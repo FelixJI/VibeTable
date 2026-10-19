@@ -66,6 +66,7 @@ from scripts.qa.windows_process_scope import (  # noqa: E402
     TargetTerminationResult,
     WindowsProcessScope,
 )
+from tests.e2e.legacy_layout_fixture import preservation_proof, seed_legacy_layouts  # noqa: E402
 from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
     OwnerLeaseCleanupReport,
     PortReleaseReport,
@@ -116,6 +117,7 @@ CAPACITY_REQUIRED_IDENTITY_FIELDS = ("workspaceId", "sessionEpoch")
 # resume phase needs; the two scenarios deliberately require different seed
 # contracts instead of sharing a generic state shape.
 _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "16-dashboard-lifecycle": ("workspaceId", "tableId", "field", "projectKey"),
     "48-plugin-applications": (
         "workspaceId",
         "projectKey",
@@ -884,6 +886,11 @@ def _handle_storage_proof(
             physical_name = row[0]
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", physical_name):
                 raise RuntimeError(f"table definition has unsafe physical name: {physical_name!r}")
+            legacy_proof = (
+                preservation_proof(connection, physical_name, table_id)
+                if request.get("legacyLayoutProof") is True
+                else None
+            )
             records = connection.execute(f'SELECT COUNT(*) FROM "{physical_name}"').fetchone()[0]
             audit = connection.execute(
                 "SELECT COUNT(*) FROM vibetable_audit_events WHERE table_id = ?",
@@ -937,6 +944,7 @@ def _handle_storage_proof(
             "outbox": int(outbox),
         },
         "auditLedger": audit_ledger,
+        **({"legacyPreservation": legacy_proof} if legacy_proof is not None else {}),
     }
 
 
@@ -2229,6 +2237,7 @@ def _run_node_runner_guarded(
         if file_dialog_request is not None:
             file_dialog_path.unlink()
             if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                "17-interface-lifecycle",
                 "52-plugin-capability-services",
                 "53-record-manager",
             }:
@@ -2255,6 +2264,9 @@ def _run_node_runner_guarded(
                 plugin_native_path.unlink()
                 handled_plugin_native_ids.add(native_id)
                 if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                    "16-dashboard-lifecycle",
+                    "17-interface-lifecycle",
+                    "46-dashboard-native-output",
                     "48-plugin-applications",
                     "49-plugin-application-security",
                     "50-plugin-headless-budget",
@@ -2644,6 +2656,7 @@ def run_scenario(
                 check=True,
             )
     if scenario.id in {
+        "46-dashboard-native-output",
         "48-plugin-applications",
         "49-plugin-application-security",
         "50-plugin-headless-budget",
@@ -2656,7 +2669,7 @@ def run_scenario(
         from tests.e2e.plugin_capability_packages import prepare_capability_packages
 
         prepare_capability_packages(controls_dir)
-    if scenario.id == "53-record-manager":
+    if scenario.id in {"16-dashboard-lifecycle", "17-interface-lifecycle", "53-record-manager"}:
         from tests.e2e.plugin_capability_packages import prepare_record_manager_package
 
         prepare_record_manager_package(controls_dir)
@@ -2779,6 +2792,9 @@ def run_scenario(
     port = _reserve_port()
     environment = os.environ.copy()
     if scenario.id in {
+        "16-dashboard-lifecycle",
+        "17-interface-lifecycle",
+        "46-dashboard-native-output",
         "47-plugin-surface-api",
         "48-plugin-applications",
         "49-plugin-application-security",
@@ -3256,6 +3272,9 @@ def run_product_acceptance(
     if any(
         scenario.id
         in {
+            "16-dashboard-lifecycle",
+            "17-interface-lifecycle",
+            "46-dashboard-native-output",
             "42-file-document-native-operations",
             "48-plugin-applications",
             "49-plugin-application-security",
@@ -3284,6 +3303,9 @@ def run_product_acceptance(
         if (
             scenario.id
             in {
+                "16-dashboard-lifecycle",
+                "17-interface-lifecycle",
+                "46-dashboard-native-output",
                 "42-file-document-native-operations",
                 "48-plugin-applications",
                 "49-plugin-application-security",
@@ -3382,6 +3404,8 @@ def _run_host_presentation_restart_acceptance(
             scenario, phase_results, "HOST_PRESENTATION_SEED_INVALID"
         )
     workspace_root = created_workspace_root
+    if scenario.id == "16-dashboard-lifecycle":
+        seed_legacy_layouts(workspace_root, persistent_root, seed)
     try:
         _write_json_atomic(
             state_path,
@@ -3419,6 +3443,30 @@ def _run_host_presentation_restart_acceptance(
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_RESUME_FAILED"
         )
+    if scenario.id == "16-dashboard-lifecycle":
+        (readiness_dir / "vibetable-readiness.json").unlink(missing_ok=True)
+        reopened = run_scenario(
+            scenario,
+            package_root=package_root,
+            evidence_root=run_root,
+            node=node,
+            persistent_run=_PersistentScenarioRun(
+                phase="resume",
+                state_path=state_path,
+                scenario_dir=run_root
+                / scenario.id
+                / "reopened"
+                / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+                readiness_dir=readiness_dir,
+                workspace_root=workspace_root,
+            ),
+        )
+        phase_results["reopened"] = reopened
+        if (
+            reopened.get("status") != "passed"
+            or reopened.get("lifecycle", {}).get("status") != "passed"
+        ):
+            return _host_presentation_phase_failure(scenario, phase_results, "LEGACY_REOPEN_FAILED")
     if scenario.id == "44-file-restore-crash" and (
         seed.get("lifecycle", {}).get("mode") != "intentional-restore-crash"
         or type(seed.get("hostRootPid")) is not int

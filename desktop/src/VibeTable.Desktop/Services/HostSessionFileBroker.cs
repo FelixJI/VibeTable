@@ -436,7 +436,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     /// write that outlives the drain can always be cleaned up; committing
     /// after retirement is refused. Idempotent for a matching outcome.
     /// </summary>
-    internal async Task CompleteDownloadAsync(string id, bool commit)
+    internal async Task CompleteDownloadAsync(string id, bool commit, Action<Action>? commitRequest = null)
     {
         Download? download = null;
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -466,11 +466,16 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 {
                     _commitCurrent(() =>
                     {
-                        download.Lease.CancellationToken.ThrowIfCancellationRequested();
-                        _retired.Token.ThrowIfCancellationRequested();
-                        if (_time.GetUtcNow() >= download.Deadline)
-                            throw new TimeoutException("SAVE_TIMEOUT");
-                        File.Move(download.Temporary, download.Target, overwrite: true);
+                        void Apply()
+                        {
+                            download.Lease.CancellationToken.ThrowIfCancellationRequested();
+                            _retired.Token.ThrowIfCancellationRequested();
+                            if (_time.GetUtcNow() >= download.Deadline)
+                                throw new TimeoutException("SAVE_TIMEOUT");
+                            File.Move(download.Temporary, download.Target, overwrite: true);
+                        }
+                        if (commitRequest is null) Apply();
+                        else commitRequest(Apply);
                     });
                 }
                 catch

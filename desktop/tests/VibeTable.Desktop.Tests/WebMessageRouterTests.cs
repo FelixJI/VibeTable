@@ -922,7 +922,7 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void DashboardNativeOutputRequiresTheCurrentWorkspaceScope()
+    public void LegacyPreservationRequiresTheCurrentWorkspaceScope()
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add,
@@ -932,14 +932,14 @@ public sealed class WebMessageRouterTests
         };
 
         HostReplyMessage? exportMissing = router.Route(
-            """{"type":"dashboard.exportTargetRequested","requestId":"export-missing","payload":{"fileName":"sales","format":"csv","blobUrl":"blob:https://app.vibetable.local/abc123","byteLength":24}}""");
+            """{"type":"legacyLayout.exportRequested","requestId":"export-missing","payload":{"fileName":"sales","format":"csv","blobUrl":"blob:https://app.vibetable.local/abc123","byteLength":24}}""");
         HostReplyMessage? printMissing = router.Route(
-            """{"type":"dashboard.printRequested","requestId":"print-missing","payload":{}}""");
+            """{"type":"legacyLayout.reportRequested","requestId":"print-missing","payload":{}}""");
         HostReplyMessage? retireMissing = router.Route(
-            """{"type":"dashboard.exportRetireRequested","requestId":"retire-missing","payload":{"token":"download-1"}}""");
+            """{"type":"legacyLayout.cancelRequested","requestId":"retire-missing","payload":{"token":"download-1"}}""");
         string acceptedJson = JsonSerializer.Serialize(new
         {
-            type = "dashboard.printRequested",
+            type = "legacyLayout.reportRequested",
             requestId = "print-scoped",
             scope = new
             {
@@ -958,7 +958,7 @@ public sealed class WebMessageRouterTests
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", retireMissing?.Payload?.Code);
         Assert.IsNull(accepted);
         Assert.HasCount(1, dispatched);
-        Assert.AreEqual("dashboard.printRequested", dispatched.Single().Type);
+        Assert.AreEqual("legacyLayout.reportRequested", dispatched.Single().Type);
         Assert.IsNotNull(dispatched.Single().Scope);
     }
 
@@ -1343,4 +1343,19 @@ public sealed class WebMessageRouterTests
                 capability.Owner, route);
         }
     }
+    [TestMethod]
+    [DataRow("interface.commitRequested")]
+    [DataRow("interface.deleteRequested")]
+    [DataRow("dashboard.saveRequested")]
+    [DataRow("dashboard.queryRequested")]
+    [DataRow("dashboard.printRequested")]
+    public void RetiredLayoutRoutesNeverDispatch(string type)
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        var rejected = router.Route(JsonSerializer.Serialize(new { type, requestId = "retired", payload = new { } }));
+        Assert.AreEqual("CAPABILITY_RETIRED", rejected?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+    }
+
 }

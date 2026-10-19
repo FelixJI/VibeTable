@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 116
+    assert len(manifest["rpcMethods"]) == 117
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -101,6 +101,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "interface.delete",
         "interface.list",
         "interface.load",
+        "legacyLayout.snapshot",
         "lookup.draft.preview",
         "lookup.list",
         "lookup.query",
@@ -303,6 +304,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "interface.delete",
         "interface.list",
         "interface.load",
+        "legacyLayout.snapshot",
         "lookup.draft.preview",
         "lookup.list",
         "lookup.query",
@@ -440,3 +442,17 @@ def test_schema_field_change_go_owner_retires_python_routes() -> None:
             "effect": expected_effect,
         }
     assert not (set(PYTHON_PRODUCT_RPC_REGISTRY) & seven)
+
+
+def test_preservation_is_read_only_and_host_only() -> None:
+    manifest = build_manifest()
+    assert next(
+        item for item in manifest["rpcMethods"] if item["method"] == "legacyLayout.snapshot"
+    ) == {
+        "method": "legacyLayout.snapshot",
+        "scope": "workspace",
+        "audience": "hostOnly",
+        "capabilityId": "legacy.preservation",
+        "owner": "goSidecar",
+        "effect": "read",
+    }

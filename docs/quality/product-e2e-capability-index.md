@@ -8,8 +8,8 @@
 ## 当前声明范围
 
 - 场景：52
-- 唯一能力：77
-- 场景—能力关联：132
+- 唯一能力：72
+- 场景—能力关联：130
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -23,13 +23,6 @@
 | `content.named-revision` | <code>07-attachment-history</code>（附件全生命周期与历史恢复） |
 | `content.record` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
-| `dashboard.conflict` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
-| `dashboard.drilldown` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
-| `dashboard.export` | <code>46-dashboard-native-output</code>（仪表盘真实 WebView 下载与原生输出） |
-| `dashboard.filtering` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
-| `dashboard.lifecycle` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
-| `dashboard.print` | <code>46-dashboard-native-output</code>（仪表盘真实 WebView 下载与原生输出） |
-| `dashboard.visualization` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `data-import.atomic` | <code>09-atomic-import-scale</code>（粘贴或导入中途失败无半提交）、<code>36-backend-import-exit</code>（运行中导入遇 Python 退出仍保留 Host 状态） |
 | `data-io.interop` | <code>35-data-io-interoperability</code>（数据互操作代表矩阵） |
 | `data-io.round-trip` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
@@ -47,9 +40,9 @@
 | `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
 | `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合）、<code>43-file-revision-leaves</code>（文件autosave正式分支与叶子恢复激活）、<code>44-file-restore-crash</code>（真实Restore提交断点崩溃与同UUID冷恢复） |
 | `host.commands` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
-| `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
-| `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
+| `legacy-layout.preservation` | <code>16-dashboard-lifecycle</code>（旧 Dashboard/Interface 副本保全与插件替代）、<code>46-dashboard-native-output</code>（旧布局受控导出与插件原生打印） |
+| `legacy-layout.retired` | <code>17-interface-lifecycle</code>（旧 Interface 拒绝与代码插件业务页面） |
 | `lookup.aggregation` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
 | `lookup.export` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
@@ -57,7 +50,9 @@
 | `mutation.authority` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化）、<code>21-calendar-date-move</code>（Calendar 日期拖动持久化）、<code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
-| `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
+| `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（旧 Interface 拒绝与代码插件业务页面） |
+| `plugin.application.lifecycle` | <code>16-dashboard-lifecycle</code>（旧 Dashboard/Interface 副本保全与插件替代）、<code>17-interface-lifecycle</code>（旧 Interface 拒绝与代码插件业务页面） |
+| `plugin.application.print` | <code>46-dashboard-native-output</code>（旧布局受控导出与插件原生打印） |
 | `plugin.applications` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.attachments` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `plugin.data-io` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
@@ -79,10 +74,10 @@
 | `relation.preview` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
 | `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
 | `relation.write` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
-| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环）、<code>45-common-field-display</code>（常用字段显示、重开与快照恢复旅程） |
+| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（旧 Dashboard/Interface 副本保全与插件替代）、<code>45-common-field-display</code>（常用字段显示、重开与快照恢复旅程） |
 | `replica.conflict` | <code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
-| `schema.query` | <code>30-query-snapshot-validation</code>（查询快照只读校验） |
+| `schema.query` | <code>16-dashboard-lifecycle</code>（旧 Dashboard/Interface 副本保全与插件替代）、<code>30-query-snapshot-validation</code>（查询快照只读校验） |
 | `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开）、<code>45-common-field-display</code>（常用字段显示、重开与快照恢复旅程） |
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
@@ -113,8 +108,8 @@
 | <code>13-protection-policy</code> | 工作区保护策略与仓库验证 | 通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。 | `workspace.protection` |
 | <code>14-document-diff</code> | 真实文件历史版本比较 | 通过 host-only picker 导入真实 TXT 历史版本并以 restore 验证无变化会话，再经真实 upgrade 建立含77组插入/删除/替换的合成修订；从 FileRevisionTree 执行唯一 V2 session/page 路由，核对首屏≤50项、完整before/after oracle、分类计数与稳定标识、关闭后的会话过期和产物清理、effective CAS 的 stale 失败，以及 renderer 原始 materializeDiffPair 请求被拒绝。 同包 XLSX 格式/内容语料核对全部3/11组独立oracle、工作表/单元格位置、公式与缓存独立及缓存未重算警告；两sheet、10004实际稀疏cell、XFD1048576跨度和20万字共享串比较75处变化，首屏有界、完整分页稳定ID、原件及历史只读、关闭过期清理和真实截图。随后通过同包受限 Worker 比较 DOCX 基础字符/段落格式和已有修订副本，精确核对3组格式/结构变化与0组归一化变化、覆盖提示、具体位置与安全渲染、权威修订和有效指针不变及关闭清理，并记录经身份核对的 Job 成员内存采样。 | `file-history.diff` |
 | <code>15-workspace-snapshot-package</code> | 工作区切换与快照包 | 通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。 | `workspace.lifecycle`、`snapshot.package` |
-| <code>16-dashboard-lifecycle</code> | Dashboard 可视化、筛选与冲突闭环 | 通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。 | `dashboard.lifecycle`、`dashboard.visualization`、`dashboard.filtering`、`dashboard.drilldown`、`dashboard.conflict`、`release.smoke` |
-| <code>17-interface-lifecycle</code> | Interface 构建、运行、重启与删除 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
+| <code>16-dashboard-lifecycle</code> | 旧 Dashboard/Interface 副本保全与插件替代 | 旧 Dashboard/Interface：本次独立工作区由真实Host建立业务表后正常退出，离线测试seed写入三个旧集合与未知/损坏payload；重开检测逐项诊断、取消和受控导出原始定义，采用record-manager读取原业务表；前后核对稳定ID、字段、记录、附件、审计与revision，重复检测导出不写旧定义。 | `legacy-layout.preservation`、`plugin.application.lifecycle`、`schema.query`、`release.smoke` |
+| <code>17-interface-lifecycle</code> | 旧 Interface 拒绝与代码插件业务页面 | 直接旧Interface/dashboard请求明确拒绝；真实record-manager安装、概览、列表导航、确认式创建/更新/规范化、订阅刷新、删除拒绝/批准和禁用再启用，保持既有业务记录身份。 | `legacy-layout.retired`、`plugin.application.lifecycle`、`plugin.action.lifecycle` |
 | <code>18-workspace-search</code> | 内容、文件关联与统一搜索闭环 | 通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析；经 host picker 导入独立 OOXML fixtures，DOCX 跨 run 中文、XLSX 引用共享字符串/缓存公式和 PPTX 真实顺序/备注均可命中，未引用字符串不可命中，有限覆盖提示可见并从结果打开正确文件。 | `workspace-search.query`、`workspace-search.rebuild`、`content.record`、`file-history.query`、`record-document-link.lifecycle`、`attachment.search` |
 | <code>19-gallery-lifecycle</code> | Gallery 创建、重开与冲突恢复 | 通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。 | `gallery.lifecycle`、`preset.conflict` |
 | <code>20-kanban-lane-drag</code> | Kanban 单选泳道拖拽持久化 | 通过真实 Tables UI 创建并配置以单选字段分组的 Kanban；泳道显示 label 但拖拽只提交稳定 optionId，host 权威提交后移动卡片；刷新以及离开 Tables 后重开仍保持移动结果。 | `kanban.lifecycle`、`mutation.authority` |
@@ -142,7 +137,7 @@
 | <code>43-file-revision-leaves</code> | 文件autosave正式分支与叶子恢复激活 | 真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。 | `history.restore`、`file-history.branches` |
 | <code>44-file-restore-crash</code> | 真实Restore提交断点崩溃与同UUID冷恢复 | 合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。 | `history.restore`、`file-history.branches`、`workspace.recovery` |
 | <code>45-common-field-display</code> | 常用字段显示、重开与快照恢复旅程 | 独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。 | `schema.v2`、`release.smoke` |
-| <code>46-dashboard-native-output</code> | 仪表盘真实 WebView 下载与原生输出 | 独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。 | `dashboard.export`、`dashboard.print` |
+| <code>46-dashboard-native-output</code> | 旧布局受控导出与插件原生打印 | 旧布局JSON保存取消不改已有文件、renderer内容/路径伪造拒绝、Host权威快照受控结算；新代码插件真实WebView2原生打印仅报告opened，取消/导航后隔离内容和清理边界通过。 | `legacy-layout.preservation`、`plugin.application.print` |
 | <code>47-plugin-surface-api</code> | 无 Worker 插件真实页面读写 | 仅在本次合成Host进程禁用NodePluginWorkerAdapter，以真实manifest.v2安装和实际隔离frame通过公开SDK读取550条200/200/150记录、保存私设、编辑草稿并由Host一次确认后经Go提交；拒绝和提交前取消零写入，记录页面/确认截图、Host任务及权威结果。旧Worker场景11完整保留。 | `plugin.surface-api`、`plugin.mutation` |
 | <code>48-plugin-applications</code> | 完整插件应用与同UUID冷重启生命周期 | 真实WPF安装无Worker包，两同名插件独立scope和三hash页、长期70调用、headless完成失败取消与回收；第二冷Host同UUID新epoch核原生键鼠确认、权限增量升级、失败保快照、禁用撤权、缺包恢复及卸载业务记录保留；当前应用原生打印opened-only与body/portal白名单；真实预览PDF首末行/多页、取消afterprint后再打印、原生预览期间导航快照不泄漏平台。 | `plugin.applications`、`plugin.lifecycle`、`plugin.surface-api`、`plugin.output.print` |
 | <code>49-plugin-application-security</code> | 完整插件应用真实安全壳与renderer恢复 | 同包真实WebView2 CSP跨插件脚本/fetch/内联/编码穿越、顶层导航、伪造消息与宿主对象拒绝；合成死循环后真实WPF SendInput停止与同env恢复、旧renderer释放和token拒绝；真实renderer崩溃自动恢复且数据保留；实际明暗主题、受控GitHub runner系统高对比及finally恢复、125%内容scale与实际DPI观察，截图来自原生窗口。 | `plugin.applications`、`plugin.isolation`、`workspace.recovery` |

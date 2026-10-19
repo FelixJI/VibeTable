@@ -3,163 +3,253 @@
     "id": "01-offline-first-start",
     "title": "干净数据目录离线首次启动",
     "requirement": "真实发布包在独立数据目录启动，WPF、WebView2、renderer 与 PocketBase sidecar 就绪；Python backend 与插件 Node 按需启动，普通首启不启动；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。",
-    "capabilities": ["workspace.lifecycle", "offline.start", "release.smoke"]
+    "capabilities": [
+      "workspace.lifecycle",
+      "offline.start",
+      "release.smoke"
+    ]
   },
   {
     "id": "02-all-field-schema",
     "title": "Schema v2 字段家族与稳定身份",
     "requirement": "宿主创建空表并分配不透明表身份；通过统一 Field Settings v2 能力、计划和应用创建全部普通字段家族，同类型显示变更不改变字段身份；select label/color 修改不改记录内 optionId；Ctrl+Z 只撤销数据编辑、不撤销字段；停用与恢复经过回收站，renderer 无法调用旧通用 schema 写入口。",
-    "capabilities": ["schema.v2", "release.smoke"]
+    "capabilities": [
+      "schema.v2",
+      "release.smoke"
+    ]
   },
   {
     "id": "03-schema-errors",
     "title": "前端与服务端 typed diagnostic",
     "requirement": "统一字段抽屉在本地阻止无效草稿；服务端拒绝无效 v2 字段意图并返回稳定错误码；旧 schema.validate 路由在 renderer 边界不可达。",
-    "capabilities": ["schema.v2", "contract.diagnostics"]
+    "capabilities": [
+      "schema.v2",
+      "contract.diagnostics"
+    ]
   },
   {
     "id": "04-json-round-trip",
     "title": "JSON 编辑、筛选、粘贴、导入与导出不变",
     "requirement": "JSON 值经结构化编辑、剪贴板粘贴、host picker 导入和导出后，与权威查询做规范化深比较并保持完全一致。",
-    "capabilities": ["data.json", "data-io.round-trip"]
+    "capabilities": [
+      "data.json",
+      "data-io.round-trip"
+    ]
   },
   {
     "id": "05-formula-lifecycle",
     "title": "常用公式界面、重算重开与迁移回滚",
     "requirement": "通过正式公式编辑器创建金额、条件分类、Unicode 文本、错误提示及日期增减→到期天数/状态→TEXT 链，TODAY/NOW 可预览保存；预览、网格、排序筛选、CSV 与关闭重开结果一致，断网可用；空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。",
-    "capabilities": ["schema.v2", "formula.recalculation"]
+    "capabilities": [
+      "schema.v2",
+      "formula.recalculation"
+    ]
   },
   {
     "id": "06-relation-fanout",
     "title": "双向关联字段编辑、冻结计划与重开",
     "requirement": "从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。",
-    "capabilities": ["schema.v2", "relation.pair-edit", "contract.diagnostics"]
+    "capabilities": [
+      "schema.v2",
+      "relation.pair-edit",
+      "contract.diagnostics"
+    ]
   },
   {
     "id": "07-attachment-history",
     "title": "附件全生命周期与历史恢复",
     "requirement": "通过 host picker 上传、另存为和替换附件，验证实际预览产物字节长度与 SHA-256、另存为落盘字节；历史恢复后通过真实 UI 移除附件，核对权威字段为空且已保存副本不变；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。单记录历史抽屉完成命名修订创建、比较、恢复、更新指针；通过 UI 关闭并重开工作区后核对列表和记录状态，再经 UI 删除并刷新确认。",
-    "capabilities": ["attachment.history", "history.restore", "content.named-revision"]
+    "capabilities": [
+      "attachment.history",
+      "history.restore",
+      "content.named-revision"
+    ]
   },
   {
     "id": "08-stale-conflict",
     "title": "两次过期编辑显示明确冲突",
     "requirement": "两个基于同一旧版本的编辑中，后提交者看到可操作的显式冲突，且不会静默覆盖。",
-    "capabilities": ["mutation.conflict", "release.smoke"]
+    "capabilities": [
+      "mutation.conflict",
+      "release.smoke"
+    ]
   },
   {
     "id": "09-atomic-import-scale",
     "title": "粘贴或导入中途失败无半提交",
     "requirement": "1,000 行单事务导入在中途故障后，业务记录、审计、幂等键和 outbox 均严格为零。",
-    "capabilities": ["data-import.atomic"]
+    "capabilities": [
+      "data-import.atomic"
+    ]
   },
   {
     "id": "10-sse-reconnect",
     "title": "SSE 断线重连且不重复应用",
     "requirement": "真实 sidecar 断开后 UI 自动追赶且事件只应用一次；精确终止打包 BFF 后通过 workspace 关闭/重开恢复，轮换 session epoch，并拒绝旧 epoch 写入。",
-    "capabilities": ["realtime.reconnect", "workspace.lifecycle"]
+    "capabilities": [
+      "realtime.reconnect",
+      "workspace.lifecycle"
+    ]
   },
   {
     "id": "11-plugin-mutation",
     "title": "插件安装、重启与执行清理",
     "requirement": "插件安装与 mutation 需明确确认，文件能力和越权拒绝可验证；确认中及计算中 Python 崩溃后任务结算、Node 回收。真实 Host 重启后 catalog/audit 零执行进程可读，缺本机包缓存时执行明确失败。",
-    "capabilities": ["plugin.mutation"]
+    "capabilities": [
+      "plugin.mutation"
+    ]
   },
   {
     "id": "12-backup-consistency",
     "title": "工作区快照恢复一致性",
     "requirement": "从当前版本界面创建并恢复工作区快照；恢复后业务数据、附件和行历史精确回到快照权威状态，同时保留快照之后产生的不可回滚审计记录与外部 ledger 链；派生搜索 generation 必须失效并重建后重新命中恢复附件。",
-    "capabilities": ["snapshot.restore", "attachment.history", "history.restore", "workspace-search.rebuild", "audit.ledger"]
+    "capabilities": [
+      "snapshot.restore",
+      "attachment.history",
+      "history.restore",
+      "workspace-search.rebuild",
+      "audit.ledger"
+    ]
   },
   {
     "id": "13-protection-policy",
     "title": "工作区保护策略与仓库验证",
     "requirement": "通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。",
-    "capabilities": ["workspace.protection"]
+    "capabilities": [
+      "workspace.protection"
+    ]
   },
   {
     "id": "14-document-diff",
     "title": "真实文件历史版本比较",
     "requirement": "通过 host-only picker 导入真实 TXT 历史版本并以 restore 验证无变化会话，再经真实 upgrade 建立含77组插入/删除/替换的合成修订；从 FileRevisionTree 执行唯一 V2 session/page 路由，核对首屏≤50项、完整before/after oracle、分类计数与稳定标识、关闭后的会话过期和产物清理、effective CAS 的 stale 失败，以及 renderer 原始 materializeDiffPair 请求被拒绝。 同包 XLSX 格式/内容语料核对全部3/11组独立oracle、工作表/单元格位置、公式与缓存独立及缓存未重算警告；两sheet、10004实际稀疏cell、XFD1048576跨度和20万字共享串比较75处变化，首屏有界、完整分页稳定ID、原件及历史只读、关闭过期清理和真实截图。随后通过同包受限 Worker 比较 DOCX 基础字符/段落格式和已有修订副本，精确核对3组格式/结构变化与0组归一化变化、覆盖提示、具体位置与安全渲染、权威修订和有效指针不变及关闭清理，并记录经身份核对的 Job 成员内存采样。",
-    "capabilities": ["file-history.diff"]
+    "capabilities": [
+      "file-history.diff"
+    ]
   },
   {
     "id": "15-workspace-snapshot-package",
     "title": "工作区切换与快照包",
     "requirement": "通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。",
-    "capabilities": ["workspace.lifecycle", "snapshot.package"]
+    "capabilities": [
+      "workspace.lifecycle",
+      "snapshot.package"
+    ]
   },
   {
     "id": "16-dashboard-lifecycle",
-    "title": "Dashboard 可视化、筛选与冲突闭环",
-    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。",
-    "capabilities": ["dashboard.lifecycle", "dashboard.visualization", "dashboard.filtering", "dashboard.drilldown", "dashboard.conflict", "release.smoke"]
+    "title": "旧 Dashboard/Interface 副本保全与插件替代",
+    "requirement": "旧 Dashboard/Interface：本次独立工作区由真实Host建立业务表后正常退出，离线测试seed写入三个旧集合与未知/损坏payload；重开检测逐项诊断、取消和受控导出原始定义，采用record-manager读取原业务表；前后核对稳定ID、字段、记录、附件、审计与revision，重复检测导出不写旧定义。",
+    "capabilities": [
+      "legacy-layout.preservation",
+      "plugin.application.lifecycle",
+      "schema.query",
+      "release.smoke"
+    ]
   },
   {
     "id": "17-interface-lifecycle",
-    "title": "Interface 构建、运行、重启与删除",
-    "requirement": "通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。",
-    "capabilities": ["interface.lifecycle", "interface.runtime", "plugin.action.lifecycle"]
+    "title": "旧 Interface 拒绝与代码插件业务页面",
+    "requirement": "直接旧Interface/dashboard请求明确拒绝；真实record-manager安装、概览、列表导航、确认式创建/更新/规范化、订阅刷新、删除拒绝/批准和禁用再启用，保持既有业务记录身份。",
+    "capabilities": [
+      "legacy-layout.retired",
+      "plugin.application.lifecycle",
+      "plugin.action.lifecycle"
+    ]
   },
   {
     "id": "18-workspace-search",
     "title": "内容、文件关联与统一搜索闭环",
     "requirement": "通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析；经 host picker 导入独立 OOXML fixtures，DOCX 跨 run 中文、XLSX 引用共享字符串/缓存公式和 PPTX 真实顺序/备注均可命中，未引用字符串不可命中，有限覆盖提示可见并从结果打开正确文件。",
-    "capabilities": ["workspace-search.query", "workspace-search.rebuild", "content.record", "file-history.query", "record-document-link.lifecycle", "attachment.search"]
+    "capabilities": [
+      "workspace-search.query",
+      "workspace-search.rebuild",
+      "content.record",
+      "file-history.query",
+      "record-document-link.lifecycle",
+      "attachment.search"
+    ]
   },
   {
     "id": "19-gallery-lifecycle",
     "title": "Gallery 创建、重开与冲突恢复",
     "requirement": "通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。",
-    "capabilities": ["gallery.lifecycle", "preset.conflict"]
+    "capabilities": [
+      "gallery.lifecycle",
+      "preset.conflict"
+    ]
   },
   {
     "id": "20-kanban-lane-drag",
     "title": "Kanban 单选泳道拖拽持久化",
     "requirement": "通过真实 Tables UI 创建并配置以单选字段分组的 Kanban；泳道显示 label 但拖拽只提交稳定 optionId，host 权威提交后移动卡片；刷新以及离开 Tables 后重开仍保持移动结果。",
-    "capabilities": ["kanban.lifecycle", "mutation.authority"]
+    "capabilities": [
+      "kanban.lifecycle",
+      "mutation.authority"
+    ]
   },
   {
     "id": "21-calendar-date-move",
     "title": "Calendar 日期拖动持久化",
     "requirement": "通过真实 Tables UI 创建 date 字段并配置 Calendar；把权威记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
-    "capabilities": ["calendar.lifecycle", "mutation.authority"]
+    "capabilities": [
+      "calendar.lifecycle",
+      "mutation.authority"
+    ]
   },
   {
     "id": "22-timeline-date-move",
     "title": "Timeline 单日期拖动持久化",
     "requirement": "通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
-    "capabilities": ["timeline.lifecycle", "mutation.authority"]
+    "capabilities": [
+      "timeline.lifecycle",
+      "mutation.authority"
+    ]
   },
   {
     "id": "23-directory-replica-recovery",
     "title": "目录副本释放、重开与进程恢复",
     "requirement": "通过真实 Workspace Center 创建目录镜像工作区，并在真实 Tables UI 写入表与记录；公开释放活动缓存后以同一 workspace UUID 重开，等待 database.opened，再以单次 query.page 与 replica.status 验证目录副本；精确终止 sidecar 并等待同 session 的 replacement database.opened，最后以单次查询和状态读取证明数据与副本状态保持一致。",
-    "capabilities": ["workspace.lifecycle", "workspace.protection", "replica.recovery"]
+    "capabilities": [
+      "workspace.lifecycle",
+      "workspace.protection",
+      "replica.recovery"
+    ]
   },
   {
     "id": "24-directory-replica-conflict",
     "title": "双端目录副本冲突与败方恢复",
     "requirement": "两个真实 packaged Host 使用独立 local-data 与目录副本，从同一表行 seed 分叉；正常关闭后仅交换公开副本 payload，稳定重开后在 Conflict Center 选择 replica，preview 有效计划并 apply 同一 planId；query.page 验证选中的远端 marker；正常关闭并重启 Host 后验证同一行与 revision、同一 conflictId 已解决状态，公开 snapshot.list 与 UI previewRestore 证明败方 recoverySnapshotIds 仍可达；冲突解决后经正常 workspace.close 新建的 protection 及重启期间后续保护点必须公开 ready/verified 并完成本地副本发布。",
-    "capabilities": ["replica.conflict", "replica.recovery", "workspace.protection"]
+    "capabilities": [
+      "replica.conflict",
+      "replica.recovery",
+      "workspace.protection"
+    ]
   },
   {
     "id": "26-lookup-definition-read",
     "title": "Lookup 持久定义读取",
     "requirement": "通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。",
-    "capabilities": ["lookup.definition-read"]
+    "capabilities": [
+      "lookup.definition-read"
+    ]
   },
   {
     "id": "27-relation-target-search",
     "title": "关系目标搜索",
     "requirement": "真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。",
-    "capabilities": ["relation.search"]
+    "capabilities": [
+      "relation.search"
+    ]
   },
   {
     "id": "28-relation-delta-preview",
     "title": "关系预览、选择器写入与重开",
     "requirement": "真实多值关系预览与取消保持权威只读；通过选择器提交多值增删、单值更换/清空与新建目标，验证 Lookup 刷新和工作区重开后的稳定身份与值；合成 CT-001/城轨一期案例覆盖编号与名称搜索、两关系独立显示、网格/Picker/卡片、更名刷新保留草稿、双向配置与离线重开，并保存截图。",
-    "capabilities": ["relation.preview", "relation.write"]
+    "capabilities": [
+      "relation.preview",
+      "relation.write"
+    ]
   },
   {
     "id": "29-lookup-source-pagination",
@@ -173,22 +263,26 @@
     "id": "30-query-snapshot-validation",
     "title": "查询快照只读校验",
     "requirement": "真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。",
-    "capabilities": ["schema.query"]
+    "capabilities": [
+      "schema.query"
+    ]
   },
   {
     "id": "31-relation-pair-inspection",
     "title": "关系完整性只读分页检查",
     "requirement": "通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。",
-    "capabilities": ["relation.integrity-inspection"]
+    "capabilities": [
+      "relation.integrity-inspection"
+    ]
   },
-{
-  "id": "32-shared-work-calendar",
-  "title": "工作区共享工作日历",
-  "requirement": "通过真实设置页保存工作区假日，首页和实际网格日期编辑器显示相同已确认规则；创建并打开B证明隔离，再正常重开A证明PB持久化，清除规则仍推进revision。S24目录副本消费证据待独立实现合入后追加。",
-  "capabilities": [
-    "workspace.calendar"
-  ]
-},
+  {
+    "id": "32-shared-work-calendar",
+    "title": "工作区共享工作日历",
+    "requirement": "通过真实设置页保存工作区假日，首页和实际网格日期编辑器显示相同已确认规则；创建并打开B证明隔离，再正常重开A证明PB持久化，清除规则仍推进revision。S24目录副本消费证据待独立实现合入后追加。",
+    "capabilities": [
+      "workspace.calendar"
+    ]
+  },
   {
     "id": "33-host-grid-presentation",
     "title": "Host 网格呈现与命令快捷方式保存和恢复",
@@ -202,89 +296,135 @@
     "id": "34-relation-lookup-data-io",
     "title": "Relation 导入与 Lookup 文本导出",
     "requirement": "复用固定 corpus，先通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。再在同一真实 UI 内完成关系映射配置、重新预检、确认导入与 Lookup 选列导出，独立读取 CSV 与 XLSX 产物核对中文、公式样文本（字符串而非公式）与稳定关系 ID，确认 UI 导出不改变两端权威记录。",
-    "capabilities": ["relation.import", "lookup.export"]
+    "capabilities": [
+      "relation.import",
+      "lookup.export"
+    ]
   },
   {
     "id": "35-data-io-interoperability",
     "title": "数据互操作代表矩阵",
     "requirement": "从冻结语料出发，真实工具栏导入 UTF-8 BOM CSV 的 NFC/NFD、Emoji/ZWJ、CJK、RTL 与 locale-case 代表值及日期文本，一次真实取消保持权威与 revision 不变，重新选择后确认；XLSX 原生日期/毫秒与公式样文本经同一 UI 导入，CSV 与 XLSX 导出独立读文件核对码点、日期 wire 文本与字符串单元格；源与目标使用 CJK+NFD+Emoji 文件名，至少一条超过 260 字符的路径经真实 Host 授权导入；导出前后权威行与 schema/data revision 保持不变。",
-    "capabilities": ["data-io.interop"]
+    "capabilities": [
+      "data-io.interop"
+    ]
   },
   {
     "id": "36-backend-import-exit",
     "title": "运行中导入遇 Python 退出仍保留 Host 状态",
     "requirement": "真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。",
-    "capabilities": ["data-import.atomic"]
+    "capabilities": [
+      "data-import.atomic"
+    ]
   },
   {
     "id": "37-collection-formula-journey",
     "title": "集合公式完整来源与独立值对照",
     "requirement": "真实公式工作台选择来源表与字段，创建 SUMIF、COUNTIF、去重拼接和日期区间公式；165 条合成来源覆盖 0/1/160 匹配，与独立 JavaScript oracle 及同条件 Lookup 对照，验证来源进入退出、删除、金额与日期窗口变化、稳定身份重命名、CSV 导出和工作区重开。",
-    "capabilities": ["formula.collections", "formula.lifecycle", "lookup.aggregation"]
+    "capabilities": [
+      "formula.collections",
+      "formula.lifecycle",
+      "lookup.aggregation"
+    ]
   },
   {
     "id": "38-calculation-chain-journey",
     "title": "三表计算链的查询、来源和导出一致性",
     "requirement": "201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle；通过可见字段编辑器创建跨表Relation、关系SUM Lookup及依赖Formula，目标字段重命名后保持稳定身份和链值。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。",
-    "capabilities": ["formula.collections", "formula.lifecycle", "lookup.aggregation", "lookup.source-pagination", "lookup.export"]
+    "capabilities": [
+      "formula.collections",
+      "formula.lifecycle",
+      "lookup.aggregation",
+      "lookup.source-pagination",
+      "lookup.export"
+    ]
   },
   {
     "id": "39-file-workflow-combination",
     "title": "同包同UUID计算链与文件全流程组合",
     "requirement": "同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录，并从关联卡真实点击查看文件版本进入对应文档版本树；中文当前/历史内容搜索真实点击并按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”，恢复后文件列表、有效指针、物化字节与不可变历史一致，两文档全部当前命中只能绑定新恢复修订且必须保留正文正向命中，无需手工重建索引；恢复前后对比0组差异，恢复前打开的有效修订比较以sessionExpired拒绝继续；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐，再核对两文档当前正文命中绑定恢复修订且升级时旧词不再冒充当前。",
-    "capabilities": ["formula.collections", "lookup.aggregation", "file-history.diff", "file-history.query", "workspace-search.query", "workspace-search.rebuild", "content.record", "record-document-link.lifecycle", "history.restore"]
+    "capabilities": [
+      "formula.collections",
+      "lookup.aggregation",
+      "file-history.diff",
+      "file-history.query",
+      "workspace-search.query",
+      "workspace-search.rebuild",
+      "content.record",
+      "record-document-link.lifecycle",
+      "history.restore"
+    ]
   },
   {
     "id": "40-file-history-capacity",
     "title": "合法容量边界真实冷打开资格",
     "requirement": "test-only Go producer 在全新合成root下生成近限（9,980文档/9,990修订）与最大链深4096两个合法FileHistory工作区（绑定真实claim/fence/LastSessionEpoch的desktop-runtime-authority）；每个scale由独立真实Host冷启动经正常连接/注册/打开UI路径接入同UUID工作区，无手改registry/SQL；真实RPC queryDocuments首页与readTree全链各≤2s、冷打开≤30s冻结预算，全部formal链在真实WebView完整绘制first/effective行且aria-current成功、无栈错误；producer分别测量Go TotalAlloc，UI仅记录耗时不宣称内核峰值；两scale均status与lifecycle通过才组合通过。",
-    "capabilities": ["file-history.capacity"]
+    "capabilities": [
+      "file-history.capacity"
+    ]
   },
   {
     "id": "41-file-document-operations",
     "title": "文件排序分页与外部身份确认",
     "requirement": "真实Host picker导入一项，再由同UUID工作区正常启动watcher扫描100项不同内容合成文件；真实文件UI100/后页的原始document.listLoaded与独立纳秒时间降序/documentId并列顺序、101项路径全集及字面bytes对齐，不靠store去重掩盖漏重。同名不同内容保留不同身份；外部rename/move/copy须经真实pending用户确认，移动保持documentId/effective/history，复制生成新身份且源不变；旧missing删除确认以稳定stale码原子拒绝并保留当前路径/内容/pending。丢失状态经Host picker重连后保持身份/路径、追加formal、不可变历史与新字面bytes一致。不包含OS打开/预览/拖出。",
-    "capabilities": ["file-history.query", "file-document.identity"]
+    "capabilities": [
+      "file-history.query",
+      "file-document.identity"
+    ]
   },
   {
     "id": "42-file-document-native-operations",
     "title": "FileDocument真实Windows打开预览与拖出",
     "requirement": "真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察TXT对应新进程/窗口；独立固定纯文本、无脚本/外联的合成HTML经真实picker导入，按真实capability调用系统Preview Handler并观察独立host的COM DoPreview结果。无默认打开或HTML预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；TXT与HTML的原导入源、物化字节、完整元数据与有效修订均保持。不覆盖排序分页/版本叶子。",
-    "capabilities": ["file-document.native-operations"]
+    "capabilities": [
+      "file-document.native-operations"
+    ]
   },
   {
     "id": "43-file-revision-leaves",
     "title": "文件autosave正式分支与叶子恢复激活",
     "requirement": "真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。",
-    "capabilities": ["history.restore", "file-history.branches"]
+    "capabilities": [
+      "history.restore",
+      "file-history.branches"
+    ]
   },
-{
-  "id": "44-file-restore-crash",
-  "title": "真实Restore提交断点崩溃与同UUID冷恢复",
-  "requirement": "合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。",
-  "capabilities": [
-    "history.restore",
-    "file-history.branches",
-    "workspace.recovery"
-  ]
-},
+  {
+    "id": "44-file-restore-crash",
+    "title": "真实Restore提交断点崩溃与同UUID冷恢复",
+    "requirement": "合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。",
+    "capabilities": [
+      "history.restore",
+      "file-history.branches",
+      "workspace.recovery"
+    ]
+  },
   {
     "id": "45-common-field-display",
     "title": "常用字段显示、重开与快照恢复旅程",
     "requirement": "独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。",
-    "capabilities": ["schema.v2", "release.smoke"]
+    "capabilities": [
+      "schema.v2",
+      "release.smoke"
+    ]
   },
   {
     "id": "46-dashboard-native-output",
-    "title": "仪表盘真实 WebView 下载与原生输出",
-    "requirement": "独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。",
-    "capabilities": ["dashboard.export", "dashboard.print"]
+    "title": "旧布局受控导出与插件原生打印",
+    "requirement": "旧布局JSON保存取消不改已有文件、renderer内容/路径伪造拒绝、Host权威快照受控结算；新代码插件真实WebView2原生打印仅报告opened，取消/导航后隔离内容和清理边界通过。",
+    "capabilities": [
+      "legacy-layout.preservation",
+      "plugin.application.print"
+    ]
   },
   {
     "id": "47-plugin-surface-api",
     "title": "无 Worker 插件真实页面读写",
     "requirement": "仅在本次合成Host进程禁用NodePluginWorkerAdapter，以真实manifest.v2安装和实际隔离frame通过公开SDK读取550条200/200/150记录、保存私设、编辑草稿并由Host一次确认后经Go提交；拒绝和提交前取消零写入，记录页面/确认截图、Host任务及权威结果。旧Worker场景11完整保留。",
-    "capabilities": ["plugin.surface-api", "plugin.mutation"]
+    "capabilities": [
+      "plugin.surface-api",
+      "plugin.mutation"
+    ]
   },
   {
     "id": "48-plugin-applications",
@@ -327,30 +467,30 @@
       "workspace.recovery"
     ]
   },
-{
-  "id": "52-plugin-capability-services",
-  "title": "无 Worker 插件文件与完整能力服务",
-  "requirement": "独立file-io场景在合成工作区以真实SDK编译无Worker应用；Job-owned原生picker取消/选择和SendInput精确确认拒绝/批准，普通文件逐字节读写、附件阶段/确认/读取、导入preview任务与授权提交、显式字段CSV导出实际落盘；query/create/update/delete及合法自关系写入、非法批次零提交、范围内单调失效通知、任务成功和批准前取消零提交、context/通知/返回、退役旧token/跨surface文件handle拒绝。真实打印保持48、unknown保持51独立门禁；非受控CI不得打开本场景原生对话框。",
-  "capabilities": [
-    "plugin.surface-api",
-    "plugin.mutation",
-    "plugin.files",
-    "plugin.attachments",
-    "plugin.data-io",
-    "plugin.subscriptions",
-    "plugin.ui-services"
-  ]
-},
-{
-  "id": "53-record-manager",
-  "title": "无 Worker 记录管理应用完整用户路径",
-  "requirement": "同一WPF/WebView2包在独立合成工作区安装真实记录管理源码构建包，核对三页路由与权威总数、创建/修改、原生确认后的批量规范化、外部失效刷新、真实CSV原生选址与落盘、重开、受控删除拒绝及批准、禁用恢复与持久记录。保留52原能力门禁；沿既有Host-owned进程清理及证据归档，无静态demo替代。",
-  "capabilities": [
-    "plugin.applications",
-    "plugin.surface-api",
-    "plugin.mutation",
-    "plugin.data-io",
-    "plugin.subscriptions"
-  ]
-}
+  {
+    "id": "52-plugin-capability-services",
+    "title": "无 Worker 插件文件与完整能力服务",
+    "requirement": "独立file-io场景在合成工作区以真实SDK编译无Worker应用；Job-owned原生picker取消/选择和SendInput精确确认拒绝/批准，普通文件逐字节读写、附件阶段/确认/读取、导入preview任务与授权提交、显式字段CSV导出实际落盘；query/create/update/delete及合法自关系写入、非法批次零提交、范围内单调失效通知、任务成功和批准前取消零提交、context/通知/返回、退役旧token/跨surface文件handle拒绝。真实打印保持48、unknown保持51独立门禁；非受控CI不得打开本场景原生对话框。",
+    "capabilities": [
+      "plugin.surface-api",
+      "plugin.mutation",
+      "plugin.files",
+      "plugin.attachments",
+      "plugin.data-io",
+      "plugin.subscriptions",
+      "plugin.ui-services"
+    ]
+  },
+  {
+    "id": "53-record-manager",
+    "title": "无 Worker 记录管理应用完整用户路径",
+    "requirement": "同一WPF/WebView2包在独立合成工作区安装真实记录管理源码构建包，核对三页路由与权威总数、创建/修改、原生确认后的批量规范化、外部失效刷新、真实CSV原生选址与落盘、重开、受控删除拒绝及批准、禁用恢复与持久记录。保留52原能力门禁；沿既有Host-owned进程清理及证据归档，无静态demo替代。",
+    "capabilities": [
+      "plugin.applications",
+      "plugin.surface-api",
+      "plugin.mutation",
+      "plugin.data-io",
+      "plugin.subscriptions"
+    ]
+  }
 ]

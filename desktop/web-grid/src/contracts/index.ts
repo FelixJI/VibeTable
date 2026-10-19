@@ -1547,16 +1547,6 @@ export type WebMessageType =
   // Table-admin requests.
   | "tableAdmin.createRequested"
   | "tableAdmin.deleteRequested"
-  | "dashboard.listRequested"
-  | "dashboard.readRequested"
-  | "dashboard.manifestRequested"
-  | "dashboard.queryRequested"
-  | "dashboard.saveRequested"
-  | "dashboard.deleteRequested"
-  | "dashboard.cancelRequested"
-  | "dashboard.exportTargetRequested"
-  | "dashboard.exportRetireRequested"
-  | "dashboard.printRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
@@ -1688,16 +1678,6 @@ export type HostMessageType =
   | "document.workspaceChanged"
   // Collections-changed notifications.
   | "database.collectionsChanged"
-  | "dashboard.listLoaded"
-  | "dashboard.loaded"
-  | "dashboard.manifestLoaded"
-  | "dashboard.queryLoaded"
-  | "dashboard.saved"
-  | "dashboard.deleted"
-  | "dashboard.exportTargetGranted"
-  | "dashboard.exportRetired"
-  | "dashboard.exportSettled"
-  | "dashboard.printDialogOpened"
   | "plugin.catalog.changed"
   | "plugin.task.changed"
   | "plugin.interaction.requested"
@@ -2026,16 +2006,6 @@ export interface HostPayloadMap {
   "document.workspaceChanged": DocumentWorkspaceChangedPayload;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
-  "dashboard.listLoaded": { readonly dashboards: readonly DashboardEntryPayload[] };
-  "dashboard.loaded": DashboardWorkspacePayload;
-  "dashboard.manifestLoaded": DashboardManifestLoadedPayload;
-  "dashboard.queryLoaded": DashboardQueryResultPayload;
-  "dashboard.saved": DashboardSaveResultPayload;
-  "dashboard.deleted": { readonly deleted: string };
-  "dashboard.exportTargetGranted": DashboardExportTargetGrantedPayload;
-  "dashboard.exportRetired": { readonly token: string; readonly retired: boolean };
-  "dashboard.exportSettled": DashboardExportSettledPayload;
-  "dashboard.printDialogOpened": { readonly opened: true };
   "plugin.catalog.changed": PluginEventEnvelope;
   "plugin.task.changed": PluginEventEnvelope;
   "plugin.interaction.requested": PluginEventEnvelope;
@@ -2259,16 +2229,6 @@ export interface WebPayloadMap {
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
-  "dashboard.listRequested": Record<string, never>;
-  "dashboard.readRequested": { readonly dashboardId: string };
-  "dashboard.manifestRequested": Record<string, never>;
-  "dashboard.queryRequested": DashboardQueryRequestedPayload;
-  "dashboard.saveRequested": DashboardSaveRequestedPayload;
-  "dashboard.deleteRequested": { readonly dashboardId: string };
-  "dashboard.cancelRequested": { readonly targetRequestId: string };
-  "dashboard.exportTargetRequested": DashboardExportTargetRequestedPayload;
-  "dashboard.exportRetireRequested": { readonly token: string };
-  "dashboard.printRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
   "plugin.cleanup.listPending": { readonly projectKey: string };

@@ -17,8 +17,6 @@
     "@lucide/vue": "1.50.0",
     "@vue/devtools-api": "8.2.1",
     "echarts": "6.1.0",
-    "gridstack": "14.0.0",
-    "html-to-image": "1.11.13",
     "naive-ui": "2.45.3",
     "pinia": "4.0.3",
     "tabulator-tables": "6.6.1",

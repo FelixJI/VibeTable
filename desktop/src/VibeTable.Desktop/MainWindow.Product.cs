@@ -57,8 +57,7 @@ public partial class MainWindow : Window
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
     private readonly NativeProductFileRequestController _nativeProductFiles;
-    private readonly DashboardExportDownloadGate? _dashboardDownloadGate;
-    private readonly DashboardNativeOutputController? _dashboardOutput;
+    private readonly LegacyLayoutRequestController _legacyLayouts;
     private readonly PluginSurfaceSessionManager _pluginSurfaces;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly PluginRequestDispatcher _pluginDispatcher;
@@ -211,15 +210,7 @@ public partial class MainWindow : Window
             runtimeDataRoot is not null
                 ? Path.Combine(runtimeDataRoot, "webview2-user-data")
                 : null,
-            stableIsolatedUserDataRoot: runtimeDataRoot is not null)
-        {
-            DashboardDownloads = () => _dashboardDownloadGate,
-        };
-        // Assigned after the bridge so the settlement callback can post
-        // through it; downloads only run after LoadAsync.
-        _dashboardDownloadGate = new DashboardExportDownloadGate(
-            notification => _webBridge.PostNotification("dashboard.exportSettled", notification),
-            message => _readiness?.Trace(message));
+            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
         _workspaceRegistry = new WorkspaceRegistry(
             startup.TestMode ? runtimeDataRoot : null);
         IReadOnlyList<WorkspaceRegistryEntryV2> knownWorkspaces;
@@ -461,21 +452,15 @@ public partial class MainWindow : Window
                 _attachmentPreview),
             () => _session.Token,
             message => _readiness?.Trace(message));
-        _dashboardOutput = new DashboardNativeOutputController(
-            _webBridge,
-            _workspaceSessionFilter,
-            new WindowsNativeDashboardOutputHost(
-                this,
-                () => AppWebView.CoreWebView2,
-                _e2eControlsDir),
-            ResolveDashboardExportBroker,
-            _dashboardDownloadGate,
-            message => _readiness?.Trace(message));
+        _legacyLayouts = new LegacyLayoutRequestController(_webBridge, _workspaceSessionFilter,
+            () => _productGateway, ResolveLegacyLayoutBroker,
+            () => Dispatcher.Invoke(() => LegacyLayoutSaveDialog.Select(this, _e2eControlsDir)));
         _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
             () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
             subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
             preparePrint: _webBridge.PreparePluginPrintAsync,
-            showPrint: _dashboardOutput.ShowPluginPrintDialog,
+            showPrint: () => (AppWebView.CoreWebView2
+                ?? throw new InvalidOperationException("The product renderer is unavailable.")).ShowPrintUI(),
             releasePrint: _webBridge.ReleasePluginPrintAsync,
             files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
             fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
@@ -508,7 +493,7 @@ public partial class MainWindow : Window
             _applicationRequests,
             _documentRequests,
             _nativeProductFiles,
-            _dashboardOutput,
+            _legacyLayouts,
             _pluginDispatcher,
             _dispatcher,
             new DeviceSettingsRequestController(
@@ -738,11 +723,11 @@ public partial class MainWindow : Window
             && configured.Matches(current);
 
     /// <summary>
-    /// Resolves the session file broker backing dashboard exports. The
+    /// Resolves the session file broker backing controlled legacy-layout preservation exports. The
     /// Go-sidecar binding owns the broker; a Python client is never required
     /// and never started for native dashboard output.
     /// </summary>
-    private HostSessionFileBroker? ResolveDashboardExportBroker()
+    private HostSessionFileBroker? ResolveLegacyLayoutBroker()
     {
         try
         {
@@ -792,10 +777,6 @@ public partial class MainWindow : Window
         binding.BindSourceImportCatalogRefresh(_productRealtime.RefreshCatalogAsync);
         _dispatcher.SetProductDataGateway(_productGateway);
 
-        _dispatcher.SetDashboardGateway(
-            new JsonRpcDashboardGateway(_productGateway),
-            _session.Token);
-        _dispatcher.SetSurfaceGateway(_productGateway);
 
         if (_pluginGateway is not null)
         {

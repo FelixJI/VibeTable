@@ -1,52 +1,73 @@
-import type {
-  InterfaceCommitRequest,
-  InterfaceDeleteRequest,
-  InterfaceDeleteResult,
-  InterfaceListRequest,
-  InterfaceListResult,
-  InterfaceLoadRequest,
-  InterfaceSnapshot,
-} from "./generated/workbench";
+/**
+ * #485 (Goal #480): the visual Interface/dashboard builder is retired. This
+ * contract now describes the ONLY legacy-layout bridge surface: a Host-owned,
+ * read-only preservation channel. The renderer may request a detection report
+ * and ask the Host to save an authoritative preservation snapshot; it never
+ * supplies export content or a target path, and no import/execution entry
+ * exists on this contract.
+ */
 
-export type SurfaceWebMessageType =
-  | "interface.listRequested"
-  | "interface.loadRequested"
-  | "interface.commitRequested"
-  | "interface.deleteRequested"
-  | "interface.cancelRequested";
+export type LegacyLayoutWebMessageType =
+  | "legacyLayout.reportRequested"
+  | "legacyLayout.exportRequested";
 
-export type SurfaceHostMessageType =
-  | "interface.listLoaded"
-  | "interface.loaded"
-  | "interface.committed"
-  | "interface.deleted";
+export type LegacyLayoutHostMessageType =
+  | "legacyLayout.reportLoaded"
+  | "legacyLayout.exportCompleted";
 
-export interface SurfaceWebPayloadMap {
-  "interface.listRequested": InterfaceListRequest;
-  "interface.loadRequested": InterfaceLoadRequest;
-  "interface.commitRequested": InterfaceCommitRequest;
-  "interface.deleteRequested": InterfaceDeleteRequest;
-  "interface.cancelRequested": { readonly targetRequestId: string };
+export interface LegacyLayoutDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "warning" | "error";
+  /** Stable record/logical id the diagnostic refers to, when known. */
+  readonly itemId?: string;
+  readonly path?: string | null;
 }
 
-export interface SurfaceHostPayloadMap {
-  "interface.listLoaded": InterfaceListResult;
-  "interface.loaded": InterfaceSnapshot;
-  "interface.committed": InterfaceSnapshot;
-  "interface.deleted": InterfaceDeleteResult;
+export interface LegacyLayoutReport {
+  readonly interfaces: number;
+  readonly dashboards: number;
+  readonly panels: number;
+  readonly diagnostics: readonly LegacyLayoutDiagnostic[];
+  readonly collectedAt: string;
 }
 
-export const SURFACE_WEB_MESSAGE_TYPES = [
-  "interface.listRequested",
-  "interface.loadRequested",
-  "interface.commitRequested",
-  "interface.deleteRequested",
-  "interface.cancelRequested",
-] as const satisfies readonly SurfaceWebMessageType[];
+export interface LegacyLayoutReportRequest {
+  readonly reason?: "detect" | "refresh";
+}
 
-export const SURFACE_HOST_MESSAGE_TYPES = [
-  "interface.listLoaded",
-  "interface.loaded",
-  "interface.committed",
-  "interface.deleted",
-] as const satisfies readonly SurfaceHostMessageType[];
+export interface LegacyLayoutExportRequest {
+  /** Display-only hint; the Host owns the snapshot and the native save flow. */
+  readonly suggestedName?: string;
+}
+
+export interface LegacyLayoutExportResult {
+  readonly cancelled: boolean;
+  /** Display name of the saved file; never a filesystem path. */
+  readonly outputDisplayName: string | null;
+}
+
+export interface LegacyLayoutWebPayloadMap {
+  "legacyLayout.reportRequested": LegacyLayoutReportRequest;
+  "legacyLayout.exportRequested": LegacyLayoutExportRequest;
+}
+
+export interface LegacyLayoutHostPayloadMap {
+  "legacyLayout.reportLoaded": LegacyLayoutReport;
+  "legacyLayout.exportCompleted": LegacyLayoutExportResult;
+}
+
+export const LEGACY_LAYOUT_WEB_MESSAGE_TYPES = [
+  "legacyLayout.reportRequested",
+  "legacyLayout.exportRequested",
+] as const satisfies readonly LegacyLayoutWebMessageType[];
+
+export const LEGACY_LAYOUT_HOST_MESSAGE_TYPES = [
+  "legacyLayout.reportLoaded",
+  "legacyLayout.exportCompleted",
+] as const satisfies readonly LegacyLayoutHostMessageType[];
+
+export interface LegacyLayoutRequestResults {
+  "legacyLayout.reportRequested": LegacyLayoutReport;
+  "legacyLayout.exportRequested": LegacyLayoutExportResult;
+}

@@ -42,7 +42,6 @@ describe("design token catalog", () => {
   it("uses the readable semantic accent foreground for compact UI copy", () => {
     const compactCopyFiles = [
       join(sourceRoot, "views", "FileWorkspaceView.vue"),
-      join(sourceRoot, "components", "dashboard", "DashboardSidebar.vue"),
     ];
     for (const path of compactCopyFiles) {
       const source = readFileSync(path, "utf8");

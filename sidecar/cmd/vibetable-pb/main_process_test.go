@@ -557,6 +557,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"interface.delete",
 		"interface.list",
 		"interface.load",
+		"legacyLayout.snapshot",
 		"lookup.draft.preview",
 		"lookup.list",
 		"lookup.query",

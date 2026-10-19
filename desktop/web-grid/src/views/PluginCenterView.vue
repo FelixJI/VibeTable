@@ -13,6 +13,8 @@ import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import { permissionDeclarations } from "@/services/pluginPermissionDeclarations";
 import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
+import { useHostBridge } from "@/services/bridgeContext";
+import type { LegacyLayoutReport } from "@/contracts/surfaceBridgeContracts";
 
 const props = withDefaults(defineProps<{ autoLoad?: boolean }>(), { autoLoad: true });
 const store = usePluginStore();
@@ -28,6 +30,39 @@ const uninstalling = computed(() => uninstallTarget.value !== null);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
 const githubRepository = ref("");
+const bridge = useHostBridge();
+const legacyReport = ref<LegacyLayoutReport | null>(null);
+const legacyBusy = ref(false);
+const legacyStatus = ref("");
+let legacyGeneration = 0;
+async function detectLegacy(): Promise<void> {
+  const generation = ++legacyGeneration;
+  legacyBusy.value = true;
+  legacyStatus.value = "";
+  try {
+    const report = await bridge.request("legacyLayout.reportRequested", { reason: "detect" });
+    if (generation === legacyGeneration) legacyReport.value = report;
+  } catch (error) {
+    if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "旧布局检测失败";
+  } finally { if (generation === legacyGeneration) legacyBusy.value = false; }
+}
+async function exportLegacy(): Promise<void> {
+  const generation = legacyGeneration;
+  legacyBusy.value = true;
+  try {
+    const result = await bridge.request("legacyLayout.exportRequested", {});
+    if (generation === legacyGeneration) legacyStatus.value = result.cancelled ? "已取消保存，原定义未改变。" : `已保存保全材料：${result.outputDisplayName}`;
+  } catch (error) {
+    if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "保全失败，原定义未改变";
+  } finally { if (generation === legacyGeneration) legacyBusy.value = false; }
+}
+watch(() => store.projectKey, () => {
+  ++legacyGeneration;
+  legacyReport.value = null;
+  legacyBusy.value = false;
+  legacyStatus.value = "";
+  if (props.autoLoad && store.projectContextReady) void detectLegacy();
+});
 
 const plugin = computed(() => store.selectedPlugin);
 function cancelUninstall(): void {
@@ -204,13 +239,14 @@ async function retryCleanup(event: PluginAuditEvent): Promise<void> {
 
 onMounted(() => {
   service.init();
+  if (props.autoLoad && store.projectContextReady) void detectLegacy();
   if (props.autoLoad) void safely(async () => {
     await service.list();
     pendingCleanup.value = await service.listPendingCleanup();
     if (store.selectedPlugin) auditEvents.value = await service.listAudit(store.selectedPlugin.pluginId);
   });
 });
-onBeforeUnmount(() => service.dispose());
+onBeforeUnmount(() => { ++legacyGeneration; service.dispose(); });
 </script>
 
 <template>
@@ -249,6 +285,19 @@ onBeforeUnmount(() => service.dispose());
         </button>
       </div>
     </header>
+
+    <section class="cleanup-queue" aria-label="旧布局保全" data-testid="legacy-layout-preservation">
+      <h2>旧布局保全</h2>
+      <p>可视化业务搭建已退役。原定义保留为只读材料，不会自动转换或执行。</p>
+      <p>文本、记录列表与详情表单可参照 record-manager 代码插件，使用原业务表、字段和记录 ID 人工改写；聚合、图表、复杂布局及未知内容需单独改写。</p>
+      <button type="button" data-testid="legacy-layout-detect" :disabled="!store.projectContextReady || legacyBusy" @click="detectLegacy">检测旧布局</button>
+      <button type="button" data-testid="legacy-layout-export" :disabled="!store.projectContextReady || legacyBusy || !legacyReport" @click="exportLegacy">保存 JSON 保全材料</button>
+      <p v-if="legacyReport" data-testid="legacy-layout-counts">Interface {{ legacyReport.interfaces }} · dashboard {{ legacyReport.dashboards }} · panel {{ legacyReport.panels }}</p>
+      <ul v-if="legacyReport?.diagnostics.length" data-testid="legacy-layout-diagnostics">
+        <li v-for="(diagnostic, index) in legacyReport.diagnostics" :key="index">{{ diagnostic.itemId }} {{ diagnostic.path }} · {{ diagnostic.code }}：{{ diagnostic.message }}</li>
+      </ul>
+      <p v-if="legacyStatus" role="status">{{ legacyStatus }}</p>
+    </section>
 
     <div v-if="store.lastError" class="global-error" role="alert"><ShieldAlert :size="15" />{{ store.lastError }}</div>
 

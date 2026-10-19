@@ -53,6 +53,9 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
     {
         "app.ready",
+        "legacyLayout.reportRequested",
+        "legacyLayout.exportRequested",
+        "legacyLayout.cancelRequested",
         "host.startupRetryRequested",
         "host.startupCancelRequested",
         "database.openRequested",
@@ -89,24 +92,11 @@ public sealed class WebMessageRouter
         // Table management (web sidebar).
         "tableAdmin.createRequested",
         "tableAdmin.deleteRequested",
-        // Native dashboards. Each entry maps to one typed use case; there is
-        // deliberately no generic provider/rpc invocation message.
-        "dashboard.listRequested",
-        "dashboard.readRequested",
-        "dashboard.manifestRequested",
-        "dashboard.queryRequested",
-        "dashboard.saveRequested",
-        "dashboard.deleteRequested",
-        "dashboard.cancelRequested",
-        "dashboard.exportTargetRequested",
-        "dashboard.exportRetireRequested",
-        "dashboard.printRequested",
-        // Interface authoring uses one closed use case per operation.
-        "interface.listRequested",
-        "interface.loadRequested",
-        "interface.commitRequested",
-        "interface.deleteRequested",
-        "interface.cancelRequested",
+        // #485: legacyLayout preservation is the only surviving legacy-layout
+        // bridge surface (Host-owned, read-only; the snapshot and the native
+        // save flow stay entirely host-side).
+        "legacyLayout.reportRequested",
+        "legacyLayout.exportRequested",
         "contentProfile.load",
         "contentProfile.commit",
         "contentProfile.delete",
@@ -169,6 +159,33 @@ public sealed class WebMessageRouter
         };
 
     /// <summary>
+    /// #485 (Goal #480): the retired visual layout builder's public bridge
+    /// requests. They are rejected explicitly with a stable code so a direct
+    /// request — including from an old renderer — receives an unmistakable
+    /// refusal instead of a generic unknown-type error. Plugin printing is
+    /// unaffected: it flows through the plugin surface API, not these types.
+    /// </summary>
+    private static readonly HashSet<string> RetiredLayoutRequestTypes =
+        new(StringComparer.Ordinal)
+        {
+            "dashboard.listRequested",
+            "dashboard.readRequested",
+            "dashboard.manifestRequested",
+            "dashboard.queryRequested",
+            "dashboard.saveRequested",
+            "dashboard.deleteRequested",
+            "dashboard.cancelRequested",
+            "dashboard.exportTargetRequested",
+            "dashboard.exportRetireRequested",
+            "dashboard.printRequested",
+            "interface.listRequested",
+            "interface.loadRequested",
+            "interface.commitRequested",
+            "interface.deleteRequested",
+            "interface.cancelRequested",
+        };
+
+    /// <summary>
     /// The host -&gt; web notification types. Phase A defines the framework;
     /// B1 adds mutation outcomes; B3 reuses <c>table.pageLoaded</c> for query
     /// results (no new outbound type needed since the page DTO carries the
@@ -177,6 +194,8 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> HostNotificationWhitelist = new(StringComparer.Ordinal)
     {
         "host.startupStateChanged",
+        "legacyLayout.reportLoaded",
+        "legacyLayout.exportCompleted",
         // #482 native host chrome → trusted web shell (stop plugins, return
         // to platform, open plugin management) without plugin involvement.
         "host.pluginChrome",
@@ -224,20 +243,10 @@ public sealed class WebMessageRouter
         "history.restoreApplied",
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
-        "dashboard.listLoaded",
-        "dashboard.loaded",
-        "dashboard.manifestLoaded",
-        "dashboard.queryLoaded",
-        "dashboard.saved",
-        "dashboard.deleted",
-        "dashboard.exportTargetGranted",
-        "dashboard.exportRetired",
-        "dashboard.exportSettled",
-        "dashboard.printDialogOpened",
-        "interface.listLoaded",
-        "interface.loaded",
-        "interface.committed",
-        "interface.deleted",
+        // #485 legacy-layout preservation outcomes (detection report +
+        // host-owned export completion).
+        "legacyLayout.reportLoaded",
+        "legacyLayout.exportCompleted",
         "document.listLoaded",
         "document.actionCompleted",
         "document.diffCompleted",
@@ -395,7 +404,7 @@ public sealed class WebMessageRouter
                     "HOST_NOT_READY");
             }
 
-            if (!WebRequestWhitelist.Contains(type))
+            if (!WebRequestWhitelist.Contains(type) && !RetiredLayoutRequestTypes.Contains(type))
             {
                 return BuildOperationFailed(
                     requestId,
@@ -409,6 +418,14 @@ public sealed class WebMessageRouter
                     requestId,
                     $"Web request type '{type}' is not a public renderer capability.",
                     "CAPABILITY_NOT_PUBLIC");
+            }
+
+            if (RetiredLayoutRequestTypes.Contains(type))
+            {
+                return BuildOperationFailed(
+                    requestId,
+                    $"Web request type '{type}' retired with the visual layout builder; install a code plugin or use the legacy-layout preservation panel.",
+                    "CAPABILITY_RETIRED");
             }
 
             if (DeviceSettingsRequestController.Handles(type)
@@ -488,7 +505,7 @@ public sealed class WebMessageRouter
             if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type) || ClipboardRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
-            if (DashboardNativeOutputController.Handles(type) && scope is null)
+            if (LegacyLayoutRequestController.Handles(type) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Dashboard output requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)

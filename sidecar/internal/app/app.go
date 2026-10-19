@@ -460,21 +460,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate, &pluginSurfaceIO{plans: importPlans, attachments: attachmentManager})
 			registerPluginWorkerMutationRoutes(event.Router, pb, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate)
 			schemaCatalog := schemaapi.New(pb)
-			dashboardService := metadata.NewDashboard(pb, queryPort)
 			contentMetadata := metadata.NewContentService(pb, querySource)
 			presets := metadata.NewPreset(pb)
-			surfaces := metadata.NewSurface(pb)
+			legacyPreservation := metadata.NewLegacyPreservation(pb)
 			paste := newPasteOwner(schemaCatalog.Describe, queryPort, importvalue.New(fieldchange.NewCatalog(pb)), mutationKernel, businessGate, capabilities.WorkspaceID)
-			productRegistrations := []productrpc.Registration{
+			productRegistrations := append([]productrpc.Registration{
 				pastePreviewRegistration(paste),
 				pasteApplyRegistration(paste),
-				dashboardRegistration("insights.dashboardQueryLimits", dashboardService, businessGate),
-				dashboardRegistration("insights.deleteDashboardWorkspace", dashboardService, businessGate),
-				dashboardRegistration("insights.executeDashboardQuery", dashboardService, businessGate),
-				dashboardRegistration("insights.listDashboards", dashboardService, businessGate),
-				dashboardRegistration("insights.panelManifest", dashboardService, businessGate),
-				dashboardRegistration("insights.readDashboardWorkspace", dashboardService, businessGate),
-				dashboardRegistration("insights.saveDashboardDraft", dashboardService, businessGate),
 				contentMetadataRegistration("contentProfile.load", contentMetadata, businessGate),
 				contentMetadataRegistration("contentProfile.commit", contentMetadata, businessGate),
 				contentMetadataRegistration("contentProfile.delete", contentMetadata, businessGate),
@@ -485,10 +477,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				presetRegistration("preset.list", presets, businessGate),
 				presetRegistration("preset.save", presets, businessGate),
 				presetRegistration("preset.delete", presets, businessGate),
-				surfaceListRegistration(surfaces),
-				surfaceLoadRegistration(surfaces),
-				surfaceCommitRegistration(surfaces, businessGate),
-				surfaceDeleteRegistration(surfaces, businessGate),
+				legacyLayoutSnapshotRegistration(legacyPreservation),
 				mutationPreviewRegistration(mutationKernel),
 				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),
@@ -517,7 +506,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				workCalendarReadRegistration(metadata.New(pb)),
 				workCalendarCommitRegistration(metadata.New(pb), businessGate),
 				relationPreviewDeltaRegistration(relationService),
-			}
+			}, retiredLayoutRegistrations()...)
 			productRegistrations = append(
 				productRegistrations, schemaFieldChangeRegistrations(fieldSettings, schemaCatalog)...,
 			)

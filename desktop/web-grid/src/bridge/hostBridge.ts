@@ -90,14 +90,15 @@ import {
   WORKSPACE_V2_WEB_MESSAGE_TYPES,
 } from "@/contracts/workspaceV2Bridge";
 import type {
-  SurfaceHostMessageType,
-  SurfaceHostPayloadMap,
-  SurfaceWebMessageType,
-  SurfaceWebPayloadMap,
+  LegacyLayoutHostMessageType,
+  LegacyLayoutRequestResults,
+  LegacyLayoutHostPayloadMap,
+  LegacyLayoutWebMessageType,
+  LegacyLayoutWebPayloadMap,
 } from "@/contracts/surfaceBridgeContracts";
 import {
-  SURFACE_HOST_MESSAGE_TYPES,
-  SURFACE_WEB_MESSAGE_TYPES,
+  LEGACY_LAYOUT_HOST_MESSAGE_TYPES,
+  LEGACY_LAYOUT_WEB_MESSAGE_TYPES,
 } from "@/contracts/surfaceBridgeContracts";
 
 import type {
@@ -120,7 +121,7 @@ type HostMessageType =
   | AppPreferencesHostMessageType
   | AppearanceHostMessageType
   | ReleaseUpdateHostMessageType
-  | SurfaceHostMessageType
+  | LegacyLayoutHostMessageType
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
@@ -129,7 +130,7 @@ type HostPayloadMap =
   & AppPreferencesHostPayloadMap
   & AppearanceHostPayloadMap
   & ReleaseUpdateHostPayloadMap
-  & SurfaceHostPayloadMap
+  & LegacyLayoutHostPayloadMap
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
@@ -137,7 +138,7 @@ type WebMessageType =
   | RuntimeDiagnosticsWebMessageType
   | AppPreferencesWebMessageType
   | ReleaseUpdateWebMessageType
-  | SurfaceWebMessageType
+  | LegacyLayoutWebMessageType
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
@@ -145,7 +146,7 @@ type WebPayloadMap =
   & RuntimeDiagnosticsWebPayloadMap
   & AppPreferencesWebPayloadMap
   & ReleaseUpdateWebPayloadMap
-  & SurfaceWebPayloadMap
+  & LegacyLayoutWebPayloadMap
   & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
@@ -343,7 +344,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   ...APPEARANCE_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
-  ...SURFACE_HOST_MESSAGE_TYPES,
+  ...LEGACY_LAYOUT_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -352,16 +353,6 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "history.restoreApplied",
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
-  "dashboard.listLoaded",
-  "dashboard.loaded",
-  "dashboard.manifestLoaded",
-  "dashboard.queryLoaded",
-  "dashboard.saved",
-  "dashboard.deleted",
-  "dashboard.exportTargetGranted",
-  "dashboard.exportRetired",
-  "dashboard.exportSettled",
-  "dashboard.printDialogOpened",
   "document.listLoaded",
   "document.actionCompleted",
   "document.diffCompleted",
@@ -472,7 +463,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   ...CLIPBOARD_WEB_MESSAGE_TYPES,
   ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
-  ...SURFACE_WEB_MESSAGE_TYPES,
+  ...LEGACY_LAYOUT_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
   "table.cursorRequested",
@@ -497,16 +488,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
-  "dashboard.listRequested",
-  "dashboard.readRequested",
-  "dashboard.manifestRequested",
-  "dashboard.queryRequested",
-  "dashboard.saveRequested",
-  "dashboard.deleteRequested",
-  "dashboard.cancelRequested",
-  "dashboard.exportTargetRequested",
-  "dashboard.exportRetireRequested",
-  "dashboard.printRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
   "plugin.cleanup.listPending",
@@ -578,19 +559,8 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "history.applyRestoreRequested": ["history.restoreApplied"],
   "tableAdmin.createRequested": ["database.collectionsChanged"],
   "tableAdmin.deleteRequested": ["database.collectionsChanged"],
-  "dashboard.listRequested": ["dashboard.listLoaded"],
-  "dashboard.readRequested": ["dashboard.loaded"],
-  "dashboard.manifestRequested": ["dashboard.manifestLoaded"],
-  "dashboard.queryRequested": ["dashboard.queryLoaded"],
-  "dashboard.saveRequested": ["dashboard.saved"],
-  "dashboard.deleteRequested": ["dashboard.deleted"],
-  "dashboard.exportTargetRequested": ["dashboard.exportTargetGranted"],
-  "dashboard.exportRetireRequested": ["dashboard.exportRetired"],
-  "dashboard.printRequested": ["dashboard.printDialogOpened"],
-  "interface.listRequested": ["interface.listLoaded"],
-  "interface.loadRequested": ["interface.loaded"],
-  "interface.commitRequested": ["interface.committed"],
-  "interface.deleteRequested": ["interface.deleted"],
+  "legacyLayout.reportRequested": ["legacyLayout.reportLoaded"],
+  "legacyLayout.exportRequested": ["legacyLayout.exportCompleted"],
   "document.listRequested": ["document.listLoaded"],
   "document.openRequested": ["document.actionCompleted"],
   "document.previewRequested": ["document.actionCompleted"],
@@ -624,9 +594,10 @@ const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "sourceImport.open",
   "file.previewRequested",
   "file.downloadRequested",
-  // The export target request waits in the host-owned SaveFileDialog; the
-  // native dialog owns completion and stop() still clears the pending entry.
-  "dashboard.exportTargetRequested",
+  // The legacy-layout preservation export waits in the host-owned
+  // SaveFileDialog; the native dialog owns completion and stop() still
+  // clears the pending entry. The renderer never supplies content or path.
+  "legacyLayout.exportRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -692,10 +663,10 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): Promise<unknown>;
-  request<K extends SurfaceWebMessageType>(
+  request<K extends LegacyLayoutWebMessageType>(
     type: K,
-    payload: SurfaceWebPayloadMap[K],
-  ): Promise<unknown>;
+    payload: LegacyLayoutWebPayloadMap[K],
+  ): Promise<LegacyLayoutRequestResults[K]>;
   request<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -709,9 +680,9 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
-  requestWithHandle<K extends SurfaceWebMessageType>(
+  requestWithHandle<K extends LegacyLayoutWebMessageType>(
     type: K,
-    payload: SurfaceWebPayloadMap[K],
+    payload: LegacyLayoutWebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
@@ -726,9 +697,9 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): void;
-  notify<K extends SurfaceWebMessageType>(
+  notify<K extends LegacyLayoutWebMessageType>(
     type: K,
-    payload: SurfaceWebPayloadMap[K],
+    payload: LegacyLayoutWebPayloadMap[K],
   ): void;
   notify<K extends SharedWebMessageType>(
     type: K,
@@ -770,9 +741,9 @@ export interface HostBridge {
     type: K,
     handler: (payload: WorkspaceV2HostPayloadMap[K]) => void,
   ): () => void;
-  on<K extends SurfaceHostMessageType>(
+  on<K extends LegacyLayoutHostMessageType>(
     type: K,
-    handler: (payload: SurfaceHostPayloadMap[K]) => void,
+    handler: (payload: LegacyLayoutHostPayloadMap[K]) => void,
   ): () => void;
   on<K extends SharedHostMessageType>(
     type: K,
@@ -1127,7 +1098,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
-    const retiresWithWorkspace = type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
+    const retiresWithWorkspace = type === "legacyLayout.reportRequested"
       || type === "settings.readWorkCalendar" || type === "gridState.get"
       || type === "lookup.query" || type === "lookup.valuePage"
       || type === "plugin.catalog.list" || type === "plugin.audit.list"

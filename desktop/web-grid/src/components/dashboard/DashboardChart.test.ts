@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseWirePanel } from "@/dashboard";
+import type { DashboardChartInput } from "@/dashboard";
 import { useUiStore } from "@/stores/uiStore";
 import DashboardChart from "./DashboardChart.vue";
 
@@ -48,12 +48,9 @@ describe("DashboardChart", () => {
       constructor(callback: () => void) { resize = callback; }
     }
     vi.stubGlobal("ResizeObserver", Observer);
-    const panel = parseWirePanel({
-      id: "p1",
-      dashboardId: "d1",
+    const panel: DashboardChartInput = {
       name: "年度收入",
-      type: "bar",
-      position: { x: 0, y: 0, width: 6, height: 4 },
+      productType: "bar",
       options: {},
       query: {
         kind: "aggregate",
@@ -61,7 +58,7 @@ describe("DashboardChart", () => {
         dimensions: ["year"],
         measures: [{ key: "revenue", op: "sum", field: "amount" }],
       },
-    });
+    };
     const wrapper = mount(DashboardChart, {
       props: { panel, rows: [{ year: 2025, revenue: 42 }, { year: 2026, revenue: 90 }] },
       global: { plugins: [createPinia()] },

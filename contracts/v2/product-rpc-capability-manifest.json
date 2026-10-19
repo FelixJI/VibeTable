@@ -236,7 +236,7 @@
     {
       "method": "insights.dashboardQueryLimits",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "read"
@@ -244,7 +244,7 @@
     {
       "method": "insights.deleteDashboardWorkspace",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "write"
@@ -252,7 +252,7 @@
     {
       "method": "insights.executeDashboardQuery",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "read"
@@ -260,7 +260,7 @@
     {
       "method": "insights.listDashboards",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "read"
@@ -268,7 +268,7 @@
     {
       "method": "insights.panelManifest",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "read"
@@ -276,7 +276,7 @@
     {
       "method": "insights.readDashboardWorkspace",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "read"
@@ -284,7 +284,7 @@
     {
       "method": "insights.saveDashboardDraft",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "insights",
       "owner": "goSidecar",
       "effect": "write"
@@ -292,7 +292,7 @@
     {
       "method": "interface.commit",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "content.model",
       "owner": "goSidecar",
       "effect": "write"
@@ -300,7 +300,7 @@
     {
       "method": "interface.delete",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "content.model",
       "owner": "goSidecar",
       "effect": "write"
@@ -308,7 +308,7 @@
     {
       "method": "interface.list",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "content.model",
       "owner": "goSidecar",
       "effect": "read"
@@ -316,8 +316,16 @@
     {
       "method": "interface.load",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "content.model",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
+      "method": "legacyLayout.snapshot",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "legacy.preservation",
       "owner": "goSidecar",
       "effect": "read"
     },

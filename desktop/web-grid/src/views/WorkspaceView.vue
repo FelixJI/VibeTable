@@ -19,7 +19,7 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon, NModal } from "naive-ui";
 import { FilePlus2 } from "@lucide/vue";
@@ -89,9 +89,6 @@ import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
 import { useRevisionHistoryService } from "@/services/revisionHistoryService";
-import { provideDashboardService, useDashboardService } from "@/services/dashboardService";
-import { provideSurfaceService, useSurfaceService } from "@/services/surfaceService";
-import { SurfaceHostRepository } from "@/surfaces/surfaceHostRepository";
 import { useRelationLookupService } from "@/services/relationLookupService";
 import {
   mutationRejectionMessage,
@@ -108,8 +105,6 @@ import { useHistoryStore } from "@/stores/historyStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePluginStore } from "@/stores/pluginStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
-import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardStore";
-import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
@@ -124,7 +119,6 @@ import {
   requestWorkspaceV2UiAction,
 } from "@/services/workspaceV2UiPort";
 import { decideWorkspaceStartup } from "@/services/workspaceStartupPolicy";
-import { createWorkspaceNavigationController } from "@/workspace/workspaceNavigationController";
 import { createStructuredCellDialogController } from "@/workspace/structuredCellDialogController";
 import { createLookupProvenanceController } from "@/workspace/lookupProvenanceController";
 import { createPresetViewController } from "@/workspace/presetViewController";
@@ -166,10 +160,6 @@ const errorRouter = useErrorRouter({
 });
 const pluginService = usePluginService();
 const revisionHistoryService = useRevisionHistoryService();
-const dashboardService = useDashboardService();
-provideDashboardService(dashboardService);
-const surfaceService = useSurfaceService(new SurfaceHostRepository(hostBridge));
-provideSurfaceService(surfaceService);
 const relationLookupService = useRelationLookupService();
 const fieldSettingsService = useFieldSettingsService({ onCommitted: refreshTable });
 const fieldSettingsState = useFieldSettingsStore();
@@ -188,9 +178,6 @@ const namedRevisions = useNamedRevisions(namedScope, useContentVersionService(),
   revisionHistoryService.refresh();
   await refreshTable();
 });
-const dashboards = useDashboardStore();
-const dashboardDraft = useDashboardDraftStore();
-const surfaces = useSurfaceStore();
 const realtime = useRealtimeStore();
 const presetViews = usePresetVersionStore();
 const viewQuery = useViewQueryStore();
@@ -491,45 +478,14 @@ watch(
 const editRejection = ref<MutationErrorPayload | null>(null);
 const editRejectionText = computed(() =>
   editRejection.value ? mutationRejectionMessage(editRejection.value) : "");
-const DashboardWorkspaceView = defineAsyncComponent(() => import("@/views/DashboardWorkspaceView.vue"));
-const InterfaceWorkspaceView = defineAsyncComponent(() => import("@/views/InterfaceWorkspaceView.vue"));
-const workspaceNavigation = createWorkspaceNavigationController(
-  {
-    dashboardDirty: () => dashboardDraft.dirty,
-    surfaceDirty: () => surfaces.dirty,
-  },
-  {
-    confirmDashboardDiscard: () => window.confirm(t("dashboard.confirm.discard")),
-    confirmSurfaceDiscard: () => window.confirm(t("surface.confirm.discard")),
-    stopDashboardDraft: () => dashboardDraft.stop(),
-    resetSurfaceDraft: () => surfaceService.reset(),
-  },
-);
 
 function onNavigate(view: AppView): void {
-  if (view === ui.activeView) {
-    showWorkspaceCenter.value = false;
-    ui.navigate(view);
-    return;
-  }
-  workspaceNavigation.attempt(() => {
-    showWorkspaceCenter.value = false;
-    ui.navigate(view);
-  });
+  showWorkspaceCenter.value = false;
+  ui.navigate(view);
 }
 
-function openDatabaseWithGuard(): void {
-  const departure = workspaceNavigation.authorizeDeparture();
-  if (!departure) return;
-  void workspaceService.openDatabase().then((outcome) => {
-    if (outcome === "opened") departure.commit();
-  });
-}
-
-function onBeforeUnload(event: BeforeUnloadEvent): void {
-  if (!workspaceNavigation.hasUnsavedChanges()) return;
-  event.preventDefault();
-  event.returnValue = "";
+function openDatabase(): void {
+  void workspaceService.openDatabase();
 }
 
 const relationLookup = useRelationLookupStore();
@@ -919,9 +875,6 @@ function backFromPluginSurface(token: string): boolean {
   const isApplication = () => activePluginAppEntry.value?.surfaceToken === token;
   const isPanel = () => plugins.actionOpen && plugins.describedAction?.surface?.surfaceToken === token;
   if (!isApplication() && !isPanel()) return false;
-  const departure = workspaceNavigation.authorizeDeparture();
-  if (!departure || (!isApplication() && !isPanel())) return false;
-  departure.commit();
   if (isApplication()) ui.closePluginApp(); else plugins.closeAction();
   return true;
 }
@@ -1042,7 +995,6 @@ function onRealtimeRecovered(): void {
   // Each consumer starts independently. The host never waits for these local
   // reads before continuing its realtime stream, and no combined "recovered"
   // acknowledgement is reported back across the bridge.
-  void dashboardService.recoverAuthoritative();
   void recoverCurrentTableAndLookups(ticket);
 }
 
@@ -1115,7 +1067,7 @@ function initializeBusinessConsumers(): void {
   workspaceService.init();
   tableService.init(onRealtimeRecovered);
   // This listener retires only a local in-flight recovery receipt. The table
-  // and Dashboard services still process normal data.changed immediately.
+  // service still processes normal data.changed immediately.
   stopRecoveryDataInvalidation = hostBridge.on("data.changed", retireRendererRecovery);
   // Source writes reconcile through tableService/mutationService. Target-only
   // writes refresh Relation display metadata in place; a full table reload
@@ -1148,8 +1100,6 @@ function initializeBusinessConsumers(): void {
   });
   errorRouter.init();
   pluginService.init();
-  dashboardService.init();
-  dashboardService.setRecoverySurfaceVisible(ui.activeView === "dashboard");
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until the host runtime is ready. Re-announce
   // business readiness means subscriptions are installed, not that any query
@@ -1160,11 +1110,6 @@ function initializeBusinessConsumers(): void {
 watch(
   () => [workspaceSession.enabled, workspaceSession.hasOpenWorkspace] as const,
   initializeBusinessConsumers,
-);
-watch(
-  () => ui.activeView,
-  (activeView) => dashboardService.setRecoverySurfaceVisible(activeView === "dashboard"),
-  { flush: "post" },
 );
 // `reloadCurrentQuery` validates its own response, but a post-flush table
 // selection can still happen after it resolves and before the root recovery
@@ -1198,7 +1143,6 @@ watch(
 
 onMounted(() => {
   viewMounted = true;
-  window.addEventListener("beforeunload", onBeforeUnload);
   applyWorkspaceStartupPolicy();
   initializeBusinessConsumers();
 });
@@ -1220,13 +1164,10 @@ onBeforeUnmount(() => {
   revisionHistoryService.dispose();
   pluginController.dispose();
   pluginService.dispose();
-  dashboardService.dispose();
-  surfaceService.dispose();
   fieldSettingsService.dispose();
   attachmentModalLifecycle.dispose();
   jsonModalLifecycle.dispose();
   structuredDialogFocus.dispose();
-  window.removeEventListener("beforeunload", onBeforeUnload);
 });
 
 /**
@@ -1331,8 +1272,6 @@ const pageTitle = computed(() => {
   if (ui.activeView === "files") return t("nav.files");
   if (ui.activeView === "search") return t("nav.search");
   if (ui.activeView === "plugins") return t("nav.plugins");
-  if (ui.activeView === "dashboard") return t("nav.dashboard");
-  if (ui.activeView === "interfaces") return t("nav.interfaces");
   if (ui.activeView === "conflicts") return t("workspaceV2.nav.conflicts");
   return t("nav.tables");
 });
@@ -1346,7 +1285,6 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
   ({ nextWorkspaceId }) => {
     retireRendererRecovery();
-    dashboardService.retireRecovery();
     void structuredCellDialogs.dispatch({ type: "attachment.close" });
     void structuredCellDialogs.dispatch({ type: "json.close" });
     void lookupProvenance.dispatch({ type: "scope.retire" });
@@ -1359,9 +1297,6 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
     documentWorkspace.clear();
     workspaceSearch.reset();
     relationLookup.reset();
-    dashboards.reset();
-    dashboardDraft.stop();
-    surfaceService.reset();
     presetViews.clearPresets();
     realtime.reset();
     ui.setWorkspaceNamespace(nextWorkspaceId);
@@ -1471,7 +1406,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             @click="dispatchMenuClipboard('menu.paste')"
           >{{ t("workspace.clipboard.menu.paste") }}</NButton>
         </div>
-        <ConnectionPill v-if="!workspaceSession.enabled" @reconnect="openDatabaseWithGuard" />
+        <ConnectionPill v-if="!workspaceSession.enabled" @reconnect="openDatabase" />
       </header>
       <div class="view-stack">
         <WorkspaceCenter
@@ -1711,11 +1646,9 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           @open-target="openImportTarget"
           @open-source-target="openSourceImportTarget"
         />
-        <DashboardWorkspaceView v-if="!platformViewsHidden && ui.activeView === 'dashboard'" />
-        <InterfaceWorkspaceView v-if="!platformViewsHidden && ui.activeView === 'interfaces'" />
         <SettingsView
           v-show="!platformViewsHidden && ui.activeView === 'settings'"
-          @reconnect="openDatabaseWithGuard"
+          @reconnect="openDatabase"
           @open-help="ui.openShortcuts"
           @workspace-v2-action="workspaceSessionUi.execute"
         />

@@ -89,20 +89,6 @@ type ItemDelete struct {
 	ExpectedRevision string `json:"expectedRevision"`
 }
 
-type DashboardCommitRequest struct {
-	IdempotencyKey string         `json:"idempotencyKey"`
-	Dashboard      ItemMutation   `json:"dashboard"`
-	Panels         []ItemMutation `json:"panels"`
-	DeletePanels   []ItemDelete   `json:"deletePanels"`
-}
-
-type DashboardCommitReceipt struct {
-	ReceiptTrace
-	Dashboard       Item     `json:"dashboard"`
-	Panels          []Item   `json:"panels"`
-	DeletedPanelIDs []string `json:"deletedPanelIds"`
-}
-
 type Error struct {
 	Code      string         `json:"code"`
 	Path      string         `json:"path,omitempty"`

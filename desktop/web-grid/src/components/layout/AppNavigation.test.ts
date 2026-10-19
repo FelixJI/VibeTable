@@ -9,17 +9,20 @@ describe("AppNavigation", () => {
     setActivePinia(createPinia());
   });
 
-  it("emits navigation intent so the workspace can guard dirty drafts", async () => {
+  it("emits direct navigation intent without retired layout-builder views", async () => {
     const wrapper = mount(AppNavigation);
     await wrapper.get('[data-testid="nav-tables"]').trigger("click");
     await wrapper.get('[data-testid="import-management-open"]').trigger("click");
-    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
     await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
     await wrapper.get('[data-testid="nav-settings"]').trigger("click");
     expect(wrapper.emitted("navigate")?.map((args) => args[0])).toEqual([
-      "tables", "imports", "interfaces", "files", "plugins", "settings",
+      "tables", "imports", "files", "plugins", "settings",
     ]);
+    // #485: the fixed dashboard/interfaces entries retired with the visual
+    // layout builder; application entries come from installed plugins only.
+    expect(wrapper.find('[data-testid="nav-dashboard"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="nav-interfaces"]').exists()).toBe(false);
   });
 
   it("exposes the import management page behind the fixed E2E entry selector", () => {
@@ -41,13 +44,5 @@ describe("AppNavigation", () => {
     for (const button of wrapper.findAll("button")) {
       expect(button.attributes("aria-label")).toBeTruthy();
     }
-  });
-
-  it("always exposes the completed Dashboard surface", async () => {
-    const wrapper = mount(AppNavigation);
-    const button = wrapper.get('[data-testid="nav-dashboard"]');
-    expect(button.attributes("aria-label")).toBe("仪表盘");
-    await button.trigger("click");
-    expect(wrapper.emitted("navigate")?.at(-1)).toEqual(["dashboard"]);
   });
 });

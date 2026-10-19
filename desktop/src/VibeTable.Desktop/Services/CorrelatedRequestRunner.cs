@@ -59,8 +59,7 @@ internal sealed class CorrelatedRequestRunner<TGateway>
     public void Cancel(string requestId)
     {
         if (!_requests.TryGetValue(requestId, out RequestState? state)) return;
-        state.MarkCancelledByRenderer();
-        state.TryCancel();
+        if (!state.TryCancelByRenderer()) return;
         if (state.IsCurrent() && state.TryMarkCancellationReply())
         {
             _reply.PostOperationFailed(
@@ -68,6 +67,14 @@ internal sealed class CorrelatedRequestRunner<TGateway>
                 _policy.CancelledMessage,
                 _policy.CancelledCode);
         }
+    }
+
+    /// <summary>Coordinates an irreversible write with cancellation of this request.</summary>
+    public void Commit(string requestId, Action apply)
+    {
+        if (!_requests.TryGetValue(requestId, out RequestState? state))
+            throw new OperationCanceledException("Request is no longer active.");
+        state.Commit(apply);
     }
 
     public async Task RunAsync<TResult>(
@@ -128,7 +135,7 @@ internal sealed class CorrelatedRequestRunner<TGateway>
             }
             TResult result = await operation(gateway, cancellation.Token)
                 .ConfigureAwait(false);
-            if (state.IsCurrent() && !cancellation.IsCancellationRequested
+            if (state.IsCurrent() && (state.IsCommitted || !cancellation.IsCancellationRequested)
                 && _requests.TryGetValue(request.RequestId, out RequestState? current)
                 && ReferenceEquals(current, state))
             {
@@ -175,6 +182,8 @@ internal sealed class CorrelatedRequestRunner<TGateway>
 
     private sealed class RequestState(CancellationTokenSource cancellation, Func<bool> isCurrent)
     {
+        private readonly object _settlement = new();
+        private bool _committed;
         private int _cancelledByRenderer;
         private int _cancellationReplyPosted;
 
@@ -182,13 +191,29 @@ internal sealed class CorrelatedRequestRunner<TGateway>
 
         public bool CancelledByRenderer => Volatile.Read(ref _cancelledByRenderer) != 0;
 
-        public void MarkCancelledByRenderer()
-            => Interlocked.Exchange(ref _cancelledByRenderer, 1);
+        public bool IsCommitted { get { lock (_settlement) return _committed; } }
 
-        public void TryCancel()
+        public bool TryCancelByRenderer()
         {
-            try { cancellation.Cancel(); }
-            catch (ObjectDisposedException) { }
+            lock (_settlement)
+            {
+                if (_committed) return false;
+                Interlocked.Exchange(ref _cancelledByRenderer, 1);
+                try { cancellation.Cancel(); }
+                catch (ObjectDisposedException) { }
+                return true;
+            }
+        }
+
+        public void Commit(Action apply)
+        {
+            lock (_settlement)
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (_committed) throw new InvalidOperationException("Request is already committed.");
+                apply();
+                _committed = true;
+            }
         }
 
         public bool TryMarkCancellationReply()

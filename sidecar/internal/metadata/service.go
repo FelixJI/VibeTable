@@ -160,7 +160,7 @@ func (service *Service) Upsert(
 					Payload:          request.Payload,
 					ExpectedRevision: request.ExpectedRevision,
 				},
-				"", "",
+				"",
 			)
 			return MutationReceipt{
 				ReceiptTrace: ReceiptTrace{Status: StatusApplied},
@@ -220,48 +220,12 @@ func (service *Service) Delete(
 			DeleteReceipt, []metadataChange, error,
 		) {
 			changes := []metadataChange{}
-			if request.Namespace == NamespaceDashboards {
-				panelCollection, resolveErr := resolveCollection(
-					txApp, NamespacePanels,
-				)
-				if resolveErr != nil {
-					return DeleteReceipt{}, nil, resolveErr
-				}
-				panelRecords, findErr := txApp.FindRecordsByFilter(
-					panelCollection,
-					"parent_id={:dashboard}",
-					"+logical_id",
-					0,
-					0,
-					dbx.Params{"dashboard": request.LogicalID},
-				)
-				if findErr != nil {
-					return DeleteReceipt{}, nil, storageError()
-				}
-				for _, panelRecord := range panelRecords {
-					panel, itemErr := itemFromRecord(
-						NamespacePanels, panelRecord,
-					)
-					if itemErr != nil {
-						return DeleteReceipt{}, nil, itemErr
-					}
-					if deleteErr := txApp.Delete(panelRecord); deleteErr != nil {
-						return DeleteReceipt{}, nil, storageError()
-					}
-					changes = append(changes, metadataChange{
-						namespace: NamespacePanels,
-						logicalID: panel.LogicalID,
-						operation: mutationpkg.OperationDelete,
-						before:    &panel,
-					})
-				}
-			}
 			change, err := service.delete(
 				txApp, request.Namespace, ItemDelete{
 					LogicalID:        request.LogicalID,
 					ExpectedRevision: request.ExpectedRevision,
 				},
-				"", "",
+				"",
 			)
 			if err != nil {
 				return DeleteReceipt{}, nil, err
@@ -288,148 +252,11 @@ func (service *Service) Delete(
 	)
 }
 
-func (service *Service) CommitDashboard(
-	ctx context.Context,
-	request DashboardCommitRequest,
-) (DashboardCommitReceipt, error) {
-	if err := validateIdempotencyKey(request.IdempotencyKey); err != nil {
-		return DashboardCommitReceipt{}, err
-	}
-	dashboard, err := canonicalMutation(
-		request.Dashboard, "dashboard",
-	)
-	if err != nil {
-		return DashboardCommitReceipt{}, dashboardError(err)
-	}
-	panels := make([]ItemMutation, len(request.Panels))
-	seen := map[string]string{}
-	for index, panel := range request.Panels {
-		path := "panels[" + integerString(index) + "]"
-		normalized, normalizeErr := canonicalMutation(panel, path)
-		if normalizeErr != nil {
-			return DashboardCommitReceipt{}, dashboardError(normalizeErr)
-		}
-		if previous, exists := seen[normalized.LogicalID]; exists {
-			return DashboardCommitReceipt{}, dashboardInvalid(
-				path+".logicalId",
-				"panel logicalId is duplicated by "+previous,
-			)
-		}
-		seen[normalized.LogicalID] = path
-		panels[index] = normalized
-	}
-	deletes := append([]ItemDelete(nil), request.DeletePanels...)
-	for index, panel := range deletes {
-		path := "deletePanels[" + integerString(index) + "]"
-		if err := validateLogicalID(
-			panel.LogicalID, path+".logicalId",
-		); err != nil {
-			return DashboardCommitReceipt{}, dashboardError(err)
-		}
-		if err := validateExpectedRevision(
-			panel.ExpectedRevision,
-			path+".expectedRevision",
-			false,
-		); err != nil {
-			return DashboardCommitReceipt{}, dashboardError(err)
-		}
-		if previous, exists := seen[panel.LogicalID]; exists {
-			return DashboardCommitReceipt{}, dashboardInvalid(
-				path+".logicalId",
-				"panel logicalId is duplicated by "+previous,
-			)
-		}
-		seen[panel.LogicalID] = path
-	}
-	request.Dashboard = dashboard
-	request.Panels = panels
-	request.DeletePanels = deletes
-	requestHash, err := hashValue(struct {
-		Operation    string         `json:"operation"`
-		Dashboard    ItemMutation   `json:"dashboard"`
-		Panels       []ItemMutation `json:"panels"`
-		DeletePanels []ItemDelete   `json:"deletePanels"`
-	}{
-		Operation:    "dashboard.commit",
-		Dashboard:    request.Dashboard,
-		Panels:       request.Panels,
-		DeletePanels: request.DeletePanels,
-	})
-	if err != nil {
-		return DashboardCommitReceipt{}, dashboardInvalid(
-			"", "dashboard request cannot be canonicalized",
-		)
-	}
-	return executeIdempotent(
-		service, ctx, request.IdempotencyKey, requestHash,
-		func(txApp core.App) (
-			DashboardCommitReceipt, []metadataChange, error,
-		) {
-			changes := make([]metadataChange, 0,
-				1+len(request.Panels)+len(request.DeletePanels),
-			)
-			dashboardItem, dashboardChange, applyErr := service.upsert(
-				txApp, NamespaceDashboards, request.Dashboard,
-				"dashboard", "",
-			)
-			if applyErr != nil {
-				return DashboardCommitReceipt{}, nil, applyErr
-			}
-			changes = append(changes, dashboardChange)
-			panelItems := make([]Item, 0, len(request.Panels))
-			for index, panel := range request.Panels {
-				item, panelChange, panelErr := service.upsert(
-					txApp, NamespacePanels, panel,
-					"panels["+integerString(index)+"]",
-					request.Dashboard.LogicalID,
-				)
-				if panelErr != nil {
-					return DashboardCommitReceipt{}, nil, panelErr
-				}
-				panelItems = append(panelItems, item)
-				changes = append(changes, panelChange)
-			}
-			deletedIDs := make(
-				[]string, 0, len(request.DeletePanels),
-			)
-			for index, panel := range request.DeletePanels {
-				panelChange, deleteErr := service.delete(
-					txApp, NamespacePanels, panel,
-					"deletePanels["+integerString(index)+"]",
-					request.Dashboard.LogicalID,
-				)
-				if deleteErr != nil {
-					return DashboardCommitReceipt{}, nil, deleteErr
-				}
-				deletedIDs = append(deletedIDs, panel.LogicalID)
-				changes = append(changes, panelChange)
-			}
-			return DashboardCommitReceipt{
-				ReceiptTrace: ReceiptTrace{Status: StatusApplied},
-				Dashboard:    dashboardItem,
-				Panels:       panelItems, DeletedPanelIDs: deletedIDs,
-			}, changes, nil
-		},
-		func(
-			receipt *DashboardCommitReceipt,
-			changeSetID string,
-			emittedEvents []string,
-		) {
-			receipt.ChangeSetID = changeSetID
-			receipt.EmittedEvents = emittedEvents
-		},
-		func(receipt *DashboardCommitReceipt) {
-			receipt.Status = StatusReplayed
-		},
-	)
-}
-
 func (service *Service) upsert(
 	app core.App,
 	namespace Namespace,
 	mutation ItemMutation,
 	pathPrefix string,
-	dashboardID string,
 ) (Item, metadataChange, error) {
 	collection, err := resolveCollection(app, namespace)
 	if err != nil {
@@ -442,14 +269,6 @@ func (service *Service) upsert(
 	actualRevision := ""
 	var before *Item
 	if record != nil {
-		if namespace == NamespacePanels &&
-			dashboardID != "" &&
-			record.GetString("parent_id") != dashboardID {
-			return Item{}, metadataChange{}, dashboardInvalid(
-				joinPath(pathPrefix, "logicalId"),
-				"panel belongs to another dashboard",
-			)
-		}
 		item, itemErr := itemFromRecord(namespace, record)
 		if itemErr != nil {
 			return Item{}, metadataChange{}, itemErr
@@ -468,9 +287,6 @@ func (service *Service) upsert(
 	}
 	record.Set("logical_id", mutation.LogicalID)
 	record.Set("payload_json", pbtypes.JSONRaw(mutation.Payload))
-	if namespace == NamespacePanels && dashboardID != "" {
-		record.Set("parent_id", dashboardID)
-	}
 	if err := app.Save(record); err != nil {
 		return Item{}, metadataChange{}, storageError()
 	}
@@ -496,7 +312,6 @@ func (service *Service) delete(
 	namespace Namespace,
 	deletion ItemDelete,
 	pathPrefix string,
-	dashboardID string,
 ) (metadataChange, error) {
 	collection, err := resolveCollection(app, namespace)
 	if err != nil {
@@ -512,14 +327,6 @@ func (service *Service) delete(
 			Path:    joinPath(pathPrefix, "logicalId"),
 			Message: "metadata item was not found",
 		}
-	}
-	if namespace == NamespacePanels &&
-		dashboardID != "" &&
-		record.GetString("parent_id") != dashboardID {
-		return metadataChange{}, dashboardInvalid(
-			joinPath(pathPrefix, "logicalId"),
-			"panel belongs to another dashboard",
-		)
 	}
 	item, err := itemFromRecord(namespace, record)
 	if err != nil {
@@ -1104,24 +911,6 @@ func invalidRequest(path, message string) *Error {
 		Code: "metadata.request.invalid",
 		Path: path, Message: message,
 	}
-}
-
-func dashboardInvalid(path, message string) *Error {
-	return &Error{
-		Code: "metadata.dashboard.invalid",
-		Path: path, Message: message,
-	}
-}
-
-func dashboardError(err error) error {
-	var productErr *Error
-	if !errors.As(err, &productErr) {
-		return err
-	}
-	if productErr.Code == "metadata.request.invalid" {
-		productErr.Code = "metadata.dashboard.invalid"
-	}
-	return productErr
 }
 
 func storageError() *Error {

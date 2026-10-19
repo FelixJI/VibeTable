@@ -53,7 +53,7 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
-		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" || ns == "content_versions" {
+		if ns := request.Request.PathValue("namespace"); ns == "shared_settings" || ns == "content_versions" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
@@ -63,8 +63,8 @@ func registerMetadataRoutes(
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
 		}
 
-		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
-			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		if ns := request.Request.PathValue("namespace"); ns == "interfaces" || ns == "dashboards" || ns == "panels" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "layout.retired", "message": "Legacy layouts are read-only; use legacyLayout.snapshot for preservation."})
 		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
@@ -94,7 +94,7 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
-		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" || ns == "content_versions" {
+		if ns := request.Request.PathValue("namespace"); ns == "shared_settings" || ns == "content_versions" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
@@ -104,8 +104,8 @@ func registerMetadataRoutes(
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
 		}
 
-		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
-			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		if ns := request.Request.PathValue("namespace"); ns == "interfaces" || ns == "dashboards" || ns == "panels" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "layout.retired", "message": "Legacy layouts are read-only; use legacyLayout.snapshot for preservation."})
 		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
@@ -132,7 +132,7 @@ func registerMetadataRoutes(
 		return request.JSON(http.StatusOK, receipt)
 	})
 	r.POST("/api/vibetable/v1/metadata/dashboards/commit", func(request *core.RequestEvent) error {
-		return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		return request.JSON(http.StatusForbidden, map[string]any{"code": "layout.retired"})
 	})
 }
 
@@ -168,29 +168,6 @@ func deleteMetadataWithGate(
 		ctx,
 		gates,
 		"metadata."+string(request.Namespace)+".delete",
-		request.IdempotencyKey,
-		func(writeContext context.Context) error {
-			var applyErr error
-			receipt, applyErr = apply(writeContext, request)
-			return applyErr
-		},
-	)
-	return receipt, err
-}
-
-func commitDashboardWithGate(
-	ctx context.Context,
-	request metadata.DashboardCommitRequest,
-	gates []businessWriteGate,
-	apply func(context.Context, metadata.DashboardCommitRequest) (
-		metadata.DashboardCommitReceipt, error,
-	),
-) (metadata.DashboardCommitReceipt, error) {
-	var receipt metadata.DashboardCommitReceipt
-	err := runBusinessWrite(
-		ctx,
-		gates,
-		"metadata.dashboard.commit",
 		request.IdempotencyKey,
 		func(writeContext context.Context) error {
 			var applyErr error

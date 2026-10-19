@@ -11,7 +11,7 @@ using VibeTable.Infrastructure.Rpc;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>JSON-RPC adapter for the closed provider-neutral product surface.</summary>
-public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurfaceRpcGateway, IHostCommandExportGateway
+public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, IHostCommandExportGateway
 {
     private static readonly JsonSerializerOptions RequestOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions JsonOptions =
@@ -79,14 +79,9 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
             .ExecuteExportAsync(parameters, token);
 
-    Task<InterfaceListResult> ISurfaceRpcGateway.ListAsync(CancellationToken token)
-        => InvokeStrict<InterfaceListRequest, InterfaceListResult>("interface.list", new(), token);
-    Task<InterfaceSnapshot> ISurfaceRpcGateway.LoadAsync(string interfaceId, CancellationToken token)
-        => InvokeStrict<InterfaceLoadRequest, InterfaceSnapshot>("interface.load", new() { InterfaceId = interfaceId }, token);
-    Task<InterfaceSnapshot> ISurfaceRpcGateway.CommitAsync(InterfaceCommitRequest parameters, CancellationToken token)
-        => InvokeStrict<InterfaceCommitRequest, InterfaceSnapshot>("interface.commit", parameters, token);
-    Task<InterfaceDeleteResult> ISurfaceRpcGateway.DeleteAsync(InterfaceDeleteRequest parameters, CancellationToken token)
-        => InvokeStrict<InterfaceDeleteRequest, InterfaceDeleteResult>("interface.delete", parameters, token);
+    internal Task<JsonElement> ReadLegacyLayoutSnapshotAsync(CancellationToken token)
+        => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
+            .InvokeAsync("legacyLayout.snapshot", JsonSerializer.SerializeToElement(new { }), token);
 
 
     public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)

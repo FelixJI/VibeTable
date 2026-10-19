@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWirePanel } from "../model";
+import type { DashboardChartInput } from "../types";
 import {
   buildDashboardChartOption,
   dashboardChartKeyboardSelections,
@@ -16,11 +16,11 @@ function series(option: ReturnType<typeof buildDashboardChartOption>): Array<Rec
 
 describe("dashboard chart option adapter", () => {
   it("renders every stable measure key as a separate categorical line series", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Compare", type: "line",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "Compare", productType: "line",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["status"], measures: [{ key: "revenue", op: "sum", field: "amount" }, { key: "orders", op: "count", field: null }] },
-    });
+    };
     const option = buildDashboardChartOption(panel, [
       { status: "paid", revenue: 42, orders: 3 },
       { status: "pending", revenue: 10, orders: 2 },
@@ -33,11 +33,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("splits time-series rows by the declared series dimension", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Trend", type: "time-series",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "Trend", productType: "time-series",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["region", "status"], measures: [{ key: "revenue", op: "sum", field: "amount" }], timeBucket: { field: "created_at", unit: "day" } },
-    });
+    };
     const option = buildDashboardChartOption(panel, [
       { created_at: "2026-07-01", region: "east", status: "paid", revenue: 42 },
       { created_at: "2026-07-01", region: "east", status: "pending", revenue: 30 },
@@ -53,11 +53,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("uses only stable query measure keys and keeps numeric dimensions as selections", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "By year", type: "bar",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "By year", productType: "bar",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["year"], measures: [{ key: "revenue", op: "sum", field: "amount" }] },
-    });
+    };
     const option = buildDashboardChartOption(panel, [
       { year: 2025, revenue: 42 },
       { year: 2026, revenue: 90 },
@@ -75,11 +75,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it.each(["pie", "donut"] as const)("builds selectable %s slices with stable visual limits", (type) => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Share", type,
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "Share", productType: type,
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["status"], measures: [{ key: "orders", op: "count", field: null }] },
-    });
+    };
     const option = buildDashboardChartOption(panel, Array.from({ length: 21 }, (_, index) => ({
       status: `s${index}`,
       orders: index + 1,
@@ -94,11 +94,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("enables category zoom and disables animation for a large bar result", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Large", type: "bar",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "Large", productType: "bar",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["status"], measures: [{ key: "orders", op: "count", field: null }] },
-    });
+    };
     const option = buildDashboardChartOption(panel, Array.from({ length: 600 }, (_, index) => ({
       status: `s${index}`,
       orders: index,
@@ -108,11 +108,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("uses ordinal and nested fallback labels when dimensions are absent", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Fallback", type: "line",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const panel: DashboardChartInput = {
+      name: "Fallback", productType: "line",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: [], measures: [{ key: "orders", op: "count", field: null }] },
-    });
+    };
     const option = buildDashboardChartOption(panel, [
       { count: 9, orders: "4", meta: { label: "嵌套标签" } },
       { count: 3, orders: Number.NaN, meta: {} },
@@ -125,11 +125,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("groups, zooms, and samples very long time series with fallback timestamps", () => {
-    const panel = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Long trend", type: "time-series",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: { fillType: "gradient" },
+    const panel: DashboardChartInput = {
+      name: "Long trend", productType: "time-series",
+      options: { fillType: "gradient" },
       query: { kind: "aggregate", collection: "orders", dimensions: [], measures: [{ key: "revenue", op: "sum", field: "amount" }], timeBucket: { field: "created_at", unit: "day" } },
-    });
+    };
     const rows = Array.from({ length: 10_001 }, (_, index) => ({
       created_at: index === 0 ? "not-a-date" : new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
       revenue: index,
@@ -144,11 +144,11 @@ describe("dashboard chart option adapter", () => {
   });
 
   it("normalizes measures, numeric values, keyboard selections, and chart events", () => {
-    const bar = parseWirePanel({
-      id: "p", dashboardId: "d", name: "Keyboard", type: "bar",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const bar: DashboardChartInput = {
+      name: "Keyboard", productType: "bar",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: ["status", 7], measures: [{ key: "orders", op: "count", field: null }, { op: "sum" }, null] },
-    });
+    };
     expect(dashboardMeasureKeys(bar)).toEqual(["orders"]);
     expect(extractCategories(bar, [{ status: "paid", orders: 2 }], "orders"))
       .toEqual([{ label: "paid", value: 2, selectionValue: { primaryField: "status", primaryValue: "paid", values: { status: "paid" } } }]);
@@ -159,11 +159,11 @@ describe("dashboard chart option adapter", () => {
     expect(dashboardChartSelectionValue({ value: [123, 2] })).toBe(123);
     expect(dashboardChartSelectionValue({ name: "paid" })).toBe("paid");
 
-    const time = parseWirePanel({
-      id: "t", dashboardId: "d", name: "Time keyboard", type: "time-series",
-      position: { x: 0, y: 0, width: 8, height: 4 }, options: {},
+    const time: DashboardChartInput = {
+      name: "Time keyboard", productType: "time-series",
+      options: {},
       query: { kind: "aggregate", collection: "orders", dimensions: [], measures: [{ key: "orders", op: "count", field: null }], timeBucket: { field: "created_at", unit: "day" } },
-    });
+    };
     expect(dashboardChartKeyboardSelections(time, [{ created_at: "2026-01-01", orders: 1 }])[0]?.label)
       .toBe("2026-01-01T00:00:00.000Z");
   });

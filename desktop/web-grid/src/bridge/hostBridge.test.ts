@@ -158,8 +158,7 @@ describe("HostBridge", () => {
       const requests = [
         bridge.request("clipboard.readText", {}),
         bridge.request("clipboard.writeText", { text: "copied" }),
-        bridge.request("dashboard.listRequested", {}),
-        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("legacyLayout.reportRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("lookup.query", lookupQueryPayload()),
@@ -188,7 +187,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(11);
+      expect(retired).toHaveBeenCalledTimes(10);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");
@@ -235,8 +234,7 @@ describe("HostBridge", () => {
         bridge.request("lookup.valuePage", lookupValuePagePayload()),
         bridge.request("clipboard.readText", {}),
         bridge.request("clipboard.writeText", { text: "copied" }),
-        bridge.request("dashboard.listRequested", {}),
-        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("legacyLayout.reportRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
@@ -946,32 +944,32 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const pending = bridge.request("dashboard.listRequested", {});
+    const pending = bridge.request("legacyLayout.reportRequested", {});
     let settled = false;
     void pending.finally(() => {
       settled = true;
     });
 
     webview.emit({
-      type: "dashboard.queryLoaded",
+      type: "legacyLayout.exportCompleted",
       requestId: "req-mismatch",
-      payload: { rows: [{ forged: true }] },
+      payload: { cancelled: true, outputDisplayName: null },
     });
     await Promise.resolve();
 
     expect(settled).toBe(false);
     expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
       kind: "mismatched-response",
-      type: "dashboard.queryLoaded",
-      reason: expect.stringContaining("expected: dashboard.listLoaded"),
+      type: "legacyLayout.exportCompleted",
+      reason: expect.stringContaining("expected: legacyLayout.reportLoaded"),
     }));
 
     webview.emit({
-      type: "dashboard.listLoaded",
+      type: "legacyLayout.reportLoaded",
       requestId: "req-mismatch",
-      payload: { dashboards: [] },
+      payload: { interfaces: 0, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
     });
-    await expect(pending).resolves.toEqual({ dashboards: [] });
+    await expect(pending).resolves.toEqual({ interfaces: 0, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" });
     bridge.stop();
   });
 
@@ -1462,50 +1460,39 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
-  it("correlates native dashboard requests and posts dashboard cancellation", async () => {
+  it("correlates native legacy-layout preservation requests through the host-owned channel", async () => {
     let counter = 0;
     const bridge = createHostBridge({
       webview,
       timeoutMs: 1000,
-      generateRequestId: () => `dashboard-${++counter}`,
+      generateRequestId: () => `legacy-${++counter}`,
     });
     bridge.start();
 
-    const list = bridge.request("dashboard.listRequested", {});
+    const report = bridge.request("legacyLayout.reportRequested", {});
     expect(webview.postMessage).toHaveBeenLastCalledWith({
-      type: "dashboard.listRequested",
-      requestId: "dashboard-1",
+      type: "legacyLayout.reportRequested",
+      requestId: "legacy-1",
       payload: {},
     });
     webview.emit({
-      type: "dashboard.listLoaded",
-      requestId: "dashboard-1",
-      payload: { dashboards: [] },
+      type: "legacyLayout.reportLoaded",
+      requestId: "legacy-1",
+      payload: { interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
     });
-    await expect(list).resolves.toEqual({ dashboards: [] });
+    await expect(report).resolves.toEqual({ interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" });
 
-    const query = bridge.requestWithHandle("dashboard.queryRequested", {
-      panelType: "metric",
-      query: {
-        kind: "aggregate",
-        collection: "orders",
-        measures: [{ key: "total", op: "sum", field: "amount" }],
-      },
+    const exportRequest = bridge.requestWithHandle("legacyLayout.exportRequested", {
+      suggestedName: "vibetable-legacy-layouts",
     });
-    expect(query.requestId).toBe("dashboard-2");
+    expect(exportRequest.requestId).toBe("legacy-2");
     webview.emit({
-      type: "dashboard.queryLoaded",
-      requestId: "dashboard-2",
-      payload: { rows: [{ total: 42 }], truncated: false, maxPoints: 100_000 },
+      type: "legacyLayout.exportCompleted",
+      requestId: "legacy-2",
+      payload: { cancelled: false, outputDisplayName: "vibetable-legacy-layouts.json" },
     });
-    await expect(query.promise).resolves.toEqual({
-      rows: [{ total: 42 }], truncated: false, maxPoints: 100_000,
-    });
-
-    bridge.notify("dashboard.cancelRequested", { targetRequestId: "dashboard-2" });
-    expect(webview.postMessage).toHaveBeenLastCalledWith({
-      type: "dashboard.cancelRequested",
-      payload: { targetRequestId: "dashboard-2" },
+    await expect(exportRequest.promise).resolves.toEqual({
+      cancelled: false, outputDisplayName: "vibetable-legacy-layouts.json",
     });
     bridge.stop();
   });

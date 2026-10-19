@@ -41,6 +41,7 @@
     "interface.delete",
     "interface.list",
     "interface.load",
+    "legacyLayout.snapshot",
     "lookup.draft.preview",
     "lookup.list",
     "lookup.query",
@@ -10911,41 +10912,11 @@
     },
     {
       "method": "insights.dashboardQueryLimits",
-      "paramsModel": "ListDashboardsParams",
-      "resultModel": "DashboardQueryLimits",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "maxConcurrentRequests": {
-            "default": 6,
-            "type": "integer"
-          },
-          "maxSeriesPoints": {
-            "default": 50000,
-            "type": "integer"
-          },
-          "maxPanelPoints": {
-            "default": 100000,
-            "type": "integer"
-          },
-          "maxCategoryPoints": {
-            "default": 5000,
-            "type": "integer"
-          },
-          "defaultTopN": {
-            "default": 100,
-            "type": "integer"
-          },
-          "maxPieSlices": {
-            "default": 50,
-            "type": "integer"
-          },
-          "maxListRows": {
-            "default": 100,
-            "type": "integer"
-          }
-        },
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
@@ -10956,15 +10927,7 @@
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-030",
-        "result": {
-          "maxConcurrentRequests": 6,
-          "maxSeriesPoints": 50000,
-          "maxPanelPoints": 100000,
-          "maxCategoryPoints": 5000,
-          "defaultTopN": 100,
-          "maxPieSlices": 50,
-          "maxListRows": 100
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -10982,34 +10945,22 @@
     },
     {
       "method": "insights.deleteDashboardWorkspace",
-      "paramsModel": "DashboardWorkspaceParams",
-      "resultModel": "DeleteDashboardWorkspaceResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
         "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "deleted"
-        ],
-        "properties": {
-          "deleted": {
-            "type": "string"
-          }
-        }
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-031",
         "method": "insights.deleteDashboardWorkspace",
-        "params": {
-          "dashboardId": "00000000-0000-4000-8000-000000000001"
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-031",
-        "result": {
-          "deleted": "dashboard-1"
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -11027,60 +10978,22 @@
     },
     {
       "method": "insights.executeDashboardQuery",
-      "paramsModel": "ExecuteDashboardQueryParams",
-      "resultModel": "DashboardQueryResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "rows": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "truncated": {
-            "default": false,
-            "type": "boolean"
-          },
-          "maxPoints": {
-            "maximum": 100000,
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "maxPoints"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-032",
         "method": "insights.executeDashboardQuery",
-        "params": {
-          "panelType": "label",
-          "query": {
-            "kind": "records",
-            "collection": "orders",
-            "fields": [
-              "sample-value"
-            ],
-            "filters": [],
-            "sorts": [],
-            "limit": 20
-          },
-          "requestId": null
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-032",
-        "result": {
-          "rows": [],
-          "truncated": false,
-          "maxPoints": 1
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -11098,188 +11011,11 @@
     },
     {
       "method": "insights.listDashboards",
-      "paramsModel": "ListDashboardsParams",
-      "resultModel": "DashboardsResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "DashboardEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "panels": {
-                "items": {
-                  "$ref": "#/$defs/PanelEntry"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "type": "object"
-          },
-          "PanelEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "dashboardId": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "showHeader": {
-                "default": true,
-                "type": "boolean"
-              },
-              "type": {
-                "default": "metric",
-                "enum": [
-                  "label",
-                  "metric",
-                  "metric-list",
-                  "list",
-                  "time-series",
-                  "bar",
-                  "line",
-                  "donut",
-                  "pie",
-                  "custom"
-                ],
-                "type": "string"
-              },
-              "position": {
-                "$ref": "#/$defs/PanelPosition"
-              },
-              "options": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "query": {
-                "additionalProperties": true,
-                "type": "object"
-              }
-            },
-            "required": [
-              "id",
-              "dashboardId"
-            ],
-            "type": "object"
-          },
-          "PanelPosition": {
-            "additionalProperties": false,
-            "properties": {
-              "x": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "y": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "x",
-              "y",
-              "width",
-              "height"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "dashboards": {
-            "items": {
-              "$ref": "#/$defs/DashboardEntry"
-            },
-            "type": "array"
-          }
-        },
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
@@ -11290,9 +11026,7 @@
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-033",
-        "result": {
-          "dashboards": []
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -11310,99 +11044,11 @@
     },
     {
       "method": "insights.panelManifest",
-      "paramsModel": "ListDashboardsParams",
-      "resultModel": "PanelManifestResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "PanelManifestEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "enum": [
-                  "label",
-                  "metric",
-                  "metric-list",
-                  "list",
-                  "time-series",
-                  "bar",
-                  "line",
-                  "donut",
-                  "pie",
-                  "custom"
-                ],
-                "type": "string"
-              },
-              "minSize": {
-                "$ref": "#/$defs/PanelPosition"
-              },
-              "optionsSchema": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "rendererVersion": {
-                "default": "",
-                "maxLength": 32,
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "minSize"
-            ],
-            "type": "object"
-          },
-          "PanelPosition": {
-            "additionalProperties": false,
-            "properties": {
-              "x": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "y": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "x",
-              "y",
-              "width",
-              "height"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "manifestVersion": {
-            "maxLength": 64,
-            "minLength": 1,
-            "type": "string"
-          },
-          "queryContract": {
-            "default": "",
-            "maxLength": 64,
-            "type": "string"
-          },
-          "panels": {
-            "items": {
-              "$ref": "#/$defs/PanelManifestEntry"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "manifestVersion"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
@@ -11413,11 +11059,7 @@
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-034",
-        "result": {
-          "manifestVersion": "sample-value",
-          "queryContract": "",
-          "panels": []
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -11435,409 +11077,22 @@
     },
     {
       "method": "insights.readDashboardWorkspace",
-      "paramsModel": "DashboardWorkspaceParams",
-      "resultModel": "DashboardWorkspaceResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "DashboardEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "panels": {
-                "items": {
-                  "$ref": "#/$defs/PanelEntry"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "type": "object"
-          },
-          "DashboardFilterVariable": {
-            "additionalProperties": false,
-            "properties": {
-              "key": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "default": "",
-                "maxLength": 128,
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "date-range",
-                  "enum",
-                  "user",
-                  "relation",
-                  "number-range"
-                ],
-                "type": "string"
-              },
-              "defaultValue": {
-                "default": null
-              },
-              "allowedFields": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 32,
-                "type": "array"
-              },
-              "targetPanels": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 64,
-                "type": "array"
-              },
-              "fieldBindings": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "maxProperties": 64,
-                "type": "object"
-              }
-            },
-            "required": [
-              "key",
-              "type"
-            ],
-            "type": "object"
-          },
-          "DashboardInteraction": {
-            "additionalProperties": false,
-            "properties": {
-              "sourcePanelId": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "sourceField": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "targetPanelIds": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 64,
-                "minItems": 1,
-                "type": "array"
-              },
-              "targetField": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "sourcePanelId",
-              "targetPanelIds",
-              "targetField"
-            ],
-            "type": "object"
-          },
-          "DashboardManagedConfig": {
-            "additionalProperties": false,
-            "properties": {
-              "configVersion": {
-                "default": 1,
-                "minimum": 1,
-                "type": "integer"
-              },
-              "globalFilters": {
-                "items": {
-                  "$ref": "#/$defs/DashboardFilterVariable"
-                },
-                "maxItems": 32,
-                "type": "array"
-              },
-              "interactions": {
-                "items": {
-                  "$ref": "#/$defs/DashboardInteraction"
-                },
-                "maxItems": 128,
-                "type": "array"
-              },
-              "refreshInterval": {
-                "default": 0,
-                "enum": [
-                  0,
-                  30,
-                  60,
-                  300,
-                  900
-                ],
-                "type": "integer"
-              }
-            },
-            "type": "object"
-          },
-          "DashboardQueryLimits": {
-            "additionalProperties": false,
-            "properties": {
-              "maxConcurrentRequests": {
-                "default": 6,
-                "type": "integer"
-              },
-              "maxSeriesPoints": {
-                "default": 50000,
-                "type": "integer"
-              },
-              "maxPanelPoints": {
-                "default": 100000,
-                "type": "integer"
-              },
-              "maxCategoryPoints": {
-                "default": 5000,
-                "type": "integer"
-              },
-              "defaultTopN": {
-                "default": 100,
-                "type": "integer"
-              },
-              "maxPieSlices": {
-                "default": 50,
-                "type": "integer"
-              },
-              "maxListRows": {
-                "default": 100,
-                "type": "integer"
-              }
-            },
-            "type": "object"
-          },
-          "PanelEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "dashboardId": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "showHeader": {
-                "default": true,
-                "type": "boolean"
-              },
-              "type": {
-                "default": "metric",
-                "enum": [
-                  "label",
-                  "metric",
-                  "metric-list",
-                  "list",
-                  "time-series",
-                  "bar",
-                  "line",
-                  "donut",
-                  "pie",
-                  "custom"
-                ],
-                "type": "string"
-              },
-              "position": {
-                "$ref": "#/$defs/PanelPosition"
-              },
-              "options": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "query": {
-                "additionalProperties": true,
-                "type": "object"
-              }
-            },
-            "required": [
-              "id",
-              "dashboardId"
-            ],
-            "type": "object"
-          },
-          "PanelPosition": {
-            "additionalProperties": false,
-            "properties": {
-              "x": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "y": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "x",
-              "y",
-              "width",
-              "height"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "dashboard": {
-            "$ref": "#/$defs/DashboardEntry"
-          },
-          "config": {
-            "$ref": "#/$defs/DashboardManagedConfig"
-          },
-          "revision": {
-            "maxLength": 64,
-            "minLength": 64,
-            "type": "string"
-          },
-          "atomicSaveEndpoint": {
-            "default": "vibetable-dashboard-atomic.v1",
-            "type": "string"
-          },
-          "queryLimits": {
-            "$ref": "#/$defs/DashboardQueryLimits"
-          }
-        },
-        "required": [
-          "dashboard",
-          "revision"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-035",
         "method": "insights.readDashboardWorkspace",
-        "params": {
-          "dashboardId": "00000000-0000-4000-8000-000000000001"
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-035",
-        "result": {
-          "dashboard": {
-            "id": "sample-value",
-            "name": "",
-            "note": "",
-            "icon": null,
-            "color": null,
-            "panels": []
-          },
-          "config": {
-            "configVersion": 1,
-            "globalFilters": [],
-            "interactions": [],
-            "refreshInterval": 0
-          },
-          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
-          "queryLimits": {
-            "maxConcurrentRequests": 6,
-            "maxSeriesPoints": 50000,
-            "maxPanelPoints": 100000,
-            "maxCategoryPoints": 5000,
-            "defaultTopN": 100,
-            "maxPieSlices": 50,
-            "maxListRows": 100
-          }
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -11855,450 +11110,22 @@
     },
     {
       "method": "insights.saveDashboardDraft",
-      "paramsModel": "SaveDashboardDraftParams",
-      "resultModel": "SaveDashboardDraftResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "DashboardEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "panels": {
-                "items": {
-                  "$ref": "#/$defs/PanelEntry"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "type": "object"
-          },
-          "DashboardFilterVariable": {
-            "additionalProperties": false,
-            "properties": {
-              "key": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "default": "",
-                "maxLength": 128,
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "date-range",
-                  "enum",
-                  "user",
-                  "relation",
-                  "number-range"
-                ],
-                "type": "string"
-              },
-              "defaultValue": {
-                "default": null
-              },
-              "allowedFields": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 32,
-                "type": "array"
-              },
-              "targetPanels": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 64,
-                "type": "array"
-              },
-              "fieldBindings": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "maxProperties": 64,
-                "type": "object"
-              }
-            },
-            "required": [
-              "key",
-              "type"
-            ],
-            "type": "object"
-          },
-          "DashboardInteraction": {
-            "additionalProperties": false,
-            "properties": {
-              "sourcePanelId": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "sourceField": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "targetPanelIds": {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 64,
-                "minItems": 1,
-                "type": "array"
-              },
-              "targetField": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "sourcePanelId",
-              "targetPanelIds",
-              "targetField"
-            ],
-            "type": "object"
-          },
-          "DashboardManagedConfig": {
-            "additionalProperties": false,
-            "properties": {
-              "configVersion": {
-                "default": 1,
-                "minimum": 1,
-                "type": "integer"
-              },
-              "globalFilters": {
-                "items": {
-                  "$ref": "#/$defs/DashboardFilterVariable"
-                },
-                "maxItems": 32,
-                "type": "array"
-              },
-              "interactions": {
-                "items": {
-                  "$ref": "#/$defs/DashboardInteraction"
-                },
-                "maxItems": 128,
-                "type": "array"
-              },
-              "refreshInterval": {
-                "default": 0,
-                "enum": [
-                  0,
-                  30,
-                  60,
-                  300,
-                  900
-                ],
-                "type": "integer"
-              }
-            },
-            "type": "object"
-          },
-          "DashboardQueryLimits": {
-            "additionalProperties": false,
-            "properties": {
-              "maxConcurrentRequests": {
-                "default": 6,
-                "type": "integer"
-              },
-              "maxSeriesPoints": {
-                "default": 50000,
-                "type": "integer"
-              },
-              "maxPanelPoints": {
-                "default": 100000,
-                "type": "integer"
-              },
-              "maxCategoryPoints": {
-                "default": 5000,
-                "type": "integer"
-              },
-              "defaultTopN": {
-                "default": 100,
-                "type": "integer"
-              },
-              "maxPieSlices": {
-                "default": 50,
-                "type": "integer"
-              },
-              "maxListRows": {
-                "default": 100,
-                "type": "integer"
-              }
-            },
-            "type": "object"
-          },
-          "DashboardWorkspaceResult": {
-            "additionalProperties": false,
-            "properties": {
-              "dashboard": {
-                "$ref": "#/$defs/DashboardEntry"
-              },
-              "config": {
-                "$ref": "#/$defs/DashboardManagedConfig"
-              },
-              "revision": {
-                "maxLength": 64,
-                "minLength": 64,
-                "type": "string"
-              },
-              "atomicSaveEndpoint": {
-                "default": "vibetable-dashboard-atomic.v1",
-                "type": "string"
-              },
-              "queryLimits": {
-                "$ref": "#/$defs/DashboardQueryLimits"
-              }
-            },
-            "required": [
-              "dashboard",
-              "revision"
-            ],
-            "type": "object"
-          },
-          "PanelEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "dashboardId": {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "default": "",
-                "maxLength": 256,
-                "type": "string"
-              },
-              "note": {
-                "default": "",
-                "maxLength": 2048,
-                "type": "string"
-              },
-              "icon": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "color": {
-                "anyOf": [
-                  {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "showHeader": {
-                "default": true,
-                "type": "boolean"
-              },
-              "type": {
-                "default": "metric",
-                "enum": [
-                  "label",
-                  "metric",
-                  "metric-list",
-                  "list",
-                  "time-series",
-                  "bar",
-                  "line",
-                  "donut",
-                  "pie",
-                  "custom"
-                ],
-                "type": "string"
-              },
-              "position": {
-                "$ref": "#/$defs/PanelPosition"
-              },
-              "options": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "query": {
-                "additionalProperties": true,
-                "type": "object"
-              }
-            },
-            "required": [
-              "id",
-              "dashboardId"
-            ],
-            "type": "object"
-          },
-          "PanelPosition": {
-            "additionalProperties": false,
-            "properties": {
-              "x": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "y": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "x",
-              "y",
-              "width",
-              "height"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "workspace": {
-            "$ref": "#/$defs/DashboardWorkspaceResult"
-          },
-          "clientPanelIds": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "atomic": {
-            "const": true,
-            "default": true,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "workspace"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-036",
         "method": "insights.saveDashboardDraft",
-        "params": {
-          "dashboardId": null,
-          "expectedRevision": null,
-          "idempotencyKey": "00000000-0000-4000-8000-000000000001",
-          "name": "sample-value",
-          "note": "",
-          "icon": null,
-          "color": null,
-          "panels": [],
-          "deletedPanelIds": [],
-          "config": {
-            "configVersion": 1,
-            "globalFilters": [],
-            "interactions": [],
-            "refreshInterval": 0
-          }
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-036",
-        "result": {
-          "workspace": {
-            "dashboard": {
-              "id": "sample-value",
-              "name": "",
-              "note": "",
-              "icon": null,
-              "color": null,
-              "panels": []
-            },
-            "config": {
-              "configVersion": 1,
-              "globalFilters": [],
-              "interactions": [],
-              "refreshInterval": 0
-            },
-            "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
-            "queryLimits": {
-              "maxConcurrentRequests": 6,
-              "maxSeriesPoints": 50000,
-              "maxPanelPoints": 100000,
-              "maxCategoryPoints": 5000,
-              "defaultTopN": 100,
-              "maxPieSlices": 50,
-              "maxListRows": 100
-            }
-          },
-          "clientPanelIds": {},
-          "atomic": true
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -12316,636 +11143,22 @@
     },
     {
       "method": "interface.commit",
-      "paramsModel": "InterfaceCommitRequest",
-      "resultModel": "InterfaceSnapshot",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "BindingVariable": {
-            "additionalProperties": false,
-            "properties": {
-              "variableId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "targetFieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "operator": {
-                "enum": [
-                  "eq",
-                  "ne",
-                  "contains",
-                  "startsWith",
-                  "gt",
-                  "gte",
-                  "lt",
-                  "lte",
-                  "isNull",
-                  "isNotNull"
-                ],
-                "type": "string"
-              },
-              "source": {
-                "enum": [
-                  "literal",
-                  "selectedRecordField"
-                ],
-                "type": "string"
-              },
-              "sourceBindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "sourceFieldId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "variableId",
-              "targetFieldId",
-              "operator",
-              "source",
-              "sourceBindingId",
-              "sourceFieldId",
-              "value"
-            ],
-            "type": "object"
-          },
-          "DataBinding": {
-            "additionalProperties": false,
-            "properties": {
-              "bindingId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "query": {
-                "$ref": "#/$defs/ViewQuery"
-              },
-              "variables": {
-                "items": {
-                  "$ref": "#/$defs/BindingVariable"
-                },
-                "maxItems": 32,
-                "type": "array"
-              }
-            },
-            "required": [
-              "bindingId",
-              "query",
-              "variables"
-            ],
-            "type": "object"
-          },
-          "InterfaceAction": {
-            "additionalProperties": false,
-            "properties": {
-              "actionId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "record.create",
-                  "record.update",
-                  "binding.refresh",
-                  "navigate",
-                  "plugin"
-                ],
-                "type": "string"
-              },
-              "bindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "targetPageId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pluginId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pluginActionId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "requiresConfirmation": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "actionId",
-              "kind",
-              "bindingId",
-              "targetPageId",
-              "pluginId",
-              "pluginActionId",
-              "requiresConfirmation"
-            ],
-            "type": "object"
-          },
-          "InterfaceDefinition": {
-            "additionalProperties": false,
-            "properties": {
-              "contractVersion": {
-                "const": "1.0",
-                "type": "string"
-              },
-              "interfaceId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "bindings": {
-                "items": {
-                  "$ref": "#/$defs/DataBinding"
-                },
-                "type": "array"
-              },
-              "actions": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceAction"
-                },
-                "type": "array"
-              },
-              "pages": {
-                "items": {
-                  "$ref": "#/$defs/InterfacePage"
-                },
-                "minItems": 1,
-                "type": "array"
-              }
-            },
-            "required": [
-              "contractVersion",
-              "interfaceId",
-              "name",
-              "bindings",
-              "actions",
-              "pages"
-            ],
-            "type": "object"
-          },
-          "InterfaceElement": {
-            "additionalProperties": false,
-            "properties": {
-              "elementId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "section",
-                  "columns",
-                  "tabs",
-                  "text",
-                  "metric",
-                  "chart",
-                  "record-list",
-                  "record-detail",
-                  "form",
-                  "button",
-                  "navigation"
-                ],
-                "type": "string"
-              },
-              "bindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "actionId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "text": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "width": {
-                "enum": [
-                  "full",
-                  "half",
-                  "third"
-                ],
-                "type": "string"
-              },
-              "children": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceElement"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "elementId",
-              "kind",
-              "bindingId",
-              "actionId",
-              "text",
-              "width",
-              "children"
-            ],
-            "type": "object"
-          },
-          "InterfacePage": {
-            "additionalProperties": false,
-            "properties": {
-              "pageId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "title": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "elements": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceElement"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "pageId",
-              "title",
-              "elements"
-            ],
-            "type": "object"
-          },
-          "ViewFilter": {
-            "additionalProperties": false,
-            "properties": {
-              "fieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "operator": {
-                "enum": [
-                  "eq",
-                  "ne",
-                  "contains",
-                  "startsWith",
-                  "gt",
-                  "gte",
-                  "lt",
-                  "lte",
-                  "isNull",
-                  "isNotNull"
-                ],
-                "type": "string"
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "fieldId",
-              "operator",
-              "value"
-            ],
-            "type": "object"
-          },
-          "ViewQuery": {
-            "additionalProperties": false,
-            "properties": {
-              "contractVersion": {
-                "const": "1.0",
-                "type": "string"
-              },
-              "tableId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "fields": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "minItems": 1,
-                "type": "array"
-              },
-              "filters": {
-                "items": {
-                  "$ref": "#/$defs/ViewFilter"
-                },
-                "type": "array"
-              },
-              "sorts": {
-                "items": {
-                  "$ref": "#/$defs/ViewSort"
-                },
-                "type": "array"
-              },
-              "cursor": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pageSize": {
-                "maximum": 500,
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "contractVersion",
-              "tableId",
-              "fields",
-              "filters",
-              "sorts",
-              "cursor",
-              "pageSize"
-            ],
-            "type": "object"
-          },
-          "ViewSort": {
-            "additionalProperties": false,
-            "properties": {
-              "fieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "direction": {
-                "enum": [
-                  "asc",
-                  "desc"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "fieldId",
-              "direction"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "definition": {
-            "$ref": "#/$defs/InterfaceDefinition"
-          },
-          "revision": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "definition",
-          "revision"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-037",
         "method": "interface.commit",
-        "params": {
-          "definition": {
-            "contractVersion": "1.0",
-            "interfaceId": "00000000-0000-4000-8000-000000000001",
-            "name": "sample-value",
-            "bindings": [
-              {
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "query": {
-                  "contractVersion": "1.0",
-                  "tableId": "00000000-0000-4000-8000-000000000001",
-                  "fields": [
-                    "sample-value"
-                  ],
-                  "filters": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "operator": "eq",
-                      "value": "sample-value"
-                    }
-                  ],
-                  "sorts": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "direction": "asc"
-                    }
-                  ],
-                  "cursor": "sample-value",
-                  "pageSize": 1
-                },
-                "variables": [
-                  {
-                    "variableId": "00000000-0000-4000-8000-000000000001",
-                    "targetFieldId": "00000000-0000-4000-8000-000000000001",
-                    "operator": "eq",
-                    "source": "literal",
-                    "sourceBindingId": "00000000-0000-4000-8000-000000000001",
-                    "sourceFieldId": "00000000-0000-4000-8000-000000000001",
-                    "value": "sample-value"
-                  }
-                ]
-              }
-            ],
-            "actions": [
-              {
-                "actionId": "00000000-0000-4000-8000-000000000001",
-                "kind": "record.create",
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "targetPageId": "00000000-0000-4000-8000-000000000001",
-                "pluginId": "sample-plugin",
-                "pluginActionId": "00000000-0000-4000-8000-000000000001",
-                "requiresConfirmation": false
-              }
-            ],
-            "pages": [
-              {
-                "pageId": "00000000-0000-4000-8000-000000000001",
-                "title": "sample-value",
-                "elements": [
-                  {
-                    "elementId": "00000000-0000-4000-8000-000000000001",
-                    "kind": "section",
-                    "bindingId": "00000000-0000-4000-8000-000000000001",
-                    "actionId": "00000000-0000-4000-8000-000000000001",
-                    "text": "sample-value",
-                    "width": "full",
-                    "children": []
-                  }
-                ]
-              }
-            ]
-          },
-          "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "idempotencyKey": "00000000-0000-4000-8000-000000000001"
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-037",
-        "result": {
-          "definition": {
-            "contractVersion": "1.0",
-            "interfaceId": "00000000-0000-4000-8000-000000000001",
-            "name": "sample-value",
-            "bindings": [
-              {
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "query": {
-                  "contractVersion": "1.0",
-                  "tableId": "00000000-0000-4000-8000-000000000001",
-                  "fields": [
-                    "sample-value"
-                  ],
-                  "filters": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "operator": "eq",
-                      "value": "sample-value"
-                    }
-                  ],
-                  "sorts": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "direction": "asc"
-                    }
-                  ],
-                  "cursor": "sample-value",
-                  "pageSize": 1
-                },
-                "variables": [
-                  {
-                    "variableId": "00000000-0000-4000-8000-000000000001",
-                    "targetFieldId": "00000000-0000-4000-8000-000000000001",
-                    "operator": "eq",
-                    "source": "literal",
-                    "sourceBindingId": "00000000-0000-4000-8000-000000000001",
-                    "sourceFieldId": "00000000-0000-4000-8000-000000000001",
-                    "value": "sample-value"
-                  }
-                ]
-              }
-            ],
-            "actions": [
-              {
-                "actionId": "00000000-0000-4000-8000-000000000001",
-                "kind": "record.create",
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "targetPageId": "00000000-0000-4000-8000-000000000001",
-                "pluginId": "sample-plugin",
-                "pluginActionId": "00000000-0000-4000-8000-000000000001",
-                "requiresConfirmation": false
-              }
-            ],
-            "pages": [
-              {
-                "pageId": "00000000-0000-4000-8000-000000000001",
-                "title": "sample-value",
-                "elements": [
-                  {
-                    "elementId": "00000000-0000-4000-8000-000000000001",
-                    "kind": "section",
-                    "bindingId": "00000000-0000-4000-8000-000000000001",
-                    "actionId": "00000000-0000-4000-8000-000000000001",
-                    "text": "sample-value",
-                    "width": "full",
-                    "children": []
-                  }
-                ]
-              }
-            ]
-          },
-          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -12963,37 +11176,22 @@
     },
     {
       "method": "interface.delete",
-      "paramsModel": "InterfaceDeleteRequest",
-      "resultModel": "InterfaceDeleteResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "interfaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "interfaceId"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-038",
         "method": "interface.delete",
-        "params": {
-          "interfaceId": "00000000-0000-4000-8000-000000000001",
-          "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "idempotencyKey": "00000000-0000-4000-8000-000000000001"
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-038",
-        "result": {
-          "interfaceId": "00000000-0000-4000-8000-000000000001"
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -13011,47 +11209,11 @@
     },
     {
       "method": "interface.list",
-      "paramsModel": "InterfaceListRequest",
-      "resultModel": "InterfaceListResult",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "InterfaceListEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "interfaceId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "revision": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "interfaceId",
-              "name",
-              "revision"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/$defs/InterfaceListEntry"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
@@ -13062,15 +11224,7 @@
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-039",
-        "result": {
-          "items": [
-            {
-              "interfaceId": "00000000-0000-4000-8000-000000000001",
-              "name": "sample-value",
-              "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            }
-          ]
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -13088,564 +11242,22 @@
     },
     {
       "method": "interface.load",
-      "paramsModel": "InterfaceLoadRequest",
-      "resultModel": "InterfaceSnapshot",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "RetiredLayoutResult",
       "resultSchema": {
-        "$defs": {
-          "BindingVariable": {
-            "additionalProperties": false,
-            "properties": {
-              "variableId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "targetFieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "operator": {
-                "enum": [
-                  "eq",
-                  "ne",
-                  "contains",
-                  "startsWith",
-                  "gt",
-                  "gte",
-                  "lt",
-                  "lte",
-                  "isNull",
-                  "isNotNull"
-                ],
-                "type": "string"
-              },
-              "source": {
-                "enum": [
-                  "literal",
-                  "selectedRecordField"
-                ],
-                "type": "string"
-              },
-              "sourceBindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "sourceFieldId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "variableId",
-              "targetFieldId",
-              "operator",
-              "source",
-              "sourceBindingId",
-              "sourceFieldId",
-              "value"
-            ],
-            "type": "object"
-          },
-          "DataBinding": {
-            "additionalProperties": false,
-            "properties": {
-              "bindingId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "query": {
-                "$ref": "#/$defs/ViewQuery"
-              },
-              "variables": {
-                "items": {
-                  "$ref": "#/$defs/BindingVariable"
-                },
-                "maxItems": 32,
-                "type": "array"
-              }
-            },
-            "required": [
-              "bindingId",
-              "query",
-              "variables"
-            ],
-            "type": "object"
-          },
-          "InterfaceAction": {
-            "additionalProperties": false,
-            "properties": {
-              "actionId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "record.create",
-                  "record.update",
-                  "binding.refresh",
-                  "navigate",
-                  "plugin"
-                ],
-                "type": "string"
-              },
-              "bindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "targetPageId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pluginId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pluginActionId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "requiresConfirmation": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "actionId",
-              "kind",
-              "bindingId",
-              "targetPageId",
-              "pluginId",
-              "pluginActionId",
-              "requiresConfirmation"
-            ],
-            "type": "object"
-          },
-          "InterfaceDefinition": {
-            "additionalProperties": false,
-            "properties": {
-              "contractVersion": {
-                "const": "1.0",
-                "type": "string"
-              },
-              "interfaceId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "name": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "bindings": {
-                "items": {
-                  "$ref": "#/$defs/DataBinding"
-                },
-                "type": "array"
-              },
-              "actions": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceAction"
-                },
-                "type": "array"
-              },
-              "pages": {
-                "items": {
-                  "$ref": "#/$defs/InterfacePage"
-                },
-                "minItems": 1,
-                "type": "array"
-              }
-            },
-            "required": [
-              "contractVersion",
-              "interfaceId",
-              "name",
-              "bindings",
-              "actions",
-              "pages"
-            ],
-            "type": "object"
-          },
-          "InterfaceElement": {
-            "additionalProperties": false,
-            "properties": {
-              "elementId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "section",
-                  "columns",
-                  "tabs",
-                  "text",
-                  "metric",
-                  "chart",
-                  "record-list",
-                  "record-detail",
-                  "form",
-                  "button",
-                  "navigation"
-                ],
-                "type": "string"
-              },
-              "bindingId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "actionId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "text": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "width": {
-                "enum": [
-                  "full",
-                  "half",
-                  "third"
-                ],
-                "type": "string"
-              },
-              "children": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceElement"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "elementId",
-              "kind",
-              "bindingId",
-              "actionId",
-              "text",
-              "width",
-              "children"
-            ],
-            "type": "object"
-          },
-          "InterfacePage": {
-            "additionalProperties": false,
-            "properties": {
-              "pageId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "title": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "elements": {
-                "items": {
-                  "$ref": "#/$defs/InterfaceElement"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "pageId",
-              "title",
-              "elements"
-            ],
-            "type": "object"
-          },
-          "ViewFilter": {
-            "additionalProperties": false,
-            "properties": {
-              "fieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "operator": {
-                "enum": [
-                  "eq",
-                  "ne",
-                  "contains",
-                  "startsWith",
-                  "gt",
-                  "gte",
-                  "lt",
-                  "lte",
-                  "isNull",
-                  "isNotNull"
-                ],
-                "type": "string"
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "fieldId",
-              "operator",
-              "value"
-            ],
-            "type": "object"
-          },
-          "ViewQuery": {
-            "additionalProperties": false,
-            "properties": {
-              "contractVersion": {
-                "const": "1.0",
-                "type": "string"
-              },
-              "tableId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "fields": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "minItems": 1,
-                "type": "array"
-              },
-              "filters": {
-                "items": {
-                  "$ref": "#/$defs/ViewFilter"
-                },
-                "type": "array"
-              },
-              "sorts": {
-                "items": {
-                  "$ref": "#/$defs/ViewSort"
-                },
-                "type": "array"
-              },
-              "cursor": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pageSize": {
-                "maximum": 500,
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "contractVersion",
-              "tableId",
-              "fields",
-              "filters",
-              "sorts",
-              "cursor",
-              "pageSize"
-            ],
-            "type": "object"
-          },
-          "ViewSort": {
-            "additionalProperties": false,
-            "properties": {
-              "fieldId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "direction": {
-                "enum": [
-                  "asc",
-                  "desc"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "fieldId",
-              "direction"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "definition": {
-            "$ref": "#/$defs/InterfaceDefinition"
-          },
-          "revision": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "definition",
-          "revision"
-        ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "rpc-040",
         "method": "interface.load",
-        "params": {
-          "interfaceId": "00000000-0000-4000-8000-000000000001"
-        }
+        "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-040",
-        "result": {
-          "definition": {
-            "contractVersion": "1.0",
-            "interfaceId": "00000000-0000-4000-8000-000000000001",
-            "name": "sample-value",
-            "bindings": [
-              {
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "query": {
-                  "contractVersion": "1.0",
-                  "tableId": "00000000-0000-4000-8000-000000000001",
-                  "fields": [
-                    "sample-value"
-                  ],
-                  "filters": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "operator": "eq",
-                      "value": "sample-value"
-                    }
-                  ],
-                  "sorts": [
-                    {
-                      "fieldId": "fld_00000001",
-                      "direction": "asc"
-                    }
-                  ],
-                  "cursor": "sample-value",
-                  "pageSize": 1
-                },
-                "variables": [
-                  {
-                    "variableId": "00000000-0000-4000-8000-000000000001",
-                    "targetFieldId": "00000000-0000-4000-8000-000000000001",
-                    "operator": "eq",
-                    "source": "literal",
-                    "sourceBindingId": "00000000-0000-4000-8000-000000000001",
-                    "sourceFieldId": "00000000-0000-4000-8000-000000000001",
-                    "value": "sample-value"
-                  }
-                ]
-              }
-            ],
-            "actions": [
-              {
-                "actionId": "00000000-0000-4000-8000-000000000001",
-                "kind": "record.create",
-                "bindingId": "00000000-0000-4000-8000-000000000001",
-                "targetPageId": "00000000-0000-4000-8000-000000000001",
-                "pluginId": "sample-plugin",
-                "pluginActionId": "00000000-0000-4000-8000-000000000001",
-                "requiresConfirmation": false
-              }
-            ],
-            "pages": [
-              {
-                "pageId": "00000000-0000-4000-8000-000000000001",
-                "title": "sample-value",
-                "elements": [
-                  {
-                    "elementId": "00000000-0000-4000-8000-000000000001",
-                    "kind": "section",
-                    "bindingId": "00000000-0000-4000-8000-000000000001",
-                    "actionId": "00000000-0000-4000-8000-000000000001",
-                    "text": "sample-value",
-                    "width": "full",
-                    "children": []
-                  }
-                ]
-              }
-            ]
-          },
-          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        }
+        "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
@@ -13655,6 +11267,78 @@
           "message": "interface.load request validation failed.",
           "data": {
             "method": "interface.load",
+            "path": "params",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "method": "legacyLayout.snapshot",
+      "paramsModel": "LegacyLayoutSnapshotParams",
+      "resultModel": "LegacyLayoutSnapshotResult",
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collectedAt",
+          "contractVersion",
+          "dashboards",
+          "diagnostics",
+          "interfaces",
+          "panels"
+        ],
+        "properties": {
+          "collectedAt": {
+            "type": "string"
+          },
+          "contractVersion": {
+            "type": "string"
+          },
+          "dashboards": {
+            "type": "array",
+            "items": {}
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {}
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {}
+          },
+          "panels": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "rpc-041",
+        "method": "legacyLayout.snapshot",
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "rpc-041",
+        "result": {
+          "contractVersion": "1.0",
+          "interfaces": [],
+          "dashboards": [],
+          "panels": [],
+          "diagnostics": [],
+          "collectedAt": "2026-10-19T00:00:00Z"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "rpc-041",
+        "error": {
+          "code": "request.invalid",
+          "message": "legacyLayout.snapshot request validation failed.",
+          "data": {
+            "method": "legacyLayout.snapshot",
             "path": "params",
             "retryable": false
           }
@@ -13829,7 +11513,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-041",
+        "id": "rpc-042",
         "method": "lookup.draft.preview",
         "params": {
           "lookup": {},
@@ -13840,7 +11524,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-041",
+        "id": "rpc-042",
         "result": {
           "cell": {
             "state": "ok",
@@ -13857,7 +11541,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-041",
+        "id": "rpc-042",
         "error": {
           "code": "request.invalid",
           "message": "lookup.draft.preview request validation failed.",
@@ -14255,7 +11939,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-042",
+        "id": "rpc-043",
         "method": "lookup.list",
         "params": {
           "collection": "orders"
@@ -14263,7 +11947,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-042",
+        "id": "rpc-043",
         "result": {
           "collection": "orders",
           "definitions": [],
@@ -14272,7 +11956,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-042",
+        "id": "rpc-043",
         "error": {
           "code": "request.invalid",
           "message": "lookup.list request validation failed.",
@@ -14519,7 +12203,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-043",
+        "id": "rpc-044",
         "method": "lookup.query",
         "params": {
           "collection": "orders",
@@ -14534,7 +12218,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-043",
+        "id": "rpc-044",
         "result": {
           "contract": "vibetable.lookup-query.v1",
           "collection": "orders",
@@ -14574,7 +12258,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-043",
+        "id": "rpc-044",
         "error": {
           "code": "request.invalid",
           "message": "lookup.query request validation failed.",
@@ -14735,7 +12419,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-044",
+        "id": "rpc-045",
         "method": "lookup.valuePage",
         "params": {
           "collection": "orders",
@@ -14750,7 +12434,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-044",
+        "id": "rpc-045",
         "result": {
           "state": "ok",
           "value": null,
@@ -14765,7 +12449,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-044",
+        "id": "rpc-045",
         "error": {
           "code": "request.invalid",
           "message": "lookup.valuePage request validation failed.",
@@ -14786,7 +12470,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-045",
+        "id": "rpc-046",
         "method": "mutation.apply",
         "params": {
           "actor": {},
@@ -14800,7 +12484,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-045",
+        "id": "rpc-046",
         "result": {
           "contractVersion": "2.0",
           "status": "applied",
@@ -14833,7 +12517,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-045",
+        "id": "rpc-046",
         "error": {
           "code": "request.invalid",
           "message": "mutation.apply request validation failed.",
@@ -14870,7 +12554,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-046",
+        "id": "rpc-047",
         "method": "mutation.preview",
         "params": {
           "actor": {},
@@ -14884,7 +12568,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-046",
+        "id": "rpc-047",
         "result": {
           "Definition": {
             "contractVersion": "2.0",
@@ -15279,7 +12963,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-046",
+        "id": "rpc-047",
         "error": {
           "code": "request.invalid",
           "message": "mutation.preview request validation failed.",
@@ -15360,7 +13044,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-047",
+        "id": "rpc-048",
         "method": "path.registerExportTarget",
         "params": {
           "path": "C:/VibeTable/sample.csv"
@@ -15368,7 +13052,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-047",
+        "id": "rpc-048",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "purpose": "import_source",
@@ -15381,7 +13065,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-047",
+        "id": "rpc-048",
         "error": {
           "code": "request.invalid",
           "message": "path.registerExportTarget request validation failed.",
@@ -15462,7 +13146,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-048",
+        "id": "rpc-049",
         "method": "path.registerImportSource",
         "params": {
           "path": "C:/VibeTable/sample.csv",
@@ -15472,7 +13156,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-048",
+        "id": "rpc-049",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "purpose": "import_source",
@@ -15485,7 +13169,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-048",
+        "id": "rpc-049",
         "error": {
           "code": "request.invalid",
           "message": "path.registerImportSource request validation failed.",
@@ -15566,7 +13250,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-049",
+        "id": "rpc-050",
         "method": "path.requestExportTarget",
         "params": {
           "defaultName": "",
@@ -15575,7 +13259,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-049",
+        "id": "rpc-050",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "purpose": "import_source",
@@ -15588,7 +13272,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-049",
+        "id": "rpc-050",
         "error": {
           "code": "request.invalid",
           "message": "path.requestExportTarget request validation failed.",
@@ -15669,7 +13353,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-050",
+        "id": "rpc-051",
         "method": "path.requestImportSource",
         "params": {
           "accept": [
@@ -15681,7 +13365,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-050",
+        "id": "rpc-051",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "purpose": "import_source",
@@ -15694,7 +13378,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-050",
+        "id": "rpc-051",
         "error": {
           "code": "request.invalid",
           "message": "path.requestImportSource request validation failed.",
@@ -15775,7 +13459,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-051",
+        "id": "rpc-052",
         "method": "path.resolveGrant",
         "params": {
           "grantId": "00000000-0000-4000-8000-000000000001"
@@ -15783,7 +13467,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-051",
+        "id": "rpc-052",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "purpose": "import_source",
@@ -15796,7 +13480,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-051",
+        "id": "rpc-052",
         "error": {
           "code": "request.invalid",
           "message": "path.resolveGrant request validation failed.",
@@ -15833,7 +13517,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-052",
+        "id": "rpc-053",
         "method": "path.revokeExportTarget",
         "params": {
           "grantId": "00000000-0000-4000-8000-000000000001"
@@ -15841,7 +13525,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-052",
+        "id": "rpc-053",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "settled": true
@@ -15849,7 +13533,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-052",
+        "id": "rpc-053",
         "error": {
           "code": "request.invalid",
           "message": "path.revokeExportTarget request validation failed.",
@@ -15870,7 +13554,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-053",
+        "id": "rpc-054",
         "method": "plugin.cancelInstall",
         "params": {
           "planId": "00000000-0000-4000-8000-000000000001"
@@ -15878,12 +13562,12 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-053",
+        "id": "rpc-054",
         "result": false
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-053",
+        "id": "rpc-054",
         "error": {
           "code": "request.invalid",
           "message": "plugin.cancelInstall request validation failed.",
@@ -15904,7 +13588,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-054",
+        "id": "rpc-055",
         "method": "plugin.cancelTask",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -15912,12 +13596,12 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-054",
+        "id": "rpc-055",
         "result": false
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-054",
+        "id": "rpc-055",
         "error": {
           "code": "request.invalid",
           "message": "plugin.cancelTask request validation failed.",
@@ -16224,7 +13908,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-055",
+        "id": "rpc-056",
         "method": "plugin.commitInstall",
         "params": {
           "planId": "00000000-0000-4000-8000-000000000001",
@@ -16233,7 +13917,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-055",
+        "id": "rpc-056",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -16264,7 +13948,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-055",
+        "id": "rpc-056",
         "error": {
           "code": "request.invalid",
           "message": "plugin.commitInstall request validation failed.",
@@ -16300,7 +13984,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-056",
+        "id": "rpc-057",
         "method": "plugin.describeAction",
         "params": {
           "projectKey": "local:default",
@@ -16322,7 +14006,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-056",
+        "id": "rpc-057",
         "result": {
           "available": false,
           "reasons": []
@@ -16330,7 +14014,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-056",
+        "id": "rpc-057",
         "error": {
           "code": "request.invalid",
           "message": "plugin.describeAction request validation failed.",
@@ -16613,7 +14297,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-057",
+        "id": "rpc-058",
         "method": "plugin.inspectInstall",
         "params": {
           "projectKey": "local:default",
@@ -16623,7 +14307,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-057",
+        "id": "rpc-058",
         "result": {
           "targetInstallationId": null,
           "targetRevision": null,
@@ -16649,7 +14333,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-057",
+        "id": "rpc-058",
         "error": {
           "code": "request.invalid",
           "message": "plugin.inspectInstall request validation failed.",
@@ -16818,7 +14502,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-058",
+        "id": "rpc-059",
         "method": "plugin.listAudit",
         "params": {
           "projectKey": "local:default",
@@ -16827,7 +14511,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-058",
+        "id": "rpc-059",
         "result": [
           {
             "eventId": "00000000-0000-4000-8000-000000000001",
@@ -16853,7 +14537,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-058",
+        "id": "rpc-059",
         "error": {
           "code": "request.invalid",
           "message": "plugin.listAudit request validation failed.",
@@ -17166,7 +14850,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-059",
+        "id": "rpc-060",
         "method": "plugin.listCatalog",
         "params": {
           "projectKey": "local:default"
@@ -17174,7 +14858,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-059",
+        "id": "rpc-060",
         "result": [
           {
             "installationId": null,
@@ -17207,7 +14891,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-059",
+        "id": "rpc-060",
         "error": {
           "code": "request.invalid",
           "message": "plugin.listCatalog request validation failed.",
@@ -17376,7 +15060,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "method": "plugin.listPendingCleanup",
         "params": {
           "projectKey": "local:default"
@@ -17384,7 +15068,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "result": [
           {
             "eventId": "00000000-0000-4000-8000-000000000001",
@@ -17410,7 +15094,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "error": {
           "code": "request.invalid",
           "message": "plugin.listPendingCleanup request validation failed.",
@@ -17431,7 +15115,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "method": "plugin.resolveFile",
         "params": {
           "requestId": "00000000-0000-4000-8000-000000000001",
@@ -17440,12 +15124,12 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "result": false
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "error": {
           "code": "request.invalid",
           "message": "plugin.resolveFile request validation failed.",
@@ -17495,7 +15179,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "method": "plugin.resolveInteraction",
         "params": {
           "runId": "00000000-0000-4000-8000-000000000001",
@@ -17505,7 +15189,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "result": {
           "status": "resolved",
           "decision": null
@@ -17513,7 +15197,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "error": {
           "code": "request.invalid",
           "message": "plugin.resolveInteraction request validation failed.",
@@ -17820,7 +15504,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "method": "plugin.rollback",
         "params": {
           "projectKey": "local:default",
@@ -17829,7 +15513,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -17860,7 +15544,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "error": {
           "code": "request.invalid",
           "message": "plugin.rollback request validation failed.",
@@ -18167,7 +15851,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "method": "plugin.setEnabled",
         "params": {
           "projectKey": "local:default",
@@ -18177,7 +15861,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -18208,7 +15892,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "error": {
           "code": "request.invalid",
           "message": "plugin.setEnabled request validation failed.",
@@ -18515,7 +16199,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "method": "plugin.setEnabledExecution",
         "params": {
           "projectKey": "local:default",
@@ -18527,7 +16211,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -18558,7 +16242,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "error": {
           "code": "request.invalid",
           "message": "plugin.setEnabledExecution request validation failed.",
@@ -18920,7 +16604,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "method": "plugin.startAction",
         "params": {
           "projectKey": "local:default",
@@ -18945,7 +16629,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "result": {
           "surfaceToken": null,
           "installationId": null,
@@ -18968,7 +16652,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "error": {
           "code": "request.invalid",
           "message": "plugin.startAction request validation failed.",
@@ -19006,7 +16690,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "method": "plugin.uninstall",
         "params": {
           "projectKey": "local:default",
@@ -19018,7 +16702,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "result": {
           "uninstalled": false,
           "privateSettingsRetained": false,
@@ -19027,7 +16711,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "error": {
           "code": "request.invalid",
           "message": "plugin.uninstall request validation failed.",
@@ -19334,7 +17018,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "method": "plugin.upgrade",
         "params": {
           "projectKey": "local:default",
@@ -19345,7 +17029,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -19376,7 +17060,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "error": {
           "code": "request.invalid",
           "message": "plugin.upgrade request validation failed.",
@@ -19421,7 +17105,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "method": "preset.delete",
         "params": {
           "presetId": "00000000-0000-4000-8000-000000000001",
@@ -19431,7 +17115,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
           "revision": "revision-1",
@@ -19443,7 +17127,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "error": {
           "code": "request.invalid",
           "message": "preset.delete request validation failed.",
@@ -19904,7 +17588,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "method": "preset.list",
         "params": {
           "collection": "orders"
@@ -19912,7 +17596,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "result": {
           "collection": "orders",
           "presets": []
@@ -19920,7 +17604,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "error": {
           "code": "request.invalid",
           "message": "preset.list request validation failed.",
@@ -20361,7 +18045,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "method": "preset.save",
         "params": {
           "collection": "orders",
@@ -20391,7 +18075,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "result": {
           "id": "sample-value",
           "collection": "orders",
@@ -20423,7 +18107,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "error": {
           "code": "request.invalid",
           "message": "preset.save request validation failed.",
@@ -20559,7 +18243,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "method": "query.cursorFetch",
         "params": {
           "cursor": "sample-value"
@@ -20567,7 +18251,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "result": {
           "rows": [
             {
@@ -20597,7 +18281,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "error": {
           "code": "request.invalid",
           "message": "query.cursorFetch request validation failed.",
@@ -20733,7 +18417,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "method": "query.cursorOpen",
         "params": {
           "query": {},
@@ -20742,7 +18426,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "result": {
           "rows": [
             {
@@ -20772,7 +18456,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "error": {
           "code": "request.invalid",
           "message": "query.cursorOpen request validation failed.",
@@ -20904,7 +18588,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "method": "query.page",
         "params": {
           "query": {},
@@ -20913,7 +18597,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "result": {
           "rows": [
             {
@@ -20944,7 +18628,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "error": {
           "code": "request.invalid",
           "message": "query.page request validation failed.",
@@ -20990,7 +18674,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "method": "query.readRows",
         "params": {
           "rowIds": [],
@@ -20999,7 +18683,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "result": {
           "rows": [
             {
@@ -21011,7 +18695,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "error": {
           "code": "request.invalid",
           "message": "query.readRows request validation failed.",
@@ -22749,7 +20433,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "method": "query.selectionOpen",
         "params": {
           "query": {},
@@ -22758,7 +20442,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "result": {
           "schemaSnapshot": {
             "contract": "vibetable.schema.v2",
@@ -23026,7 +20710,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "error": {
           "code": "request.invalid",
           "message": "query.selectionOpen request validation failed.",
@@ -23068,7 +20752,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "method": "query.validateSnapshot",
         "params": {
           "snapshot": {}
@@ -23076,7 +20760,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "result": {
           "valid": false,
           "reason": "application_write",
@@ -23086,7 +20770,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "error": {
           "code": "request.invalid",
           "message": "query.validateSnapshot request validation failed.",
@@ -23322,7 +21006,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "method": "query.view",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -23331,7 +21015,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "result": {
           "page": {
             "rows": [
@@ -23383,7 +21067,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "error": {
           "code": "request.invalid",
           "message": "query.view request validation failed.",
@@ -23469,7 +21153,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "method": "recordDocumentLink.commit",
         "params": {
           "link": {
@@ -23487,7 +21171,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "result": {
           "link": {
             "contractVersion": "1.0",
@@ -23503,7 +21187,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.commit request validation failed.",
@@ -23534,7 +21218,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "method": "recordDocumentLink.delete",
         "params": {
           "linkId": "00000000-0000-4000-8000-000000000001",
@@ -23544,14 +21228,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "result": {
           "linkId": "00000000-0000-4000-8000-000000000001"
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.delete request validation failed.",
@@ -23652,7 +21336,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "method": "recordDocumentLink.list",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -23661,7 +21345,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "result": {
           "items": [
             {
@@ -23681,7 +21365,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.list request validation failed.",
@@ -23767,7 +21451,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "method": "recordDocumentLink.repair",
         "params": {
           "linkId": "00000000-0000-4000-8000-000000000001",
@@ -23778,7 +21462,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "result": {
           "link": {
             "contractVersion": "1.0",
@@ -23794,7 +21478,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.repair request validation failed.",
@@ -23916,7 +21600,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "method": "relation.applyDelta",
         "params": {
           "adds": "sample-value",
@@ -23929,7 +21613,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "result": {
           "outcome": "committed",
           "current": [
@@ -23948,7 +21632,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "error": {
           "code": "request.invalid",
           "message": "relation.applyDelta request validation failed.",
@@ -24060,7 +21744,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "method": "relation.createTarget",
         "params": {
           "idempotencyKey": "00000000-0000-4000-8000-000000000001",
@@ -24069,7 +21753,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "result": {
           "outcome": "committed",
           "target": {
@@ -24085,7 +21769,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "error": {
           "code": "request.invalid",
           "message": "relation.createTarget request validation failed.",
@@ -24336,7 +22020,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "method": "relation.inspectPair",
         "params": {
           "fieldId": "fld_00000001",
@@ -24345,7 +22029,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "result": {
           "pairId": "pair_example",
           "endpoints": [
@@ -24376,7 +22060,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "error": {
           "code": "request.invalid",
           "message": "relation.inspectPair request validation failed.",
@@ -24623,7 +22307,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "method": "relation.previewDelta",
         "params": {
           "adds": "sample-value",
@@ -24636,7 +22320,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "result": {
           "delta": {
             "relationId": "00000000-0000-4000-8000-000000000001",
@@ -24660,7 +22344,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "error": {
           "code": "request.invalid",
           "message": "relation.previewDelta request validation failed.",
@@ -24771,7 +22455,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "method": "relation.searchTargets",
         "params": {
           "relationId": "00000000-0000-4000-8000-000000000001"
@@ -24779,7 +22463,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "result": {
           "items": [
             {
@@ -24796,7 +22480,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "error": {
           "code": "request.invalid",
           "message": "relation.searchTargets request validation failed.",
@@ -24922,7 +22606,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "method": "relation.updateSingle",
         "params": {
           "expectedSchemaRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -24934,7 +22618,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "result": {
           "outcome": "committed",
           "current": null,
@@ -24944,7 +22628,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "error": {
           "code": "request.invalid",
           "message": "relation.updateSingle request validation failed.",
@@ -24978,7 +22662,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "method": "schema.delete",
         "params": {
           "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -24987,7 +22671,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "result": {
           "deleted": true,
           "tableId": "orders"
@@ -24995,7 +22679,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "error": {
           "code": "request.invalid",
           "message": "schema.delete request validation failed.",
@@ -25766,7 +23450,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "method": "schema.describe",
         "params": {
           "accepts": [],
@@ -25776,7 +23460,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "result": {
           "contract": "vibetable.schema-describe.v1",
           "collection": "orders",
@@ -25822,7 +23506,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "error": {
           "code": "request.invalid",
           "message": "schema.describe request validation failed.",
@@ -27274,7 +24958,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "method": "schema.getTable",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001"
@@ -27282,7 +24966,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "result": {
           "contract": "vibetable.schema.v2",
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -27522,7 +25206,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "error": {
           "code": "request.invalid",
           "message": "schema.getTable request validation failed.",
@@ -27577,13 +25261,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "method": "schema.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "result": {
           "tables": [
             {
@@ -27596,7 +25280,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "error": {
           "code": "request.invalid",
           "message": "schema.list request validation failed.",
@@ -27646,7 +25330,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "method": "schema.table.create",
         "params": {
           "actor": {},
@@ -27656,7 +25340,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "result": {
           "contract": "vibetable.schema.v2",
           "operationId": "operation-create-table-12345678",
@@ -27667,7 +25351,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "error": {
           "code": "request.invalid",
           "message": "schema.table.create request validation failed.",
@@ -27751,7 +25435,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "method": "settings.commitWorkCalendar",
         "params": {
           "overrides": [],
@@ -27761,7 +25445,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "result": {
           "overrides": [],
           "revision": "sha256:example",
@@ -27772,7 +25456,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "error": {
           "code": "request.invalid",
           "message": "settings.commitWorkCalendar request validation failed.",
@@ -27849,13 +25533,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "method": "settings.readDevice",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -27870,7 +25554,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "error": {
           "code": "request.invalid",
           "message": "settings.readDevice request validation failed.",
@@ -27935,13 +25619,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "method": "settings.readWorkCalendar",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "result": {
           "overrides": [],
           "revision": ""
@@ -27949,7 +25633,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "error": {
           "code": "request.invalid",
           "message": "settings.readWorkCalendar request validation failed.",
@@ -28026,7 +25710,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "method": "settings.saveDevice",
         "params": {
           "settings": {
@@ -28044,7 +25728,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -28059,7 +25743,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "error": {
           "code": "request.invalid",
           "message": "settings.saveDevice request validation failed.",
@@ -28089,7 +25773,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "method": "shortcut.delete",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001"
@@ -28097,14 +25781,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "result": {
           "deleted": "11111111-1111-4111-8111-111111111111"
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.delete request validation failed.",
@@ -28163,7 +25847,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "method": "shortcut.launch",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
@@ -28172,7 +25856,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "launched": false,
@@ -28182,7 +25866,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.launch request validation failed.",
@@ -28265,20 +25949,20 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "method": "shortcut.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "result": {
           "shortcuts": []
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.list request validation failed.",
@@ -28347,7 +26031,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "method": "shortcut.save",
         "params": {
           "shortcut": {
@@ -28361,7 +26045,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "target": "built-in-command",
@@ -28372,7 +26056,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.save request validation failed.",
@@ -28413,7 +26097,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "method": "system.handshake",
         "params": {
           "clientVersion": "sample-value",
@@ -28422,7 +26106,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "result": {
           "backendVersion": "sample-value",
           "protocolVersion": "sample-value",
@@ -28433,7 +26117,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "error": {
           "code": "request.invalid",
           "message": "system.handshake request validation failed.",
@@ -28561,7 +26245,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "method": "table.applyPaste",
         "params": {
           "collection": "orders",
@@ -28571,7 +26255,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "result": {
           "collection": "orders",
           "outcome": "committed",
@@ -28584,7 +26268,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "error": {
           "code": "request.invalid",
           "message": "table.applyPaste request validation failed.",
@@ -28803,7 +26487,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "method": "table.previewPaste",
         "params": {
           "collection": "orders",
@@ -28828,7 +26512,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "result": {
           "collection": "orders",
           "schemaRevision": "schema_0001",
@@ -28860,7 +26544,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "error": {
           "code": "request.invalid",
           "message": "table.previewPaste request validation failed.",
@@ -28963,7 +26647,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "method": "task.cancel",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -28971,7 +26655,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -28988,7 +26672,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "error": {
           "code": "request.invalid",
           "message": "task.cancel request validation failed.",
@@ -29009,7 +26693,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "method": "task.cancelExecution",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -29017,12 +26701,12 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "result": true
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "error": {
           "code": "request.invalid",
           "message": "task.cancelExecution request validation failed.",
@@ -29125,7 +26809,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "method": "task.create",
         "params": {
           "kind": "data.import",
@@ -29134,7 +26818,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -29151,7 +26835,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "error": {
           "code": "request.invalid",
           "message": "task.create request validation failed.",
@@ -29188,7 +26872,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "method": "task.settleExport",
         "params": {
           "grantId": "00000000-0000-4000-8000-000000000001"
@@ -29196,7 +26880,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "settled": true
@@ -29204,7 +26888,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "error": {
           "code": "request.invalid",
           "message": "task.settleExport request validation failed.",
@@ -29234,7 +26918,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "method": "task.startExecution",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001",
@@ -29244,14 +26928,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "result": {
           "accepted": true
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "error": {
           "code": "request.invalid",
           "message": "task.startExecution request validation failed.",
@@ -29354,7 +27038,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "method": "task.status",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -29362,7 +27046,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -29379,7 +27063,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "error": {
           "code": "request.invalid",
           "message": "task.status request validation failed.",
@@ -29445,7 +27129,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "method": "version.compare",
         "params": {
           "collection": "orders",
@@ -29456,7 +27140,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -29469,7 +27153,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "error": {
           "code": "request.invalid",
           "message": "version.compare request validation failed.",
@@ -29543,7 +27227,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "method": "version.create",
         "params": {
           "collection": "orders",
@@ -29555,7 +27239,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "result": {
           "id": "sample-value",
           "key": "",
@@ -29569,7 +27253,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "error": {
           "code": "request.invalid",
           "message": "version.create request validation failed.",
@@ -29614,7 +27298,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "method": "version.delete",
         "params": {
           "collection": "orders",
@@ -29626,7 +27310,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
           "revision": "revision-1",
@@ -29638,7 +27322,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "error": {
           "code": "request.invalid",
           "message": "version.delete request validation failed.",
@@ -29740,7 +27424,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "method": "version.list",
         "params": {
           "collection": "orders",
@@ -29749,7 +27433,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -29758,7 +27442,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "error": {
           "code": "request.invalid",
           "message": "version.list request validation failed.",
@@ -29822,7 +27506,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "method": "version.promote",
         "params": {
           "collection": "orders",
@@ -29835,7 +27519,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "result": {
           "promoted": "version-1",
           "restoredToRevision": "revision-1",
@@ -29850,7 +27534,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "error": {
           "code": "request.invalid",
           "message": "version.promote request validation failed.",
@@ -29903,7 +27587,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "method": "version.save",
         "params": {
           "collection": "orders",
@@ -29916,7 +27600,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "result": {
           "saved": "version-1",
           "changeSetId": "change-set-1",
@@ -29930,7 +27614,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "error": {
           "code": "request.invalid",
           "message": "version.save request validation failed.",
