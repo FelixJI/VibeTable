@@ -193,6 +193,59 @@ public sealed partial class HostProductRpcInvokerTests
     }
 
     [TestMethod]
+    public async Task LegacyPreservationCommitSurvivesPastTheOrdinaryWebViewDownloadDeadline()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        ConfigureLegacyPages(fixture, Json(LegacySnapshot));
+        var produce = fixture.Http.BeforeReply!;
+        var time = new ManualTimeProvider();
+        bool pastWebViewDeadline = false;
+        fixture.Http.BeforeReply = (call, token) =>
+        {
+            if (!pastWebViewDeadline)
+            {
+                pastWebViewDeadline = true;
+                // A large legal scan keeps streaming after the ordinary WebView
+                // download window while staying inside the five-minute
+                // preservation runner deadline.
+                time.Advance(HostSessionFileBroker.DownloadLifetime + TimeSpan.FromSeconds(1));
+            }
+            return produce(call, token);
+        };
+        using var gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new FakeWebReplySink();
+        var directory = Path.Combine(Path.GetTempPath(), "legacy-deadline-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "preserved.json");
+        var broker = new HostSessionFileBroker(() => {
+            Assert.IsTrue(fixture.Leases.TryCaptureHost(fixture.Session.WorkspaceId!.Value, fixture.Session.SessionEpoch, Guid.NewGuid(), out var lease));
+            return lease!;
+        }, action => action(), time);
+        var controller = new LegacyLayoutRequestController(sink, fixture.Leases, () => gateway, () => broker, () => target);
+        RoutedWebRequest Request(string type, string id) => new(type, id, Json("{}"), "", new WorkspaceWireScope {
+            Scope = "workspace", WorkspaceId = fixture.Session.WorkspaceId!.Value, SessionEpoch = fixture.Session.SessionEpoch,
+            OperationId = Guid.NewGuid(), Sequence = fixture.Leases.ReserveHostSequence(fixture.Session.WorkspaceId!.Value, fixture.Session.SessionEpoch) + 100,
+        });
+        try
+        {
+            // The ordinary WebView deadline is not relaxed by this change.
+            DateTimeOffset start = time.GetUtcNow();
+            HostDownloadTarget ordinary = await broker.OpenDownloadTargetAsync(Path.Combine(directory, "ordinary.json"));
+            Assert.AreEqual(start + HostSessionFileBroker.DownloadLifetime, ordinary.Deadline);
+            HostDownloadTarget preserved = await broker.OpenDownloadTargetAsync(target, LegacyLayoutRequestController.PreservationDeadline);
+            Assert.AreEqual(start + LegacyLayoutRequestController.PreservationDeadline, preserved.Deadline);
+            await broker.CompleteDownloadAsync(ordinary.Id, commit: false);
+            await broker.CompleteDownloadAsync(preserved.Id, commit: false);
+            await File.WriteAllTextAsync(target, "existing material");
+            await controller.DispatchAsync(Request("legacyLayout.exportRequested", "past-deadline"));
+            Assert.AreEqual("legacyLayout.exportCompleted", sink.Replies.Last().Type);
+            Assert.AreEqual(LegacySnapshot, await File.ReadAllTextAsync(target));
+            Assert.HasCount(1, Directory.GetFiles(directory));
+        }
+        finally { File.Delete(target); Directory.Delete(directory); }
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task LegacyPreservationMidPageCancelOrEpochRetirementLeavesTargetUntouched(bool retire)

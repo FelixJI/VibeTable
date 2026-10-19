@@ -125,7 +125,7 @@ func (service *LegacyPreservationService) Page(ctx context.Context, request Lega
 	if _, revision, err := canonicalPayload([]byte(record.Payload)); err == nil {
 		item.Revision = revision
 	}
-	item.Diagnostics = diagnoseLegacyItem(request.Collection, record.LogicalID, []byte(record.Payload))
+	item.Diagnostics = diagnoseLegacyItem(request.Collection, record.LogicalID, record.ParentID, []byte(record.Payload))
 	encoded, err := json.Marshal(item)
 	if err != nil {
 		return page, err
@@ -170,7 +170,7 @@ func truncateLegacyPreview(value string) string {
 // definitions this channel must preserve. Unknown element kinds, versions,
 // unparsable payloads and identity mismatches are reported per item; the raw
 // payload always stays intact.
-func diagnoseLegacyItem(namespace Namespace, logicalID string, payload json.RawMessage) []LegacyLayoutDiagnostic {
+func diagnoseLegacyItem(namespace Namespace, logicalID, parentID string, payload json.RawMessage) []LegacyLayoutDiagnostic {
 	diagnostics := []LegacyLayoutDiagnostic{}
 	add := func(code, severity, message string) {
 		diagnostics = append(diagnostics, LegacyLayoutDiagnostic{Code: code, Severity: severity, Message: message})
@@ -223,6 +223,25 @@ func diagnoseLegacyItem(namespace Namespace, logicalID string, payload json.RawM
 			}
 		}
 	case NamespaceDashboards, NamespacePanels:
+		// The retired dashboard writer stored payload.id == logical_id and,
+		// for panels, payload.dashboardId == parent_id; a diverging record is
+		// corrupt, not merely manual-rewrite material. Both identities stay
+		// untouched in storage and in the verbatim payload.
+		object := value.(map[string]any)
+		item := "Dashboard"
+		if namespace == NamespacePanels {
+			item = "Panel"
+		}
+		if id, _ := object["id"].(string); id == "" || id != logicalID {
+			add("legacy.identity_mismatch", "error",
+				fmt.Sprintf("Stored %s identity does not match its logical id; preserved verbatim.", item))
+		}
+		if namespace == NamespacePanels {
+			if dashboardID, _ := object["dashboardId"].(string); dashboardID == "" || dashboardID != parentID {
+				add("legacy.identity_mismatch", "error",
+					"Stored Panel parent identity does not match its parent dashboard; preserved verbatim.")
+			}
+		}
 		// Dashboard-era payloads need a hand-written code plugin (#485
 		// matrix); keep the item with the shared manual-rewrite guidance.
 		add("legacy.dashboard_manual_rewrite", "warning",
@@ -246,7 +265,10 @@ func inspectLegacyFields(value any, path string, namespace Namespace, diagnostic
 		allowed = "id name note icon color config configVersion"
 	case path == "$" && namespace == NamespacePanels:
 		allowed = "id dashboardId name note icon color showHeader type position options query"
-	case strings.HasSuffix(path, ".query"):
+	case namespace == NamespaceInterfaces && strings.HasSuffix(path, ".query"):
+		// Only Interface binding queries are the retired ViewQuery shape;
+		// dashboard/panel queries keep their own historical contract and
+		// stay opaque below.
 		allowed = "contractVersion tableId fields filters sorts cursor pageSize"
 	case strings.Contains(path, ".elements[") || strings.Contains(path, ".children["):
 		allowed = "elementId kind bindingId actionId text width children"

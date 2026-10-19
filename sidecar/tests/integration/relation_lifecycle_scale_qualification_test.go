@@ -179,7 +179,7 @@ func qualifyRelationLifecycleScale(t *testing.T, data calculationChainData) {
 				mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &id,
 					Values: map[string]any{link.Definition.Identity.PhysicalName: target}}))
 			if err != nil || receipt.Status != mutation.StatusApplied || len(receipt.Warnings) != 0 {
-				return 0, fmt.Errorf("pair mutation: receipt=%+v error=%v", receipt, err)
+				return 0, fmt.Errorf("pair mutation: receipt=%+v error=%#v", receipt, err)
 			}
 			drainCalculationChain(t, ctx, f, service)
 			return check()

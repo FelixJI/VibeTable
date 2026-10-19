@@ -328,9 +328,12 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     /// Opens a host-driven download target: a validated native path plus a
     /// same-directory temporary file that WebView2 writes into directly.
     /// The caller must not hold any broker lock while waiting on a modal
-    /// picker; resolve the path before calling this method.
+    /// picker; resolve the path before calling this method. The default
+    /// deadline stays the ordinary WebView download lifetime; a host-driven
+    /// stream that is not bounded by that window (the legacy preservation
+    /// runner) passes its own bounded lifetime explicitly.
     /// </summary>
-    internal async Task<HostDownloadTarget> OpenDownloadTargetAsync(string path)
+    internal async Task<HostDownloadTarget> OpenDownloadTargetAsync(string path, TimeSpan? lifetime = null)
     {
         WorkspaceRequestEpochLease lease = _capture();
         try
@@ -357,7 +360,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                     || !Directory.Exists(Path.GetDirectoryName(full))) throw new IOException("Invalid selected file.");
                 string temporary = Path.Combine(Path.GetDirectoryName(full)!, $".vibetable-{Guid.NewGuid():N}.tmp");
                 string id = "download-" + Guid.NewGuid().ToString("N");
-                var download = new Download(id, full, temporary, lease, _time.GetUtcNow() + DownloadLifetime);
+                var download = new Download(id, full, temporary, lease, _time.GetUtcNow() + (lifetime ?? DownloadLifetime));
                 _commitCurrent(() => { _retired.Token.ThrowIfCancellationRequested(); _downloads.Add(id, download); });
                 return new HostDownloadTarget(id, temporary, name, download.Deadline);
             }

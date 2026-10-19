@@ -58,6 +58,11 @@ func newLegacyLayoutFixture(t *testing.T) *legacyLayoutFixture {
 	seedRecord(t, pb, "vibetable_dashboards", "dash-1", json.RawMessage(dashboard))
 	seedRecord(t, pb, "vibetable_panels", "panel-1", json.RawMessage(panel))
 	seedRecord(t, pb, "vibetable_interfaces", "interface-corrupt", json.RawMessage(`"not-an-object"`))
+	// Mirror the retired dashboard writer: a healthy panel stores
+	// parent_id == payload.dashboardId next to logical_id == payload.id.
+	if _, err := pb.DB().NewQuery("UPDATE vibetable_panels SET parent_id='dash-1' WHERE logical_id='panel-1'").Execute(); err != nil {
+		t.Fatal(err)
+	}
 
 	fixture := &legacyLayoutFixture{
 		pb:   pb,
@@ -152,10 +157,16 @@ func TestLegacyLayoutSnapshotPreservesRawPayloadsAndDiagnosesEachItem(t *testing
 			} `json:"diagnostics"`
 		} `json:"interfaces"`
 		Dashboards []struct {
-			LogicalId string `json:"logicalId"`
+			LogicalId   string `json:"logicalId"`
+			Diagnostics []struct {
+				Code string `json:"code"`
+			} `json:"diagnostics"`
 		} `json:"dashboards"`
 		Panels []struct {
-			LogicalId string `json:"logicalId"`
+			LogicalId   string `json:"logicalId"`
+			Diagnostics []struct {
+				Code string `json:"code"`
+			} `json:"diagnostics"`
 		} `json:"panels"`
 		Diagnostics []string `json:"diagnostics"`
 	}
@@ -201,6 +212,23 @@ func TestLegacyLayoutSnapshotPreservesRawPayloadsAndDiagnosesEachItem(t *testing
 	}
 	if diagByCode["legacy.payload_not_object"] != "interface-corrupt" {
 		t.Fatalf("corrupt payload not diagnosed: %+v", diagByCode)
+	}
+	// Identity-consistent dashboard and panel records stay clean; the panel
+	// query with kind/collection/dimensions/measures stays opaque instead of
+	// being misdiagnosed through the Interface ViewQuery field set.
+	for _, dashboard := range snapshot.Dashboards {
+		for _, diagnostic := range dashboard.Diagnostics {
+			if diagnostic.Code == "legacy.identity_mismatch" || diagnostic.Code == "legacy.field_unknown" {
+				t.Fatalf("consistent dashboard %s misdiagnosed: %s", dashboard.LogicalId, diagnostic.Code)
+			}
+		}
+	}
+	for _, panel := range snapshot.Panels {
+		for _, diagnostic := range panel.Diagnostics {
+			if diagnostic.Code == "legacy.identity_mismatch" || diagnostic.Code == "legacy.field_unknown" {
+				t.Fatalf("consistent panel %s misdiagnosed: %s", panel.LogicalId, diagnostic.Code)
+			}
+		}
 	}
 	if len(snapshot.Diagnostics) == 0 {
 		t.Fatal("no aggregate diagnostics reported")
@@ -253,6 +281,18 @@ func TestLegacyLayoutSnapshotKeepsBrokenBytesParentAndUnknownPaths(t *testing.T)
 	}
 	if first.Panels[0].ParentID != "independent-parent" {
 		t.Fatal("parent must come from storage, not payload")
+	}
+	// The diverging storage parent versus payload.dashboardId must surface as
+	// an identity mismatch, not just generic manual-rewrite guidance, while
+	// both identities stay preserved unchanged.
+	panelMismatch := false
+	for _, diagnostic := range first.Panels[0].Diagnostics {
+		if diagnostic.Code == "legacy.identity_mismatch" {
+			panelMismatch = true
+		}
+	}
+	if !panelMismatch {
+		t.Fatalf("storage/payload parent divergence not diagnosed: %+v", first.Panels[0].Diagnostics)
 	}
 	if _, err := json.Marshal(first); err != nil {
 		t.Fatal(err)

@@ -10,6 +10,10 @@ internal sealed class LegacyLayoutRequestController
 {
     internal const int PageBytes = 256 * 1024;
     internal const int DiagnosticPreviewLimit = 100;
+    /// <summary>One deadline for the whole preservation request: the runner
+    /// timeout and the streaming download target must not diverge, otherwise
+    /// a legal scan between the two windows cannot commit its export.</summary>
+    internal static readonly TimeSpan PreservationDeadline = TimeSpan.FromMinutes(5);
     private readonly IWebReplySink _reply;
     private readonly WorkspaceSessionEnvelopeFilter _sessions;
     private readonly Func<JsonRpcProductDataGateway?> _gateway;
@@ -27,7 +31,7 @@ internal sealed class LegacyLayoutRequestController
         _gateway = gateway;
         _files = files;
         _selectTarget = selectTarget;
-        _runner = new(reply, TimeSpan.FromMinutes(5), () => CancellationToken.None,
+        _runner = new(reply, PreservationDeadline, () => CancellationToken.None,
             new("旧布局服务不可用。", "BACKEND_UNAVAILABLE", "缺少请求标识。", "BAD_PAYLOAD",
                 "请求正在处理。", "DUPLICATE_REQUEST", "已取消保全。", "CANCELLED",
                 "保全请求超时。", "TIMEOUT",
@@ -81,7 +85,7 @@ internal sealed class LegacyLayoutRequestController
         string? pathName = _selectTarget();
         token.ThrowIfCancellationRequested();
         if (pathName is null) return new { cancelled = true, outputDisplayName = (string?)null };
-        HostDownloadTarget target = await broker.OpenDownloadTargetAsync(pathName).ConfigureAwait(true);
+        HostDownloadTarget target = await broker.OpenDownloadTargetAsync(pathName, PreservationDeadline).ConfigureAwait(true);
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool committed = false;
         try
