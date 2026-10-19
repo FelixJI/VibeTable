@@ -79,9 +79,9 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, IHostCom
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
             .ExecuteExportAsync(parameters, token);
 
-    internal Task<JsonElement> ReadLegacyLayoutSnapshotAsync(CancellationToken token)
+    internal Task<JsonElement> ReadLegacyLayoutSnapshotAsync(string collection, string afterRecordId, int recordOffset, CancellationToken token)
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
-            .InvokeAsync("legacyLayout.snapshot", JsonSerializer.SerializeToElement(new { }), token);
+            .InvokeAsync("legacyLayout.snapshot", JsonSerializer.SerializeToElement(new { collection, afterRecordId, recordOffset }), token);
 
 
     public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)

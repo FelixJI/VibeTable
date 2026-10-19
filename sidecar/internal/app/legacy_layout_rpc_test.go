@@ -1,9 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/tools/router"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,8 +65,7 @@ func newLegacyLayoutFixture(t *testing.T) *legacyLayoutFixture {
 	}
 	rejection := retiredLayoutRegistration("interface.commit")
 	fixture.handler = rejection.Handler
-	snapshotRegistration := legacyLayoutSnapshotRegistration(metadata.NewLegacyPreservation(pb))
-	fixture.snapshot = snapshotRegistration.Handler
+	fixture.snapshot = func(ctx context.Context, _ json.RawMessage) (any, error) { return collectLegacyPages(ctx, pb) }
 	return fixture
 }
 
@@ -139,9 +143,9 @@ func TestLegacyLayoutSnapshotPreservesRawPayloadsAndDiagnosesEachItem(t *testing
 	var snapshot struct {
 		ContractVersion string `json:"contractVersion"`
 		Interfaces      []struct {
-			LogicalId   string          `json:"logicalId"`
-			Revision    string          `json:"revision"`
-			Payload     json.RawMessage `json:"payload"`
+			LogicalId   string `json:"logicalId"`
+			Revision    string `json:"revision"`
+			Payload     string `json:"rawPayload"`
 			Diagnostics []struct {
 				Code     string `json:"code"`
 				Severity string `json:"severity"`
@@ -167,7 +171,7 @@ func TestLegacyLayoutSnapshotPreservesRawPayloadsAndDiagnosesEachItem(t *testing
 	byID := map[string]json.RawMessage{}
 	diagByCode := map[string]string{}
 	for _, item := range snapshot.Interfaces {
-		byID[item.LogicalId] = item.Payload
+		byID[item.LogicalId] = json.RawMessage(item.Payload)
 		for _, diagnostic := range item.Diagnostics {
 			diagByCode[diagnostic.Code] = item.LogicalId
 			if diagnostic.Severity != "warning" && diagnostic.Severity != "error" {
@@ -216,11 +220,11 @@ func TestLegacyLayoutSnapshotKeepsBrokenBytesParentAndUnknownPaths(t *testing.T)
 	if _, err := fixture.pb.DB().NewQuery("UPDATE vibetable_interfaces SET payload_json={:payload} WHERE logical_id='interface-ops'").Bind(dbx.Params{"payload": raw}).Execute(); err != nil {
 		t.Fatal(err)
 	}
-	first, err := metadata.NewLegacyPreservation(fixture.pb).Snapshot(context.Background())
+	first, err := collectLegacyPages(context.Background(), fixture.pb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := metadata.NewLegacyPreservation(fixture.pb).Snapshot(context.Background())
+	second, err := collectLegacyPages(context.Background(), fixture.pb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +238,7 @@ func TestLegacyLayoutSnapshotKeepsBrokenBytesParentAndUnknownPaths(t *testing.T)
 		if item.RecordID == "" {
 			t.Fatal("missing stable storage id")
 		}
-		if item.LogicalId == "interface-corrupt" && (item.RawPayload != broken || string(item.Payload) != "null" || item.Revision != "") {
+		if item.LogicalId == "interface-corrupt" && (item.RawPayload != broken || item.Revision != "") {
 			t.Fatalf("lost broken bytes: %+v", item)
 		}
 		if item.LogicalId == "interface-ops" && item.RawPayload != raw {
@@ -255,7 +259,7 @@ func TestLegacyLayoutSnapshotKeepsBrokenBytesParentAndUnknownPaths(t *testing.T)
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := metadata.NewLegacyPreservation(fixture.pb).Snapshot(canceled); err == nil {
+	if _, err := collectLegacyPages(canceled, fixture.pb); err == nil {
 		t.Fatal("cancelled read succeeded")
 	}
 }
@@ -267,7 +271,198 @@ func TestLegacyLayoutSnapshotRejectsCallerPayload(t *testing.T) {
 			t.Fatalf("accepted caller data: %s", raw)
 		}
 	}
-	if err := validate(json.RawMessage(`{}`)); err != nil {
+	if err := validate(json.RawMessage(`{"collection":"interfaces","afterRecordId":"","recordOffset":0}`)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Materialization belongs only to small test fixtures; production Host streams.
+func collectLegacyPages(ctx context.Context, pb *pocketbase.PocketBase) (metadata.LegacyLayoutSnapshot, error) {
+	result := metadata.LegacyLayoutSnapshot{ContractVersion: "1.0"}
+	service := metadata.NewLegacyPreservation(pb)
+	for _, ns := range []metadata.Namespace{metadata.NamespaceInterfaces, metadata.NamespaceDashboards, metadata.NamespacePanels} {
+		request := metadata.LegacyLayoutPageRequest{Collection: ns}
+		var record bytes.Buffer
+		for {
+			page, err := service.Page(ctx, request)
+			if err != nil {
+				return result, err
+			}
+			if page.CollectionDone {
+				break
+			}
+			record.Write(page.Chunk)
+			if page.RecordDone {
+				var item metadata.LegacyLayoutItem
+				if err := json.Unmarshal(record.Bytes(), &item); err != nil {
+					return result, err
+				}
+				switch ns {
+				case metadata.NamespaceInterfaces:
+					result.Interfaces = append(result.Interfaces, item)
+				case metadata.NamespaceDashboards:
+					result.Dashboards = append(result.Dashboards, item)
+				case metadata.NamespacePanels:
+					result.Panels = append(result.Panels, item)
+				}
+				for _, d := range item.Diagnostics {
+					result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s/%s: %s", ns, item.LogicalId, d.Code))
+				}
+				record.Reset()
+			}
+			request.AfterRecordID = page.NextAfterRecordID
+			request.RecordOffset = page.NextRecordOffset
+		}
+	}
+	return result, nil
+}
+
+func legacyPageServer(t *testing.T, pb *pocketbase.PocketBase) *httptest.Server {
+	t.Helper()
+	registrations := []productrpc.Registration{legacyLayoutSnapshotRegistration(metadata.NewLegacyPreservation(pb))}
+	for _, descriptor := range productcapabilities.RPCDescriptors() {
+		if descriptor.Owner != productcapabilities.GoSidecar || descriptor.Method == "legacyLayout.snapshot" {
+			continue
+		}
+		registrations = append(registrations, productrpc.Registration{Method: descriptor.Method, Scope: descriptor.Scope,
+			ValidateParams: func(json.RawMessage) error { t.Fatal("unrelated validation"); return nil },
+			Handler:        func(context.Context, json.RawMessage) (any, error) { t.Fatal("unrelated handler"); return nil, nil }})
+	}
+	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, registrations...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+		return &core.RequestEvent{App: pb, Event: router.Event{Response: w, Request: request}}, nil
+	})
+	registerProductRoutes(r, dispatcher)
+	mux, err := r.BuildMux()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestLegacyLayoutHTTPPagesPreserveMoreThanSixteenMiB(t *testing.T) {
+	fixture := newLegacyLayoutFixture(t)
+	collection, err := fixture.pb.FindCollectionByNameOrId("vibetable_interfaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collection.Fields.GetByName("payload_json").(*core.JSONField).CalculateMaxBodySize() != 1<<20 {
+		t.Fatal("historical JSON budget changed")
+	}
+	expected := map[string]string{}
+	for index := 0; index < 20; index++ {
+		id := fmt.Sprintf("large-%02d", index)
+		raw, _ := json.Marshal(map[string]any{"contractVersion": "1.0", "interfaceId": id, "name": strings.Repeat("x", 900000) + "中😀<&", "pages": []any{}})
+		seedRecord(t, fixture.pb, "vibetable_interfaces", id, raw)
+		var stored struct {
+			Payload string `db:"payload_json"`
+		}
+		if err := fixture.pb.DB().NewQuery("SELECT payload_json FROM vibetable_interfaces WHERE logical_id={:id}").Bind(dbx.Params{"id": id}).One(&stored); err != nil {
+			t.Fatal(err)
+		}
+		expected[id] = stored.Payload
+	}
+	before := previewAuthorityState(t, fixture.pb, "vibetable_interfaces")
+	server := legacyPageServer(t, fixture.pb)
+	request := metadata.LegacyLayoutPageRequest{Collection: metadata.NamespaceInterfaces}
+	var current bytes.Buffer
+	total, pages, found := 0, 0, 0
+	for {
+		raw, _ := json.Marshal(request)
+		response := metadataHTTPRequest(t, server, "legacyLayout.snapshot", string(raw))
+		if response.Error != nil {
+			t.Fatalf("HTTP page rejected: %+v", response.Error)
+		}
+		if len(response.Result) >= 4<<20 {
+			t.Fatal("page exceeded real product HTTP response budget")
+		}
+		var page metadata.LegacyLayoutPage
+		if err := json.Unmarshal(response.Result, &page); err != nil {
+			t.Fatal(err)
+		}
+		if page.CollectionDone {
+			break
+		}
+		pages++
+		total += len(page.Chunk)
+		current.Write(page.Chunk)
+		if len(page.Chunk) > metadata.LegacyChunkBytes {
+			t.Fatal("unbounded page")
+		}
+		if page.RecordDone {
+			var item metadata.LegacyLayoutItem
+			if err := json.Unmarshal(current.Bytes(), &item); err != nil {
+				t.Fatal(err)
+			}
+			if raw, ok := expected[item.LogicalId]; ok {
+				found++
+				if item.RawPayload != raw || item.RecordID == "" || item.Revision == "" {
+					t.Fatalf("record changed: %s", item.LogicalId)
+				}
+			}
+			current.Reset()
+		}
+		request.AfterRecordID = page.NextAfterRecordID
+		request.RecordOffset = page.NextRecordOffset
+	}
+	t.Logf("preserved %d bytes across %d bounded HTTP pages; %d large originals reconciled", total, pages, found)
+	if total <= 16<<20 || found != 20 || pages <= 20 {
+		t.Fatalf("insufficient multi-page proof bytes=%d found=%d pages=%d", total, found, pages)
+	}
+	if !reflect.DeepEqual(before, previewAuthorityState(t, fixture.pb, "vibetable_interfaces")) {
+		t.Fatal("preservation wrote original records")
+	}
+	for _, raw := range []string{
+		`{"Collection":"interfaces"}`, `{"collection":"interfaces","RECORDOFFSET":0}`,
+		`{"collection":"interfaces","limit":999999}`, `{"collection":"sharedSettings"}`,
+		`{"collection":"interfaces","recordOffset":1}`, `{"collection":"interfaces","recordOffset":null}`,
+		`{"collection":"interfaces","afterRecordId":null}`, `{"collection":"interfaces","afterRecordId":"../bad"}`,
+	} {
+		if legacyLayoutSnapshotRegistration(nil).ValidateParams(json.RawMessage(raw)) == nil {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+}
+
+func TestLegacyLayoutDiagnosticPreviewIsExplicitAndExportIsComplete(t *testing.T) {
+	fixture := newLegacyLayoutFixture(t)
+	value := map[string]any{"contractVersion": "1.0", "interfaceId": "many-diagnostics", "pages": []any{}}
+	for index := 0; index < 120; index++ {
+		value[fmt.Sprintf("unknown-%03d", index)] = true
+	}
+	value[strings.Repeat("long", 200)] = true
+	raw, _ := json.Marshal(value)
+	seedRecord(t, fixture.pb, "vibetable_interfaces", "many-diagnostics", raw)
+	service := metadata.NewLegacyPreservation(fixture.pb)
+	request := metadata.LegacyLayoutPageRequest{Collection: metadata.NamespaceInterfaces}
+	found := false
+	for {
+		page, err := service.Page(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.CollectionDone {
+			break
+		}
+		if page.LogicalID == "many-diagnostics" {
+			if page.DiagnosticCount != 121 || len(page.Diagnostics) != 100 || !page.PreviewTruncated {
+				t.Fatalf("preview lost totals: %+v", page)
+			}
+			var item metadata.LegacyLayoutItem
+			if !page.RecordDone || json.Unmarshal(page.Chunk, &item) != nil || len(item.Diagnostics) != 121 {
+				t.Fatal("full export diagnostics were truncated")
+			}
+			found = true
+		}
+		request.AfterRecordID = page.NextAfterRecordID
+		request.RecordOffset = page.NextRecordOffset
+	}
+	if !found {
+		t.Fatal("missing diagnostic fixture")
 	}
 }

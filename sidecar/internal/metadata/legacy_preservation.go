@@ -2,8 +2,11 @@ package metadata
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/pocketbase/dbx"
 	"sort"
 	"strings"
 	"time"
@@ -32,7 +35,6 @@ type LegacyLayoutItem struct {
 	ParentID    string                   `json:"parentId"`
 	RawPayload  string                   `json:"rawPayload"`
 	Revision    string                   `json:"revision"`
-	Payload     json.RawMessage          `json:"payload"`
 	Diagnostics []LegacyLayoutDiagnostic `json:"diagnostics,omitempty"`
 }
 
@@ -59,85 +61,108 @@ var recordManagerElementKinds = map[string]bool{
 	"form": true, "button": true, "navigation": true,
 }
 
-func (service *LegacyPreservationService) Snapshot(ctx context.Context) (LegacyLayoutSnapshot, error) {
-	snapshot := LegacyLayoutSnapshot{
-		ContractVersion: "1.0",
-		Interfaces:      []LegacyLayoutItem{},
-		Dashboards:      []LegacyLayoutItem{},
-		Panels:          []LegacyLayoutItem{},
-		Diagnostics:     []string{},
-		CollectedAt:     time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	for _, namespace := range []Namespace{NamespaceInterfaces, NamespaceDashboards, NamespacePanels} {
-		if err := ctx.Err(); err != nil {
-			return LegacyLayoutSnapshot{}, err
-		}
-		// Read the original collection records directly (not the closed-set
-		// metadata Item projection) so unparseable or unknown payloads stay
-		// preserved verbatim with a diagnostic instead of failing the batch.
-		collection, err := resolveCollection(service.metadata.app, namespace)
-		if err != nil {
-			return LegacyLayoutSnapshot{}, err
-		}
-		var records []struct {
-			ID        string `db:"id"`
-			LogicalID string `db:"logical_id"`
-			ParentID  string `db:"parent_id"`
-			Payload   string `db:"payload_json"`
-		}
-		parentColumn := "'' AS parent_id"
-		if namespace == NamespacePanels {
-			parentColumn = "parent_id"
-		}
-		err = service.metadata.app.DB().NewQuery("SELECT id, logical_id, " + parentColumn + ", payload_json FROM {{" + collection.Name + "}} ORDER BY logical_id, id").WithContext(ctx).All(&records)
-		if err != nil {
-			return LegacyLayoutSnapshot{}, err
-		}
-		for _, record := range records {
-			if err := ctx.Err(); err != nil {
-				return LegacyLayoutSnapshot{}, err
-			}
-			raw := []byte(record.Payload)
-			preserved := LegacyLayoutItem{
-				Namespace:  namespace,
-				RecordID:   record.ID,
-				LogicalId:  record.LogicalID,
-				ParentID:   record.ParentID,
-				RawPayload: record.Payload,
-				Payload:    json.RawMessage("null"),
-			}
-			if json.Valid(raw) {
-				preserved.Payload = append(json.RawMessage(nil), raw...)
-			}
-			// The existing metadata revision is payload-derived; when it
-			// cannot be recomputed (corrupt content) the item is preserved
-			// without one and diagnosed below.
-			if _, revision, err := canonicalPayload(raw); err == nil {
-				preserved.Revision = revision
-			}
-			preserved.Diagnostics = diagnoseLegacyItem(namespace, preserved.LogicalId, raw)
-			for _, diagnostic := range preserved.Diagnostics {
-				snapshot.Diagnostics = append(snapshot.Diagnostics,
-					fmt.Sprintf("%s/%s: %s", namespace, preserved.LogicalId, diagnostic.Code))
-			}
-			switch namespace {
-			case NamespaceInterfaces:
-				snapshot.Interfaces = append(snapshot.Interfaces, preserved)
-			case NamespaceDashboards:
-				snapshot.Dashboards = append(snapshot.Dashboards, preserved)
-			case NamespacePanels:
-				snapshot.Panels = append(snapshot.Panels, preserved)
-			}
-		}
-	}
-	sortLegacyItems(snapshot.Interfaces)
-	sortLegacyItems(snapshot.Dashboards)
-	sortLegacyItems(snapshot.Panels)
-	return snapshot, nil
+const LegacyChunkBytes = 256 * 1024
+const LegacyDiagnosticPreviewLimit = 100
+
+type LegacyLayoutPageRequest struct {
+	Collection    Namespace `json:"collection"`
+	AfterRecordID string    `json:"afterRecordId"`
+	RecordOffset  int       `json:"recordOffset"`
+}
+type LegacyLayoutPage struct {
+	PreviewTruncated  bool                     `json:"previewTruncated"`
+	ContractVersion   string                   `json:"contractVersion"`
+	Collection        Namespace                `json:"collection"`
+	RecordID          string                   `json:"recordId"`
+	LogicalID         string                   `json:"logicalId"`
+	Revision          string                   `json:"revision"`
+	Chunk             []byte                   `json:"chunk"`
+	RecordDone        bool                     `json:"recordDone"`
+	CollectionDone    bool                     `json:"collectionDone"`
+	NextAfterRecordID string                   `json:"nextAfterRecordId"`
+	NextRecordOffset  int                      `json:"nextRecordOffset"`
+	DiagnosticCount   int                      `json:"diagnosticCount"`
+	Diagnostics       []LegacyLayoutDiagnostic `json:"diagnostics"`
+	CollectedAt       string                   `json:"collectedAt"`
 }
 
-func sortLegacyItems(items []LegacyLayoutItem) {
-	sort.Slice(items, func(i, j int) bool { return items[i].LogicalId < items[j].LogicalId })
+// Historical JSONField admission bounds a legitimate record to 1 MiB.
+// Each request reads only the next immutable retired record; base64 byte
+// fragments preserve JSON escapes and UTF-8 even across fragment boundaries.
+func (service *LegacyPreservationService) Page(ctx context.Context, request LegacyLayoutPageRequest) (LegacyLayoutPage, error) {
+	page := LegacyLayoutPage{ContractVersion: "2.0", Collection: request.Collection,
+		NextAfterRecordID: request.AfterRecordID, Chunk: []byte{}, Diagnostics: []LegacyLayoutDiagnostic{},
+		CollectedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := ctx.Err(); err != nil {
+		return page, err
+	}
+	collection, err := resolveCollection(service.metadata.app, request.Collection)
+	if err != nil {
+		return page, err
+	}
+	var record struct {
+		ID        string `db:"id"`
+		LogicalID string `db:"logical_id"`
+		ParentID  string `db:"parent_id"`
+		Payload   string `db:"payload_json"`
+	}
+	parentColumn := "'' AS parent_id"
+	if request.Collection == NamespacePanels {
+		parentColumn = "parent_id"
+	}
+	err = service.metadata.app.DB().NewQuery("SELECT id, logical_id, " + parentColumn + ", payload_json FROM {{" + collection.Name + "}} WHERE id > {:after} ORDER BY id LIMIT 1").Bind(dbx.Params{"after": request.AfterRecordID}).WithContext(ctx).One(&record)
+	if errors.Is(err, sql.ErrNoRows) {
+		if request.RecordOffset != 0 {
+			return page, fmt.Errorf("legacy preservation cursor beyond collection")
+		}
+		page.CollectionDone = true
+		return page, nil
+	}
+	if err != nil {
+		return page, err
+	}
+	item := LegacyLayoutItem{Namespace: request.Collection, RecordID: record.ID, LogicalId: record.LogicalID, ParentID: record.ParentID, RawPayload: record.Payload}
+	if _, revision, err := canonicalPayload([]byte(record.Payload)); err == nil {
+		item.Revision = revision
+	}
+	item.Diagnostics = diagnoseLegacyItem(request.Collection, record.LogicalID, []byte(record.Payload))
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return page, err
+	}
+	if request.RecordOffset >= len(encoded) {
+		return page, fmt.Errorf("legacy preservation cursor beyond record")
+	}
+	end := min(request.RecordOffset+LegacyChunkBytes, len(encoded))
+	page.RecordID = record.ID
+	page.LogicalID = record.LogicalID
+	page.Revision = item.Revision
+	page.Chunk = encoded[request.RecordOffset:end]
+	page.RecordDone = end == len(encoded)
+	if page.RecordDone {
+		page.NextAfterRecordID = record.ID
+	} else {
+		page.NextRecordOffset = end
+	}
+	if request.RecordOffset == 0 {
+		page.DiagnosticCount = len(item.Diagnostics)
+		page.PreviewTruncated = len(item.Diagnostics) > LegacyDiagnosticPreviewLimit
+		for _, diagnostic := range item.Diagnostics[:min(len(item.Diagnostics), LegacyDiagnosticPreviewLimit)] {
+			// Only UI preview is shortened; export retains all original diagnostics.
+			page.PreviewTruncated = page.PreviewTruncated || len([]rune(diagnostic.Path)) > 512 || len([]rune(diagnostic.Message)) > 512
+			diagnostic.Path = truncateLegacyPreview(diagnostic.Path)
+			diagnostic.Message = truncateLegacyPreview(diagnostic.Message)
+			page.Diagnostics = append(page.Diagnostics, diagnostic)
+		}
+	}
+	return page, nil
+}
+func truncateLegacyPreview(value string) string {
+	runes := []rune(value)
+	if len(runes) > 512 {
+		return string(runes[:512]) + "…"
+	}
+	return value
 }
 
 // diagnoseLegacyItem inspects one preserved item leniently — never through

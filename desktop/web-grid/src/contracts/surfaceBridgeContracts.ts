@@ -29,6 +29,8 @@ export interface LegacyLayoutReport {
   readonly dashboards: number;
   readonly panels: number;
   readonly diagnostics: readonly LegacyLayoutDiagnostic[];
+  readonly diagnosticCount?: number;
+  readonly diagnosticsTruncated?: boolean;
   readonly collectedAt: string;
 }
 
@@ -36,10 +38,7 @@ export interface LegacyLayoutReportRequest {
   readonly reason?: "detect" | "refresh";
 }
 
-export interface LegacyLayoutExportRequest {
-  /** Display-only hint; the Host owns the snapshot and the native save flow. */
-  readonly suggestedName?: string;
-}
+export type LegacyLayoutExportRequest = Readonly<Record<string, never>>;
 
 export interface LegacyLayoutExportResult {
   readonly cancelled: boolean;

@@ -136,7 +136,12 @@ def bootstrap() -> None:
     candidate_prepare = _candidate_prepare_mode()
     _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
     node_env = _node_environment()
-    projects = (Path("desktop/web-grid"),) if candidate_prepare else NPM_PROJECTS
+    # The prepare-stage legacy-layout journey builds its replacement code plugin.
+    projects = (
+        (Path("desktop/web-grid"), Path("examples/plugins/surface-data-editor"))
+        if candidate_prepare
+        else NPM_PROJECTS
+    )
     for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")

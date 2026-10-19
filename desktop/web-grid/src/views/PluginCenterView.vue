@@ -7,6 +7,7 @@ import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
@@ -21,6 +22,7 @@ const store = usePluginStore();
 const service = usePluginService();
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
+const workspaceSession = useWorkspaceSessionStore();
 const table = useTableStore();
 const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
@@ -56,13 +58,13 @@ async function exportLegacy(): Promise<void> {
     if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "保全失败，原定义未改变";
   } finally { if (generation === legacyGeneration) legacyBusy.value = false; }
 }
-watch(() => store.projectKey, () => {
+watch(() => [store.projectKey, workspaceSession.sessionEpoch, workspaceSession.sessionState], () => {
   ++legacyGeneration;
   legacyReport.value = null;
   legacyBusy.value = false;
   legacyStatus.value = "";
-  if (props.autoLoad && store.projectContextReady) void detectLegacy();
-});
+  if (props.autoLoad && store.projectContextReady && (!workspaceSession.enabled || (workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning))) void detectLegacy();
+}, { flush: "sync" });
 
 const plugin = computed(() => store.selectedPlugin);
 function cancelUninstall(): void {
@@ -293,6 +295,7 @@ onBeforeUnmount(() => { ++legacyGeneration; service.dispose(); });
       <button type="button" data-testid="legacy-layout-detect" :disabled="!store.projectContextReady || legacyBusy" @click="detectLegacy">检测旧布局</button>
       <button type="button" data-testid="legacy-layout-export" :disabled="!store.projectContextReady || legacyBusy || !legacyReport" @click="exportLegacy">保存 JSON 保全材料</button>
       <p v-if="legacyReport" data-testid="legacy-layout-counts">Interface {{ legacyReport.interfaces }} · dashboard {{ legacyReport.dashboards }} · panel {{ legacyReport.panels }}</p>
+      <p v-if="legacyReport?.diagnosticsTruncated" data-testid="legacy-layout-diagnostics-truncated">共 {{ legacyReport.diagnosticCount }} 条诊断，最多显示前 100 条摘要，长路径会缩短；导出包含全部诊断与完整路径。</p>
       <ul v-if="legacyReport?.diagnostics.length" data-testid="legacy-layout-diagnostics">
         <li v-for="(diagnostic, index) in legacyReport.diagnostics" :key="index">{{ diagnostic.itemId }} {{ diagnostic.path }} · {{ diagnostic.code }}：{{ diagnostic.message }}</li>
       </ul>

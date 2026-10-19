@@ -39,3 +39,26 @@
 scenario16 在 runner 创建的独立工作区中先通过产品建立真实业务数据，待所属 Host 退出后核对绝对路径及 workspace UUID，仅向三个旧集合加入历史定义（包含未知字段和损坏 JSON）。重开产品后核对提示、受控导出和 record-manager 原表展示，并对比原定义原串、记录/字段/表 ID、附件元数据、audit 与 revision；再次重开检验重复处理。scenario17 承接 record-manager 的分页、确认式写入、拒绝、刷新和导航；scenario46 保留导出取消及新插件原生打印的终态、会话退休和清理断言。scenario45 普通字段能力保留。
 
 直接验证包括 Web 全量测试与构建、.NET 全量测试、Go 保全/旧端点回归、Python 相关写入拒绝以及 E2E runner/fixture 契约。真实包场景及项目 quality/pr-e2e/build/smoke 的结果单独记录，不以源码契约测试代替真实 WPF 验收。JSON 仅为保全材料，没有自动导入或执行入口；复杂布局、图表和旧插件动作仍需人工改写。
+
+
+### 有界保全分页（PR #492 整改）
+
+Host-only legacyLayout.snapshot 接受精确字段闭集：collection 为 interfaces/dashboards/panels；
+afterRecordId 默认空字符串，否则为原集合 15 位字母数字记录 ID；recordOffset 默认 0，
+仅允许 256 KiB 的整数倍（最高 2^30）。不接受路径、内容、任意 limit 或大小写别名。
+
+响应契约 v2 每次只读取 keyset 后的一条旧记录，返回最多 256 KiB 的记录 JSON 字节片段
+（Base64 chunk），recordDone/collectionDone 和 nextAfterRecordId/nextRecordOffset。
+Host 校验集合、记录/既有 revision、游标前进及终止条件。原集合写入口已退役；
+工作区 epoch 退休立即取消页读取，取消与最终 File.Move 仍通过同一请求结算边界协调。
+
+导出文件仍为 v1 三集合 JSON：去掉无消费者的重复 payload 投影，rawPayload 是权威原文，
+包含损坏 JSON；全部逐项 diagnostics 保留。Host 直接写 broker 临时 FileStream，
+不累积整个快照，也不因总量超过 4/16 MiB 拒绝；通用 Product RPC 4 MiB 上限不变。
+Go 的单次工作集按单条历史 JSONField 记录处理（既有 PocketBase 默认 1 MiB，
+三个集合 migration 均未提高该字段限制），不会一次读入整个集合。
+
+检测报告逐页计数，只保留最多 100 条摘要，单条预览路径/消息最多 512 字符；
+diagnosticCount 给出总诊断数，diagnosticsTruncated 明确提示截断。导出完整诊断不截断。
+renderer 导出请求仅接受空对象；它与检测请求均在工作区关闭/切换/epoch 变化时退休，
+面板 generation 同步失效，因此相同 projectKey 重开也不会保留 busy 或旧完成结果。

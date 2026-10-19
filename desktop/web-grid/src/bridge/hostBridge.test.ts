@@ -159,6 +159,7 @@ describe("HostBridge", () => {
         bridge.request("clipboard.readText", {}),
         bridge.request("clipboard.writeText", { text: "copied" }),
         bridge.request("legacyLayout.reportRequested", {}),
+        bridge.request("legacyLayout.exportRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("lookup.query", lookupQueryPayload()),
@@ -187,7 +188,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(10);
+      expect(retired).toHaveBeenCalledTimes(11);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");
@@ -1460,6 +1461,27 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("retires an export without a timeout and accepts same-workspace epoch reopen", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    let counter = 0;
+    const bridge = createHostBridge({ webview, generateRequestId: () => "export-" + ++counter });
+    bridge.start();
+    const pending = bridge.request("legacyLayout.exportRequested", {}).catch(error => error);
+    expect(session.beginClose()).toBe(true);
+    await expect(pending).resolves.toMatchObject({ name: "AbortError" });
+    session.closeSession();
+    openWorkspaceSessionFixture(session);
+    session.sessionEpoch = 8;
+    const reopened = bridge.request("legacyLayout.exportRequested", {});
+    webview.emit({ type: "legacyLayout.exportCompleted", requestId: "export-2",
+      payload: { cancelled: false, outputDisplayName: "saved.json" },
+      scope: { scope: "workspace", workspaceId: session.activeWorkspaceId, sessionEpoch: 8,
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sequence: 100 } });
+    await expect(reopened).resolves.toEqual({ cancelled: false, outputDisplayName: "saved.json" });
+    bridge.stop();
+  });
+
   it("correlates native legacy-layout preservation requests through the host-owned channel", async () => {
     let counter = 0;
     const bridge = createHostBridge({
@@ -1482,9 +1504,7 @@ describe("HostBridge", () => {
     });
     await expect(report).resolves.toEqual({ interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" });
 
-    const exportRequest = bridge.requestWithHandle("legacyLayout.exportRequested", {
-      suggestedName: "vibetable-legacy-layouts",
-    });
+    const exportRequest = bridge.requestWithHandle("legacyLayout.exportRequested", {});
     expect(exportRequest.requestId).toBe("legacy-2");
     webview.emit({
       type: "legacyLayout.exportCompleted",

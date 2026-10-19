@@ -93,7 +93,6 @@ public sealed partial class HostProductRpcInvokerTests
 
     [TestMethod]
     [DataRow("legacyLayout.reportRequested")]
-    [DataRow("legacyLayout.exportRequested")]
     public async Task WorkspaceCloseRetiresCorrelatedReadsWithoutFalseTimeout(string requestType)
     {
         await using var fixture = await HostFixture.OpenAsync();

@@ -239,8 +239,12 @@ class PromoteVersionParams(CamelModel):
 
 
 class LegacyLayoutSnapshotParams(CamelModel):
-    """Parameters for the #485 read-only legacy-layout preservation snapshot.
+    """Empty tombstone input for retired Interface/Insights method catalog entries."""
 
-    The method is Go-owned and host-only: the WPF host requests the snapshot
-    and performs the native controlled save; the renderer never calls it.
-    """
+
+class LegacyLayoutPageParams(CamelModel):
+    """Host-only immutable record keyset and fixed-size fragment cursor."""
+
+    collection: Literal["interfaces", "dashboards", "panels"]
+    after_record_id: str = Field(default="", pattern=r"^(?:[a-zA-Z0-9]{15})?$")
+    record_offset: int = Field(default=0, ge=0, le=1 << 30, multiple_of=256 * 1024, strict=True)

@@ -92,11 +92,6 @@ public sealed class WebMessageRouter
         // Table management (web sidebar).
         "tableAdmin.createRequested",
         "tableAdmin.deleteRequested",
-        // #485: legacyLayout preservation is the only surviving legacy-layout
-        // bridge surface (Host-owned, read-only; the snapshot and the native
-        // save flow stay entirely host-side).
-        "legacyLayout.reportRequested",
-        "legacyLayout.exportRequested",
         "contentProfile.load",
         "contentProfile.commit",
         "contentProfile.delete",
@@ -243,10 +238,6 @@ public sealed class WebMessageRouter
         "history.restoreApplied",
         // Table management: host pushes refreshed collection list after create/delete.
         "database.collectionsChanged",
-        // #485 legacy-layout preservation outcomes (detection report +
-        // host-owned export completion).
-        "legacyLayout.reportLoaded",
-        "legacyLayout.exportCompleted",
         "document.listLoaded",
         "document.actionCompleted",
         "document.diffCompleted",

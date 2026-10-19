@@ -11275,41 +11275,70 @@
     },
     {
       "method": "legacyLayout.snapshot",
-      "paramsModel": "LegacyLayoutSnapshotParams",
-      "resultModel": "LegacyLayoutSnapshotResult",
+      "paramsModel": "LegacyLayoutPageParams",
+      "resultModel": "LegacyLayoutPageResult",
       "resultSchema": {
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "chunk",
           "collectedAt",
+          "collection",
+          "collectionDone",
           "contractVersion",
-          "dashboards",
+          "diagnosticCount",
           "diagnostics",
-          "interfaces",
-          "panels"
+          "logicalId",
+          "nextAfterRecordId",
+          "nextRecordOffset",
+          "previewTruncated",
+          "recordDone",
+          "recordId",
+          "revision"
         ],
         "properties": {
+          "chunk": {
+            "type": "string"
+          },
           "collectedAt": {
             "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "collectionDone": {
+            "type": "boolean"
           },
           "contractVersion": {
             "type": "string"
           },
-          "dashboards": {
-            "type": "array",
-            "items": {}
+          "diagnosticCount": {
+            "type": "integer"
           },
           "diagnostics": {
             "type": "array",
             "items": {}
           },
-          "interfaces": {
-            "type": "array",
-            "items": {}
+          "logicalId": {
+            "type": "string"
           },
-          "panels": {
-            "type": "array",
-            "items": {}
+          "nextAfterRecordId": {
+            "type": "string"
+          },
+          "nextRecordOffset": {
+            "type": "integer"
+          },
+          "previewTruncated": {
+            "type": "boolean"
+          },
+          "recordDone": {
+            "type": "boolean"
+          },
+          "recordId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
           }
         }
       },
@@ -11317,17 +11346,29 @@
         "jsonrpc": "2.0",
         "id": "rpc-041",
         "method": "legacyLayout.snapshot",
-        "params": {}
+        "params": {
+          "collection": "interfaces",
+          "afterRecordId": "",
+          "recordOffset": 0
+        }
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-041",
         "result": {
-          "contractVersion": "1.0",
-          "interfaces": [],
-          "dashboards": [],
-          "panels": [],
+          "contractVersion": "2.0",
+          "collection": "interfaces",
+          "recordId": "",
+          "logicalId": "",
+          "revision": "",
+          "chunk": "",
+          "recordDone": false,
+          "collectionDone": true,
+          "nextAfterRecordId": "",
+          "nextRecordOffset": 0,
+          "diagnosticCount": 0,
           "diagnostics": [],
+          "previewTruncated": false,
           "collectedAt": "2026-10-19T00:00:00Z"
         }
       },

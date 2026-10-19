@@ -6,6 +6,7 @@ import type { PluginAuditEvent, PluginSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginService } from "@/services/pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
@@ -99,6 +100,31 @@ describe("PluginCenterView", () => {
     usePluginStore().applyPlugin(blockedPlugin);
   });
   afterEach(() => setHostBridgeForTesting(null));
+
+  it("clears export busy state on same-project epoch rotation and ignores stale completion", async () => {
+    const session = useWorkspaceSessionStore();
+    session.sessionEpoch = 7;
+    let resolveExport!: (value: { cancelled: boolean; outputDisplayName: string }) => void;
+    const bridge = createHostBridge({ webview: { postMessage: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined } });
+    const request = vi.spyOn(bridge, "request");
+    request.mockImplementation(((type: string) => type === "legacyLayout.reportRequested"
+      ? Promise.resolve({ interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" })
+      : new Promise(resolve => { resolveExport = resolve; })) as HostBridge["request"]);
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="legacy-layout-detect"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="legacy-layout-export"]').trigger("click");
+    expect(wrapper.get('[data-testid="legacy-layout-detect"]').attributes("disabled")).toBeDefined();
+    session.sessionEpoch = 8;
+    await flushPromises();
+    expect(usePluginStore().projectKey).toBe("local:default");
+    expect(wrapper.get('[data-testid="legacy-layout-detect"]').attributes("disabled")).toBeUndefined();
+    resolveExport({ cancelled: false, outputDisplayName: "stale.json" });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("stale.json");
+    wrapper.unmount();
+  });
 
   it("projects canonical manifest blockers and permissions", () => {
     setHostBridgeForTesting(createHostBridge({ webview: { postMessage: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined } }));
