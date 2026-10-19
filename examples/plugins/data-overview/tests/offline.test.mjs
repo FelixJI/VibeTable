@@ -10,7 +10,7 @@ await mkdir(output, { recursive: true });
 for (const [entry, name] of [["src/overview-action.ts", "overview.mjs"], ["tests/sdk-exports.ts", "sdk.mjs"]]) {
   await build({ absWorkingDir: root, entryPoints: [entry], outfile: `${output}/${name}`, bundle: true, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent" });
 }
-const { collectOverview, defaultField } = await import(pathToFileURL(`${output}/overview.mjs`));
+const { collectOverview, defaultField, supportsContains } = await import(pathToFileURL(`${output}/overview.mjs`));
 const sdk = await import(pathToFileURL(`${output}/sdk.mjs`));
 
 const description = {
@@ -126,6 +126,24 @@ test("权威计数与分页累计不一致时拒绝，不误报全量", async ()
   } });
   try { await assert.rejects(collectOverview(api, {}), code("plugin_query_failed")); }
   finally { api.dispose(); }
+});
+
+test("contains 只对声明该运算符的字段生成；数值字段仍可无过滤统计", async () => {
+  // amount 只声明 eq/gte：聚焦它时不再发送不支持的 contains，统计仍然完成。
+  const { api, requests } = fixture(550);
+  try {
+    assert.equal(supportsContains(description, "amount"), false);
+    assert.equal(supportsContains(description, "title"), true);
+    assert.equal(supportsContains(description, null), false);
+    const { stats } = await collectOverview(api, { fieldId: "amount", contains: "42" });
+    assert.equal(stats.fieldId, "amount");
+    assert.equal(stats.count, 550);
+    assert.deepEqual(requests[0].filters, [], "不支持 contains 的字段不得发送该运算符");
+    assert.deepEqual(requests[0].fields, ["id", "amount"]);
+    // 对照：支持 contains 的字段仍生成权威筛选。
+    await collectOverview(api, { fieldId: "title", contains: "row-" });
+    assert.deepEqual(requests.at(-1).filters, [{ field: "title", operator: "contains", value: "row-" }]);
+  } finally { api.dispose(); }
 });
 
 test("defaultField 选择第一个可排序的非 id 字段", () => {

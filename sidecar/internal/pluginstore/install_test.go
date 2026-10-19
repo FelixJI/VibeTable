@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -203,6 +204,76 @@ func TestCommitPlanAcceptsRealHostInstallPlanDump(t *testing.T) {
 	// three lifecycle audits.
 	if count != 5 {
 		t.Fatalf("persisted %d records after real-dump commits", count)
+	}
+}
+
+// TestCommitAcceptsAuthoritativeHostPlanFixture feeds the generator's
+// authoritative host-plan fixture (contracts/v2/fixtures/plugin-install-
+// host-plans.json) straight into the Go commit boundary so the two sides
+// cannot drift: the real native v2 plan — verbatim manifest, schemas and
+// the always-present blockingReasons list — must commit. Only the
+// workspace identity and the install-flavor target nulls are adapted, the
+// same way a real Host binds a plan to the opened workspace; the package
+// revision is assembled with the existing oracle helper.
+func TestCommitAcceptsAuthoritativeHostPlanFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../contracts/v2/fixtures/plugin-install-host-plans.json")
+	if err != nil {
+		t.Fatalf("read authoritative host-plan fixture: %v", err)
+	}
+	var cases []struct {
+		Name   string `json:"name"`
+		Params struct {
+			Plan json.RawMessage `json:"plan"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	var planRaw json.RawMessage
+	for _, item := range cases {
+		if item.Name == "native" {
+			planRaw = item.Params.Plan
+		}
+	}
+	if len(planRaw) == 0 {
+		t.Fatal("authoritative native host plan is missing")
+	}
+	var plan map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(planRaw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := plan["blockingReasons"]; !present {
+		t.Fatal("authoritative plan dropped the blockingReasons field")
+	}
+	manifest, _ := plan["manifest"].(map[string]any)
+	if manifest["$schema"] != "vibetable.plugin-manifest.v2" {
+		t.Fatalf("authoritative native manifest = %#v", manifest["$schema"])
+	}
+	service := newTestService(t)
+	ctx := context.Background()
+	plan["projectKey"] = service.ProjectKey()
+	plan["targetInstallationId"] = nil
+	plan["targetRevision"] = nil
+	planRaw, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := replaceJSON(t, loadFrozenOracleCase(t, "package-revision-persisted"), map[string]any{
+		"projectKey":  service.ProjectKey(),
+		"pluginId":    manifest["pluginId"],
+		"version":     manifest["version"],
+		"packageHash": plan["packageHash"],
+		"manifest":    manifest,
+		"state":       "current",
+	})
+	installed, err := service.CommitInstall(ctx, planRaw, revision)
+	if err != nil {
+		t.Fatalf("authoritative native host plan rejected: %v", err)
+	}
+	if jsonText(installed, "pluginId") != textValue(manifest["pluginId"]) || jsonInt(installed, "revision") != 1 {
+		t.Fatalf("authoritative install snapshot = %s", installed)
 	}
 }
 

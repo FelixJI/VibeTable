@@ -51,6 +51,30 @@ def _require_native_manifest(manifest: dict[str, Any]) -> None:
         raise PluginPackageError("legacy_worker_package", _legacy_migration_hint())
 
 
+def _load_manifest_object(source: Path) -> dict[str, Any] | None:
+    """Parse ``manifest.json`` with the package validator's structured contract.
+
+    Malformed JSON or a non-object root is a structured ``manifest_invalid``
+    failure — never a traceback — and a missing file stays ``None`` so the
+    packer/validator keeps reporting it as its own ``missing_reference``/
+    ``missing_manifest`` error.
+    """
+    manifest_path = source / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PluginPackageError(
+            "manifest_invalid", "manifest.json is not valid UTF-8 JSON", path="manifest.json"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise PluginPackageError(
+            "manifest_invalid", "manifest must be an object", path="manifest.json"
+        )
+    return manifest
+
+
 def _validation_report(source: Path) -> dict[str, Any]:
     inspected = inspect_plugin_package(source)
     report = {
@@ -123,11 +147,11 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
 
 def _command_pack(args: argparse.Namespace) -> int:
     source = args.source.resolve()
-    manifest_path = source / "manifest.json"
-    if manifest_path.is_file():
+    manifest = _load_manifest_object(source)
+    if manifest is not None:
         # A legacy manifest must fail before any archive is created; packages
         # without a manifest keep the packer's own structured error.
-        _require_native_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
+        _require_native_manifest(manifest)
     destination = args.output or source.with_suffix(".vtplugin")
     package_hash = pack_plugin(source, destination)
     report = {"ok": True, "output": str(destination.resolve()), "packageHash": package_hash}
@@ -523,10 +547,9 @@ def _compile_declared_scripts(source: Path, manifest: dict[str, Any]) -> list[Pa
 
 def _command_build(args: argparse.Namespace) -> int:
     package_source = args.source.resolve()
-    manifest_path = package_source / "manifest.json"
-    if not manifest_path.is_file():
+    manifest = _load_manifest_object(package_source)
+    if manifest is None:
         raise PluginPackageError("missing_manifest", "manifest.json is required")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     _require_native_manifest(manifest)
     compiled_outputs = _compile_declared_scripts(package_source, manifest)
     inspected = inspect_plugin_package(package_source)

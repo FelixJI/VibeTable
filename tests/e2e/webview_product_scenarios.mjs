@@ -6656,7 +6656,7 @@ async function scenario11(page, recorder, _network, runtime) {
   const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = databaseOpened.payload.projectKey.trim();
   await exerciseSdkExamples(page, recorder, runtime, projectKey, {
-    createSimpleTable, applyProductMutation, rawBridgeRequest, selectTable,
+    createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest, selectTable,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage,
   });
   await page.getByTestId("nav-tables").click();

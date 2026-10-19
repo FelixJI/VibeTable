@@ -372,6 +372,53 @@ def _reserve_port() -> int:
         return int(listener.getsockname()[1])
 
 
+_NODE_FREE_HOST_SCENARIOS = frozenset(
+    {
+        "11-plugin-mutation",
+        "47-plugin-surface-api",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
+        "53-record-manager",
+    }
+)
+
+
+def _scenario_host_environment(
+    scenario_id: str, package_root: Path
+) -> tuple[dict[str, str], dict[str, str | bool]]:
+    """Qualify plugin Hosts without developer runtimes; the parent driver keeps its environment."""
+    environment = os.environ.copy()
+    if scenario_id not in _NODE_FREE_HOST_SCENARIOS:
+        return environment, {}
+    windows = Path(environment.get("SYSTEMROOT", environment.get("WINDIR", "C:/Windows")))
+    environment = {key: value for key, value in environment.items() if key.upper() != "PATH"}
+    environment["PATH"] = os.pathsep.join((str(windows / "System32"), str(windows)))
+    # Probe in a child with the Host's exact cwd/environment. Windows may search
+    # its current directory even when PATH contains only system directories.
+    observed = subprocess.run(
+        [sys.executable, "-I", "-c", "import json,shutil; print(json.dumps(shutil.which('node')))"],
+        cwd=package_root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    node = json.loads(observed.stdout)
+    if node is not None:
+        raise ValueError("plugin Host environment still resolves a Node runtime")
+    return environment, {
+        "hostNodeRuntimeAvailable": False,
+        "hostPath": environment["PATH"],
+        "hostNodeRuntimeProbe": "child shutil.which('node') with package cwd",
+    }
+
+
 def _launch_host_process(
     command: Sequence[str],
     *,
@@ -3010,7 +3057,7 @@ def run_scenario(
     layout = json.loads(_package_layout_path(package_root).read_text(encoding="utf-8"))
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
-    environment = os.environ.copy()
+    environment, host_runtime_evidence = _scenario_host_environment(scenario.id, package_root)
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
     )
@@ -3061,6 +3108,7 @@ def run_scenario(
                 "controlsDirectory": str(controls_dir),
                 "mutationBarrier": mutation_barrier,
                 "renderer": "the WPF host's WebView2; no browser launch",
+                **host_runtime_evidence,
             },
             ensure_ascii=False,
             indent=2,

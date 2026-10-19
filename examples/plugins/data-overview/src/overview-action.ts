@@ -21,6 +21,12 @@ export function defaultField(description: DataDescription): string | null {
   return description.fields.find(item => item.fieldId !== "id" && item.sortable)?.fieldId ?? null;
 }
 
+/** The text filter only exists for fields whose Go operators declare contains. */
+export function supportsContains(description: DataDescription, fieldId: string | null): boolean {
+  if (fieldId === null) return false;
+  return description.fields.find(item => item.fieldId === fieldId)?.filterOperators.includes("contains") ?? false;
+}
+
 /** Page through the whole authorized result and fold authoritative counters. */
 export async function collectOverview(
   api: SurfaceCapabilities,
@@ -37,10 +43,14 @@ export async function collectOverview(
   if (input.fieldId !== undefined && !requested) {
     throw new PluginCapabilityError("plugin_read_denied", "字段不可读取");
   }
+  // Only fields whose filterOperators declare contains accept the text filter;
+  // numeric/date columns keep an unfiltered authoritative overview instead of
+  // failing with query.operator.unsupported.
+  const filterByContains = input.contains !== undefined && supportsContains(metadata, requested?.fieldId ?? null);
   const query = {
     contract: "vibetable.plugin-query.v2" as const, collection,
     fields: requested ? ["id", requested.fieldId] : ["id"], pageSize: 200,
-    filters: input.contains === undefined ? [] : [{ field: requested?.fieldId ?? "", operator: "contains" as const, value: input.contains }],
+    filters: filterByContains ? [{ field: requested?.fieldId ?? "", operator: "contains" as const, value: input.contains }] : [],
     sorts: requested?.sortable ? [{ field: requested.fieldId, direction: "asc" as const, nullsLast: true }] : [],
   };
   let cursor: string | undefined;

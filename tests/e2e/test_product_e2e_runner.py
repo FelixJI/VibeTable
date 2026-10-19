@@ -7526,3 +7526,93 @@ def test_retired_plugin_seed_requires_successful_owned_host_close(tmp_path: Path
             connection.execute("SELECT COUNT(*) FROM vibetable_plugin_records").fetchone()[0] == 0
         )
     assert not (workspace / ".vibetable/data/state/plugin-packages").exists()
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows Node-free Host acceptance environment")
+def test_plugin_host_path_is_node_free_while_sdk_build_and_driver_keep_parent_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    node = ensure_node(runner.ROOT)
+    parent_path = str(node.parent) + runner.os.pathsep + runner.os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", parent_path)
+    assert runner.shutil.which("node") is not None
+    scenario = runner.Scenario("47-plugin-surface-api", "surface", "Node-free Host")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"synthetic unlaunched Host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    captured: dict[str, object] = {}
+
+    def launch(*_args: object, **kwargs: Any) -> _FakeScope:
+        captured["hostPath"] = kwargs["env"]["PATH"]
+        assert str(node.parent) not in kwargs["env"]["PATH"]
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_: None)
+    _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_: {"ready": True})
+    monkeypatch.setattr(runner, "_prepare_retired_plugin_packages", lambda *_args, **_kwargs: None)
+    actual_run = subprocess.run
+    builds = []
+
+    def run(command: Any, **kwargs: Any) -> Any:
+        if len(command) > 1 and str(command[1]).endswith("vibetable_plugin.py"):
+            assert kwargs.get("env", runner.os.environ)["PATH"] == parent_path
+            builds.append(command[2])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+
+    def driver(command: list[str], *, scenario_dir: Path, **_kwargs: Any) -> tuple[int, str, str]:
+        assert command[0] == str(node)
+        assert runner.os.environ["PATH"] == parent_path
+        assert runner.shutil.which("node") is not None
+        # Execute the real locked Node as the parent-side driver, without a browser.
+        actual_run([command[0], "--version"], check=True, capture_output=True)
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}), encoding="utf-8"
+        )
+        captured["launch"] = json.loads((scenario_dir / "launch.json").read_text(encoding="utf-8"))
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", driver)
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node=str(node)
+    )
+    assert result["status"] == "passed"
+    assert builds == ["build", "pack"]
+    assert runner.os.environ["PATH"] == parent_path
+    evidence = captured["launch"]
+    assert isinstance(evidence, dict)
+    assert evidence["hostNodeRuntimeAvailable"] is False
+    assert evidence["hostPath"] == captured["hostPath"]
+    assert all(
+        Path(entry).is_relative_to(Path(runner.os.environ["SYSTEMROOT"]))
+        for entry in evidence["hostPath"].split(runner.os.pathsep)
+    )
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows current-directory executable search")
+def test_plugin_host_node_probe_rejects_node_in_package_current_directory(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "node.exe").write_bytes(b"synthetic lookup fixture, never executed")
+    with pytest.raises(ValueError, match="still resolves a Node runtime"):
+        runner._scenario_host_environment("11-plugin-mutation", package)
+
+
+def test_other_scenarios_keep_existing_host_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", "existing-parent-tools")
+    environment, evidence = runner._scenario_host_environment("02-schema-edit", tmp_path)
+    assert environment["PATH"] == "existing-parent-tools"
+    assert evidence == {}
+    assert runner.os.environ["PATH"] == "existing-parent-tools"

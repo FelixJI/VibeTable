@@ -148,6 +148,28 @@ def test_validate_reports_plugin_identity_as_json(tmp_path: Path) -> None:
     assert report["packageHash"].startswith("sha256:")
 
 
+@pytest.mark.parametrize("content", ["{ not json", "null", "[]", '"text"'])
+def test_pack_and_build_report_structured_errors_for_malformed_manifest(
+    tmp_path: Path, content: str
+) -> None:
+    """非法 JSON/非 object 根值：pack（含 --json）与 build 输出结构化错误且不落包。"""
+    plugin = tmp_path / "broken"
+    _write_readonly_plugin(plugin)
+    (plugin / "manifest.json").write_text(content, encoding="utf-8")
+
+    package = tmp_path / "broken.vtplugin"
+    packed = _run_cli("pack", str(plugin), "--output", str(package), "--json")
+    assert packed.returncode == 2, (packed.stdout, packed.stderr)
+    assert json.loads(packed.stdout)["code"] == "manifest_invalid"
+    assert not package.exists(), "a malformed manifest must never produce a package"
+    assert "Traceback" not in packed.stderr
+
+    built = _run_cli("build", str(plugin))
+    assert built.returncode == 2, (built.stdout, built.stderr)
+    assert json.loads(built.stdout)["code"] == "manifest_invalid"
+    assert "Traceback" not in built.stderr
+
+
 def test_legacy_worker_package_gets_read_only_diagnostics_but_never_builds_or_packs(
     tmp_path: Path,
 ) -> None:

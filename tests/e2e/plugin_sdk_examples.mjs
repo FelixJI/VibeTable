@@ -4,7 +4,7 @@ import { nativePluginInput } from "./plugin_applications.mjs";
 
 // Real CLI-built examples execute in isolated surfaces; their data still comes from Go.
 export async function exerciseSdkExamples(page, recorder, runtime, projectKey, helpers) {
-  const { createSimpleTable, applyProductMutation, rawBridgeRequest, selectTable,
+  const { createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest, selectTable,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage } = helpers;
   const sourceControl = path.join(runtime.controlsDir, "plugin-source.txt");
   const originalSource = await fs.readFile(sourceControl, "utf8");
@@ -12,15 +12,19 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     await page.getByTestId("nav-tables").click();
     const table = await createSimpleTable(page, "E2E SDK Examples", "Text");
     const field = table.field.physicalName;
+    const second = await createV2Field(page, table.tableId, "More text", "text");
+    const secondField = second.physicalName;
     const initial = "  Vibe   Table  ";
-    const seed = await applyProductMutation(page, table.tableId, [initial, " keep "].map(value => ({
-      kind: "insert", recordId: null, values: { [field]: value },
+    const secondInitial = "  Same   Row  ";
+    const otherSecond = " keep   second ";
+    const seed = await applyProductMutation(page, table.tableId, [initial, " keep "].map((value, index) => ({
+      kind: "insert", recordId: null, values: { [field]: value, [secondField]: index === 0 ? secondInitial : otherSecond },
     })), "sdk-example-seed");
     const [selectedId, otherId] = seed.payload.affectedRows.map(row => row.recordId);
     const readRows = async () => (await rawBridgeRequest(page, "query.page", {
       tableId: table.tableId, query: { filters: [{ field: "id", operator: "in", value: [selectedId, otherId] }], sorts: [], offset: 0, limit: 100 },
     })).payload.rows;
-    const valueOf = (rows, id) => rows.find(row => row.id === id)?.[field];
+    const valueOf = (rows, id, fieldName = field) => rows.find(row => row.id === id)?.[fieldName];
     async function install(example) {
       await fs.writeFile(sourceControl, `${path.join(runtime.controlsDir, `${example}.vtplugin`)}\n`);
       await page.getByTestId("nav-plugins").click();
@@ -44,6 +48,7 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     const metrics = () => overview.locator("#summary dl").evaluate(list => Object.fromEntries([...list.querySelectorAll("dt")].map(term => [term.textContent, term.nextElementSibling?.textContent])));
     const complete = await metrics();
     recorder.check("real overview surface reads all 550 rows through three pages", complete["筛选后记录"] === "550" && complete["读取页数"] === "3" && complete["完整计算"] === "是", { complete });
+    await overview.locator("#field").selectOption(table.field.fieldId);
     await overview.locator("#contains").fill("row-"); await overview.locator("#refresh").click();
     await overview.locator("#summary dd").filter({ hasText: /^548$/u }).waitFor({ timeout: 30000 });
     const filtered = await metrics();
@@ -71,9 +76,12 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
       const taskId = await runner.locator(".task-status code").innerText();
       const before = await rawBridgeRequest(page, "plugin.task.get", { taskId });
       const preview = pending.pendingConfirmation.preview;
-      recorder.check(`native normalization ${decision} shows the exact selected-row plan`, before.payload?.runId === pending.runId
-        && before.payload.collection === table.tableId && preview.affectedCount === 1
-        && preview.sampleRows[0].primaryKey === selectedId && preview.sampleRows[0].values[table.field.fieldId] === "Vibe Table", { pending, before });
+      const changes = preview.sampleRows[0]?.values;
+      recorder.check(`native normalization ${decision} merges two text fields into one guarded selected-row update`, before.payload?.runId === pending.runId
+        && before.payload.collection === table.tableId && preview.affectedCount === 1 && preview.sampleRows.length === 1
+        && preview.sampleRows[0].primaryKey === selectedId && changes?.[table.field.fieldId] === "Vibe Table"
+        && changes?.[second.fieldId] === "Same Row"
+        && Object.keys(changes).sort().join() === [table.field.fieldId, second.fieldId].sort().join(), { pending, before });
       if (decision === "cancelled") await page.getByTestId("plugin-headless-cancel").click();
       else {
         if (decision === "conflict") await applyProductMutation(page, table.tableId, [{ kind: "update", recordId: selectedId, values: { [field]: "changed elsewhere" } }], "sdk-concurrent-change");
@@ -88,9 +96,16 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
       } while (Date.now() < until);
       const rows = await readRows();
       const expected = decision === "conflict" ? "changed elsewhere" : decision === "approved" ? "Vibe Table" : initial;
-      recorder.check(`native normalization ${decision} preserves data and truthful terminal`, valueOf(rows, selectedId) === expected && valueOf(rows, otherId) === " keep "
+      const expectedSecond = decision === "approved" ? "Same Row" : secondInitial;
+      recorder.check(`native normalization ${decision} preserves both selected fields and the unselected row`, valueOf(rows, selectedId) === expected && valueOf(rows, otherId) === " keep "
+        && valueOf(rows, selectedId, secondField) === expectedSecond && valueOf(rows, otherId, secondField) === otherSecond
         && (decision === "approved" ? settled?.state === "succeeded" : decision === "conflict" ? settled?.state === "failed" && settled.error?.code === "mutation.digest_conflict" : settled?.state === "cancelled"), { settled, rows });
       await page.getByTestId("plugin-headless-close").waitFor({ timeout: 30000 }); await page.getByTestId("plugin-headless-close").click();
+      const audit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey, pluginId: "com.vibetable.examples.normalize-text" })).payload;
+      const terminals = audit.filter(event => event.eventType === "action" && event.runId === settled.runId);
+      recorder.check(`native normalization ${decision} has one durable receipt for one authorized row`, terminals.length === 1
+        && terminals[0].targetCount === 1 && terminals[0].details?.taskId === taskId
+        && terminals[0].outcome === (decision === "approved" ? "succeeded" : decision === "conflict" ? "failed" : decision), { terminals, taskId });
       if (decision === "conflict") await applyProductMutation(page, table.tableId, [{ kind: "update", recordId: selectedId, values: { [field]: initial } }], "sdk-reset-synthetic-value");
     }
   } finally { await fs.writeFile(sourceControl, originalSource, "utf8"); }

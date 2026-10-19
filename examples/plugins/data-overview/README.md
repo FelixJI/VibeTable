@@ -7,6 +7,8 @@
 `inputSchema` 表单输入。
 
 - `context.read` 获取活动表；`data.describe` 读取授权字段元数据；
+- 文本筛选（contains）只对 `filterOperators` 声明该运算符的字段生成；数值/日期等字段
+  禁用筛选输入并保持无过滤统计，不发送不支持的运算符；
 - `data.query` 按 200 条分页跟随 `nextCursor` 直到为空，汇总权威
   `totalRows`/`filteredRows`、非空计数与 computed `complete`，提前失败时显式
   `releaseCursor`；

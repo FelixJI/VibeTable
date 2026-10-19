@@ -1,5 +1,5 @@
 import { createSurfaceClient, type DataDescription } from "@vibetable/plugin-sdk";
-import { collectOverview } from "./overview-action.js";
+import { collectOverview, supportsContains } from "./overview-action.js";
 
 const api = createSurfaceClient(window.name);
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
@@ -64,6 +64,9 @@ async function load(): Promise<void> {
       contains: contains.value === "" ? undefined : contains.value,
     });
     fillFields(result.description, result.stats.fieldId ?? undefined);
+    // 数值/日期等字段不声明 contains：禁用文本筛选而不是发送不支持的运算符。
+    contains.disabled = !supportsContains(result.description, result.stats.fieldId);
+    contains.title = contains.disabled ? "该字段不支持文本筛选" : "";
     render(result);
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
