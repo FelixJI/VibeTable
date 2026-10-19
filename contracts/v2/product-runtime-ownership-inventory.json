@@ -95,11 +95,9 @@
       "id": "event.plugin-host-requests",
       "kind": "event",
       "names": [
-        "plugin.file.requested",
         "plugin.interaction.requested"
       ],
       "currentPath": [
-        "pythonBff",
         "wpfHost",
         "renderer"
       ],
@@ -111,7 +109,6 @@
         "read": [],
         "write": [],
         "notification": [
-          "plugin.file.requested",
           "plugin.interaction.requested"
         ],
         "state": []
@@ -120,7 +117,7 @@
         "wpfHost"
       ],
       "stateLifetime": "task",
-      "cancellation": "processBound",
+      "cancellation": "cooperative",
       "timeout": "operationBounded",
       "productScenarios": [
         "11-plugin-mutation",
@@ -128,13 +125,10 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Host owns public task/confirmation/file pending and generation settlement. Python retains only execution reports and reply futures. L9 still must replace the resident Python executor with an on-demand Worker; domain mutations remain Go-authoritative.",
+      "deleteWhen": "Host owns native surface task, confirmation and file lifetimes. No Node Worker or Python plugin execution reports remain.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/infrastructure/plugin_file_capability.py",
-        "backend/infrastructure/plugin_interaction.py",
-        "tests/e2e/pocketbase_product_scenarios.json",
-        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/PluginSurfaceApi.cs"
       ]
     },
     {
@@ -144,8 +138,6 @@
         "plugin.task.changed"
       ],
       "currentPath": [
-        "nodeWorker",
-        "pythonBff",
         "wpfHost",
         "renderer"
       ],
@@ -165,7 +157,7 @@
         "wpfHost"
       ],
       "stateLifetime": "task",
-      "cancellation": "processBound",
+      "cancellation": "cooperative",
       "timeout": "operationBounded",
       "productScenarios": [
         "11-plugin-mutation",
@@ -173,13 +165,10 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Host owns public task/confirmation/file pending and generation settlement. Python retains only execution reports and reply futures. L9 still must replace the resident Python executor with an on-demand Worker; domain mutations remain Go-authoritative.",
+      "deleteWhen": "Host owns native surface task, confirmation and file lifetimes. No Node Worker or Python plugin execution reports remain.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/application/plugin_execution_runtime.py",
-        "backend/infrastructure/plugin_worker.py",
-        "tests/e2e/pocketbase_product_scenarios.json",
-        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/PluginSurfaceApi.cs"
       ]
     },
     {
@@ -1510,8 +1499,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonWorker",
-        "nodeWorker"
+        "pythonWorker"
       ],
       "currentRoute": "pythonWorker",
       "classification": "HOST_NATIVE",
@@ -1528,11 +1516,9 @@
         "state": []
       },
       "stateHolders": [
-        "wpfHost",
-        "pythonWorker",
-        "nodeWorker"
+        "pythonWorker"
       ],
-      "stateLifetime": "workspace",
+      "stateLifetime": "request",
       "cancellation": "cooperative",
       "timeout": "operationBounded",
       "productScenarios": [
@@ -1541,16 +1527,9 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Completed: WPF owns task identity, public snapshots, confirmation and file pending; the on-demand Python executor keeps only cancellation handles and active reply futures behind closed host-only entries. Client loss settles running tasks as aborted with an unknown business-commit boundary.",
+      "deleteWhen": "Retired host-only rejection tombstones; no pending state or plugin executor exists.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/application/plugin_execution_runtime.py",
-        "backend/application/plugin_platform_service.py",
-        "backend/infrastructure/plugin_file_capability.py",
-        "backend/infrastructure/plugin_interaction.py",
-        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs",
-        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "backend/__main__.py"
       ]
     },
     {
@@ -1590,6 +1569,47 @@
       "evidence": [
         "desktop/src/VibeTable.Desktop/Services/HostInstallPlanLeaseRegistry.cs",
         "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
+      ]
+    },
+    {
+      "id": "rpc.plugin-preservation",
+      "kind": "rpc",
+      "names": [
+        "pluginPreservation.snapshot"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "pluginPreservation.snapshot"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "11-plugin-mutation"
+      ],
+      "targetSlice": "L9",
+      "targetPr": null,
+      "deleteWhen": "Host-only read-only archival export of retained plugin records and packages; no plugin execution or data migration.",
+      "evidence": [
+        "sidecar/internal/pluginstore/preservation.go",
+        "desktop/src/VibeTable.Desktop/Services/PluginPreservationRequestController.cs"
       ]
     },
     {
@@ -1679,7 +1699,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Completed: Host starts the existing Python supervisor on demand for bounded package inspection; Host issues and retains the full install plan, and Python keeps no acceptable-plan ledger.",
+      "deleteWhen": "Fixed platform package inspection only. describeAction is a retired rejection; new surface descriptions are Host-owned.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_platform_service.py",
@@ -1701,7 +1721,6 @@
       "currentPath": [
         "wpfHost",
         "pythonWorker",
-        "nodeWorker",
         "goSidecar",
         "pocketBase"
       ],
@@ -1723,8 +1742,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonWorker",
-        "nodeWorker",
         "goSidecar",
         "pocketBase",
         "wpfHost"
@@ -1738,14 +1755,12 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Completed: the on-demand Python executor performs package and task-scoped Node execution. Host owns plan admission and task settlement; Go/PocketBase owns committed installation, revision, audit and mutation state. Hidden lifecycle methods remain hidden.",
+      "deleteWhen": "Fixed platform package lifecycle only, with Host-owned admission and Go-owned atomic storage. startAction is a retired rejection, not an executor.",
       "evidence": [
         "backend/__main__.py",
-        "backend/application/plugin_execution_runtime.py",
         "backend/application/plugin_platform_service.py",
         "backend/infrastructure/plugin_package_lifecycle.py",
-        "backend/infrastructure/plugin_worker.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
       ]
     },
     {
@@ -3195,13 +3210,10 @@
       "id": "state.plugin-confirmation",
       "kind": "state",
       "names": [
-        "HostConfirmationAdapter._revisions",
-        "HostConfirmationAdapter._waiters",
         "HostPluginTaskRegistry._interactions"
       ],
       "currentPath": [
-        "wpfHost",
-        "pythonWorker"
+        "wpfHost"
       ],
       "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
@@ -3212,13 +3224,10 @@
         "write": [],
         "notification": [],
         "state": [
-          "HostConfirmationAdapter._revisions",
-          "HostConfirmationAdapter._waiters",
           "HostPluginTaskRegistry._interactions"
         ]
       },
       "stateHolders": [
-        "pythonWorker",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3230,52 +3239,8 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Completed for confirmation state: the WPF HostPluginTaskRegistry owns pending confirmation, decision, revision, timeout and cancellation state; HostConfirmationAdapter keeps only the execution-side reply future and transport sequence, so Worker exit cannot strand a confirmation. InMemoryInteractionAdapter._runs is a test fake and is no longer listed as production state.",
+      "deleteWhen": "Host owns native surface confirmation and task lifetime; retired Python/Node plugin execution state has been removed.",
       "evidence": [
-        "backend/infrastructure/plugin_interaction.py",
-        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
-      ]
-    },
-    {
-      "id": "state.plugin-file-requests",
-      "kind": "state",
-      "names": [
-        "HostFileCapabilityAdapter._pending",
-        "HostPluginTaskRegistry._fileRequests"
-      ],
-      "currentPath": [
-        "wpfHost",
-        "pythonWorker"
-      ],
-      "currentRoute": "wpfHost",
-      "classification": "HOST_NATIVE",
-      "targetOwner": "HOST_NATIVE",
-      "authority": "HOST_NATIVE",
-      "effects": {
-        "read": [],
-        "write": [],
-        "notification": [],
-        "state": [
-          "HostFileCapabilityAdapter._pending",
-          "HostPluginTaskRegistry._fileRequests"
-        ]
-      },
-      "stateHolders": [
-        "pythonWorker",
-        "wpfHost"
-      ],
-      "stateLifetime": "task",
-      "cancellation": "processBound",
-      "timeout": "operationBounded",
-      "productScenarios": [
-        "11-plugin-mutation",
-        "17-interface-lifecycle"
-      ],
-      "targetSlice": "L7+L9",
-      "targetPr": null,
-      "deleteWhen": "Completed for file pending: the WPF HostPluginTaskRegistry owns the public pending file-request record and generation settlement; HostFileCapabilityAdapter keeps only the picker reply future for an active execution, and Host owns run-scoped file grants and native IO. Client termination invalidates pending picker replies through the existing Host gateway binding.",
-      "evidence": [
-        "backend/infrastructure/plugin_file_capability.py",
         "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
@@ -3350,7 +3315,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Completed: the on-demand Python executor retains local package bytes; Go package identity and audit records survive its exit. Missing local bytes fail execution closed without following shared absolute paths.",
+      "deleteWhen": "Fixed platform package lifecycle retains original package bytes; Host reads only the trusted workspace cache. No plugin code runs in Python.",
       "evidence": [
         "backend/infrastructure/plugin_package_lifecycle.py",
         "desktop/src/VibeTable.Desktop/Services/PluginRetainedPackage.cs"
@@ -3360,13 +3325,11 @@
       "id": "state.plugin-task",
       "kind": "state",
       "names": [
-        "PluginExecutionRuntime._executions",
-        "PluginExecutionRuntime._revision"
+        "HostPluginTaskRegistry._tasks",
+        "HostPluginTaskRegistry._tasksByRun"
       ],
       "currentPath": [
-        "wpfHost",
-        "pythonWorker",
-        "nodeWorker"
+        "wpfHost"
       ],
       "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
@@ -3377,13 +3340,11 @@
         "write": [],
         "notification": [],
         "state": [
-          "PluginExecutionRuntime._executions",
-          "PluginExecutionRuntime._revision"
+          "HostPluginTaskRegistry._tasks",
+          "HostPluginTaskRegistry._tasksByRun"
         ]
       },
       "stateHolders": [
-        "pythonWorker",
-        "nodeWorker",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3395,54 +3356,9 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Completed for task state: the WPF HostPluginTaskRegistry owns public task snapshots, notification sequence, cancellation and terminal settlement; PluginExecutionRuntime keeps only execution futures and the execution-report transport sequence, never a queryable second authority.",
+      "deleteWhen": "Host owns native surface confirmation and task lifetime; retired Python/Node plugin execution state has been removed.",
       "evidence": [
-        "backend/application/plugin_execution_runtime.py",
         "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
-      ]
-    },
-    {
-      "id": "state.plugin-worker-runtime",
-      "kind": "state",
-      "names": [
-        "NodePluginWorkerAdapter._active_processes",
-        "NodePluginWorkerAdapter._profiles",
-        "NodePluginWorkerAdapter._semaphore"
-      ],
-      "currentPath": [
-        "pythonWorker",
-        "nodeWorker"
-      ],
-      "currentRoute": "pythonWorker",
-      "classification": "PYTHON_WORKER",
-      "targetOwner": "PYTHON_WORKER",
-      "authority": "PYTHON_WORKER",
-      "effects": {
-        "read": [],
-        "write": [],
-        "notification": [],
-        "state": [
-          "NodePluginWorkerAdapter._active_processes",
-          "NodePluginWorkerAdapter._profiles",
-          "NodePluginWorkerAdapter._semaphore"
-        ]
-      },
-      "stateHolders": [
-        "pythonWorker",
-        "nodeWorker"
-      ],
-      "stateLifetime": "process",
-      "cancellation": "processBound",
-      "timeout": "operationBounded",
-      "productScenarios": [
-        "11-plugin-mutation",
-        "17-interface-lifecycle"
-      ],
-      "targetSlice": "L9",
-      "targetPr": null,
-      "deleteWhen": "Completed: the on-demand Python executor bounds task-scoped Node processes and derives profiles from Go. The Host closes the exact generation Job on Python exit, including a Node process busy computing; no durable business state belongs to either executor.",
-      "evidence": [
-        "backend/infrastructure/plugin_worker.py"
       ]
     },
     {

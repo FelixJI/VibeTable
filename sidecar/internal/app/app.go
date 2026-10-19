@@ -458,7 +458,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			registerPluginStoreRoutes(event.Router, plugins, businessGate)
 			registerPluginDataRoutes(event.Router, pb, querySource, capabilities.WorkspaceID, capabilities.SessionEpoch)
 			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate, &pluginSurfaceIO{plans: importPlans, attachments: attachmentManager})
-			registerPluginWorkerMutationRoutes(event.Router, pb, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate)
+			registerPluginWorkerRetiredRoutes(event.Router)
 			schemaCatalog := schemaapi.New(pb)
 			contentMetadata := metadata.NewContentService(pb, querySource)
 			presets := metadata.NewPreset(pb)
@@ -521,6 +521,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				productRegistrations = append(productRegistrations, contentVersionRegistration(method, versions, businessGate))
 			}
 			productRegistrations = append(productRegistrations, PluginSharedStateRegistrations(plugins, businessGate)...)
+			productRegistrations = append(
+				productRegistrations,
+				pluginPreservationSnapshotRegistration(plugins),
+			)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,

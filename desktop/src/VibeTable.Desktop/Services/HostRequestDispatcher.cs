@@ -153,7 +153,8 @@ internal sealed class HostRequestDispatcher
         HostCommandRequestController commands,
         HostSourceImportRequestController sourceImports,
         ClipboardRequestController clipboard,
-        Action<RoutedWebRequest>? beforeDispatch = null)
+        Action<RoutedWebRequest>? beforeDispatch = null,
+        PluginPreservationRequestController? pluginPreservation = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         ArgumentNullException.ThrowIfNull(lifecycle);
@@ -190,6 +191,8 @@ internal sealed class HostRequestDispatcher
                 request => _ = nativeFiles.DispatchAsync(request)),
             new(LegacyLayoutRequestController.Handles,
                 request => _ = legacyLayouts.DispatchAsync(request)),
+            new(type => pluginPreservation is not null && PluginPreservationRequestController.Handles(type),
+                request => _ = pluginPreservation!.DispatchAsync(request)),
             new(PluginRequestDispatcher.Handles, plugins.Dispatch),
             new(workspace.Handles, workspace.Dispatch),
         ];

@@ -568,6 +568,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"plugin.listCatalog",
 		"plugin.listPendingCleanup",
 		"plugin.setEnabled",
+		"pluginPreservation.snapshot",
 		"preset.delete",
 		"preset.list",
 		"preset.save",

@@ -1,5 +1,4 @@
 using System;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -10,27 +9,13 @@ namespace VibeTable.Desktop.Services;
 /// <summary>Fixed plugin-use-case adapter over the supervisor-owned pipe.</summary>
 public sealed class JsonRpcPluginGateway : IPluginRpcGateway
 {
-    private static readonly JsonSerializerOptions JsonOptions =
-        new(JsonSerializerDefaults.Web);
-
     private readonly JsonRpcClient _client;
     private bool _disposed;
-    private readonly Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? _issueFile;
-    private readonly Func<string, Task>? _revokeRun;
 
-    public JsonRpcPluginGateway(JsonRpcClient client,
-        Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? issueFile = null,
-        Func<string, Task>? revokeRun = null)
+    public JsonRpcPluginGateway(JsonRpcClient client)
     {
-        _issueFile = issueFile;
-        _revokeRun = revokeRun;
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _client.NotificationReceived += OnNotificationReceived;
     }
-
-    public event Action<PluginEventEnvelope>? TaskChanged;
-    public event Action<PluginEventEnvelope>? InteractionRequested;
-    public event Action<PluginEventEnvelope>? FileRequested;
 
     /// <inheritdoc />
     public event Action? Terminated
@@ -67,44 +52,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         => InvokeAsync<PluginUninstallParams, PluginRuntimeUninstallResult>(
             "plugin.uninstall", request, token);
 
-    public Task<PluginRuntimeActionAvailability> DescribeActionAsync(
-        PluginDescribeActionParams request, CancellationToken token)
-        => InvokeAsync<PluginDescribeActionParams, PluginRuntimeActionAvailability>(
-            "plugin.describeAction", request, token);
-
-    public Task<PluginRuntimeTaskSnapshot> StartActionAsync(
-        PluginStartActionParams request, CancellationToken token)
-        => InvokeAsync<PluginStartActionParams, PluginRuntimeTaskSnapshot>(
-            "plugin.startAction", request, token);
-
-    public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
-        PluginResolveInteractionParams request, CancellationToken token)
-        => InvokeAsync<PluginResolveInteractionParams, PluginRuntimeInteractionResolveResult>(
-            "plugin.resolveInteraction", request, token);
-
-    public async Task<bool> ResolveFileAsync(
-        PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        SessionPathGrant? grant = null;
-        if (selectedPath is not null)
-        {
-            JsonElement descriptor = await (_issueFile ?? throw new InvalidOperationException("Host file binding unavailable."))
-                (request, selectedPath, token).ConfigureAwait(false);
-            grant = descriptor.Deserialize<SessionPathGrant>(JsonOptions)
-                ?? throw new JsonException("Invalid Host file grant.");
-        }
-        return await InvokeAsync<PluginResolveFileParams, bool>("plugin.resolveFile",
-            new PluginResolveFileParams(request.RequestId, grant), token).ConfigureAwait(false);
-    }
-
-    public Task RevokeRunFileGrantsAsync(string runId)
-        => _revokeRun?.Invoke(runId) ?? Task.CompletedTask;
-    public Task<bool> CancelTaskAsync(
-        PluginTaskParams request, CancellationToken token)
-        => InvokeAsync<PluginTaskParams, bool>(
-            "plugin.cancelTask", request, token);
-
     public void Dispose()
     {
         if (_disposed)
@@ -112,7 +59,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
             return;
         }
         _disposed = true;
-        _client.NotificationReceived -= OnNotificationReceived;
     }
 
     private Task<TResult> InvokeAsync<TParams, TResult>(
@@ -123,58 +69,4 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         return _client.InvokeAsync<TParams, TResult>(method, request, token);
     }
 
-    private void OnNotificationReceived(string method, JsonElement parameters)
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        string? expectedEventType = method switch
-        {
-            "plugin.taskChanged" => "plugin.task.changed",
-            "plugin.interactionRequested" => "plugin.interaction.requested",
-            "plugin.fileRequested" => "plugin.file.requested",
-            _ => null,
-        };
-        if (expectedEventType is null)
-        {
-            return;
-        }
-
-        PluginEventEnvelope? envelope;
-        try
-        {
-            envelope = parameters.Deserialize<PluginEventEnvelope>(JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return;
-        }
-        if (envelope is null
-            || !string.Equals(envelope.Contract, PluginContractVersions.Event, StringComparison.Ordinal))
-        {
-            return;
-        }
-        if (!string.Equals(envelope.EventType, expectedEventType, StringComparison.Ordinal)
-            || string.IsNullOrWhiteSpace(envelope.ProjectKey)
-            || string.IsNullOrWhiteSpace(envelope.EntityId)
-            || envelope.Revision < 1)
-        {
-            return;
-        }
-
-        switch (method)
-        {
-            case "plugin.taskChanged":
-                TaskChanged?.Invoke(envelope);
-                break;
-            case "plugin.interactionRequested":
-                InteractionRequested?.Invoke(envelope);
-                break;
-            case "plugin.fileRequested":
-                FileRequested?.Invoke(envelope);
-                break;
-        }
-    }
 }

@@ -35,6 +35,14 @@ func (service *Service) commitPackage(ctx context.Context, planRaw, revisionRaw 
 	if !ok {
 		return nil, invalidPayload()
 	}
+	// #486: the frozen compatibility matrix retires schema v1 / pluginApi
+	// 1.x-2.x Worker packages at the commit boundary itself. Structural
+	// manifest validation above stays lenient so legacy raw rows import and
+	// stream verbatim through preservation; only new installs, upgrades and
+	// rollbacks of legacy Worker contracts are rejected fail-closed.
+	if !manifestIsNative(manifest) {
+		return nil, workerRetiredRejection()
+	}
 	pluginID, version := textValue(manifest["pluginId"]), textValue(manifest["version"])
 	developmentSource := any(nil)
 	if plan["sourceType"] == "local-folder" {

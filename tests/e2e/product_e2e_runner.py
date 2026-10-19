@@ -28,7 +28,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -140,6 +140,7 @@ _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
         "pluginId",
         "tableId",
         "packageHash",
+        "legacyPackage",
     ),
     "39-file-workflow-combination": (
         "workspaceId",
@@ -2264,6 +2265,7 @@ def _run_node_runner_guarded(
                 plugin_native_path.unlink()
                 handled_plugin_native_ids.add(native_id)
                 if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                    "11-plugin-mutation",
                     "16-dashboard-lifecycle",
                     "17-interface-lifecycle",
                     "46-dashboard-native-output",
@@ -2584,6 +2586,234 @@ def _write_sparse_diff_workbooks(controls_dir: Path) -> None:
                 )
 
 
+def _prepare_retired_plugin_packages(controls: Path, *, active: bool) -> None:
+    """Build the API 3 fixture; assemble the historical ZIP only as inert test input."""
+    from backend.infrastructure.plugin_package import _integrity_content, inspect_plugin_package
+
+    source = ROOT / "tests/fixtures/plugins/mutation-boundary"
+    manifest = json.loads((source / "legacy-manifest.json").read_text(encoding="utf-8"))
+    manifest["pluginId"] = "com.vibetable.e2e.legacy-worker"
+    manifest["compatibility"]["pluginApi"] = "2.x"
+    manifest["permissions"]["privateStorage"] = True
+    entries = [("manifest.json", (json.dumps(manifest, ensure_ascii=False) + "\n").encode())]
+    for directory in ("workers", "schemas"):
+        entries.extend(
+            (path.relative_to(source).as_posix(), path.read_bytes())
+            for path in sorted((source / directory).rglob("*"))
+            if path.is_file()
+        )
+    entries.append(("integrity.json", _integrity_content(entries)))
+    archive = controls / "legacy-worker.vtplugin"
+    with zipfile.ZipFile(archive, "w") as package:
+        for name, content in entries:
+            package.writestr(name, content)
+    inspect_plugin_package(archive)
+    if not active:
+        return
+    target = controls / "mutation-boundary"
+    shutil.copytree(
+        source,
+        target,
+        ignore=shutil.ignore_patterns("legacy-manifest.json", "workers", "schemas", "dist"),
+    )
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/vibetable_plugin.py"), "build", str(target)],
+        cwd=ROOT,
+        check=True,
+        env={
+            **os.environ,
+            "VIBETABLE_ESBUILD_JS": str(
+                ROOT / "examples/plugins/surface-data-editor/node_modules/esbuild/lib/main.js"
+            ),
+        },
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/vibetable_plugin.py"),
+            "pack",
+            str(target),
+            "--output",
+            str(controls / "mutation-boundary.vtplugin"),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    (controls / "plugin-source.txt").write_text(str(target.resolve()) + "\n", encoding="utf-8")
+    (controls / "52-input.csv").write_text("native plugin file grant\n", encoding="utf-8")
+
+
+def _seed_retired_plugin(
+    workspace: Path, approved_root: Path, seed: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Seed four historical record kinds only after the owned synthetic Host exited."""
+    from backend.infrastructure.plugin_package import inspect_plugin_package
+    from backend.infrastructure.plugin_package_lifecycle import _compact_package_digest
+
+    workspace = workspace.resolve(strict=True)
+    approved_root = approved_root.resolve(strict=True)
+    if workspace == approved_root or not workspace.is_relative_to(approved_root):
+        raise ValueError("legacy plugin seed must stay in this synthetic run")
+    if seed.get("lifecycle", {}).get("status") != "passed":
+        raise ValueError("owned Host must close before seeding historical plugins")
+    workspace_id = json.loads(
+        (workspace / ".vibetable/workspace.json").read_text(encoding="utf-8")
+    )["workspaceId"]
+    if workspace_id != seed["workspaceId"]:
+        raise ValueError("synthetic workspace identity changed")
+    project = "local:" + uuid.UUID(workspace_id).hex
+    archive = Path(str(seed["legacyPackage"]))
+    if not archive.resolve(strict=True).is_relative_to(approved_root.parent):
+        raise ValueError("legacy package must belong to this synthetic run")
+    inspected = inspect_plugin_package(archive)
+    plugin = inspected.manifest["pluginId"]
+    cache = workspace / ".vibetable/data/state/plugin-packages"
+    cache.mkdir(parents=True, exist_ok=True)
+    retained = cache / (_compact_package_digest(inspected.package_hash) + ".vtplugin")
+    shutil.copyfile(archive, retained)
+    identity = {"projectKey": project, "pluginId": plugin}
+    installed = {
+        **identity,
+        "version": "1.0.0",
+        "packageHash": inspected.package_hash,
+        "sourceType": "package",
+        "sourceLocation": str(archive),
+        "developmentSourceLocation": None,
+        "sourceChanged": False,
+        "manifest": inspected.manifest,
+        "schemas": {},
+        "status": "enabled",
+        "disabledReason": None,
+        "blockingReasons": [],
+        "revision": 1,
+    }
+    package = {
+        **identity,
+        "version": "1.0.0",
+        "packageHash": inspected.package_hash,
+        "localPath": "untrusted-history-only.vtplugin",
+        "manifest": inspected.manifest,
+        "state": "current",
+    }
+    setting = {
+        **identity,
+        "settingKey": "unknown-historical-key",
+        "value": {"future": {"nested": [None, False, "保留"]}, "large": "保全原文" * 80000},
+        "revision": 1,
+    }
+    event = {
+        **identity,
+        "eventId": "e2e-legacy-installed",
+        "pluginVersion": "1.0.0",
+        "packageHash": inspected.package_hash,
+        "eventType": "install",
+        "outcome": "succeeded",
+        "actionId": None,
+        "runId": None,
+        "actor": "synthetic-seed",
+        "risk": None,
+        "targetCollection": None,
+        "targetCount": None,
+        "startedAt": "2026-01-01T00:00:00Z",
+        "finishedAt": "2026-01-01T00:00:00Z",
+        "durationMs": 0,
+        "errorCode": None,
+        "details": {"source": "closed-Host synthetic fixture"},
+    }
+    rows = [
+        ("installation", "current", installed),
+        ("revision", inspected.package_hash, package),
+        ("setting", setting["settingKey"], setting),
+        ("audit", event["eventId"], event),
+    ]
+    expected = []
+    database = workspace / ".vibetable/data/data.db"
+    with (
+        closing(sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True)) as connection,
+        connection,
+    ):
+        if connection.execute(
+            "SELECT COUNT(*) FROM vibetable_plugin_records WHERE plugin_id=?", (plugin,)
+        ).fetchone()[0]:
+            raise ValueError("synthetic legacy plugin must not already exist")
+        maximum = connection.execute(
+            "SELECT COALESCE(MAX(seq),0) FROM vibetable_plugin_records"
+        ).fetchone()[0]
+        for index, (kind, key, payload) in enumerate(rows, start=1):
+            record_id = f"legacy{index:09d}"
+            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            sequence = maximum + index
+            connection.execute(
+                "INSERT INTO vibetable_plugin_records (id,kind,project_key,plugin_id,item_key,payload_json,seq,created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    record_id,
+                    kind,
+                    project,
+                    plugin,
+                    key,
+                    raw,
+                    sequence,
+                    "2026-01-01 00:00:00.000Z",
+                    "2026-01-01 00:00:00.000Z",
+                ),
+            )
+            expected.append(
+                {
+                    "recordId": record_id,
+                    "kind": kind,
+                    "itemKey": key,
+                    "rawPayload": raw,
+                    "seq": sequence,
+                }
+            )
+    proof = {
+        "pluginId": plugin,
+        "installationId": "legacy000000001",
+        "revision": 1,
+        "packageHash": inspected.package_hash,
+        "packageName": retained.name,
+        "originalPackage": str(archive.resolve(strict=True)),
+        "records": expected,
+    }
+    _write_json_atomic(approved_root / "legacy-plugin-preservation.json", proof)
+    return {key: value for key, value in proof.items() if key != "records"}
+
+
+def _verify_retired_plugin_preservation(workspace: Path, approved_root: Path) -> dict[str, Any]:
+    """Compare originals after normal Host close, using the synthetic run's proof only."""
+    workspace = workspace.resolve(strict=True)
+    approved_root = approved_root.resolve(strict=True)
+    if workspace == approved_root or not workspace.is_relative_to(approved_root):
+        raise ValueError("preservation verification must stay in this synthetic run")
+    proof = json.loads(
+        (approved_root / "legacy-plugin-preservation.json").read_text(encoding="utf-8")
+    )
+    original = Path(proof["originalPackage"]).resolve(strict=True)
+    if not original.is_relative_to(approved_root.parent):
+        raise ValueError("original package escaped this synthetic run")
+    database = workspace / ".vibetable/data/data.db"
+    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
+        actual = [
+            {
+                "recordId": row[0],
+                "kind": row[1],
+                "itemKey": row[2],
+                "rawPayload": row[3],
+                "seq": row[4],
+            }
+            for row in connection.execute(
+                "SELECT id,kind,item_key,payload_json,seq FROM vibetable_plugin_records WHERE plugin_id=? ORDER BY id",
+                (proof["pluginId"],),
+            )
+        ]
+    if actual != proof["records"]:
+        raise ValueError("historical raw records changed while reopening or exporting")
+    retained = workspace / ".vibetable/data/state/plugin-packages" / proof["packageName"]
+    if retained.read_bytes() != original.read_bytes():
+        raise ValueError("historical original package changed while reopening or exporting")
+    return {"recordCount": len(actual), "rawUnchanged": True, "originalPackageUnchanged": True}
+
+
 def run_scenario(
     scenario: Scenario,
     *,
@@ -2643,6 +2873,7 @@ def run_scenario(
         encoding="utf-8",
     )
     if scenario.id == "11-plugin-mutation":
+        _prepare_retired_plugin_packages(controls_dir, active=True)
         for example in ("data-overview", "normalize-text"):
             source = ROOT / "examples" / "plugins" / example
             plugin_cli = ROOT / "scripts" / "vibetable_plugin.py"
@@ -2685,18 +2916,7 @@ def run_scenario(
             cwd=ROOT,
             check=True,
         )
-        subprocess.run(
-            [
-                sys.executable,
-                str(plugin_cli),
-                "pack",
-                str(plugin_fixture),
-                "--output",
-                str(controls_dir / "worker-disabled-probe.vtplugin"),
-            ],
-            cwd=ROOT,
-            check=True,
-        )
+        _prepare_retired_plugin_packages(controls_dir, active=False)
         (controls_dir / "plugin-source.txt").write_text(
             str(archive.resolve()) + "\n", encoding="utf-8"
         )
@@ -2791,19 +3011,6 @@ def run_scenario(
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
-    if scenario.id in {
-        "16-dashboard-lifecycle",
-        "17-interface-lifecycle",
-        "46-dashboard-native-output",
-        "47-plugin-surface-api",
-        "48-plugin-applications",
-        "49-plugin-application-security",
-        "50-plugin-headless-budget",
-        "51-plugin-application-commit-unknown",
-        "52-plugin-capability-services",
-        "53-record-manager",
-    }:
-        environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
     )
@@ -3272,6 +3479,7 @@ def run_product_acceptance(
     if any(
         scenario.id
         in {
+            "11-plugin-mutation",
             "16-dashboard-lifecycle",
             "17-interface-lifecycle",
             "46-dashboard-native-output",
@@ -3303,6 +3511,7 @@ def run_product_acceptance(
         if (
             scenario.id
             in {
+                "11-plugin-mutation",
                 "16-dashboard-lifecycle",
                 "17-interface-lifecycle",
                 "46-dashboard-native-output",
@@ -3406,6 +3615,8 @@ def _run_host_presentation_restart_acceptance(
     workspace_root = created_workspace_root
     if scenario.id == "16-dashboard-lifecycle":
         seed_legacy_layouts(workspace_root, persistent_root, seed)
+    if scenario.id == "11-plugin-mutation":
+        seed["legacyPlugin"] = _seed_retired_plugin(workspace_root, persistent_root, seed)
     try:
         _write_json_atomic(
             state_path,
@@ -3414,6 +3625,11 @@ def _run_host_presentation_restart_acceptance(
                 "workspaceRoot": str(workspace_root),
                 "localData": str((readiness_dir / "local-data").resolve()),
                 **{name: seed[name] for name in required},
+                **(
+                    {"legacyPlugin": seed["legacyPlugin"]}
+                    if scenario.id == "11-plugin-mutation"
+                    else {}
+                ),
             },
         )
     except OSError:
@@ -3443,6 +3659,15 @@ def _run_host_presentation_restart_acceptance(
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_RESUME_FAILED"
         )
+    if scenario.id == "11-plugin-mutation":
+        try:
+            resume["historicalPreservationAfterClose"] = _verify_retired_plugin_preservation(
+                workspace_root, persistent_root
+            )
+        except OSError, ValueError, sqlite3.Error:
+            return _host_presentation_phase_failure(
+                scenario, phase_results, "PLUGIN_HISTORICAL_PRESERVATION_CHANGED"
+            )
     if scenario.id == "16-dashboard-lifecycle":
         (readiness_dir / "vibetable-readiness.json").unlink(missing_ok=True)
         reopened = run_scenario(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from backend.contracts.plugin import (
     CommandContext,
@@ -135,10 +135,12 @@ __all__ = [
     "InspectInstallExecutionParams",
     "InspectInstallParams",
     "PluginIdentityParams",
+    "PluginPreservationPageParams",
     "PluginProjectParams",
     "PluginTaskParams",
     "ResolvePluginFileParams",
     "ResolvePluginInteractionParams",
+    "RetiredPluginExecutionParams",
     "RollbackPluginParams",
     "SetPluginEnabledParams",
     "StartPluginActionParams",
@@ -146,3 +148,20 @@ __all__ = [
     "UpgradePluginExecutionParams",
     "UpgradePluginParams",
 ]
+
+
+class RetiredPluginExecutionParams(PluginContract):
+    """No legacy payload is executed; every object receives the retirement diagnostic."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class PluginPreservationPageParams(PluginContract):
+    """Read-only Go preservation page; Python exposes no handler."""
+
+    project_key: str = Field(min_length=1)
+    plugin_id: str = Field(min_length=1)
+    installation_id: str = Field(min_length=1)
+    installation_revision: int = Field(strict=True, ge=1)
+    after_record_id: str = Field(default="", pattern=r"^(?:[A-Za-z0-9]{15})?$")
+    record_offset: int = Field(default=0, strict=True, ge=0, le=1 << 30, multiple_of=256 * 1024)

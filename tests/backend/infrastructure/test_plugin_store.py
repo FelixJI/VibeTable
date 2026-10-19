@@ -22,11 +22,11 @@ from backend.infrastructure.plugin_store import (
 def _manifest(*, version: str = "1.0.0") -> PluginManifest:
     return PluginManifest.model_validate(
         {
-            "$schema": "vibetable.plugin-manifest.v1",
+            "$schema": "vibetable.plugin-manifest.v2",
             "pluginId": "com.example.summary",
             "version": version,
             "displayName": {"en": "Summary"},
-            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "3.x"},
             "permissions": {
                 "data": [],
                 "files": [],
@@ -38,7 +38,8 @@ def _manifest(*, version: str = "1.0.0") -> PluginManifest:
                     "displayName": {"en": "Summarize"},
                     "mode": "local",
                     "risk": "read",
-                    "workerEntry": "dist/worker.js",
+                    "presentation": "headless",
+                    "entry": "dist/action.js",
                 }
             ],
         }

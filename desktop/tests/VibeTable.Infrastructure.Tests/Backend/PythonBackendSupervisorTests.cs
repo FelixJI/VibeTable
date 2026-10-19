@@ -770,8 +770,20 @@ public sealed class PythonBackendSupervisorTests
                     "task.cancelExecution",
                     "task.startExecution",
                     "task.settleExport",
+                    "plugin.cancelTask",
+                    "plugin.describeAction",
+                    "plugin.resolveFile",
+                    "plugin.resolveInteraction",
+                    "plugin.startAction",
                 },
                 result.Capabilities);
+            foreach (string retired in new[] { "plugin.cancelTask", "plugin.describeAction",
+                "plugin.resolveFile", "plugin.resolveInteraction", "plugin.startAction" })
+            {
+                var error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+                    supervisor.Client.InvokeAsync<object, JsonElement>(retired, new { }, CancellationToken.None));
+                Assert.AreEqual("plugin_worker_retired", error.ErrorData!.Value.GetProperty("code").GetString());
+            }
         }
         finally
         {

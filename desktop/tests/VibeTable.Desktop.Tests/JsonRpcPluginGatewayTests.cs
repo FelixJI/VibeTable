@@ -15,19 +15,7 @@ public sealed class JsonRpcPluginGatewayTests
     {
         var transport = new AutoRespondTransport();
         await using var client = new JsonRpcClient(transport);
-        using var gateway = new JsonRpcPluginGateway(client, (request, path, token) =>
-            Task.FromResult(JsonSerializer.SerializeToElement(new SessionPathGrant("opaque", "export_target", "write", "output.txt", null, "text/plain", 9999999999), new JsonSerializerOptions(JsonSerializerDefaults.Web))));
-        var context = new PluginRuntimeCommandContext(
-            "vibetable.command-context.v1",
-            "project-1",
-            "customers",
-            [JsonDocument.Parse(""""1"""").RootElement.Clone()],
-            null,
-            "zh-CN",
-            "light",
-            "comfortable",
-            JsonDocument.Parse("{}").RootElement.Clone(),
-            "1.0.0");
+        using var gateway = new JsonRpcPluginGateway(client);
 
         await gateway.InspectInstallAsync(
             new("project-1", "revision-1", "source-1", "plan-host-1"), CancellationToken.None);
@@ -37,20 +25,6 @@ public sealed class JsonRpcPluginGatewayTests
             new("project-1", "com.acme.clean", UpgradePlan, "revision-2"), CancellationToken.None);
         await gateway.RollbackAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
         await gateway.UninstallAsync(new("project-1", "com.acme.clean", "record-clean", 1), CancellationToken.None);
-        await gateway.DescribeActionAsync(
-            new("project-1", "com.acme.clean", "normalize", context), CancellationToken.None);
-        await gateway.StartActionAsync(
-            new(
-                "project-1",
-                "com.acme.clean",
-                "normalize",
-                context,
-                JsonDocument.Parse("""{"trim":true}""").RootElement.Clone()),
-            CancellationToken.None);
-        await gateway.ResolveInteractionAsync(new("run-1", "i-1", "rejected"), CancellationToken.None);
-        await gateway.ResolveFileAsync(new("file-1", "run-1", "project-1", "plugin-1", "action-1", "write", [], "output.txt", "text/plain", 9999999999), @"C:\trusted\output.txt", CancellationToken.None);
-        await gateway.CancelTaskAsync(new("task-1"), CancellationToken.None);
-
         CollectionAssert.AreEqual(
             new[]
             {
@@ -59,11 +33,6 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.upgrade",
                 "plugin.rollback",
                 "plugin.uninstall",
-                "plugin.describeAction",
-                "plugin.startAction",
-                "plugin.resolveInteraction",
-                "plugin.resolveFile",
-                "plugin.cancelTask",
             },
             transport.Methods);
         Assert.AreEqual("record-clean", transport.Requests[4].GetProperty("params").GetProperty("installationId").GetString());
@@ -98,19 +67,7 @@ public sealed class JsonRpcPluginGatewayTests
             "com.acme.clean",
             transport.Requests[2].GetProperty("params").GetProperty("plan")
                 .GetProperty("manifest").GetProperty("pluginId").GetString());
-        Assert.AreEqual(
-            "project-1",
-            transport.Requests[5].GetProperty("params").GetProperty("context")
-                .GetProperty("projectKey").GetString());
-        Assert.IsTrue(
-            transport.Requests[6].GetProperty("params").GetProperty("input")
-                .GetProperty("trim").GetBoolean());
-        Assert.AreEqual(
-            "rejected",
-            transport.Requests[7].GetProperty("params").GetProperty("decision").GetString());
-        Assert.AreEqual("opaque",
-            transport.Requests[8].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
-        Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
+
     }
 
     [TestMethod]
@@ -219,12 +176,6 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.cancelInstall" => "true",
                 "plugin.uninstall" =>
                     """{"uninstalled":true,"privateSettingsRetained":true}""",
-                "plugin.describeAction" => """{"available":true,"reasons":[]}""",
-                "plugin.startAction" =>
-                    """{"taskId":"t","runId":"r","pluginId":"x","pluginVersion":"1.0.0","actionId":"a","projectKey":"p","collection":null,"targetCount":0,"risk":"read","state":"queued","cancelRequested":false,"result":null,"error":null}""",
-                "plugin.cancelTask" => "true",
-                "plugin.resolveInteraction" => """{"status":"resolved","decision":"rejected"}""",
-                "plugin.resolveFile" => "true",
                 _ =>
                     """{"projectKey":"project","pluginId":"x.test","version":"1","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourceType":"package","sourceLocation":"package.vtplugin","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"ui":{}},"schemas":{},"status":"enabled","disabledReason":null,"revision":1}""",
             };

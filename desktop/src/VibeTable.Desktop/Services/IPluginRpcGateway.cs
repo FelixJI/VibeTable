@@ -34,10 +34,6 @@ public interface IPluginRpcGateway : IDisposable
 {
     Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(PluginSetEnabledExecutionParams request, CancellationToken token)
         => Task.FromException<PluginRuntimeSnapshot>(new NotSupportedException("Lifecycle execution is unavailable."));
-    event Action<PluginEventEnvelope>? TaskChanged;
-    event Action<PluginEventEnvelope>? InteractionRequested;
-    event Action<PluginEventEnvelope>? FileRequested;
-
     /// <summary>Raised once when the backing client transport terminates.</summary>
     event Action? Terminated;
 
@@ -59,15 +55,4 @@ public interface IPluginRpcGateway : IDisposable
         PluginRollbackParams request, CancellationToken token);
     Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request, CancellationToken token);
-    Task<PluginRuntimeActionAvailability> DescribeActionAsync(
-        PluginDescribeActionParams request, CancellationToken token);
-    Task<PluginRuntimeTaskSnapshot> StartActionAsync(
-        PluginStartActionParams request, CancellationToken token);
-    Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
-        PluginResolveInteractionParams request, CancellationToken token);
-    Task<bool> ResolveFileAsync(
-        PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token);
-    Task RevokeRunFileGrantsAsync(string runId) => Task.CompletedTask;
-    Task<bool> CancelTaskAsync(
-        PluginTaskParams request, CancellationToken token);
 }

@@ -15,8 +15,8 @@
     },
     "rpcMethods": {
       "type": "array",
-      "minItems": 117,
-      "maxItems": 117,
+      "minItems": 118,
+      "maxItems": 118,
       "uniqueItems": true,
       "items": {
         "type": "object",
@@ -70,8 +70,8 @@
     },
     "eventTopics": {
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 6,
+      "maxItems": 6,
       "uniqueItems": true,
       "items": {
         "type": "object",

@@ -1096,6 +1096,7 @@ export interface PluginSnapshot {
 }
 
 export interface PluginInstallPlan {
+  readonly blockingReasons?: readonly string[];
   readonly targetInstallationId?: string | null;
   readonly targetRevision?: number | null;
   readonly planId: string;

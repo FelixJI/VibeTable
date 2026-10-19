@@ -21,10 +21,10 @@ Go 的私有 `/api/vibetable/v3/plugins/surface` 重用 v2 query.Source、plugin
 Host-only 凭据不进入插件 JSON。MutationKernel 的可信 `Authorize` 回调在事务内、幂等回放之前
 核对撤权和安装代际，业务行 guard 与审计保持原权威路径。
 
-`HostPluginTaskRegistry` 同时拥有迁移期旧 Python gateway 任务和无 gateway 的 native surface
-保存任务、确认消费及公开终态。新页面提交不启动 Python 插件执行器或 Node Worker；Python
-仍可负责旧包安装管理，不能作为新业务执行 fallback。native confirmation 仍由可信 Host UI
-解析与批准，插件仅得到 opaque planId；回执未知不补发，真实成功不被迟到取消覆盖。
+`HostPluginTaskRegistry` 只拥有原生 surface 的保存任务、确认消费及公开终态。
+插件代码仅在隔离 WebView2 frame 内运行，不经过 Python 或 Node 插件执行器。
+Python 保留固定的平台包检查/安装和 CSV/XLSX 等用途。确认由可信 Host UI 解析与批准，
+插件仅得到 opaque planId；回执未知不补发，真实成功不被迟到取消覆盖。
 
 #482 起 v2 action 可声明 `presentation: application/headless`（entry 在 action 上，与
 `ui.customViews`/旧表单 schema 互斥）。Host catalog 投影为这类动作在 action 级派生 src/token
@@ -32,7 +32,7 @@ Host-only 凭据不进入插件 JSON。MutationKernel 的可信 `Authorize` 回�
 fragment 变化被允许，导航栏/返回平台/管理入口始终在插件 frame 之外），headless 由保留路径
 `__vibetable_host__/headless.html` 的 Host 内置受控文档加载包内 JS 模块（包内同路径不可伪造，
 CSP/独立 origin/初始 source 语义与页面 surface 一致）；Go surfaceInstallation 同时接受
-customViews 与 presentation-entry 两种绑定。旧栈安装新形态明确失败，旧 v1/v2 包语义与序列化不变。
+customViews 与 presentation-entry 两种绑定。旧 v1/API1–2 Worker 包只读保留原件；检查、启用和升级返回迁移诊断，不再执行。
 
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method 与严格 Schema v2 解析；
 invoker 按生成 policy/Workspace catalog 选择 Go、Host 或 Python owner。Go HTTP 握手独立持有
@@ -41,7 +41,7 @@ workspace epoch lease 至实际请求完成，单 caller 取消仅结束自身�
 `ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 捕获固定 runtime、workspace
 UUID/epoch 和 canonical Sidecar snapshot。Go binding identity 不含 Python client：普通打开、
 查询、编辑、workspace 恢复及 Sidecar 重启均只恢复 Go/Host 准入，不启动或等待 Python。
-首次 CSV/XLSX preview/template/import/export，以及必要插件执行，经同一 runtime 的按需入口
+首次 CSV/XLSX preview/template/import/export，以及固定的包检查/安装，经同一 runtime 的按需入口
 启动现有 Python supervisor。并发共享一个启动 Task；共享启动拥有独立 Host epoch lease、
 runtime ingress 取消与既有 BackendTimeout。单 caller 不取消其他等待者；失败后仅新请求重试。
 SessionManager 先 request drain 后 runtime drain，因此启动失败/取消必须等待 supervisor 真正
@@ -119,16 +119,17 @@ Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及�
 ## 插件任务/交互公开 owner（L7）
 
 `plugin.task.get` / `plugin.task.cancel` / `plugin.interaction.resolve` 由 WPF
-`HostPluginTaskRegistry` 唯一拥有：Host 生成 taskId/runId 并在调用执行器前登记，任务以 project/session/fence
-绑定到启动它的 gateway 代际，终态粘滞，迟到取消不能改写已记录的成功；执行报告早于 start 回包时不得降级。Python 仅保留执行上下文、取消句柄与等待
-Host 回复的 future；`plugin.getTask` 已从 Python 退役，`plugin.cancelTask`/`plugin.resolveInteraction`/
-`plugin.resolveFile` 只是封闭 host-only 执行入口。Python client 失效（transport 终止、重绑或项目上下文切换）时，
-非终态任务立即结算为 `aborted`，错误码 `plugin_task_aborted` 并明确 `commitOutcome: unknown`，不宣称零写入也不自动重放；
-待确认交互与原生文件选择晚返回按代际拒绝，Host 文件 grant 撤销仍由 `HostSessionFileBroker` 的 Retire/DrainCompletion 观察。
-安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；共享插件状态由下述 Go catalog 持久化。
-确认登记同时核对 run/project/plugin/action/interactionId 和期限，并在 Host 原子消费；文件选择回包核对完整请求及 run 取消令牌。
-任务终态撤销该 run 的文件授权，transport dispose 等待已退休 broker 的 DrainCompletion，首个终止观察者异常不阻断其他 owner。
-Web 终态不可被迟到交互或任务回包复活，终态面板不再显示仍在等待的提示。
+`HostPluginTaskRegistry` 唯一拥有。Host 生成 taskId/runId，绑定安装身份、surface 与工作区代际；
+终态粘滞，迟到取消不能改写已记录的成功。确认登记核对 run/project/plugin/action/interactionId
+和期限，在 Host 原子消费；安装退役和工作区切换会终止待确认请求。
+Python 的 describeAction/startAction/cancelTask/resolveInteraction/resolveFile 仅保留固定
+`plugin_worker_retired` 拒绝，不持有执行、交互或文件请求状态。原生文件能力由
+`PluginSurfaceApi.Files` 与 `HostSessionFileBroker` 管理；任务终态撤销对应授权。
+未知提交保持 unknown，不自动重放；Web 不能用迟到任务回包复活已结束任务。
+安装计划仍由 `HostInstallPlanLeaseRegistry` 持有，共享插件状态仍由 Go catalog 持久化。
+
+以下 #369 报告是旧实现的历史证据，不代表当前无 Worker 链已验收；当前资格以对应 PR
+及完整产品场景报告为准。
 
 #369 的本地真实候选 S11（`build/qa/task369-plugin-owner/20260924T045540Z/product-e2e-report.json`）通过：
 原生授权文件读写、明确确认后的单条提交、字段越权拒绝，以及待确认时杀掉已归属的 Python 子进程后公开 task.get 的
@@ -144,8 +145,7 @@ aborted/unknown、旧 resolve 的 expired、既有成功不变和 Go query 可�
 `plugin.listCatalog` / `plugin.listAudit` / `plugin.listPendingCleanup` / `plugin.setEnabled`
 由 Host Product binding 直达 Go，不要求 Python gateway 就绪。PocketBase 的
 `vibetable_plugin_records` 保存 installation、revision、audit、setting 四类记录，projectKey
-固定为当前 workspace UUID 的 `local:<32 位小写十六进制>`；路径不是身份。Python 包检查与 Node
-执行器仅通过 session 保护的固定 `/api/vibetable/v1/plugins/store` 闭集操作读写共享状态。
+固定为当前 workspace UUID 的 `local:<32 位小写十六进制>`；路径不是身份。Python 固定包检查/安装仅通过 session 保护的固定 `/api/vibetable/v1/plugins/store` 闭集操作读写共享状态。
 写入复用业务 write coordinator/fence 和同事务持久收据；`commit_install` 一次提交安装 snapshot、
 当前包 revision、安装 audit 和 catalog outbox，不跨 HTTP 进行删除补偿。
 
@@ -158,10 +158,10 @@ Go outbox 发布 `plugin.catalog.changed`，Host 在当前 epoch、gateway gener
 复用 `PluginRequestDispatcher.ProjectSnapshot` 投影，Web 断线恢复后重新读取完整 catalog。
 包的 source/localPath 字段不授予执行或资源能力：Host 只按既有 packageHash/Base32 规则定位当前
 runtime data root 的 `state/plugin-packages/*.vtplugin`，缺本机保留包时不生成资源链接；重新定位后
-使用新 runtime root。Python 执行前复用既有包检查校验预期 packageHash。Host 保留确认、文件 grant
+使用新 runtime root。Python 包安装前复用既有包检查校验预期 packageHash。Host 保留确认、文件 grant
 与 surface token 能力；隐藏升级/回滚/卸载未开放为公开 RPC。
 
-## 插件安装计划与执行进程（L9）
+## 插件安装计划与固定平台进程（L9）
 
 `HostInstallPlanLeaseRegistry` 保存完整安装计划与下载包 lease。Host 签发 planId、核对 inspect 回显，
 并将计划绑定到 workspace/session、Go authority epoch 和具体 Python gateway 代际。公开 renderer
@@ -173,14 +173,19 @@ Python 不再维护 `_plans` 或接受远端 cancelInstall；它在执行时校�
 Python transport 终止立即退休该 gateway 的计划绑定，已消费操作在开始和投影结果时再次检查绑定。
 这不会退休仍可用的 Go epoch，也不会因 Python 重启恢复计划或自动重放未知提交。
 
-Python supervisor 复用已有 lifecycle 锁清理意外退出的精确 ProcessGeneration：关闭该代 Windows Job，
-使正在计算且不读取 stdin 的 Node 也退出。若排队补启已替换旧代，旧清理直接结束，不影响新客户端。
-Job assignment 失败沿已有 teardown 回收已启动进程；`ERROR_ACCESS_DENIED` 不能证明进程已被当前 Job 接管。
-相邻 supervisor 回归在任何显式 Stop/Dispose 前检查真实繁忙 Node 退出，并验证排队新代仍可调用。
-真实包的 S11 同时覆盖确认、文件能力、崩溃结算、Host 重启后的 catalog 和缺本机包缓存诊断；
-主干固定样本（main@0bdbc1b）已将上述 L8/L9 范围连同 L10 六个普通场景（S01/02/03/05/06/08）
-真实业务完成后的零 Worker Job 成员观测（Host/Go 各 1、Python/Node 各 0）一并验收，见
-[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)。
+Python supervisor 的固定平台进程清理和 DocumentDiff.Worker 继续保留。
+插件 Node adapter/runner 与 Python 插件业务执行编排已删除；不以改名后的执行器回退。
+当前 S11 验证新执行链、确认、文件能力、Host 重启与旧包保全；隔离插件卡死、异常和未知
+提交还由 S49/S50/S51 覆盖。历史 L8/L9 运行报告见
+[产品 E2E 历史证据](../e2e-performance.md#当前产品-e2e-证据)。
+
+## 旧插件原件保全
+
+插件中心通过 Host-only `pluginPreservation.snapshot` 分页读取当前工作区的四类原始记录。
+Go 每页重验安装身份和修订，保留原 JSON 文本；Host 只从可信 workspace cache 按已有
+packageHash 读取原包，不信任记录中的 localPath。ZIP 包含 records.json、原 vtplugin 与
+preservation.json；缺包明确报告，不生成替代空包。取消、工作区退役或失败不会提交半成品，
+该通道不修改安装、私有设置、审计或业务数据。
 
 ## Shell readiness 与按需 Worker
 

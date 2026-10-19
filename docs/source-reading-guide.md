@@ -70,7 +70,7 @@ uv run python scripts/dev.py --build-only
 | Python BFF | stdio JSON-RPC、应用服务、导入导出、插件和 PocketBase adapter | `backend/__main__.py`、`backend/rpc/`、`backend/adapters/pocketbase/` | `tests/backend/` |
 | Go sidecar | PocketBase、workspace-v2、修订树、Snapshot 和恢复 | `sidecar/cmd/vibetable-pb/main.go`、`sidecar/internal/workspacev2/` | 相邻 `*_test.go` |
 | 共享契约 | v1 product RPC、v2 workspace RPC 与 schema fixtures | `contracts/v1/`、`contracts/v2/`、`contracts/schema-v2/` | 各栈 contract tests |
-| 插件平台 | SDK、manifest、示例与隔离执行 | `sdk/plugin/`、`examples/plugins/`、`backend/infrastructure/plugin_worker.py` | SDK/示例及 backend plugin tests |
+| 插件平台 | SDK、manifest、示例与隔离执行 | `sdk/plugin/`、`examples/plugins/`、`desktop/src/VibeTable.Desktop/Services/PluginSurfaceApi.cs` | SDK/示例及 backend plugin tests |
 
 不要从 `MainWindow.Product.cs` 或 `backend/__main__.py` 第一行一路读到底。它们是组合根，适合在你理解各个小接口后回来确认“这些模块如何接起来”。
 
@@ -208,8 +208,9 @@ Go 测试通常与源码相邻。修改 handler 时，先找到方法注册、sc
 
 1. `sdk/plugin/src/types.ts` 与 `src/index.ts`
 2. `examples/plugins/normalize-text/` 的 manifest、源码和测试
-3. `backend/infrastructure/plugin_worker.py`
-4. `backend/application/plugin_platform_service.py` 及相关 contracts
+3. `desktop/src/VibeTable.Desktop/Services/PluginSurfaceApi.cs`
+4. `sidecar/internal/app/plugin_surface_api.go` 与 `pluginstore` 权威目录
+5. `backend/application/plugin_platform_service.py`（仅固定包检查/安装）及相关 contracts
 
 插件只提交受控 mutation plan，不直接取得数据库写权限。这是理解插件接口的前提。
 

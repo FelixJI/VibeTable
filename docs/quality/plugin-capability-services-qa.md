@@ -1,6 +1,6 @@
 # 插件完整能力服务产品 QA
 
-`52-plugin-capability-services` 是 file-io lane 的独立合成旅程。它编译仓库真实 Plugin SDK、经正常 packer 产生 manifest.v2 包，安装到本次新工作区，并在禁用 NodePluginWorkerAdapter 的真实 WPF/WebView2 中执行。它不依赖 48 的打印阶段；48 原生打印和 51 unknown 提交回执继续是独立必需门禁。
+`52-plugin-capability-services` 是 file-io lane 的独立合成旅程。它编译仓库真实 Plugin SDK、经正常 packer 产生 manifest.v2 包，安装到本次新工作区，并在已退役 NodePluginWorkerAdapter 的真实 WPF/WebView2 中执行。它不依赖 48 的打印阶段；48 原生打印和 51 unknown 提交回执继续是独立必需门禁。
 
 在受控 Windows CI 新包上执行：
 

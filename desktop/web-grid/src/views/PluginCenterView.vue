@@ -33,6 +33,51 @@ const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
 const githubRepository = ref("");
 const bridge = useHostBridge();
+const pluginPreservationBusy = ref(false);
+const pluginPreservationStatus = ref("");
+let pluginPreservationRequestId: string | null = null;
+let pluginPreservationGeneration = 0;
+function cancelPluginPreservation(): void {
+  ++pluginPreservationGeneration;
+  const target = pluginPreservationRequestId;
+  pluginPreservationRequestId = null;
+  pluginPreservationBusy.value = false;
+  if (target === null || (workspaceSession.enabled && (!workspaceSession.hasOpenWorkspace || workspaceSession.isTransitioning))) return;
+  try { bridge.notify("pluginPreservation.cancelRequested", { targetRequestId: target }); }
+  catch { /* The Host workspace lease and deadline also retire the export. */ }
+}
+async function exportPlugin(): Promise<void> {
+  const snapshot = store.selectedPlugin;
+  if (!snapshot?.installationId) return;
+  cancelPluginPreservation();
+  const generation = pluginPreservationGeneration;
+  pluginPreservationBusy.value = true;
+  pluginPreservationStatus.value = "";
+  let requestId: string | null = null;
+  try {
+    const handle = bridge.requestWithHandle("pluginPreservation.exportRequested", {
+      pluginId: snapshot.pluginId, installationId: snapshot.installationId, installationRevision: snapshot.revision,
+    });
+    requestId = handle.requestId;
+    pluginPreservationRequestId = requestId;
+    const result = await handle.promise;
+    if (generation === pluginPreservationGeneration) pluginPreservationStatus.value = result.cancelled
+      ? "已取消，原包与设置未改变。"
+      : result.missingPackages > 0
+        ? `已保存数据：${result.outputDisplayName}；${result.missingPackages} 项原包无法完整保全，详情见材料中的说明。`
+        : `已保存原包、设置与审计：${result.outputDisplayName}`;
+  } catch (error) {
+    if (generation === pluginPreservationGeneration) pluginPreservationStatus.value = error instanceof Error ? error.message : "保全失败，原数据未改变";
+  } finally {
+    if (pluginPreservationRequestId === requestId) pluginPreservationRequestId = null;
+    if (generation === pluginPreservationGeneration) pluginPreservationBusy.value = false;
+  }
+}
+watch(() => [store.selectedPlugin?.installationId, store.selectedPlugin?.revision, store.projectKey,
+  workspaceSession.sessionEpoch, workspaceSession.sessionState], () => {
+  cancelPluginPreservation();
+  pluginPreservationStatus.value = "";
+}, { flush: "sync" });
 const legacyReport = ref<LegacyLayoutReport | null>(null);
 const legacyBusy = ref(false);
 const legacyStatus = ref("");
@@ -159,9 +204,14 @@ const upgradePermissionDelta = computed<{ added: string[]; removed: string[] } |
     removed: [...before].filter(item => !after.has(item)),
   };
 });
+function blockerLabel(reason: string): string {
+  return reason === "plugin_worker_retired"
+    ? "旧 Worker 插件已停止支持；请先保存原包与设置，再迁移到新版插件。" : reason;
+}
 function blockingReasons(snapshot: PluginSnapshot): readonly string[] {
-  if (snapshot.blockingReasons?.length) return snapshot.blockingReasons;
-  return snapshot.disabledReason ? [snapshot.disabledReason] : [];
+  const reasons = snapshot.blockingReasons?.length ? snapshot.blockingReasons
+    : snapshot.disabledReason ? [snapshot.disabledReason] : [];
+  return reasons.map(blockerLabel);
 }
 function compatibility(value: Readonly<Record<string, unknown>>): string {
   return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`).join(" · ") || "未声明";
@@ -279,7 +329,7 @@ onMounted(() => {
     if (store.selectedPlugin) auditEvents.value = await service.listAudit(store.selectedPlugin.pluginId);
   });
 });
-onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispose(); });
+onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); cancelPluginPreservation(); service.dispose(); });
 </script>
 
 <template>
@@ -342,7 +392,7 @@ onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispo
 
     <section v-if="store.installPlan" class="install-plan" data-testid="plugin-install-plan">
       <div class="plan-title">
-        <span>INSTALL PLAN / READY</span>
+        <span>{{ store.installPlan.blockingReasons?.length ? "INSTALL PLAN / BLOCKED" : "INSTALL PLAN / READY" }}</span>
         <strong>{{ localize(store.installPlan.manifest.displayName, store.installPlan.manifest.pluginId) }} <code>{{ store.installPlan.manifest.version }}</code></strong>
       </div>
       <div><small>PACKAGE HASH</small><code>{{ store.installPlan.packageHash }}</code></div>
@@ -357,7 +407,9 @@ onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispo
       </div>
       <div><small>COMPATIBILITY</small><p>{{ compatibility(store.installPlan.manifest.compatibility) }}</p></div>
       <div><small>ACTIONS / RISK</small><p>{{ store.installPlan.manifest.actions.map((action) => `${localize(action.displayName, action.actionId)}:${riskLabel(action.risk)}`).join(' · ') || '无动作' }}</p></div>
-      <div><small>LOCAL WORKERS</small><p>{{ store.installPlan.manifest.actions.map((action) => action.workerEntry).join(' · ') || '无本地动作' }}</p></div>
+      <div v-if="store.installPlan.blockingReasons?.length" role="alert" data-testid="plugin-install-blocked">
+        此插件需要迁移后才能安装：{{ store.installPlan.blockingReasons.map(blockerLabel).join(' · ') }}
+      </div>
       <div><small>PROJECT REVISION</small><code>{{ store.installPlan.projectRevision }}</code></div>
       <div class="plan-actions">
         <button data-testid="plugin-install-cancel" type="button" class="quiet-button" @click="cancelPlan">取消</button>
@@ -370,7 +422,7 @@ onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispo
           data-testid="plugin-install-commit"
           type="button"
           class="primary-button"
-          :disabled="!store.projectContextReady || store.busy"
+          :disabled="!store.projectContextReady || store.busy || !!store.installPlan.blockingReasons?.length"
           @click="commitPlan"
         >{{ plannedUpgradePluginId ? '批准变更并升级' : '批准权限并安装' }}</button>
       </div>
@@ -414,6 +466,11 @@ onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispo
           <Upload :size="15" />本地开发文件夹已变化。请检查新的权限与本地执行计划后显式重新加载。
         </div>
 
+        <section class="plugin-preservation">
+          <button data-testid="plugin-preservation-export" type="button" :disabled="pluginPreservationBusy || !plugin.installationId" @click="exportPlugin">保存插件原包与设置</button>
+          <button v-if="pluginPreservationBusy" type="button" @click="cancelPluginPreservation">取消保全</button>
+          <p role="status">{{ pluginPreservationStatus }}</p>
+        </section>
         <section v-if="blockingReasons(plugin).length" class="blockers">
           <header><ShieldAlert :size="15" /><strong>插件整体不可用</strong><span>{{ blockingReasons(plugin).length }} 个阻断原因</span></header>
           <ul><li v-for="reason in blockingReasons(plugin)" :key="reason">{{ reason }}</li></ul>

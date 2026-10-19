@@ -135,8 +135,7 @@ public sealed record PluginResolveFileParams(string RequestId, SessionPathGrant?
 public sealed record PluginTaskParams(string TaskId);
 public sealed record PluginSurfaceAcceptance(bool Accepted);
 
-// Python execution/interaction wire fixtures. These mirror the domain RPC
-// contracts and remain separate from the smaller Web-facing presentation DTOs.
+// Host-owned plugin task and interaction contracts shared with isolated surfaces.
 public sealed record PluginRuntimeMetric(string Label, JsonElement Value);
 
 public sealed record PluginRuntimeResult(
@@ -269,7 +268,8 @@ public sealed record PluginRuntimeInstallPlan(
     PluginRuntimeManifest Manifest,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas,
     string? TargetInstallationId = null,
-    int? TargetRevision = null);
+    int? TargetRevision = null,
+    IReadOnlyList<string>? BlockingReasons = null);
 
 public sealed record PluginRuntimeSnapshot(
     string ProjectKey,

@@ -59,7 +59,8 @@
             "customViews": []
           }
         },
-        "schemas": {}
+        "schemas": {},
+        "blockingReasons": []
       },
       "projectRevision": "revision-1"
     }
@@ -204,7 +205,8 @@
             "customViews": []
           }
         },
-        "schemas": {}
+        "schemas": {},
+        "blockingReasons": []
       },
       "projectRevision": "revision-1"
     }

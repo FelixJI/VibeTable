@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据概览</title>
+<style>
+:root { color-scheme: light dark; }
+body { font: 14px/1.6 system-ui, "Segoe UI", sans-serif; margin: 0; padding: 16px 24px; color: var(--vt-plugin-text, #222); background: var(--vt-plugin-bg, #fff); }
+h1 { font-size: 18px; margin: 0 0 8px; }
+dl { display: grid; grid-template-columns: auto auto; gap: 4px 16px; margin: 8px 0; }
+dt { color: var(--vt-plugin-muted, #6b7280); }
+dd { margin: 0; }
+table { border-collapse: collapse; margin-top: 8px; }
+th, td { border: 1px solid var(--vt-plugin-border, #d1d5db); padding: 4px 8px; text-align: left; }
+label { margin-right: 8px; }
+#controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+button { padding: 6px 14px; }
+#status { min-height: 1.6em; }
+</style>
+</head>
+<body>
+<main>
+<h1>数据概览</h1>
+<p id="status" role="status">正在连接宿主…</p>
+<div id="controls">
+<label>字段 <select id="field" aria-label="聚焦字段"></select></label>
+<label>包含 <input id="contains" type="search" aria-label="筛选文本"></label>
+<button id="refresh" type="button">刷新</button>
+</div>
+<div id="summary" aria-live="polite"></div>
+</main>
+<script type="module" src="../dist/surface.js"></script>
+</body>
+</html>

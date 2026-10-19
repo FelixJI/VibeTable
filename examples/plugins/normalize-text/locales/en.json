@@ -1,4 +1,0 @@
-{
-  "action.normalize": "Normalize selected text",
-  "result.summary": "Updated {updated}, skipped {skipped}, conflicts {conflicts}"
-}

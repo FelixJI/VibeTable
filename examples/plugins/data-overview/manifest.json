@@ -1,5 +1,5 @@
 {
-  "$schema": "vibetable.plugin-manifest.v1",
+  "$schema": "vibetable.plugin-manifest.v2",
   "pluginId": "com.vibetable.examples.data-overview",
   "version": "1.0.0",
   "displayName": {
@@ -7,11 +7,11 @@
     "en": "Data overview"
   },
   "description": {
-    "zh-CN": "通过分页能力读取聚合和样本数据"
+    "zh-CN": "通过统一 surface API 读取授权元数据并分页汇总当前数据表"
   },
   "compatibility": {
-    "minHostVersion": "0.5.1",
-    "pluginApi": "2.x"
+    "minHostVersion": "0.5.3",
+    "pluginApi": "3.x"
   },
   "permissions": {
     "data": [
@@ -22,12 +22,16 @@
           "query"
         ],
         "fields": [
-          "$configured"
+          "*"
         ]
       }
     ],
     "files": [],
-    "privateStorage": false
+    "privateStorage": false,
+    "network": {
+      "domains": [],
+      "methods": []
+    }
   },
   "actions": [
     {
@@ -40,10 +44,7 @@
       "invocation": "manual",
       "placements": [
         "table.toolbar"
-      ],
-      "workerEntry": "dist/workers/overview.js",
-      "inputSchema": "schemas/action-input.v1.json",
-      "outputSchema": "schemas/action-output.v1.json"
+      ]
     }
   ],
   "ui": {
@@ -54,7 +55,8 @@
         "displayName": {
           "zh-CN": "数据概览"
         },
-        "entry": "dist/views/overview/index.html"
+        "entry": "ui/index.html",
+        "script": "dist/surface.js"
       }
     ]
   }

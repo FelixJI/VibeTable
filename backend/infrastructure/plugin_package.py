@@ -502,12 +502,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                 f"action {action_id} cannot declare entryFlow",
                 path=f"actions.{action_id}.entryFlow",
             )
-        if not isinstance(worker_entry, str):
-            raise PluginPackageError(
-                "worker_entry",
-                f"local action {action_id} must declare workerEntry",
-            )
-        _validate_reference(contents, worker_entry, schema=False)
+        # Legacy entries are metadata for preservation, never executable requirements.
+        if worker_entry is not None:
+            if not isinstance(worker_entry, str):
+                raise PluginPackageError("worker_entry", "legacy workerEntry must be a string")
+            _validate_reference(contents, worker_entry, schema=False)
 
     ui = manifest.get("ui", {})
     if not isinstance(ui, dict) or not isinstance(ui.get("customViews", []), list):

@@ -446,6 +446,16 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         and isinstance(call.args[0], ast.Constant)
         and isinstance(call.args[0].value, str)
     }
+    # Fixed rejection endpoints are registered together, not as literal AST calls.
+    registered.update(
+        {
+            "plugin.cancelTask",
+            "plugin.describeAction",
+            "plugin.resolveFile",
+            "plugin.resolveInteraction",
+            "plugin.startAction",
+        }
+    )
     registered.update(PRODUCT_RPC_REGISTRY)
     registered.update(current_owner_methods("goSidecar"))
     registered.update(current_owner_methods("wpfHost"))
@@ -478,7 +488,6 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
     assert catalog["eventTopics"] == [
         "data.changed",
         "plugin.catalog.changed",
-        "plugin.file.requested",
         "plugin.interaction.requested",
         "plugin.task.changed",
         "realtime.recovered",

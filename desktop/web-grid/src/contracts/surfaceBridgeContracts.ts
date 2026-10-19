@@ -1,23 +1,20 @@
 /**
- * #485 (Goal #480): the visual Interface/dashboard builder is retired. This
- * contract now describes the ONLY legacy-layout bridge surface: a Host-owned,
- * read-only preservation channel. The renderer may request a detection report
- * and ask the Host to save an authoritative preservation snapshot; it never
- * supplies export content or a target path, and no import/execution entry
- * exists on this contract. Abandoning an in-flight request uses the
- * fire-and-forget `legacyLayout.cancelRequested` envelope: the Host cancels
- * the correlated target request (freeing its single concurrency gate) and
- * settles the TARGET with `CANCELLED`; the cancel itself gets no reply.
+ * Host-owned archival export of retired layouts and retained plugin records.
+ * The renderer supplies neither export contents nor paths. Cancellation
+ * targets the original request; it does not create a separate reply.
  */
 
-export type LegacyLayoutWebMessageType =
+export type PreservationWebMessageType =
   | "legacyLayout.reportRequested"
   | "legacyLayout.exportRequested"
-  | "legacyLayout.cancelRequested";
+  | "legacyLayout.cancelRequested"
+  | "pluginPreservation.exportRequested"
+  | "pluginPreservation.cancelRequested";
 
-export type LegacyLayoutHostMessageType =
+export type PreservationHostMessageType =
   | "legacyLayout.reportLoaded"
-  | "legacyLayout.exportCompleted";
+  | "legacyLayout.exportCompleted"
+  | "pluginPreservation.exportCompleted";
 
 export interface LegacyLayoutDiagnostic {
   readonly code: string;
@@ -60,29 +57,46 @@ export interface LegacyLayoutExportResult {
   readonly outputDisplayName: string | null;
 }
 
-export interface LegacyLayoutWebPayloadMap {
+export interface PluginPreservationExportRequest {
+  readonly pluginId: string;
+  readonly installationId: string;
+  readonly installationRevision: number;
+}
+export interface PluginPreservationExportResult extends LegacyLayoutExportResult {
+  readonly missingPackages: number;
+}
+
+export interface PreservationWebPayloadMap {
+  "pluginPreservation.exportRequested": PluginPreservationExportRequest;
+  "pluginPreservation.cancelRequested": LegacyLayoutCancelRequest;
   "legacyLayout.reportRequested": LegacyLayoutReportRequest;
   "legacyLayout.exportRequested": LegacyLayoutExportRequest;
   "legacyLayout.cancelRequested": LegacyLayoutCancelRequest;
 }
 
-export interface LegacyLayoutHostPayloadMap {
+export interface PreservationHostPayloadMap {
+  "pluginPreservation.exportCompleted": PluginPreservationExportResult;
   "legacyLayout.reportLoaded": LegacyLayoutReport;
   "legacyLayout.exportCompleted": LegacyLayoutExportResult;
 }
 
-export const LEGACY_LAYOUT_WEB_MESSAGE_TYPES = [
+export const PRESERVATION_WEB_MESSAGE_TYPES = [
+  "pluginPreservation.exportRequested",
+  "pluginPreservation.cancelRequested",
   "legacyLayout.reportRequested",
   "legacyLayout.exportRequested",
   "legacyLayout.cancelRequested",
-] as const satisfies readonly LegacyLayoutWebMessageType[];
+] as const satisfies readonly PreservationWebMessageType[];
 
-export const LEGACY_LAYOUT_HOST_MESSAGE_TYPES = [
+export const PRESERVATION_HOST_MESSAGE_TYPES = [
+  "pluginPreservation.exportCompleted",
   "legacyLayout.reportLoaded",
   "legacyLayout.exportCompleted",
-] as const satisfies readonly LegacyLayoutHostMessageType[];
+] as const satisfies readonly PreservationHostMessageType[];
 
-export interface LegacyLayoutRequestResults {
+export interface PreservationRequestResults {
+  "pluginPreservation.exportRequested": PluginPreservationExportResult;
+  "pluginPreservation.cancelRequested": never;
   "legacyLayout.reportRequested": LegacyLayoutReport;
   "legacyLayout.exportRequested": LegacyLayoutExportResult;
   /** Cancellation is notify-only; the Host settles the target request instead. */

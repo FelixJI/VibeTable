@@ -5753,9 +5753,8 @@ function countProcessMembers(members, processName) {
     .filter(member => member.processName.toLowerCase() === lowered).length;
 }
 
-// Wait until one exact Job-scoped PID disappears. Killing the Python parent
-// reclaims its busy Node worker asynchronously through the Host Job, so the
-// bounded poll observes that expected transition without inventing retries:
+// Wait until one exact Job-scoped PID disappears. The bounded poll observes
+// that transition without inventing retries:
 // an observation failure or an unverifiable snapshot is an evidence gap that
 // propagates immediately, and a missing members list is never read as exit.
 async function waitForPackagedMemberExit(runtime, pid, timeoutMs = 10_000) {
@@ -5786,25 +5785,6 @@ async function waitForPackagedMemberExit(runtime, pid, timeoutMs = 10_000) {
   throw new Error(
     `packaged member ${pid} did not exit within ${timeoutMs}ms: ${JSON.stringify(lastObserved)}`,
   );
-}
-
-// The busy plugin Worker announces itself through a Host-written file grant,
-// never through worker stdout: Node may buffer stdout forever once killed.
-async function waitForBusyPluginMarker(markerPath, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const content = await fs.readFile(markerPath, "utf8");
-      if (content === "busy-compute-started\n") return content;
-      lastError = new Error(`unexpected busy marker payload: ${JSON.stringify(content)}`);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      lastError = error;
-    }
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  throw new Error(`busy plugin marker was never written: ${lastError}`);
 }
 
 async function listRetainedPluginPackages(workspaceRoot) {
@@ -6629,11 +6609,54 @@ async function scenario10(page, recorder, _network, runtime) {
   );
 }
 
+// This fixture uses real isolated surfaces and Host file grants with scoped test-mode pickers.
+async function openMutationBoundary(page) {
+  await page.locator(".action-row").filter({ hasText: "open-boundary" }).locator("button.run-button").click();
+  const frame = page.frameLocator(".surface-shell iframe");
+  await frame.locator("#status").filter({ hasText: /^ready$/u }).waitFor({ timeout: 30_000 });
+  return frame;
+}
+
+async function mutationBoundaryFiles(page, recorder, runtime, frame) {
+  const readControl = path.join(runtime.controlsDir, "attachment-replacement-source.txt");
+  const writeControl = path.join(runtime.controlsDir, "attachment-target.txt");
+  const previousRead = await fs.readFile(readControl, "utf8");
+  const previousWrite = await fs.readFile(writeControl, "utf8");
+  try {
+    // Existing Host test-mode pickers accept these fixed synthetic paths. Actual
+    // owned Windows picker UIA/SendInput remains the independent S52 CI gate.
+    await fs.writeFile(readControl, `${path.join(runtime.controlsDir, "52-input.csv")}\n`);
+    await fs.writeFile(writeControl, `${path.join(runtime.controlsDir, "52-output.bin")}\n`);
+    await frame.locator("#files").click();
+    await frame.locator("#result").filter({ hasText: '"status":"succeeded"' }).waitFor({ timeout: 30_000 });
+    const receipt = JSON.parse(await frame.locator("#result").innerText());
+    const input = await fs.readFile(path.join(runtime.controlsDir, "52-input.csv"));
+    const output = await fs.readFile(path.join(runtime.controlsDir, "52-output.bin"));
+    recorder.check("scoped test-mode Host file grants preserve exact bytes without disclosing paths",
+      receipt.bytes === input.length && input.equals(output)
+        && !JSON.stringify(receipt).includes(runtime.controlsDir), { receipt, picker: "Host test-mode controls" });
+  } finally {
+    await fs.writeFile(readControl, previousRead);
+    await fs.writeFile(writeControl, previousWrite);
+  }
+}
+
+async function waitForPluginTerminal(page, taskId) {
+  const deadline = Date.now() + 30_000;
+  let task;
+  do {
+    task = (await rawBridgeRequest(page, "plugin.task.get", { taskId })).payload;
+    if (["succeeded", "failed", "cancelled", "aborted"].includes(task?.state)) return task;
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  throw new Error(`native plugin task did not settle: ${JSON.stringify(task)}`);
+}
+
 async function scenario11(page, recorder, _network, runtime) {
   const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = databaseOpened.payload.projectKey.trim();
   await exerciseSdkExamples(page, recorder, runtime, projectKey, {
-    createSimpleTable, applyProductMutation, rawBridgeRequest,
+    createSimpleTable, applyProductMutation, rawBridgeRequest, selectTable,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage,
   });
   await page.getByTestId("nav-tables").click();
@@ -6644,132 +6667,61 @@ async function scenario11(page, recorder, _network, runtime) {
   const installPlan = page.getByTestId("plugin-install-plan");
   await installPlan.waitFor({ timeout: 30_000 });
   recorder.check("plugin permission and install plan was shown before approval",
-    (await installPlan.innerText()).includes("E2E"), {
-      installPlan: await installPlan.innerText(),
-    });
+    (await installPlan.innerText()).includes("E2E"), { installPlan: await installPlan.innerText() });
   await page.getByTestId("plugin-install-commit").click();
-  const pluginRow = page.locator("button.plugin-row")
-    .filter({ hasText: "com.vibetable.e2e.mutation-boundary" });
-  await pluginRow.waitFor({ timeout: 60_000 });
-  await pluginRow.click();
-
+  const pluginId = "com.vibetable.e2e.mutation-boundary";
+  const pluginRow = page.locator("button.plugin-row").filter({ hasText: pluginId });
+  await pluginRow.waitFor({ timeout: 60_000 }); await pluginRow.click();
   const toggle = page.getByTestId("plugin-toggle");
-  await page.waitForFunction(() => {
+  const settledToggle = async (enabled) => page.waitForFunction(enabled => {
     const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
     const runButton = document.querySelector(".action-row button.run-button");
-    return lifecycleToggle instanceof HTMLButtonElement
-      && runButton instanceof HTMLButtonElement
-      && lifecycleToggle.classList.contains("enabled")
-      && !lifecycleToggle.disabled
-      && !runButton.disabled;
-  });
-  await toggle.click();
-  await page.waitForFunction(() => {
-    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
-    const runButton = document.querySelector(".action-row button.run-button");
-    return lifecycleToggle instanceof HTMLButtonElement
-      && runButton instanceof HTMLButtonElement
-      && !lifecycleToggle.classList.contains("enabled")
-      && !lifecycleToggle.disabled
-      && runButton.disabled;
-  });
-  recorder.check("installed plugin can be disabled through its lifecycle UI",
-    !(await toggle.getAttribute("class")).includes("enabled")
-      && await page.locator(".action-row button.run-button").first().isDisabled());
-  await toggle.click();
-  await page.waitForFunction(() => {
-    const lifecycleToggle = document.querySelector('[data-testid="plugin-toggle"]');
-    const runButton = document.querySelector(".action-row button.run-button");
-    return lifecycleToggle instanceof HTMLButtonElement
-      && runButton instanceof HTMLButtonElement
-      && lifecycleToggle.classList.contains("enabled")
-      && !lifecycleToggle.disabled
-      && !runButton.disabled;
-  });
-  recorder.check("disabled plugin can be explicitly enabled again",
-    (await toggle.getAttribute("class")).includes("enabled")
-      && await page.locator(".action-row button.run-button").first().isEnabled());
-
-  const actions = page.locator(".action-row");
-  await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
-  await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
-  await page.getByTestId("plugin-action-start").click();
-  const fileStart = await waitForCapturedBridgeMessage(page, 30_000);
-  recorder.check("native file action received a Host task identity",
-    fileStart.type === "plugin.action.start" && Boolean(fileStart.payload?.taskId), { fileStart });
-  await page.locator(".result-card").waitFor({ timeout: 30_000 });
-  const fileTask = await rawBridgeRequest(page, "plugin.task.get", {
-    taskId: fileStart.payload.taskId,
-  });
-  const sourceBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-read-source.txt"));
-  const writtenBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-write-result.txt"));
-  recorder.check("native file grants completed read and write without exposing paths",
-    fileTask.payload?.state === "succeeded"
-      && fileTask.payload?.runId === fileStart.payload.runId
-      && fileTask.payload?.result?.table?.data?.rows === 0
-      && fileTask.payload?.result?.table?.data?.bytes === sourceBytes.length
-      && sourceBytes.equals(writtenBytes), { fileTask });
-  await page.getByTestId("plugin-action-close").click();
-
-  await actions.filter({ hasText: "allowed-plan" }).locator("button.run-button").click();
-  await page.getByTestId("plugin-action-start").click();
-  const confirmation = page.getByTestId("plugin-confirmation");
-  await confirmation.waitFor({ timeout: 30_000 });
-  const confirmationText = await confirmation.innerText();
-  const confirmationTargetCount = await confirmation.locator("dd").first().innerText();
-  const confirmationApprove = page.getByTestId("plugin-confirm-approve");
-  recorder.check("authorized mutation plan required explicit confirmation",
-    /FINAL WRITE CONFIRMATION/i.test(confirmationText)
-      && confirmationTargetCount.trim() === "1"
-      && await confirmationApprove.isVisible()
-      && await confirmationApprove.isEnabled(),
-  {
-    confirmation: confirmationText,
-    confirmationTargetCount,
-  });
-  await confirmationApprove.click();
-  await page.locator(".result-card").waitFor({ timeout: 30_000 });
-  await page.getByTestId("plugin-action-close").click();
-
-  await page.getByTestId("nav-tables").click();
-  const afterAuthorized = await waitForTableRecovery(
-    page,
-    "E2E Plugin Target",
-    pluginTable.tableId,
-    1,
-  );
-  recorder.check("approved plugin mutation became one visible record", afterAuthorized === 1);
-
-  await page.getByTestId("nav-plugins").click();
-  await pluginRow.click();
-  await actions.filter({ hasText: "denied-plan" }).locator("button.run-button").click();
-  await page.getByTestId("plugin-action-start").click();
-  const denied = page.getByTestId("plugin-task-error");
-  await denied.waitFor({ timeout: 30_000 });
-  const deniedText = await denied.innerText();
-  recorder.check("undeclared field mutation was rejected by the capability boundary",
-    /forbidden|permission|declared|field/i.test(deniedText), { deniedText });
-  const auditResponse = await rawBridgeRequest(page, "plugin.audit.list", {
-    projectKey,
-    pluginId: "com.vibetable.e2e.mutation-boundary",
-  });
-  const auditEvents = Array.isArray(auditResponse.payload) ? auditResponse.payload : [];
-  const deniedAudit = auditEvents.find((event) =>
-    event.errorCode
-    || /denied|rejected|failed|error/i.test(String(event.outcome)));
-  recorder.check("denied plugin mutation emitted an auditable rejection event",
-    Boolean(deniedAudit), { auditEvents });
-  await page.getByTestId("plugin-action-close").click();
-  await page.getByTestId("nav-tables").click();
-  const afterDenied = await waitForTableRecovery(
-    page,
-    "E2E Plugin Target",
-    pluginTable.tableId,
-    1,
-  );
-  recorder.check("rejected plugin mutation did not create a second record", afterDenied === 1);
-  await page.getByTestId("nav-plugins").click();
-  await pluginRow.click();
+    return lifecycleToggle instanceof HTMLButtonElement && runButton instanceof HTMLButtonElement
+      && lifecycleToggle.classList.contains("enabled") === enabled
+      && !lifecycleToggle.disabled && runButton.disabled === !enabled;
+  }, enabled);
+  await settledToggle(true); await toggle.click(); await settledToggle(false);
+  recorder.check("installed plugin can be disabled through its lifecycle UI", await page.locator(".action-row button.run-button").first().isDisabled());
+  await toggle.click(); await settledToggle(true);
+  recorder.check("disabled plugin can be explicitly enabled again", await page.locator(".action-row button.run-button").first().isEnabled());
+  let frame = await openMutationBoundary(page);
+  await mutationBoundaryFiles(page, recorder, runtime, frame);
+  const rows = async () => (await rawBridgeRequest(page, "query.page", {
+    tableId: pluginTable.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  })).payload.totalRows;
+  let successfulTask;
+  for (const decision of ["approved", "rejected", "cancelled"]) {
+    await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);
+    await frame.locator("#allowed").click();
+    const pending = (await waitForCapturedBridgeMessage(page, 30_000)).payload.snapshot;
+    const confirmation = page.locator(".host-confirmation");
+    await confirmation.waitFor({ timeout: 30_000 });
+    const taskId = await page.locator(".host-runtime").filter({ has: confirmation }).locator(".task-status code").innerText();
+    const before = (await rawBridgeRequest(page, "plugin.task.get", { taskId })).payload;
+    recorder.check(`surface ${decision} requires Host-owned final confirmation`,
+      before.collection === pluginTable.tableId && before.runId === pending.runId
+        && pending.pendingConfirmation.preview.affectedCount === 1
+        && /FINAL WRITE CONFIRMATION/u.test(await confirmation.innerText()), { pending });
+    if (decision === "approved") await page.getByTestId("plugin-surface-confirm-approve").click();
+    else if (decision === "rejected") await confirmation.getByRole("button", { name: "拒绝", exact: true }).click();
+    else await frame.locator("#cancel").click();
+    const task = await waitForPluginTerminal(page, taskId);
+    await frame.locator("#result").filter({ hasText: '"kind":"allowed"' }).waitFor({ timeout: 30_000 });
+    await page.waitForFunction(() => !document.querySelector('.host-confirmation'));
+    recorder.check(`surface ${decision} settles truthfully without extra records`,
+      task.state === (decision === "approved" ? "succeeded" : "cancelled") && await rows() === 1, { task });
+    const events = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey, pluginId })).payload;
+    recorder.check(`surface ${decision} durable audit binds to the exact Host run`,
+      events.some(event => event.eventType === "action" && event.runId === task.runId
+        && event.details?.taskId === taskId && event.outcome === (decision === "approved" ? "succeeded" : decision)), { events });
+    if (decision === "approved") successfulTask = task;
+  }
+  await frame.locator("#denied").click();
+  await frame.locator("#result").filter({ hasText: '"status":"failed"' }).waitFor({ timeout: 30_000 });
+  const denied = JSON.parse(await frame.locator("#result").innerText());
+  recorder.check("undeclared field preview is rejected before a mutation can be submitted",
+    /field|permission|forbidden|denied/iu.test(`${denied.code} ${denied.message}`) && await rows() === 1, { denied });
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
   const sourceControl = path.join(runtime.controlsDir, "plugin-source.txt");
   const installedSource = (await fs.readFile(sourceControl, "utf8")).trim();
   const invalidUpgrade = path.join(runtime.controlsDir, "invalid-plugin-upgrade");
@@ -6785,192 +6737,42 @@ async function scenario11(page, recorder, _network, runtime) {
   recorder.check("invalid upgrade source is rejected without replacing the installation",
     (await upgradeFailure.innerText()).trim().length > 0
       && await page.getByTestId("plugin-install-plan").isHidden()
-      && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
-  { message: await upgradeFailure.innerText() });
+      && (await page.locator(".status-strip").innerText()).includes("1.0.0"));
+  await fs.writeFile(sourceControl, `${installedSource}\n`, "utf8");
 
-  // Hold a real confirmation open while its Python execution process exits.
-  // Host owns the public terminal state and must reject the old decision.
-  await actions.filter({ hasText: "allowed-plan" }).locator("button.run-button").click();
-  const pendingCapture = await page.evaluateHandle(() => {
-    const capture = { snapshot: null, release: null };
-    const listener = (event) => {
-      let message = event.data;
-      if (typeof message === "string") {
-        try { message = JSON.parse(message); } catch { return; }
-      }
-      const snapshot = message?.payload?.snapshot;
-      if (message?.type !== "plugin.interaction.requested"
-        || snapshot?.actionId !== "allowed-plan" || !snapshot.pendingConfirmation) return;
-      capture.snapshot = snapshot;
-    };
-    window.chrome.webview.addEventListener("message", listener);
-    capture.release = () => window.chrome.webview.removeEventListener("message", listener);
-    return capture;
-  });
-  try {
-    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
-    await page.getByTestId("plugin-action-start").click();
-    const pendingStart = await waitForCapturedBridgeMessage(page, 30_000);
-    recorder.check("pending mutation has a Host task identity before process exit",
-      pendingStart.type === "plugin.action.start" && Boolean(pendingStart.payload?.taskId),
-      { pendingStart });
-    await confirmation.waitFor({ timeout: 30_000 });
-    const interaction = await pendingCapture.evaluate((capture) => capture.snapshot);
-    recorder.check("pending confirmation belongs to the same task run",
-      interaction?.runId === pendingStart.payload.runId
-        && Boolean(interaction?.pendingConfirmation?.interactionId), { interaction });
-    await requestPackagedProcessKill(runtime, "kill-backend", "plugin-pending-confirmation-owner");
-    const deadline = Date.now() + 30_000;
-    let abortedTask;
-    do {
-      abortedTask = await rawBridgeRequest(page, "plugin.task.get", {
-        taskId: pendingStart.payload.taskId,
-      });
-      if (abortedTask.payload?.state === "aborted") break;
-      await page.waitForTimeout(100);
-    } while (Date.now() < deadline);
-    recorder.check("Host preserves an explicit unknown-commit terminal after Python exits",
-      abortedTask.payload?.state === "aborted"
-        && abortedTask.payload?.runId === pendingStart.payload.runId
-        && abortedTask.payload?.error?.code === "plugin_task_aborted"
-        && abortedTask.payload?.error?.details?.commitOutcome === "unknown", { abortedTask });
-    await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
-    recorder.check("terminal task UI no longer waits for runtime updates",
-      !(await page.locator(".task-card").innerText()).includes("等待运行时更新"));
-    const oldDecision = await rawBridgeRequest(page, "plugin.interaction.resolve", {
-      runId: interaction.runId,
-      interactionId: interaction.pendingConfirmation.interactionId,
-      decision: "approved",
-    });
-    recorder.check("old confirmation cannot authorize work after its execution process exits",
-      oldDecision.payload?.status === "expired", { oldDecision });
-    const settledFileTask = await rawBridgeRequest(page, "plugin.task.get", {
-      taskId: fileStart.payload.taskId,
-    });
-    recorder.check("a confirmed successful task remains successful after Python exits",
-      settledFileTask.payload?.state === "succeeded", { settledFileTask });
-    const remainingRows = await rawBridgeRequest(page, "query.page", {
-      tableId: pluginTable.tableId,
-      query: { filters: [], sorts: [], offset: 0, limit: 100 },
-    });
-    recorder.check("Go query remains available and the unapproved mutation was not replayed",
-      remainingRows.type === "query.page" && remainingRows.payload?.totalRows === 1,
-      { remainingRows });
-  } finally {
-    await pendingCapture.evaluate((capture) => capture.release());
-    await pendingCapture.dispose();
-  }
-
-  // A compute-busy plugin Worker must be reclaimed through the Host-owned Job
-  // when only its Python parent is killed. The kill is issued inside the
-  // Worker's natural 15s budget (measured from before the action-start click,
-  // never from a later response), the exact busy Node PID disappears within a
-  // bounded wait, and the busy task settles to the Host's aborted terminal
-  // instead of a timeout failure.
-  const busyWriteControl = path.join(runtime.controlsDir, "plugin-file-write.txt");
-  const busyWriteControlBefore = await fs.readFile(busyWriteControl, "utf8");
-  const busyMarkerPath = path.join(runtime.controlsDir, "plugin-busy-started.txt");
-  await fs.writeFile(busyWriteControl, `${busyMarkerPath}\n`, "utf8");
-  try {
-    // The pending-confirmation crash leaves its action modal mounted; close
-    // it first so its overlay cannot swallow the busy action's run click.
-    await page.getByTestId("plugin-action-close").click();
-    await page.locator("aside.action-panel").waitFor({ state: "hidden", timeout: 10_000 });
-    await actions.filter({ hasText: "busy-compute" }).locator("button.run-button").click();
-    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
-    const busyActionStartedAt = Date.now();
-    await page.getByTestId("plugin-action-start").click();
-    const busyStart = await waitForCapturedBridgeMessage(page, 30_000);
-    recorder.check("busy compute action received a Host task identity",
-      busyStart.type === "plugin.action.start" && Boolean(busyStart.payload?.taskId),
-      { busyStart });
-    await waitForBusyPluginMarker(busyMarkerPath);
-    const markerSeenAt = Date.now();
-    const busyTaskBeforeKill = await rawBridgeRequest(page, "plugin.task.get", {
-      taskId: busyStart.payload.taskId,
-    });
-    const busyTopology = await requestPackagedProcessKill(
-      runtime,
-      "observe-processes",
-      "verify busy plugin worker topology",
-    );
-    const busyNodes = verifiedProcessMembers(busyTopology.members)
-      .filter(member => member.processName.toLowerCase() === "node.exe");
-    recorder.check("the busy plugin Worker is the only Node member while computing",
-      busyTaskBeforeKill.payload?.state === "running"
-        && busyTaskBeforeKill.payload?.runId === busyStart.payload.runId
-        && busyNodes.length === 1 && busyNodes[0].identityVerified === true,
-      { busyTaskBeforeKill, busyTopology });
-    const busyNodePid = busyNodes[0].pid;
-    const busyKill = await requestPackagedProcessKill(
-      runtime,
-      "kill-backend",
-      "plugin-busy-worker-owner",
-    );
-    const killIssuedAt = Date.now();
-    recorder.check("the Python-only kill was issued inside the Worker's natural budget",
-      busyKill.processName === "vibetable-backend.exe" && busyKill.pid !== busyNodePid
-        && killIssuedAt - busyActionStartedAt < 15_000,
-      { busyKill, killLatencyMs: killIssuedAt - busyActionStartedAt });
-    const busyCleanup = await waitForPackagedMemberExit(runtime, busyNodePid, 10_000);
-    recorder.check("killing only Python reclaims the exact busy Node through the Host Job",
-      busyCleanup.pid === busyNodePid
-        && countProcessMembers(busyCleanup.snapshot.members, "vibetable.next.exe") === 1
-        && countProcessMembers(busyCleanup.snapshot.members, "vibetable-pb.exe") === 1
-        && countProcessMembers(busyCleanup.snapshot.members, "node.exe") === 0
-        && countProcessMembers(busyCleanup.snapshot.members, "vibetable-backend.exe") === 0,
-    {
-      busyNodePid,
-      cleanupElapsedMs: busyCleanup.elapsedMs,
-      killLatencyMs: killIssuedAt - busyActionStartedAt,
-      markerSeenMs: markerSeenAt - busyActionStartedAt,
-      snapshot: busyCleanup.snapshot,
-    });
-    const busyTerminalDeadline = Date.now() + 30_000;
-    let busyTaskTerminal;
-    do {
-      busyTaskTerminal = await rawBridgeRequest(page, "plugin.task.get", {
-        taskId: busyStart.payload.taskId,
-      });
-      if (busyTaskTerminal.payload?.state === "aborted") break;
-      if (["succeeded", "failed", "cancelled"].includes(busyTaskTerminal.payload?.state)) {
-        throw new Error(
-          `busy plugin task settled through ${busyTaskTerminal.payload.state} instead of the Host aborted terminal: `
-            + JSON.stringify(busyTaskTerminal),
-        );
-      }
-      await page.waitForTimeout(100);
-    } while (Date.now() < busyTerminalDeadline);
-    recorder.check("the reclaimed busy task keeps an explicit unknown-commit terminal",
-      busyTaskTerminal.payload?.state === "aborted"
-        && busyTaskTerminal.payload?.runId === busyStart.payload.runId
-        && busyTaskTerminal.payload?.error?.code === "plugin_task_aborted"
-        && busyTaskTerminal.payload?.error?.details?.commitOutcome === "unknown",
-      { busyTaskTerminal });
-    await page.getByTestId("plugin-action-close").click();
-  } finally {
-    await fs.writeFile(busyWriteControl, busyWriteControlBefore, "utf8");
-  }
-
-  const catalogResponse = await rawBridgeRequest(page, "plugin.catalog.list", {
-    projectKey,
-  });
-  const catalogEntry = findCatalogEntry(catalogResponse.payload, "com.vibetable.e2e.mutation-boundary");
-  recorder.check("the installed plugin stays in the Go catalog after its backend exits",
-    catalogEntry?.pluginId === "com.vibetable.e2e.mutation-boundary"
-      && catalogEntry.status === "enabled"
-      && /^sha256:[0-9a-f]{64}$/.test(String(catalogEntry.packageHash)),
-    { catalogEntry });
-  const seedSession = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession,
-  );
-  return {
-    workspaceId: seedSession.workspaceId,
-    projectKey,
-    pluginId: "com.vibetable.e2e.mutation-boundary",
-    tableId: pluginTable.tableId,
-    packageHash: catalogEntry.packageHash,
-  };
+  // The package BFF no longer owns this execution. Its exit must not invent an unknown commit.
+  frame = await openMutationBoundary(page);
+  await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);
+  await frame.locator("#allowed").click();
+  const pending = (await waitForCapturedBridgeMessage(page, 30_000)).payload.snapshot;
+  const pendingConfirmation = page.locator(".host-confirmation");
+  await pendingConfirmation.waitFor({ timeout: 30_000 });
+  const pendingTaskId = await page.locator(".host-runtime").filter({ has: pendingConfirmation }).locator(".task-status code").innerText();
+  const killed = await requestPackagedProcessKill(runtime, "kill-backend", "retired-plugin-package-bff");
+  await waitForPackagedMemberExit(runtime, killed.pid);
+  const stillPending = (await rawBridgeRequest(page, "plugin.task.get", { taskId: pendingTaskId })).payload;
+  recorder.check("package BFF exit preserves the native pending confirmation identity",
+    stillPending.state === "running" && stillPending.runId === pending.runId
+      && await pendingConfirmation.isVisible(), { stillPending, interactionId: pending.pendingConfirmation.interactionId });
+  await page.locator(".host-confirmation").getByRole("button", { name: "拒绝", exact: true }).click();
+  const rejected = await waitForPluginTerminal(page, pendingTaskId);
+  const retainedSuccess = (await rawBridgeRequest(page, "plugin.task.get", { taskId: successfulTask.taskId })).payload;
+  recorder.check("native confirmation stays usable and successful results remain sticky after BFF exit",
+    rejected.state === "cancelled" && retainedSuccess.state === "succeeded" && await rows() === 1, { rejected, retainedSuccess });
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  await openMutationBoundary(page);
+  const topology = await requestPackagedProcessKill(runtime, "observe-processes", "surface runs without business processes");
+  recorder.check("surface reopen starts neither Python nor Node after package BFF exit",
+    countProcessMembers(topology.members, "vibetable-backend.exe") === 0
+      && countProcessMembers(topology.members, "node.exe") === 0, { topology });
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload;
+  const entry = findCatalogEntry(catalog, pluginId);
+  recorder.check("installed plugin remains authoritative after package BFF exit",
+    entry?.status === "enabled" && /^sha256:[0-9a-f]{64}$/u.test(entry.packageHash), { entry });
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  return { workspaceId: session.workspaceId, projectKey, pluginId, tableId: pluginTable.tableId,
+    packageHash: entry.packageHash, legacyPackage: path.join(runtime.controlsDir, "legacy-worker.vtplugin") };
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
@@ -7889,201 +7691,102 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
   const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
   recorder.check("restarted Host reopens the seeded plugin workspace writable",
-    switched.result?.workspaceId === state.workspaceId
-      && Number.isSafeInteger(switched.result?.sessionEpoch)
-      && switched.result.sessionEpoch > 0
-      && switched.result?.state === "openedWritable",
-    { start, expected: state.workspaceId, switched: switched.result });
+    switched.result?.workspaceId === state.workspaceId && switched.result?.state === "openedWritable"
+      && Number.isSafeInteger(switched.result?.sessionEpoch) && switched.result.sessionEpoch > 0, { start, switched });
   const assertZeroExecutionProcesses = async (label) => {
-    const observed = await requestPackagedProcessKill(
-      runtime,
-      "observe-processes",
-      "verify zero execution processes after Host restart",
-    );
-    recorder.check(label,
-      countProcessMembers(observed.members, "vibetable-backend.exe") === 0
-        && countProcessMembers(observed.members, "node.exe") === 0
-        && countProcessMembers(observed.members, "vibetable.next.exe") === 1
-        && countProcessMembers(observed.members, "vibetable-pb.exe") === 1,
-      { observed });
-    return observed;
+    const observed = await requestPackagedProcessKill(runtime, "observe-processes", label);
+    recorder.check(label, countProcessMembers(observed.members, "vibetable-backend.exe") === 0
+      && countProcessMembers(observed.members, "node.exe") === 0
+      && countProcessMembers(observed.members, "vibetable.next.exe") === 1
+      && countProcessMembers(observed.members, "vibetable-pb.exe") === 1, { observed });
   };
-
   await page.getByTestId("nav-plugins").click();
-  const pluginRow = page.locator("button.plugin-row")
-    .filter({ hasText: state.pluginId });
+  const pluginRow = page.locator("button.plugin-row").filter({ hasText: state.pluginId });
   await pluginRow.waitFor({ timeout: 60_000 });
-  recorder.check("the restarted Host renders the installed plugin from the Go catalog",
-    await pluginRow.isVisible(), { pluginId: state.pluginId });
-  await assertZeroExecutionProcesses(
-    "restarted Host reads the installed catalog without Python or Node");
-
-  const catalogResponse = await rawBridgeRequest(page, "plugin.catalog.list", {
-    projectKey: state.projectKey,
-  });
-  const catalogEntry = findCatalogEntry(catalogResponse.payload, state.pluginId);
-  recorder.check("the installed catalog entry survived the Host restart unchanged",
-    catalogEntry?.packageHash === state.packageHash
-      && catalogEntry.projectKey === state.projectKey
-      && catalogEntry.status === "enabled",
-    { catalogEntry, expectedPackageHash: state.packageHash });
-
-  const auditResponse = await rawBridgeRequest(page, "plugin.audit.list", {
-    projectKey: state.projectKey,
-    pluginId: state.pluginId,
-  });
-  const auditEvents = Array.isArray(auditResponse.payload) ? auditResponse.payload : [];
-  recorder.check("the seeded plugin audit history is readable after the Host restart",
-    auditEvents.length > 0
-      && auditEvents.every(event => event.pluginId === state.pluginId)
-      && auditEvents.some(event => event.eventType === "install"),
-    { auditEvents });
-  await assertZeroExecutionProcesses(
-    "daily catalog and audit reads never start Python or Node");
-
-  await page.getByTestId("nav-tables").click();
-  await selectTable(page, "E2E Plugin Target");
-  await page.getByTestId("nav-plugins").click();
-  await pluginRow.click();
-  const actions = page.locator(".action-row");
-  await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
-  await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
-  await page.getByTestId("plugin-action-start").click();
-  const restartStart = await waitForCapturedBridgeMessage(page, 30_000);
-  recorder.check("a plugin action still runs after the Host restart",
-    restartStart.type === "plugin.action.start" && Boolean(restartStart.payload?.taskId)
-      && restartStart.payload.collection === state.tableId,
-    { restartStart });
-  await page.locator(".result-card").waitFor({ timeout: 30_000 });
-  const restartTask = await rawBridgeRequest(page, "plugin.task.get", {
-    taskId: restartStart.payload.taskId,
-  });
-  const sourceBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-read-source.txt"));
-  const writtenBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-write-result.txt"));
-  recorder.check("the restarted action completed its native file roundtrip",
-    restartTask.payload?.state === "succeeded"
-      && restartTask.payload?.runId === restartStart.payload.runId
-      && sourceBytes.equals(writtenBytes), { restartTask });
-  await page.getByTestId("plugin-action-close").click();
-  const afterAction = await requestPackagedProcessKill(
-    runtime,
-    "observe-processes",
-    "verify lazy execution topology after restart action",
-  );
-  recorder.check("the restarted action lazily started Python and reclaimed its Node worker",
-    countProcessMembers(afterAction.members, "vibetable-backend.exe") === 1
-      && countProcessMembers(afterAction.members, "node.exe") === 0,
-    { afterAction });
-
-  // Withhold the exact retained package file. The seeded workspace installed
-  // exactly three plugins — the mutation-boundary fixture and both SDK example
-  // packages — and each installed plugin retains its content-addressed package.
-  // The catalog is the authority: derive every expected cache file name from
-  // the authoritative packageHash values through the shared compact-digest
-  // naming contract and require the cache to match that exact set with no
-  // extra files. The just-completed real action already read the fixture
-  // package through the product boundary, and the catalog packageHash evidence
-  // above names its identity. The next action must fail closed and
-  // diagnosably without spawning any Node process, never falling back to a
-  // shared absolute path, and the catalog entry must survive the miss.
-  const catalogEntries = Array.isArray(catalogResponse.payload) ? catalogResponse.payload : [];
-  const expectedPluginIds = [
-    state.pluginId,
-    "com.vibetable.examples.data-overview",
-    "com.vibetable.examples.normalize-text",
-  ];
-  const installedEntries = expectedPluginIds.map(id => findCatalogEntry(catalogEntries, id));
-  const retained = await listRetainedPluginPackages(state.workspaceRoot);
-  recorder.check("the catalog holds exactly the fixture and both SDK examples",
-    catalogEntries.length === expectedPluginIds.length
-      && expectedPluginIds.every(id => catalogEntries.some(entry => entry?.pluginId === id))
-      && installedEntries.every(entry => /^sha256:[0-9a-f]{64}$/u.test(entry?.packageHash ?? "")),
-    { catalogEntries, expectedPluginIds, installedEntries });
-  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
-  const packageNames = JSON.parse(execFileSync(runtime.pythonExecutable, [
-    "-c",
-    "import json,sys; from backend.infrastructure.plugin_package_lifecycle import _compact_package_digest; print(json.dumps([_compact_package_digest(h)+'.vtplugin' for h in json.loads(sys.argv[1])]))",
-    JSON.stringify(installedEntries.map(entry => entry.packageHash)),
-  ], {
-    cwd: fileURLToPath(new URL("../../", import.meta.url)),
-    encoding: "utf8",
-    timeout: 30_000,
-    windowsHide: true,
+  const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload;
+  const entry = findCatalogEntry(catalog, state.pluginId);
+  recorder.check("installed catalog identity survives cold Host restart",
+    entry?.packageHash === state.packageHash && entry.status === "enabled" && entry.projectKey === state.projectKey, { entry });
+  const audit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey: state.projectKey, pluginId: state.pluginId })).payload;
+  recorder.check("durable native plugin audit survives Host restart", audit.some(event => event.eventType === "install")
+    && audit.some(event => event.eventType === "action" && event.outcome === "succeeded"), { audit });
+  const legacy = findCatalogEntry(catalog, state.legacyPlugin.pluginId);
+  recorder.check("historical installation is visible and explicitly retired without losing identity",
+    legacy?.installationId === state.legacyPlugin.installationId && legacy.revision === 1
+      && legacy.blockingReasons?.includes("plugin_worker_retired"), { legacy });
+  const legacyRow = page.locator("button.plugin-row").filter({ hasText: state.legacyPlugin.pluginId });
+  await legacyRow.click();
+  recorder.check("historical package diagnosis offers preservation and prevents execution",
+    (await page.locator(".blockers").innerText()).includes("迁移到新版插件")
+      && await page.locator(".action-row button.run-button").first().isDisabled());
+  const exportPath = path.join(runtime.controlsDir, "legacy-plugin-preservation.zip");
+  await fs.writeFile(path.join(runtime.controlsDir, "plugin-preservation-target.txt"), `${exportPath}\n`);
+  await beginBridgeMessageCapture(page, ["pluginPreservation.exportCompleted", "operation.failed"]);
+  await page.getByTestId("plugin-preservation-export").click();
+  const exported = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("historical package can be preserved through the real Host export UI",
+    exported.type === "pluginPreservation.exportCompleted" && exported.payload?.cancelled === false && exported.payload?.missingPackages === 0, { exported });
+  if (!runtime.pythonExecutable) throw new Error("The locked test Python is required for archive inspection.");
+  const archiveProof = JSON.parse(execFileSync(runtime.pythonExecutable, ["-c", [
+    "import json,sys,zipfile,pathlib",
+    "proof=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8'))",
+    "with zipfile.ZipFile(sys.argv[1]) as archive:",
+    " actual=json.loads(archive.read('records.json')); expected=proof['records']",
+    " assert sorted(actual,key=lambda r:r['recordId'])==sorted(expected,key=lambda r:r['recordId'])",
+    " meta=json.loads(archive.read('preservation.json')); assert meta['missingPackages']==0 and meta['diagnostics']==[]",
+    " assert archive.read('packages/'+proof['packageHash'][7:]+'.vtplugin')==pathlib.Path(proof['originalPackage']).read_bytes()",
+    "print(json.dumps({'records':len(actual),'rawPreserved':True,'originalPackagePreserved':True}))",
+  ].join("\n"), exportPath, path.join(path.dirname(statePath), "legacy-plugin-preservation.json")], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)), encoding: "utf8", timeout: 30_000, windowsHide: true,
   }));
-  const expectedPackages = [...packageNames].sort();
-  recorder.check("the retained cache holds exactly the three installed packages",
-    isDeepStrictEqual(retained.packages, expectedPackages)
-      && isDeepStrictEqual(retained.entries, expectedPackages),
-    { retained, expectedPackages });
-  const retainedPath = path.join(
-    retained.cacheDirectory,
-    packageNames[0],
-  );
-  const withheldPath = `${retainedPath}.withheld`;
-  await fs.rename(retainedPath, withheldPath);
+  recorder.check("export preserves four original raw records, large unknown settings and original package bytes",
+    archiveProof.records === 4 && archiveProof.rawPreserved && archiveProof.originalPackagePreserved, { archiveProof });
+  await assertZeroExecutionProcesses("cold catalog, audit and historical export never start Python or Node");
+  await page.getByTestId("nav-tables").click(); await selectTable(page, "E2E Plugin Target");
+  await page.getByTestId("nav-plugins").click(); await pluginRow.click();
+  const frame = await openMutationBoundary(page);
+  await mutationBoundaryFiles(page, recorder, runtime, frame);
+  await assertZeroExecutionProcesses("surface and scoped file roundtrip execute after restart without Python or Node");
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  const expectedIds = [state.pluginId, state.legacyPlugin.pluginId,
+    "com.vibetable.examples.data-overview", "com.vibetable.examples.normalize-text"];
+  const installed = expectedIds.map(id => findCatalogEntry(catalog, id));
+  recorder.check("catalog retains exactly the native fixtures and the historical installation",
+    catalog.length === expectedIds.length && installed.every(item => /^sha256:[0-9a-f]{64}$/u.test(item?.packageHash ?? "")), { expectedIds });
+  const packageNames = JSON.parse(execFileSync(runtime.pythonExecutable, ["-c",
+    "import json,sys; from backend.infrastructure.plugin_package_lifecycle import _compact_package_digest; print(json.dumps([_compact_package_digest(h)+'.vtplugin' for h in json.loads(sys.argv[1])]))",
+    JSON.stringify(installed.map(item => item.packageHash))], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)), encoding: "utf8", timeout: 30_000, windowsHide: true,
+  }));
+  const retained = await listRetainedPluginPackages(state.workspaceRoot);
+  recorder.check("retained cache contains exactly all four authoritative original packages",
+    isDeepStrictEqual(retained.packages, [...packageNames].sort()) && isDeepStrictEqual(retained.entries, [...packageNames].sort()), { retained });
+  const retainedPath = path.join(retained.cacheDirectory, packageNames[0]);
+  const withheld = `${retainedPath}.withheld`;
+  await fs.rename(retainedPath, withheld);
   try {
-    await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
-    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
-    await page.getByTestId("plugin-action-start").click();
-    const withheldStart = await waitForCapturedBridgeMessage(page, 30_000);
-    recorder.check("the withheld-cache action still receives a Host task identity",
-      withheldStart.type === "plugin.action.start" && Boolean(withheldStart.payload?.taskId),
-      { withheldStart });
-    const withheldFailure = page.getByTestId("plugin-task-error");
-    await withheldFailure.waitFor({ timeout: 30_000 });
-    const withheldDeadline = Date.now() + 30_000;
-    let withheldTask;
-    do {
-      withheldTask = await rawBridgeRequest(page, "plugin.task.get", {
-        taskId: withheldStart.payload.taskId,
-      });
-      if (withheldTask.payload?.state === "failed") break;
-      if (withheldTask.payload?.state === "aborted") {
-        throw new Error(
-          `withheld-cache task was aborted as if its backend died: ${JSON.stringify(withheldTask)}`,
-        );
-      }
-      await page.waitForTimeout(100);
-    } while (Date.now() < withheldDeadline);
-    recorder.check("a missing retained cache fails closed with a diagnosable safe error",
-      withheldTask.payload?.state === "failed"
-        && withheldTask.payload?.error?.code === "plugin_worker_failed"
-        && /load/i.test(String(withheldTask.payload?.error?.message)),
-      { withheldTask });
-    recorder.check("the missing-cache failure is visible to the user with its safe error code",
-      (await withheldFailure.innerText()).includes("plugin_worker_failed"),
-      { failureText: await withheldFailure.innerText() });
-    const withheldTopology = await requestPackagedProcessKill(
-      runtime,
-      "observe-processes",
-      "verify no worker process executed without the retained cache",
-    );
-    recorder.check("no worker process was executed while the cache was withheld",
-      countProcessMembers(withheldTopology.members, "node.exe") === 0,
-      { withheldTopology });
-    const withheldCatalog = await rawBridgeRequest(page, "plugin.catalog.list", {
-      projectKey: state.projectKey,
+    // Re-listing retires stale resource leases and revalidates the authoritative package.
+    await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey });
+    const described = await rawBridgeRequest(page, "plugin.action.describe", {
+      projectKey: state.projectKey, pluginId: state.pluginId, actionId: "open-boundary",
+      context: { contract: "vibetable.command-context.v1", projectKey: state.projectKey, collection: state.tableId,
+        selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light", density: "comfortable", user: {}, hostVersion: "unknown" },
     });
-    const withheldEntry = findCatalogEntry(withheldCatalog.payload, state.pluginId);
-    recorder.check("the catalog entry survives a missing retained cache",
-      withheldEntry?.packageHash === state.packageHash
-        && withheldEntry.status === "enabled",
-      { withheldEntry });
-    await page.getByTestId("plugin-action-close").click();
-  } finally {
-    await fs.rename(withheldPath, retainedPath);
-  }
-  const restoredPackage = await fs.stat(retainedPath);
-  recorder.check("the withheld package was restored into the isolated cache",
-    restoredPackage.isFile(),
-    { retainedPath });
-  return {
-    workspaceId: switched.result?.workspaceId,
-    projectKey: state.projectKey,
-    pluginId: state.pluginId,
-    tableId: state.tableId,
-    packageHash: state.packageHash,
-  };
+    recorder.check("missing retained package fails closed with a stable surface diagnosis",
+      described.payload?.available === false && described.payload.reasons?.includes("plugin_surface_unavailable"), { described });
+    const after = findCatalogEntry((await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload, state.pluginId);
+    recorder.check("a missing local package does not rewrite installation authority",
+      after?.packageHash === state.packageHash && after.status === "enabled", { after });
+    await assertZeroExecutionProcesses("missing retained package never executes a fallback process");
+  } finally { await fs.rename(withheld, retainedPath); }
+  await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey });
+  await page.getByTestId("nav-tables").click(); await page.getByTestId("nav-plugins").click(); await pluginRow.click();
+  await openMutationBoundary(page);
+  recorder.check("restoring the exact retained package reopens a working fresh surface", await page.locator(".surface-shell iframe").isVisible());
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  await assertZeroExecutionProcesses("restored native plugin remains independent of retired execution processes");
+  return { workspaceId: state.workspaceId, projectKey: state.projectKey, pluginId: state.pluginId,
+    tableId: state.tableId, packageHash: state.packageHash, historicalPreservation: archiveProof };
 }
 
 async function resumeHostPresentation(page, recorder, statePath, runtime) {
@@ -11913,7 +11616,7 @@ const scenarios = {
   "45-common-field-display": scenario45,
   "46-dashboard-native-output": scenario46,
   "47-plugin-surface-api": (page, recorder, _network, runtime) => runPluginSurfaceApi(page, recorder, runtime, {
-    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest, acknowledgeExpectedBridgeFailure,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage,
   }),  "48-plugin-applications": (page, recorder, _network, runtime) => runPluginApplications(page, recorder, runtime, {
     waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,

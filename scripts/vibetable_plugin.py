@@ -33,15 +33,39 @@ def _print_json(value: Any) -> None:
     print(json.dumps(value, sort_keys=True))
 
 
+def _legacy_migration_hint() -> str:
+    return (
+        "legacy worker packages (manifest v1 / pluginApi 1.x-2.x) are retired and "
+        "cannot be built or installed: migrate to vibetable.plugin-manifest.v2 with "
+        "pluginApi 3.x surface/application/headless entries (docs/plugin-development.md)"
+    )
+
+
+def _is_legacy_worker_manifest(manifest: dict[str, Any]) -> bool:
+    return manifest.get("$schema") == "vibetable.plugin-manifest.v1"
+
+
+def _require_native_manifest(manifest: dict[str, Any]) -> None:
+    """Old Worker packages are read-only history: never built or installed as new."""
+    if _is_legacy_worker_manifest(manifest):
+        raise PluginPackageError("legacy_worker_package", _legacy_migration_hint())
+
+
 def _validation_report(source: Path) -> dict[str, Any]:
     inspected = inspect_plugin_package(source)
-    return {
+    report = {
         "ok": True,
         "pluginId": inspected.manifest["pluginId"],
         "version": inspected.manifest["version"],
         "packageHash": inspected.package_hash,
         "fileCount": len(inspected.files),
     }
+    if _is_legacy_worker_manifest(inspected.manifest):
+        # Read-only diagnostics preserve the real identity of old packages;
+        # build/pack reject them separately so they can never install as new.
+        report["legacy"] = True
+        report["migration"] = _legacy_migration_hint()
+    return report
 
 
 def _command_validate(args: argparse.Namespace) -> int:
@@ -53,6 +77,8 @@ def _command_validate(args: argparse.Namespace) -> int:
             f"valid {report['pluginId']}@{report['version']} "
             f"({report['fileCount']} files, {report['packageHash']})"
         )
+        if report.get("legacy"):
+            print(f"legacy worker package: {report['migration']}")
     return 0
 
 
@@ -74,10 +100,14 @@ def _permission_report(manifest: dict[str, Any]) -> dict[str, Any]:
 def _command_inspect_permissions(args: argparse.Namespace) -> int:
     inspected = inspect_plugin_package(args.source)
     report = _permission_report(inspected.manifest)
+    if _is_legacy_worker_manifest(inspected.manifest):
+        report["legacy"] = True
     if args.json:
         _print_json(report)
         return 0
     print(f"插件: {report['pluginId']}")
+    if report.get("legacy"):
+        print(f"旧 Worker 包: {_legacy_migration_hint()}")
     print(f"风险: {', '.join(report['risks']) or '无'}")
     for declaration in report["data"]:
         operations = ", ".join(declaration["operations"])
@@ -92,8 +122,14 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
 
 
 def _command_pack(args: argparse.Namespace) -> int:
-    destination = args.output or args.source.with_suffix(".vtplugin")
-    package_hash = pack_plugin(args.source, destination)
+    source = args.source.resolve()
+    manifest_path = source / "manifest.json"
+    if manifest_path.is_file():
+        # A legacy manifest must fail before any archive is created; packages
+        # without a manifest keep the packer's own structured error.
+        _require_native_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
+    destination = args.output or source.with_suffix(".vtplugin")
+    package_hash = pack_plugin(source, destination)
     report = {"ok": True, "output": str(destination.resolve()), "packageHash": package_hash}
     if args.json:
         _print_json(report)
@@ -378,9 +414,9 @@ class _ModuleScripts(HTMLParser):
 def _application_scripts(source: Path, manifest: dict[str, Any]) -> set[str]:
     scripts: set[str] = set()
     for action in manifest.get("actions", []):
-        # Reuse the Worker traversal guard: malformed entries (null, strings,
-        # numbers) surface as the package validator's structured
-        # PluginPackageError JSON, never as an AttributeError here.
+        # Malformed entries (null, strings, numbers) surface as the package
+        # validator's structured PluginPackageError JSON, never as an
+        # AttributeError here.
         if not isinstance(action, dict):
             continue
         if action.get("presentation") != "application" or not isinstance(action.get("entry"), str):
@@ -412,35 +448,31 @@ def _application_scripts(source: Path, manifest: dict[str, Any]) -> set[str]:
     return scripts
 
 
-def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[Path]:
-    """Compile every declared entry in place and return its validated output paths."""
-    entries = sorted(
+def _declared_script_entries(source: Path, manifest: dict[str, Any]) -> list[str]:
+    """Every v2 (pluginApi 3.x) page script this package builds from TypeScript."""
+    return sorted(
         {
-            action["workerEntry"]
-            for action in manifest.get("actions", [])
-            if isinstance(action, dict) and isinstance(action.get("workerEntry"), str)
+            *_application_scripts(source, manifest),
+            *(
+                view["script"]
+                for view in manifest.get("ui", {}).get("customViews", [])
+                if isinstance(view, dict) and isinstance(view.get("script"), str)
+            ),
+            *(
+                action["entry"]
+                for action in manifest.get("actions", [])
+                if isinstance(action, dict)
+                and action.get("presentation") == "headless"
+                and isinstance(action.get("entry"), str)
+                and (source / "src" / f"{Path(action['entry']).stem}.ts").is_file()
+            ),
         }
     )
-    if manifest.get("$schema") == "vibetable.plugin-manifest.v2":
-        entries = sorted(
-            {
-                *entries,
-                *_application_scripts(source, manifest),
-                *(
-                    view["script"]
-                    for view in manifest.get("ui", {}).get("customViews", [])
-                    if isinstance(view, dict) and isinstance(view.get("script"), str)
-                ),
-                *(
-                    action["entry"]
-                    for action in manifest.get("actions", [])
-                    if isinstance(action, dict)
-                    and action.get("presentation") == "headless"
-                    and isinstance(action.get("entry"), str)
-                    and (source / "src" / f"{Path(action['entry']).stem}.ts").is_file()
-                ),
-            }
-        )
+
+
+def _compile_declared_scripts(source: Path, manifest: dict[str, Any]) -> list[Path]:
+    """Compile every declared entry in place and return its validated output paths."""
+    entries = _declared_script_entries(source, manifest)
     if not entries:
         return []
     # Every output is validated before any bundler call, so a rejected build
@@ -456,11 +488,11 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
             "Node.js, a plugin-local esbuild dependency and Plugin SDK are required to build plugin scripts",
         )
     for entry, destination in outputs:
-        worker_source = source / "src" / f"{Path(entry).stem}.ts"
-        if not worker_source.is_file():
+        script_source = source / "src" / f"{Path(entry).stem}.ts"
+        if not script_source.is_file():
             raise PluginPackageError(
-                "worker_source_missing",
-                f"declared script {entry!r} requires {worker_source.relative_to(source)}",
+                "script_source_missing",
+                f"declared script {entry!r} requires {script_source.relative_to(source)}",
             )
         completed = subprocess.run(
             [
@@ -468,7 +500,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
                 "-e",
                 _BUNDLE_SCRIPT,
                 str(bundler),
-                str(worker_source),
+                str(script_source),
                 str(destination),
                 str(source),
                 str(sdk_entry),
@@ -483,8 +515,8 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
             raise PluginPackageError(
-                "worker_bundle_failed",
-                f"failed to bundle {worker_source.relative_to(source)}: {detail}",
+                "script_bundle_failed",
+                f"failed to bundle {script_source.relative_to(source)}: {detail}",
             )
     return [destination for _, destination in outputs]
 
@@ -495,7 +527,8 @@ def _command_build(args: argparse.Namespace) -> int:
     if not manifest_path.is_file():
         raise PluginPackageError("missing_manifest", "manifest.json is required")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    compiled_outputs = _transpile_declared_workers(package_source, manifest)
+    _require_native_manifest(manifest)
+    compiled_outputs = _compile_declared_scripts(package_source, manifest)
     inspected = inspect_plugin_package(package_source)
     # The validated outputs are this build's real artifacts, so they pass the
     # same checks even when they live outside dist/.
@@ -533,7 +566,7 @@ def _command_build(args: argparse.Namespace) -> int:
                 f"{artifact.relative_to(package_source)}",
             )
     print(
-        f"build valid ({len(compiled_outputs)} {'surface scripts' if manifest.get('$schema') == 'vibetable.plugin-manifest.v2' else 'Workers'} compiled, "
+        f"build valid ({len(compiled_outputs)} surface scripts compiled, "
         f"{len(artifacts)} self-contained JavaScript artifacts)"
     )
     return 0

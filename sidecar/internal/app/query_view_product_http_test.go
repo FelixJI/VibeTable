@@ -44,6 +44,7 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
+			unrelatedPluginPreservationRegistration(t),
 			unrelatedPresetRegistration(t, "preset.list"),
 			unrelatedPresetRegistration(t, "preset.save"),
 			unrelatedPresetRegistration(t, "preset.delete"),

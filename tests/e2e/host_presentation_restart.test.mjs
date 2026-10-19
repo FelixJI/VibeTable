@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { JSDOM } from "../../desktop/web-grid/node_modules/jsdom/lib/api.js";
 
 // The packaged runner has a CLI entry point. Exercise its small async seam
@@ -230,7 +232,7 @@ const countProcessMembers = eval(`(${extract(
   "function countProcessMembers", "async function waitForPackagedMemberExit",
 )})`);
 const waitForPackagedMemberExitSource = extract(
-  "async function waitForPackagedMemberExit", "async function waitForBusyPluginMarker",
+  "async function waitForPackagedMemberExit", "async function listRetainedPluginPackages",
 );
 
 function memberSnapshot(pids, processName = "node.exe") {
@@ -291,4 +293,67 @@ test("waiting for a packaged member exit rejects a snapshot without verified ide
       /not a verified legal snapshot/,
     );
   }
+});
+
+
+const mutationBoundaryFilesSource = extract("async function mutationBoundaryFiles", "async function waitForPluginTerminal");
+const pickerTestRoot = fileURLToPath(new URL("../../build/task480", import.meta.url));
+function createPickerControls() {
+  fs.mkdirSync(pickerTestRoot, { recursive: true });
+  return fs.mkdtempSync(path.join(pickerTestRoot, "s11-picker-"));
+}
+function removePickerControls(directory) {
+  assert.equal(path.dirname(path.resolve(directory)), path.resolve(pickerTestRoot));
+  for (const name of ["attachment-replacement-source.txt", "attachment-target.txt", "52-input.csv", "52-output.bin"]) {
+    const target = path.join(directory, name);
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+  }
+  fs.rmdirSync(directory);
+}
+
+test("S11 file grants use existing scoped Host controls and restore them after success", async () => {
+  const directory = createPickerControls();
+  const fsPromises = fs.promises;
+  try {
+    const runtime = { controlsDir: directory };
+    const readControl = path.join(directory, "attachment-replacement-source.txt");
+    const writeControl = path.join(directory, "attachment-target.txt");
+    fs.writeFileSync(readControl, "previous source\n"); fs.writeFileSync(writeControl, "previous target\n");
+    const bytes = Buffer.from("scoped synthetic bytes\n");
+    fs.writeFileSync(path.join(directory, "52-input.csv"), bytes);
+    let result;
+    const frame = { locator(selector) {
+      if (selector === "#files") return { async click() {
+        const source = fs.readFileSync(readControl, "utf8").trim();
+        const target = fs.readFileSync(writeControl, "utf8").trim();
+        assert.equal(source, path.join(directory, "52-input.csv"));
+        assert.equal(target, path.join(directory, "52-output.bin"));
+        fs.copyFileSync(source, target);
+        result = JSON.stringify({ kind: "files", status: "succeeded", bytes: bytes.length });
+      } };
+      assert.equal(selector, "#result");
+      return { filter() { return { async waitFor() {} }; }, async innerText() { return result; } };
+    } };
+    const recorded = [];
+    const recorder = { check(name, passed, evidence) { assert.ok(passed, name); recorded.push(evidence); } };
+    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fsPromises, path);
+    await run({}, recorder, runtime, frame);
+    assert.equal(recorded[0].picker, "Host test-mode controls");
+    assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
+    assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
+  } finally { removePickerControls(directory); }
+});
+
+test("S11 restores its scoped picker controls when a real file grant fails", async () => {
+  const directory = createPickerControls();
+  try {
+    const readControl = path.join(directory, "attachment-replacement-source.txt");
+    const writeControl = path.join(directory, "attachment-target.txt");
+    fs.writeFileSync(readControl, "previous source\n"); fs.writeFileSync(writeControl, "previous target\n");
+    const frame = { locator() { return { async click() { throw new Error("file grant rejected"); } }; } };
+    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fs.promises, path);
+    await assert.rejects(run({}, {}, { controlsDir: directory }, frame), /file grant rejected/);
+    assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
+    assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
+  } finally { removePickerControls(directory); }
 });

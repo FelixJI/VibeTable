@@ -56,6 +56,8 @@ public sealed class WebMessageRouter
         "legacyLayout.reportRequested",
         "legacyLayout.exportRequested",
         "legacyLayout.cancelRequested",
+        "pluginPreservation.exportRequested",
+        "pluginPreservation.cancelRequested",
         "host.startupRetryRequested",
         "host.startupCancelRequested",
         "database.openRequested",
@@ -191,6 +193,7 @@ public sealed class WebMessageRouter
         "host.startupStateChanged",
         "legacyLayout.reportLoaded",
         "legacyLayout.exportCompleted",
+        "pluginPreservation.exportCompleted",
         // #482 native host chrome → trusted web shell (stop plugins, return
         // to platform, open plugin management) without plugin involvement.
         "host.pluginChrome",
@@ -496,7 +499,7 @@ public sealed class WebMessageRouter
             if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type) || ClipboardRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
-            if (LegacyLayoutRequestController.Handles(type) && scope is null)
+            if ((LegacyLayoutRequestController.Handles(type) || PluginPreservationRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Dashboard output requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)

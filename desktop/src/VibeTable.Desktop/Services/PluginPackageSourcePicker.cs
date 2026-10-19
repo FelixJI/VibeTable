@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Win32;
-using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
@@ -22,11 +21,6 @@ public enum PluginPackagePickKind
 public interface IPluginPackageSourcePicker
 {
     Task<string?> PickAsync(PluginPackagePickKind kind, CancellationToken token);
-}
-
-public interface IPluginFilePicker
-{
-    Task<string?> PickAsync(PluginRuntimeFileRequest request, CancellationToken token);
 }
 
 public static class PluginPackageSourceTokens
@@ -163,84 +157,5 @@ public sealed class TestModePluginPackageSourcePicker : IPluginPackageSourcePick
                 selected);
         }
         return Task.FromResult<string?>(selected);
-    }
-}
-
-/// <summary>Fixed native file picker protocol available only in explicit desktop test mode.</summary>
-public sealed class TestModePluginFilePicker : IPluginFilePicker
-{
-    private readonly string _controlsDirectory;
-
-    public TestModePluginFilePicker(string controlsDirectory)
-    {
-        _controlsDirectory = Path.GetFullPath(
-            controlsDirectory ?? throw new ArgumentNullException(nameof(controlsDirectory)));
-    }
-
-    public Task<string?> PickAsync(PluginRuntimeFileRequest request, CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        string controlName = request.Direction switch
-        {
-            "read" => "plugin-file-read.txt",
-            "write" => "plugin-file-write.txt",
-            _ => throw new InvalidOperationException("Unsupported plugin file direction."),
-        };
-        string control = Path.Combine(_controlsDirectory, controlName);
-        if (!File.Exists(control))
-            throw new InvalidOperationException($"Missing test-mode control file: {controlName}");
-        string selected = Path.GetFullPath(File.ReadAllText(control).Trim());
-        if (request.Direction == "read" ? !File.Exists(selected)
-            : !Directory.Exists(Path.GetDirectoryName(selected)))
-            throw new FileNotFoundException("The test-mode plugin file path is unavailable.", selected);
-        return Task.FromResult<string?>(selected);
-    }
-}
-/// <summary>Native file boundary used only for an active, declared plugin capability.</summary>
-public sealed class WindowsPluginFilePicker : IPluginFilePicker
-{
-    public async Task<string?> PickAsync(
-        PluginRuntimeFileRequest request,
-        CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        var application = Application.Current
-            ?? throw new InvalidOperationException("WPF application is unavailable.");
-        return await application.Dispatcher.InvokeAsync(() =>
-        {
-            token.ThrowIfCancellationRequested();
-            if (string.Equals(request.Direction, "read", StringComparison.Ordinal))
-            {
-                var dialog = new OpenFileDialog
-                {
-                    CheckFileExists = true,
-                    CheckPathExists = true,
-                    DereferenceLinks = false,
-                    Filter = "Files|*.*",
-                    Multiselect = false,
-                    RestoreDirectory = true,
-                    Title = "选择插件要读取的文件",
-                };
-                bool? accepted = application.MainWindow is null
-                    ? dialog.ShowDialog()
-                    : dialog.ShowDialog(application.MainWindow);
-                return accepted == true ? Path.GetFullPath(dialog.FileName) : null;
-            }
-
-            var saveDialog = new SaveFileDialog
-            {
-                AddExtension = true,
-                CheckPathExists = true,
-                DereferenceLinks = false,
-                FileName = request.SuggestedName ?? "plugin-output",
-                Filter = "Files|*.*",
-                RestoreDirectory = true,
-                Title = "选择插件输出文件",
-            };
-            bool? saved = application.MainWindow is null
-                ? saveDialog.ShowDialog()
-                : saveDialog.ShowDialog(application.MainWindow);
-            return saved == true ? Path.GetFullPath(saveDialog.FileName) : null;
-        });
     }
 }

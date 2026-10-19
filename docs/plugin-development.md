@@ -2,28 +2,39 @@
 
 VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离 WebView2 frame 的闭集 SDK 读取数据、
 保留草稿并请求 MutationPlan 预览/保存；Host 展示精确计划并一次确认，Go 完成事务。
-旧 1.x/2.x 包暂时保留 Worker 链。两条链均不能直接访问 PocketBase、SQLite、本机路径或任意网络。宿主在安装前展示 manifest
+旧 1.x/2.x Worker 执行链已退役（#486）：旧包只保留只读解析、迁移诊断与保全，不再构建、安装或执行。
+两条链均不能直接访问 PocketBase、SQLite、本机路径或任意网络。宿主在安装前展示 manifest
 中的权限、兼容性和动作风险，用户批准后才会提交安装事务。
 
 ## 1. 权威工具与版本边界
 
-- Manifest schema：旧包 `vibetable.plugin-manifest.v1`；新页面 `vibetable.plugin-manifest.v2`
-- Plugin result：`vibetable.plugin-result.v1`
-- TypeScript SDK：`sdk/plugin/`
-- 开发与打包 CLI：`scripts/vibetable_plugin.py`
+- Manifest schema：新页面 `vibetable.plugin-manifest.v2`；旧 `vibetable.plugin-manifest.v1`
+  （1.x/2.x Worker 包）已退役，仅保留只读解析供诊断与保全
+- Plugin result：`vibetable.plugin-result.v1`（平台任务/审计仍使用；插件 SDK 不再暴露旧 Worker 返回类型）
+- TypeScript SDK：`sdk/plugin/`（统一 surface API；旧 Worker capability 入口已删除）
+- 开发与打包 CLI：`scripts/vibetable_plugin.py`（旧 v1 包 `build`/`pack` 固定拒绝 `legacy_worker_package`，
+  `validate`/`inspect-permissions` 返回 `legacy` 迁移诊断）
 - 包解析与完整性契约：`backend/infrastructure/plugin_package.py`
-- 可运行示例：`examples/plugins/surface-data-editor/`（无 Worker）、`examples/plugins/record-manager/`（无 Worker 完整应用）、`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`（旧链）
+- 可运行示例：`examples/plugins/surface-data-editor/`（无 Worker surface 视图）、
+  `examples/plugins/data-overview/`（surface 视图：describe/query 分页汇总）、
+  `examples/plugins/normalize-text/`（headless 动作：rowGuards 批量规范化）、
+  `examples/plugins/record-manager/`（无 Worker 完整应用）、`examples/plugins/team-tasks-app/`
+  （无 npm 依赖的应用+headless）；`examples/plugins/weread-notes-dashboard/` 是冻结的
+  旧 v1 Worker 历史包 fixture，只用于旧包诊断/保全测试，不参与构建
 
-当前 SDK 支持 Plugin API 1.x/2.x/3.x，包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
+当前 SDK 只支持 Plugin API 3.x（surface）；包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
 外部插件仓库不得声明一个并不存在的 npm 版本；应在 CI 中 checkout 明确的 VibeTable commit，
 并用该 commit 的 SDK/CLI 完成最终 validate/build/pack。固定 commit 需要由插件维护者显式更新，
-这样一次 Release 的包契约不会随 `main` 漂移。
+这样一次 Release 的包契约不会随 `main` 漂移。旧 Worker 包（1.x/2.x）不能再用新 CLI 构建或安装；
+固定在 #486 之前 commit 的旧插件源必须按下文迁移指南改写。
 
 API 3.x 的已合并历史基线是 `ada6290921ffadf17a75b5018fbce144841e8594`（#483）。
 它不包含本节 #484 的新初始化模板、显示辅助或离线 surface 工具；这些功能必须固定到包含 #484 的实际实现提交。
 本节新 SDK、CLI、记录管理示例和 `data.releaseCursor` 固定到实现提交
 [`d90238b21ba337a06b6795099007031245e90726`](https://github.com/FelixJI/VibeTable/tree/d90238b21ba337a06b6795099007031245e90726)。
-在 VibeTable checkout 中执行 `git checkout --detach d90238b21ba337a06b6795099007031245e90726`，
+#486 退役旧 Worker 链后，SDK 删除了旧 Worker 入口且 CLI 拒绝旧包；固定到 #486 之前
+commit 的插件源码必须按迁移指南改写，新固定应选择包含 #486 的实现提交。
+在 VibeTable checkout 中执行 `git checkout --detach <固定提交>`，
 再按下文恢复锁定环境、构建和校验；Host 也须使用包含该提交能力的构建，不代表本轮已发布新版本。
 开发时可在该已检出的固定源码里运行 `git rev-parse HEAD` 记录版本；不要把可变的 `main` 当作插件供应链 pin。
 
@@ -92,10 +103,9 @@ Host 展示真实操作样本和数量、绑定精确计划并单次消费；sur
 customView 对应的声明动作。同 entry 的不同动作持有独立 surface token 和调用上下文；
 Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
 write/destructive 声明风险进入任务和持久审计；任何含 delete 的计划都升级为 destructive 原生确认，
-write 动作也不能降低删除确认风险，renderer 不能批准。旧 Worker 的 MutationPlan 仍只接受 create/update。
-`requires.selection` 的 one-or-more/exactly-one
-在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮目前仅支持 Worker 动作，
-3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
+write 动作也不能降低删除确认风险，renderer 不能批准。`requires.selection` 的 one-or-more/exactly-one
+在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮不进入 3.x 页面动作选择器，
+已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
 revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
 `plugin_commit_unknown`，不得自动重放，迟到取消或工作区退役保留已读取并完整校验的 applied/replayed 回执成功；旧任务通知不投递到新会话。
 
@@ -201,10 +211,14 @@ CSV 导出声明 `files: ["pickWrite"]`，原生保存选址与实际落盘仍�
 `PluginSurfaceApiTests` 与离线示例消费。原生 picker/确认、订阅和权限持久化仍以产品 QA47/48/49/51/52/53 为准，
 DOM/离线测试不能替代 WPF 验收。
 
-旧 Worker 包升级：把业务计算保留为纯函数，数据读写改用 `createSurfaceClient`，写入使用 `mutation.preview/submit`；
-入口改为 `application/headless` 并移除 `workerEntry` 与旧输入/输出 schema。安装/升级始终经过 Host 包计划确认，
+旧 Worker 包升级（强制迁移）：把业务计算保留为纯函数，数据读写改用 `createSurfaceClient`，写入使用 `mutation.preview/submit`；
+入口改为 `application/headless`（或 surface `customView` + `script`）并移除 `workerEntry` 与旧输入/输出 schema。
+安装/升级始终经过 Host 包计划确认，
 新增 `delete`/`pickWrite`、改字段或授权表范围时由 Host 展示新的权限声明；插件不能自行批准。旧 Host 明确拒绝
-v2/3.x 包，当前旧链兼容只为迁移保留，其最终退役由 #486 处理。本轮不改独立 WeRead 插件仓库。
+v2/3.x 包；#486 起旧 Worker 执行链已删除，旧 v1/v2 包 inspect 返回迁移诊断、CLI `build`/`pack` 拒绝，
+不存在兼容开关或改名必经框架。参考迁移：`examples/plugins/normalize-text`（旧 write Worker → headless）、
+`examples/plugins/data-overview`（旧 read Worker + view → surface 视图）。本轮不改独立 WeRead 插件仓库；
+`examples/plugins/weread-notes-dashboard/` 仅作为冻结历史 fixture 保留一个真实旧包 ZIP 供诊断/保全测试。
 
 ### 初始化三种无 Worker 包
 
@@ -228,7 +242,8 @@ uv run --frozen --no-sync python scripts/vibetable_plugin.py pack build/plugins/
 生成器复用仓库已锁定的 esbuild/TypeScript lock，包里不包含未发布的 npm SDK 依赖、Worker 文件或入口占位。
 应用/动作都通过同一个 SDK；Node/npm 仅在构建时使用。独立插件目录在本次命令环境设置
 `$env:VIBETABLE_SDK_ROOT = "已固定的 VibeTable checkout 路径"` 后使用相同 npm 脚本，路径不会写入源码或包。
-类型检查临时配置只生成在该 checkout 的 `build/plugins/typecheck`。CLI 继续接受现有旧链包，新的 init 不生成旧链。
+类型检查临时配置只生成在该 checkout 的 `build/plugins/typecheck`。CLI 已不再接受旧链包：旧 v1
+manifest 的 `build`/`pack` 固定拒绝，只读检查返回迁移诊断；新的 init 不生成旧链。
 
 ```text
 manifest.json
@@ -251,12 +266,15 @@ README.md
 
 源码仓库应提交源文件、schema、测试、lock 和必要的静态视图源码。`build/`、`dist/`、
 `release/`、ZIP 与 `.vtplugin` 是生成物，不应作为源码重复提交；正式 `.vtplugin` 只作为
-GitHub Release 资产发布。本仓现有 tracked 示例 Worker 也必须由 CLI build 更新；升级入口
-名称时删除旧入口，提交对应的新生成 Worker，不手改编译结果。
+GitHub Release 资产发布。本仓 tracked 示例的页面脚本输出（如 `dist/surface.js`、
+`ui/normalize.js`）均由 CLI build 生成且不提交；唯一例外是 `examples/plugins/weread-notes-dashboard/`
+冻结的旧 v1 历史包 fixture（含一个真实旧 ZIP，仅用于旧包诊断/保全测试），它不由 CLI 重建，
+也不随升级改写。
 
 ## 3. 主仓内开发
 
-从锁文件恢复依赖，不使用 `npm install` 改写依赖解析结果：
+从锁文件恢复依赖，不使用 `npm install` 改写依赖解析结果（以迁移后的 `data-overview` 为例；
+`normalize-text`、`surface-data-editor`、`record-manager` 同）:
 
 ```powershell
 Set-Location examples/plugins/data-overview
@@ -265,28 +283,32 @@ npm run typecheck
 npm test
 
 Set-Location ../../..
-uv run python scripts/vibetable_plugin.py build examples/plugins/data-overview
-uv run python scripts/vibetable_plugin.py validate examples/plugins/data-overview
-uv run python scripts/vibetable_plugin.py inspect-permissions examples/plugins/data-overview
-uv run python scripts/vibetable_plugin.py pack examples/plugins/data-overview `
+uv run --frozen --no-sync python scripts/vibetable_plugin.py build examples/plugins/data-overview
+uv run --frozen --no-sync python scripts/vibetable_plugin.py validate examples/plugins/data-overview
+uv run --frozen --no-sync python scripts/vibetable_plugin.py inspect-permissions examples/plugins/data-overview
+uv run --frozen --no-sync python scripts/vibetable_plugin.py pack examples/plugins/data-overview `
   --output build/plugins/data-overview.vtplugin
 ```
 
-`build` 会用插件本地、锁定的 esbuild 将 Worker 打成自包含 ESM，并拒绝动态 import、未打包
-runtime import、Worker 网络全局与 WebRTC 出站 API（`RTCPeerConnection` 及其 webkit 别名）；
-v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳入
+`build` 会用插件本地、锁定的 esbuild 把 v2 声明的页面脚本（application 模块引用、customView `script`、
+headless `entry`）打成自包含 ESM，并拒绝动态 import、未打包
+runtime import、网络全局与 WebRTC 出站 API（`RTCPeerConnection` 及其 webkit 别名）；
+所有声明输出（即使位于 `dist/` 之外）同样纳入
 这些检查与产物计数，包内其它宿主以 `text/javascript` 服务的 `.js`/`.mjs` 成员（大小写不敏感，
 页面可经 `script-src 'self'` 加载）也在检查范围内；`src`/`tests`/`node_modules` 等本地开发输入不参与。
-运行时纵深：Host 在首次 Navigate 前以 document-created 注入统一禁用两别名（不可写、不可配置），
+旧 `vibetable.plugin-manifest.v1`（1.x/2.x Worker）包在 `build`/`pack` 前置拒绝（`legacy_worker_package`），
+不调用任何打包器，也不会重写旧 dist 产物；`validate`/`inspect-permissions` 对旧包保留只读检查并返回
+`legacy: true` 与迁移提示。运行时纵深：Host 在首次 Navigate 前以 document-created 注入统一禁用两别名（不可写、不可配置），
 构建检查为纵深，不单独承担封锁保证；不依赖 Runtime 尚不支持的 CSP `webrtc` 指令。
 `pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
 `dist` 或 `integrity.json` 后跳过 build/pack。
 
-示例 `npm test` 会先调用上述真实 CLI build，再测试编译后的 Worker。CLI 的 `validate`
-检查包、manifest、schema 方言、Worker 入口与静态 import；它不执行动作，也没有返回值校验
-子命令。返回值由实际 Node Worker 的 Python closed DTO 校验；SDK 与 Worker 测试共用
-`tests/contract/fixtures/plugin-capabilities-v1.json` 的独立预期。正式同包测试在
-`11-plugin-mutation` 场景通过真实安装、Host、BFF 与 Go 验证两个示例。
+示例 `npm test` 会先调用上述真实 CLI build，再在合成 surface 宿主上测试编译后的模块（分页、拒绝、取消、
+冲突与游标释放均用合成数据）。CLI 的 `validate`
+检查包、manifest、schema 方言与静态 import；它不执行动作，也没有返回值校验
+子命令。SDK 的 v2 查询/游标合同与 Go conformance 共用
+`tests/contract/fixtures/plugin-capabilities-v2.json` 的独立预期；旧 `plugin-capabilities-v1.json`
+Worker 执行语料随旧链一并退役。正式同包测试在产品 E2E 场景通过真实安装、Host 与 Go 验证示例。
 
 ## 4. Manifest 与最小权限
 
@@ -295,115 +317,58 @@ Manifest 只声明实现实际消费的 capability：
 - `permissions.data`：按 collection、operation 和 field 限定数据访问；
 - `permissions.files`：只有调用原生文件选择能力时才声明；
 - `permissions.privateStorage`：只有使用插件私有设置时才声明；
-- `permissions.network`：Worker 当前不能直接使用浏览器网络全局；不要用空 domain 或无消费者的
+- `permissions.network`：插件页面不能直接使用浏览器网络全局；不要用空 domain 或无消费者的
   method 预留未来权限；
 - `actions[].risk`：必须与可观察行为一致，不能把 write/destructive 动作伪装成 read。
 
-Worker 的公共类型应使用 SDK 的 `JsonObject`/`JsonValue`，不要用宽泛 `unknown` 或 `Any`
+插件的公共类型应使用 SDK 的 `JsonObject`/`JsonValue`，不要用宽泛 `unknown` 或 `Any`
 绕过 capability 契约。测试至少覆盖核心纯函数、空数据、字段映射和 manifest/静态资源存在性；
 测试路径必须基于仓库根或 `import.meta.url`，不能硬编码开发者的本机目录。
 
-## 5. SDK v1 执行契约
+## 5. 旧 Worker 包（1.x/2.x）退役与迁移
 
-| 接口 | 当前行为 | 权限与边界 |
-| --- | --- | --- |
-| `data.read(request)` | 支持，返回 `{items,nextCursor,rowGuards}` | `permissions.data` 的 read/collection/fields；`$active` 对应 context.collection，`$configured` 对应产品可读字段 |
-| `data.mutate(plan)` | 已弃用，始终拒绝 `plugin_direct_mutation_unsupported`，类型为 `Promise<never>` | write 动作返回 MutationPlan，由 Host 确认后提交 |
-| `file.pickRead` / grant.read | 支持，取消选择返回 null | 声明 pickRead；原生一次性 grant，只读所选内容，不暴露本机路径；最大 1 MiB |
-| `file.pickWrite` / grant.write | 支持，取消选择返回 null | 声明 pickWrite；提供 suggestedName/mediaType；仅写所选 grant，最大 1 MiB |
-| `storage.get/set/delete` | 支持，get 缺键返回 null | privateStorage；插件私有命名空间，key 为 1–128 个允许字符，JSON 值最大 64 KiB |
-| `context.read()` | 支持，返回当前 CommandContext | 当前项目、表、选择、querySnapshot、locale/theme/density/user/hostVersion；不是可变的全局状态 |
-| `ui.reportProgress(progress)` | 支持，返回 `{cancelRequested:boolean}` | current/total 为非负整数，total>0 时 current<=total；进度单调，cancellable 原请求值保留 |
-| `ui.emitResult(result)` | 已弃用，始终拒绝 `plugin_emit_result_unsupported`，类型为 `Promise<never>` | 直接 return 最终 PluginResult；不存在独立结果推送消费者 |
-| `permissions.network` | 未提供 Worker 网络 capability | 不声明占位权限；Worker 不可直接调用网络全局 |
+旧 `vibetable.plugin-manifest.v1` / `pluginApi 1.x`-`2.x` Worker 执行链已在 #486 删除：
 
-`data.read` 必须显式提供 collection 和 fields；字段值保持原始 JSON，包括 0、false、null、
-数组与对象，不转换成展示文本。`fields:["*"]` 仍受权限和产品字段限制。v1 的 filter 只接受
-缺省、null 或 `{}`，非空值稳定拒绝 `plugin_filter_unsupported`。pageSize 缺省 100，整数
-夹在 1–200；null、布尔和非整数拒绝。`totalRows` 是该次查询的权威总行数，与 items
-同页返回，不额外消耗调用。nextCursor 非空时继续读取，满页后可能还需读取一个
-空页才能结束。cursor 是 offset 字符串；宿主兼容既有 Python 整数形式（如 `"1_0"`），插件
-应直接转发收到的 nextCursor，不自行拼装。
+- SDK 已移除旧 Worker 入口（`createCapabilityClient`、`PluginCapabilities`/`PluginAction` 类型、
+  `mutationPlan`、`ok`/`failure`/`cancelled`、`startOfflineAction` 与旧 v1 conformance 离线执行器）；
+  保留统一 surface API、`createOfflineHost`（v2 describe/query/cursor 合成数据宿主）与
+  `createOfflineSurfaceHost`（surface 合成宿主）及其安全测试。
+- CLI 对旧包 `build`/`pack` 前置拒绝（`legacy_worker_package`），不调用打包器、不重写旧 `dist`；
+  `validate`/`inspect-permissions` 只读检查成功时返回 `legacy: true` 与迁移提示及真实 pluginId/version。
+  真实旧包（如 weread fixture 的旧版 BOM `integrity.json`）在只读核验中 fail closed，不会执行旧代码。
+- 旧包的安装、启动、禁用/重开与升级诊断由 Host/Go owner 提供（需要迁移/不兼容、身份与设置保全）；
+  CLI 不提供旧包兼容开关。
 
-单次 Worker 默认预算为 15 秒、最多 64 次 capability 调用、单条 JSON 消息最大 1 MiB；
-宿主最多并行两个 Worker。分页、文件和进度调用都消耗该预算；这些限制没有因示例而放宽。
-逐 200 行扫全表同步计数会撞上调用预算：6200 行的表需要 1 次 `context.read` 加 32 次读页
-和 32 次进度，共 65 次调用，已超过 64 次上限。只需计数时用一次 `pageSize:1` 读取并采用
-返回的权威 `totalRows`（见 `examples/plugins/data-overview/src/overview.ts`），不新建计数
-接口，也不放宽预算。
+迁移步骤（参考 `examples/plugins/normalize-text` 与 `examples/plugins/data-overview`）：
 
-rowGuards 是与同一次 Go 查询页对应的 opaque 元数据，按记录 id 索引，与获准的业务字段
-分离。它由 Go 权威行状态产生、MutationKernel 消费；插件把它放入 operation.expectedDigest，
-不用自己计算或解析。若预览后行发生变化，Go 原子拒绝 `mutation.digest_conflict`，不会用
-旧预览覆盖新值。旧 expectedDateUpdated 已弃用；非 null 只接受已有 `row_` 加至少四位数字
-的 revision，映射 Go expectedRevision。日期、digest、空字符串稳定拒绝，不能被忽略。
+1. manifest 改为 `vibetable.plugin-manifest.v2` + `pluginApi: "3.x"`，动作改为
+   `presentation: "application"`/`"headless"` 或缺省 `surface` + `ui.customViews`（含 `script`），
+   删除 `workerEntry` 与 `formSchema/inputSchema/outputSchema`；
+2. 业务计算保留为纯函数模块；数据读取改用 `createSurfaceClient` 的
+   `context.read`/`data.describe`/`data.query`（200/页、游标单次消费、提前停止 `releaseCursor`）；
+3. 写入用查询页的 `rowGuards` 作为 `expectedDigest`，经 `mutation.preview` → 宿主原生确认 →
+   `mutation.submit` 单次原子提交；拒绝/取消零写入，`plugin_commit_unknown` 不自动重放；
+4. headless 入口用 `finishHeadlessRun(window.name, status, summary)` 报告终态；
+5. 旧输入表单改为页面内控件或 headless 内的确定性规则；同步更新测试为合成 surface 宿主驱动。
 
-read 动作使用 `PluginReadAction<Input, Output>` 返回 PluginResult；write/destructive 动作
-使用 `PluginWriteAction<Input>` 返回 MutationPlan（最多 10,000 operations，affectedCount
-必须等于 operations.length）。两个类型都只需 input、capabilities 两个参数。旧 PluginAction
-返回 union 保持兼容，但第三参数是已弃用的协作取消快照，不是真正 AbortSignal，没有 DOM
-取消事件。每次耗时循环 await reportProgress 后检查 receipt.cancelRequested；Host 的公开
-task 终态仍是取消与成功的权威。`cancellable:false` 只表达该进度的协作取消提示，不移除
-Host 对任务的取消管理能力。Host 取消在 Worker 执行阶段先设置取消标记，并给最多约 1 秒
-协作宽限（允许一次进度回执与清理），仍未结束则强制终止 Node 进程；确认与提交阶段不设
-宽限，取消立即生效；提交开始后的取消保持现有 `aborted`/`plugin_commit_unknown` 边界，
-不会重放。
+仍适用于新链的保障事实：
 
-```typescript
-import { ok, mutationPlan, type PluginReadAction, type PluginWriteAction } from "@vibetable/plugin-sdk";
-
-export const read: PluginReadAction<{}> = async (_input, capabilities) => {
-  const { collection } = await capabilities.context.read();
-  if (!collection) throw new Error("请选择表");
-  const page = await capabilities.data.read({ collection, fields: ["id"], pageSize: 200 });
-  return ok({ countOnPage: page.items.length });
-};
-
-export const write: PluginWriteAction<{ field: string }> = async ({ field }, capabilities) => {
-  const { collection, selectedKeys } = await capabilities.context.read();
-  if (!collection || selectedKeys.length !== 1) throw new Error("请选择一条记录");
-  const page = await capabilities.data.read({ collection, fields: ["id", field] });
-  const row = page.items.find(item => String(item.id) === String(selectedKeys[0]));
-  if (!row || typeof row[field] !== "string") throw new Error("当前页没有选中的文本记录");
-  const before = row[field];
-  const after = before.trim();
-  const expectedDigest = page.rowGuards[String(row.id)];
-  if (!expectedDigest) throw new Error("缺少宿主行保护");
-  const operations = before === after ? [] : [{ kind: "update" as const,
-    primaryKey: String(row.id), expectedDigest, values: { [field]: after } }];
-  return mutationPlan(collection, operations, {
-    affectedCount: operations.length, sampleRows: [{ before, after }],
-  });
-};
-```
-
-完整分页与选择处理见 `examples/plugins/normalize-text/src/normalize.ts`；权威计数（一次
-`pageSize:1` 读取 `totalRows`）见
-`examples/plugins/data-overview/src/overview.ts`。PluginResult 的最小形状是
-`{contract:"vibetable.plugin-result.v1",status:"success"|"warning"|"error",summary:string}`，
-可加 metrics、table、refresh、warnings、artifacts。`ok(data)` 把原始 JSON 放在 table.data，
-`failure(code,message)` 把错误码放在 table.code；这些是结果内容，不自动改变 Host task 的
-执行终态。MutationPlan 的最小形状是 `{contract:"vibetable.mutation-plan.v1",collection,
-operations,preview:{affectedCount}}`。返回额外未声明 wire 字段会被 closed DTO 拒绝。
-
-批准前，拒绝或取消都不提交。批准后的 Go 冲突按原码返回；pending、提交传输失败或不完整
-回执会成为现有 `aborted` 终态与 `plugin_commit_unknown`。提交开始后取消不表示回滚；检查
-记录与审计再决定后续动作，宿主不会自动重放。已确认成功的任务不会被晚到取消覆盖。
-
-`startOfflineAction` 的第四参数 `risk` 应与 manifest 动作一致，默认 `"read"`；写动作测试使用
-`startOfflineAction(run, input, host, { risk: "write" })`，破坏性动作使用 `"destructive"`。
-风险错配不会进入确认或提交；返回计划先按 Worker 校验写权限，空计划也不例外。
-
-离线 `createOfflineHost` 显式输入合成 collections、fields、permissions、rowGuards；默认不
-授权读写。`cancelRequested` 与进度单调基线按单次 `startOfflineAction` 执行隔离：取消或超
-时后的旧异步动作即使晚返回，也只影响自己的执行，同一宿主上的并行运行互不串扰；宿主级
-`requestCancel` 只作用于直接经 `host.capabilities` 发起的调用。storage、progressEvents 历史、
-mutationPlans 与 writtenFiles 仍由宿主共享，用于跨执行观察。write 测试还必须提供合成产品可写 profile，例如
-`writableFields: { articles: { create: [], update: ["title"] } }`；集合与本次操作的字段列表须显式
-配置，缺少时在确认前以 `plugin_action_failed` 拒绝。它独立于读取 `fields` 和 manifest 权限，
-不会从字段名称推断可写性。write 测试还须提供 approveMutation 与合成 applyMutation，它不会
-默认伪造提交成功，也不能连接真实业务库。`startOfflineAction` 支持挂起动作取消/超时、确认拒绝和未知
-提交结果；离线 helper 不替代真实 Host 的 task registry。
+- rowGuards 是与同一次 Go 查询页对应的 opaque 元数据，按记录 id 索引，与获准的业务字段
+  分离。它由 Go 权威行状态产生、MutationKernel 消费；插件把它放入 surface mutation 的
+  `expectedDigest`，不用自己计算或解析。若预览后行发生变化，Go 原子拒绝 `mutation.digest_conflict`，
+  不会用旧预览覆盖新值；缺 guard 时插件必须 fail closed，不得生成部分计划（见
+  `examples/plugins/normalize-text/src/normalize-action.ts`）。
+- 批准前，拒绝或取消都不提交。批准后的 Go 冲突按原码返回；丢失或不完整回执为
+  `plugin_commit_unknown`。提交开始后取消不表示回滚；检查记录与审计再决定后续动作，
+  宿主不会自动重放。已确认成功的任务不会被晚到取消覆盖。
+- headless 模块完成/失败都通过 `finishHeadlessRun(window.name, status, summary)` 报告，
+  summary 是给人看的纯文本；宿主任务终态与审计是权威。
+- 离线 `createOfflineHost` 显式输入合成 permissions、descriptions、`queryAdapter` 与
+  rowGuards；默认不授权。它只实现 v2 describe/query/cursor 合同（与 Go conformance
+  语料 `plugin-capabilities-v2.json` 对齐），不再模拟旧 Worker 执行器。`createOfflineSurfaceHost`
+  在其上叠加 surface 信封：mutation 预览/提交必须显式提供合成 authority port，没有默认
+  成功，也不连接真实业务库。取消、进度、权限、未知提交等新链保障由 surface 测试与产品
+  E2E 验证，离线 helper 不替代真实 Host 的 task registry。
 
 ## 6. GitHub Release 安装契约
 
@@ -438,40 +403,47 @@ WebView。远程包下载后仍使用与本地 `.vtplugin` 相同的“检查计
 `.vtplugin` 上传到正式 GitHub Release 的交付方式。
 
 
-## Plugin API v2 受控读取
+## Plugin API v2 受控读取（现属于 surface API 3.x）
 
-新插件声明 `compatibility.pluginApi: "2.x"`，同一 data grant 的 operations 同时声明 `read`、`query`。旧版 `1.x` 的 `data.read` 继续使用物理字段、空 filter 和原有分页契约；非空 filter 仍明确拒绝。旧 Host 会拒绝 v2 包，不能静默降级。
+`vibetable.plugin-data.v2` describe/query 合同继续作为统一 surface API（pluginApi 3.x）的
+数据层；独立声明 `compatibility.pluginApi: "2.x"` 的 Worker 包已退役，不能新建或安装。
+data grant 的 operations 同时声明 `read`、`query`。
 
 先调用 `data.describe({ accepts: ["vibetable.plugin-data.v2"] })` 查看授权表，再传 `collection` 查看授权字段。查询使用返回的稳定 `fieldId`。元数据包含 logicalType、resultType、resultElementType、readonly、nullable、display、options、constraints、filterOperators、sortable；不返回公式源码、lookup 路径或 relation 目标字段。
 
 ```ts
-const description = await capabilities.data.describe({
+const api = createSurfaceClient(window.name);
+const description = await api.data.describe({
   accepts: ["vibetable.plugin-data.v2"], collection,
 });
 const request = { contract: "vibetable.plugin-query.v2" as const, collection,
   fields: ["id", fieldId], filters: [{ field: fieldId, operator: "gte" as const, value: 0 }],
   sorts: [{ field: fieldId, direction: "asc" as const }], pageSize: 200 };
 let cursor: string | undefined;
-do {
-  const page = await capabilities.data.query(cursor ? { ...request, cursor } : request);
-  // items 保留原始 ID、0、false、null；不要用 truthy 判断缺值。
-  consume(page.items);
-  cursor = page.nextCursor ?? undefined;
-} while (cursor);
+try {
+  do {
+    const page = await api.data.query(cursor ? { ...request, cursor } : request);
+    // items 保留原始 ID、0、false、null；不要用 truthy 判断缺值。
+    consume(page.items);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+} finally {
+  if (cursor !== undefined) await api.data.releaseCursor(cursor);
+}
 ```
 
 每个投影、筛选、排序字段都需授权；`ids` 需授权 `id`，最多 200 个。单页 1–200 条，默认 100；未知参数、raw SQL、关系路径、keyword/RPC 均不接受。筛选直接使用 Go QueryPort 的 operators：text 的 eq/ne/in/contains/starts_with/ends_with；number/date 的 eq/ne/in/gt/lt/gte/lte/between；bool/relation 的 eq/ne/in；select 的 eq/ne/in、multiSelect 的 contains；JSON 的 contains。普通字段均支持 is_null/is_not_null。实际字段能力以元数据为准。首版 text/number/bool/date 可稳定排序；select/relation/JSON/computed 不支持排序。
 
 Formula/lookup 首版可投影、不可筛选和排序，结果为 `{state,value,fresh}`。非 fresh 时 value 为 null，page.complete 为 false；不会返回旧计算值和内部 diagnostic。关联字段返回原始关联 ID（多关联返回 ID 数组），不展开未授权目标表的标签。
 
-游标是执行内随机、单次句柄；继续页必须保留相同 query。另一次 run、查询变化、workspace/session、安装修订或 schema/data/computed dependency 变化会失败，调用方应开始新查询。沿用执行超时、取消、64 次能力调用和 1 MiB 消息预算，不保证无限大表能在一次执行中完成。
+游标是 surface 内随机、单次句柄；继续页必须保留相同 query。另一次查询、查询变化、workspace/session、安装修订或 schema/data/computed dependency 变化会失败，调用方应开始新查询并释放未消费句柄。沿用请求取消与 1 MiB 消息预算；长驻页面没有旧 Worker 的终身 64 次预算。
 
-Go 在同一读取事务中读取 pluginstore 的 installation/status/grants/revision 并执行查询；BFF 只传 Host 可信 projectKey/sessionEpoch，插件不能传 scope。闭合 REST `/api/vibetable/v2/plugins/data` 只由 Host 的已鉴权会话使用，没有 renderer RPC 注册。
+Go 在同一读取事务中读取 pluginstore 的 installation/status/grants/revision 并执行查询；插件不能传 scope。闭合 REST `/api/vibetable/v2/plugins/data` 只由 Host 的已鉴权会话使用，没有 renderer RPC 注册。
 
-离线测试显式配置 `pluginApi: "2.x"`、Go 元数据 fixture 和 `queryAdapter`。adapter 接收闭合请求、返回 synthetic 权威分页结果；offlineHost 不实现另一套筛选引擎。缺少 adapter 明确失败。`data-overview` 示例展示元数据、筛选、稳定排序、全量分页、完整性与进度。
+离线测试显式配置合成 Go 元数据 fixture 和 `queryAdapter`。adapter 接收闭合请求、返回 synthetic 权威分页结果；offlineHost 不实现另一套筛选引擎。缺少 adapter 明确失败。`data-overview` 示例展示元数据、筛选、稳定排序、全量分页与完整性。
 
 
-v2 错误包括 `plugin_api_unsupported`（未协商/旧插件）、`plugin_read_denied`（授权不足/安装禁用）、`plugin_capability_invalid`（未知键/请求形态）、`plugin_query_limit`（页或ID上限）、`query.operator.unsupported`、`query.cursor.unsupported_sort`、`plugin_query_computed_unsupported`、`plugin_cursor_invalid`（句柄不存在/已消费/请求改变）、`plugin_cursor_stale`（安装或computed依赖修订改变）和 Go 的 `query.cursor_stale`（schema/data/clock变化）。执行取消、超时、总调用数和消息上限继续使用 v1 的 `plugin_cancel_requested` / `plugin_timeout` / `plugin_worker_failed`，不得把失败结果解释为成功全量。
+v2 错误包括 `plugin_api_unsupported`（未协商/旧插件）、`plugin_read_denied`（授权不足/安装禁用）、`plugin_capability_invalid`（未知键/请求形态）、`plugin_query_limit`（页或ID上限）、`query.operator.unsupported`、`query.cursor.unsupported_sort`、`plugin_query_computed_unsupported`、`plugin_cursor_invalid`（句柄不存在/已消费/请求改变）、`plugin_cursor_stale`（安装或computed依赖修订改变）和 Go 的 `query.cursor_stale`（schema/data/clock变化）。取消、超时和消息上限继续使用 `plugin_cancel_requested` / `plugin_timeout` 等既有码，不得把失败结果解释为成功全量。
 
 Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capabilities-v2.json`，SDK/offlineHost/BFF 均使用它。以合成库重建：在根目录设置 `VIBETABLE_PLUGIN_DATA_CAPTURE=../../../tests/contract/fixtures/plugin-capabilities-v2.json` 后，从 sidecar 执行 `go test ./internal/app -run '^TestPluginDataRealAuthorityPaginationAndGrants$' -count=1`；只归一化表/字段/记录/游标标识及schema修订，保留Go原值和元数据。真实跨进程本地合同设置 `VIBETABLE_PLUGIN_HOST_CONTRACT=1` 后运行 `go test ./internal/app -run '^TestPluginData' -count=1 -v`，需要仓库已同步Python依赖与Node；完整WPF安装执行由 `11-plugin-mutation` 产品场景覆盖。
 
@@ -573,7 +545,7 @@ Go 临时计划仍受固定 TTL 与容量限制。常用拒绝码还有 `plugin_
 `plugin_cursor_stale` 和 canonical mutation 冲突码。
 
 新增 DataIO principal 只存在于 Host-only 任务组合和现有鉴权 surface HTTP 端口；没有新增
-Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为继续使用原契约。
+Product RPC 或旧 Worker 能力。旧 1.x/2.x Worker 包已退役（见第 5 节），不再有可执行的旧 grant/任务路径。
 
 内部 Host-only `attachment.stage` 的完整 JSON/base64 编码请求上限为 2 MiB，解码后的附件仍限 1 MiB；
 普通 frame 与其它 surface HTTP 请求保持 1 MiB。此编码预算不授予插件更大普通消息能力。
@@ -584,7 +556,7 @@ Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为
 
 `createSurfaceClient(token)` 同时使用当前 frame 的原生数据通道和可信父页
 `https://app.vibetable.local` 的展示通道。父页严格核对 origin、source 和当前 surfaceToken；
-UI 消息不会转成 Worker action 或通用 Product RPC。`client.ui.capabilities()` 返回当前闭集方法
+UI 消息不会转成旧 Worker action 或通用 Product RPC。`client.ui.capabilities()` 返回当前闭集方法
 及明确不支持列表。
 
 - `context.read()` 先读取 Go 授权的项目、表、选择等数据上下文，再叠加父页此刻的 theme/locale/density。

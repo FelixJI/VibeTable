@@ -343,6 +343,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
+			unrelatedPluginPreservationRegistration(t),
 			unrelatedPresetRegistration(t, "preset.list"),
 			unrelatedPresetRegistration(t, "preset.save"),
 			unrelatedPresetRegistration(t, "preset.delete"),

@@ -1206,7 +1206,7 @@ public sealed class PluginSurfaceFilesTests
             if (type != "plugin.interaction.requested" || payload is not PluginEventEnvelope envelope) return;
             var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             NativeConfirmation = _tasks.RequiresNativeConfirmation(interaction.RunId);
-            _tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation!.InteractionId, "approved"), out _, fromNativeHost: true);
+            _tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation!.InteractionId, "approved"), fromNativeHost: true);
         }
         public void PostResponse(string type, string? id, object? payload) { }
         public void PostOperationFailed(string? id, string message, string? code = null, string? operation = null, string? operationId = null) { }

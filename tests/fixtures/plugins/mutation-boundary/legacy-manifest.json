@@ -1,0 +1,133 @@
+{
+  "$schema": "vibetable.plugin-manifest.v1",
+  "pluginId": "com.vibetable.e2e.mutation-boundary",
+  "version": "1.0.0",
+  "displayName": {
+    "zh-CN": "E2E 插件变更边界",
+    "en-US": "E2E mutation boundary"
+  },
+  "description": {
+    "zh-CN": "确定性验证 mutation plan 确认与字段越权拒绝"
+  },
+  "compatibility": {
+    "minHostVersion": "0.2.0",
+    "pluginApi": "1.x"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": [
+          "read",
+          "create",
+          "update"
+        ],
+        "fields": []
+      }
+    ],
+    "files": [
+      "pickRead",
+      "pickWrite"
+    ],
+    "privateStorage": false,
+    "network": {
+      "domains": [],
+      "methods": [
+        "GET"
+      ]
+    }
+  },
+  "actions": [
+    {
+      "actionId": "allowed-plan",
+      "displayName": {
+        "zh-CN": "提交授权变更计划"
+      },
+      "description": {
+        "zh-CN": "创建一条不写入任何字段的记录"
+      },
+      "mode": "local",
+      "risk": "write",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/allowed.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
+    },
+    {
+      "actionId": "denied-plan",
+      "displayName": {
+        "zh-CN": "提交越权变更计划"
+      },
+      "description": {
+        "zh-CN": "尝试写入未授权 forbidden 字段"
+      },
+      "mode": "local",
+      "risk": "write",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/denied.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
+    },
+    {
+      "actionId": "files-roundtrip",
+      "displayName": {
+        "zh-CN": "读取数据并验证原生文件授权"
+      },
+      "description": {
+        "zh-CN": "通过原生授权读取并复制测试文件"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/files.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/files-result.json"
+    },
+    {
+      "actionId": "busy-compute",
+      "displayName": {
+        "zh-CN": "进入不可中断的持续计算"
+      },
+      "description": {
+        "zh-CN": "写入 started 标记后进入同步忙循环，验证宿主 Job 清理"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/busy.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
+    }
+  ],
+  "ui": {
+    "customViews": []
+  }
+}

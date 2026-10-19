@@ -148,6 +148,75 @@ def test_validate_reports_plugin_identity_as_json(tmp_path: Path) -> None:
     assert report["packageHash"].startswith("sha256:")
 
 
+def test_legacy_worker_package_gets_read_only_diagnostics_but_never_builds_or_packs(
+    tmp_path: Path,
+) -> None:
+    """旧 v1 Worker 包：只读检查保留真实身份与迁移诊断；build/pack 明确拒绝。"""
+    plugin = tmp_path / "legacy-reader"
+    _write_readonly_plugin(plugin)
+
+    inspected = _run_cli("validate", str(plugin), "--json")
+    assert inspected.returncode == 0, inspected.stderr
+    report = json.loads(inspected.stdout)
+    assert report["ok"] is True
+    assert report["legacy"] is True
+    assert report["pluginId"] == "com.example.reader"
+    assert report["version"] == "1.0.0"
+    assert "vibetable.plugin-manifest.v2" in report["migration"]
+    assert "pluginApi 3.x" in report["migration"]
+
+    permissions = _run_cli("inspect-permissions", str(plugin), "--json")
+    assert permissions.returncode == 0, permissions.stderr
+    assert json.loads(permissions.stdout)["legacy"] is True
+
+    text_report = _run_cli("validate", str(plugin))
+    assert text_report.returncode == 0, text_report.stderr
+    assert "legacy worker package" in text_report.stdout
+
+    env, spy_calls = _spy_bundler_env(tmp_path, "legacy-worker")
+    original_worker = (plugin / "dist" / "workers" / "read.js").read_text(encoding="utf-8")
+    built = _run_cli("build", str(plugin), env=env)
+    assert built.returncode == 2, (built.stdout, built.stderr)
+    assert json.loads(built.stdout)["code"] == "legacy_worker_package"
+    assert not spy_calls.exists(), "the retired worker chain must not invoke any bundler"
+    # 原有 worker 产物保持原样：退役后的 build 不再重写旧输出。
+    assert (plugin / "dist" / "workers" / "read.js").read_text(encoding="utf-8") == original_worker
+
+    package = tmp_path / "legacy.vtplugin"
+    packed = _run_cli("pack", str(plugin), "--output", str(package), "--json")
+    assert packed.returncode == 2, (packed.stdout, packed.stderr)
+    assert json.loads(packed.stdout)["code"] == "legacy_worker_package"
+    assert not package.exists(), "a legacy package must never be packed as installable"
+
+
+def test_tracked_weread_historical_fixture_reports_stable_legacy_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """tracked 历史 fixture：真实旧包 ZIP 的只读检查与提交端拒绝。"""
+    fixture = ROOT / "examples/plugins/weread-notes-dashboard"
+    package = fixture / "weread-notes-dashboard.vtplugin"
+
+    inspected = _run_cli("validate", str(package), "--json")
+    assert inspected.returncode == 2, inspected.stdout
+    # 真实旧包由旧版 packer 写入带 BOM 的 integrity.json；当前只读核验 fail closed，
+    # 永远不会执行旧代码；成功路径的迁移诊断由合成 v1 fixture 覆盖。
+    assert json.loads(inspected.stdout)["code"] == "integrity_invalid"
+
+    # 开发目录缺少已退役的 dist Worker 产物时同样 fail closed，不会执行旧链。
+    inspected_folder = _run_cli("validate", str(fixture), "--json")
+    assert inspected_folder.returncode == 2, inspected_folder.stdout
+    assert json.loads(inspected_folder.stdout)["code"] in {
+        "missing_reference",
+        "version_incompatible",
+    }
+
+    env, spy_calls = _spy_bundler_env(tmp_path, "weread-fixture")
+    built = _run_cli("build", str(fixture), env=env)
+    assert built.returncode == 2, (built.stdout, built.stderr)
+    assert json.loads(built.stdout)["code"] == "legacy_worker_package"
+    assert not spy_calls.exists()
+
+
 def test_offline_test_command_executes_plugin_tests_from_plugin_directory(
     tmp_path: Path,
 ) -> None:

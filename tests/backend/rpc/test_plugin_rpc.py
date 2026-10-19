@@ -101,3 +101,67 @@ def test_uninstall_requires_the_confirmed_installation_identity_and_revision() -
     )
     assert value.installation_id == "record-original"
     assert value.expected_revision == 4
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "plugin.describeAction",
+        "plugin.startAction",
+        "plugin.resolveInteraction",
+        "plugin.resolveFile",
+        "plugin.cancelTask",
+    ],
+)
+@pytest.mark.parametrize("payload", [{}, {"taskId": "old", "workerEntry": "untrusted.js"}])
+async def test_retired_execution_commands_never_call_platform_service(
+    method: str, payload: dict[str, Any]
+) -> None:
+    from backend.__main__ import _register_retired_plugin_methods
+
+    dispatcher = RpcDispatcher()
+    _register_retired_plugin_methods(dispatcher)
+    response = await dispatcher.dispatch(
+        {"jsonrpc": "2.0", "id": "retired", "method": method, "params": payload}
+    )
+    assert response is not None
+    assert response["error"]["code"] == -32120
+    assert response["error"]["data"]["code"] == "plugin_worker_retired"
+
+
+def test_preservation_page_requires_bound_identity_and_aligned_bounded_offsets() -> None:
+    from pydantic import ValidationError
+
+    from backend.contracts.plugin_rpc import PluginPreservationPageParams
+
+    identity = {
+        "projectKey": "local:workspace",
+        "pluginId": "com.example.old",
+        "installationId": "a" * 15,
+        "installationRevision": 1,
+    }
+    page = PluginPreservationPageParams.model_validate(identity)
+    assert page.after_record_id == ""
+    assert page.record_offset == 0
+    assert (
+        PluginPreservationPageParams.model_validate(
+            {**identity, "afterRecordId": "A0" + "a" * 13, "recordOffset": 256 * 1024}
+        ).record_offset
+        == 256 * 1024
+    )
+    for patch in (
+        {"projectKey": ""},
+        {"installationId": None},
+        {"installationRevision": True},
+        {"installationRevision": 0},
+        {"afterRecordId": "bad"},
+        {"afterRecordId": None},
+        {"recordOffset": -1},
+        {"recordOffset": 1},
+        {"recordOffset": (1 << 30) + 256 * 1024},
+        {"recordOffset": None},
+        {"recordOffset": True},
+        {"unknown": "field"},
+    ):
+        with pytest.raises(ValidationError):
+            PluginPreservationPageParams.model_validate({**identity, **patch})
