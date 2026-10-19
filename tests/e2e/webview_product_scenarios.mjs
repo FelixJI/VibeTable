@@ -11624,6 +11624,7 @@ const scenarios = {
   }),  "48-plugin-applications": (page, recorder, _network, runtime) => runPluginApplications(page, recorder, runtime, {
     waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
     activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
+    openWorkspaceCenterFromSwitcher, beginWritableWorkspaceBootstrapCapture, switchWorkspaceByName,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
   }),
   "49-plugin-application-security": (page, recorder, _network, runtime) => runApplicationSecurity(page, recorder, runtime, {
@@ -11960,6 +11961,7 @@ async function main() {
           if (args.scenario === "48-plugin-applications") return runPluginApplications(candidate, checks, runtime, {
             waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
             activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
+            openWorkspaceCenterFromSwitcher, beginWritableWorkspaceBootstrapCapture, switchWorkspaceByName,
             beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
           }, args.state);
           return resumeNaturalRetentionAging(candidate, checks, args.state);

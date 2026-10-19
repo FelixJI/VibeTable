@@ -125,6 +125,7 @@ _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
         "pluginId",
         "packageHash",
         "sessionEpoch",
+        "crossWorkspace",
     ),
     "33-host-grid-presentation": (
         "workspaceId",

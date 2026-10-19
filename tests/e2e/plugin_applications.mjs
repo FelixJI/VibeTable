@@ -112,6 +112,125 @@ async function headless(page, id, actionId) {
   await page.getByTestId("plugin-headless-runner").waitFor({ timeout: 30000 });
 }
 
+export async function exerciseApplicationWorkspaceIsolation(page, recorder, runtime, helpers, state, originalFrame) {
+  const { rawBridgeRequest, createSimpleTable, applyProductMutation, openWorkspaceCenterFromSwitcher,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage, switchWorkspaceByName, selectTable } = helpers;
+  const rows = async tableId => (await rawBridgeRequest(page, "query.page", {
+    tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  })).payload.rows;
+  const catalog = async projectKey => (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload;
+  const oldRows = await rows(state.tableId);
+  const first = (await catalog(state.projectKey)).find(item => item.pluginId === A);
+  const oldToken = await originalFrame.evaluate(() => window.name);
+  const readControl = path.join(runtime.controlsDir, "attachment-replacement-source.txt");
+  const previousRead = await fs.readFile(readControl, "utf8");
+  const firstFile = path.join(runtime.controlsDir, "48-workspace-a-private.txt");
+  const secondFile = path.join(runtime.controlsDir, "48-workspace-b-private.txt");
+  await fs.writeFile(firstFile, "WORKSPACE_A_PRIVATE_FILE");
+  await fs.writeFile(secondFile, "WORKSPACE_B_FILE");
+  try {
+    // Normal package inspection/install grants pickRead; the existing Host
+    // test-mode picker only chooses these scoped synthetic files, never a path RPC.
+    await fs.writeFile(readControl, `${firstFile}\n`);
+    const held = await originalFrame.evaluate(() => call("file.pickRead", { mediaTypes: ["text/plain"] }));
+    recorder.check("first workspace issues a real unread surface file grant", typeof held?.grantId === "string" && held.grantId.length > 0);
+    const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    await openWorkspaceCenterFromSwitcher(page);
+    await page.getByTestId("workspace-create").click();
+    await page.getByTestId("workspace-flow-modal").locator("input").first().fill("E2E Plugin Scope Isolation");
+    await page.getByTestId("workspace-flow-confirm").click();
+    const target = page.getByTestId("workspace-center").getByRole("button", { name: /E2E Plugin Scope Isolation/ });
+    await target.waitFor({ state: "visible", timeout: 60000 });
+    await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+    await target.click();
+    const opened = await waitForCapturedBridgeMessage(page, 60000);
+    const session = opened.payload.session;
+    recorder.check("same-plugin isolation uses a second real writable workspace and newer epoch",
+      session.workspaceId !== state.workspaceId && session.sessionEpoch > originalSession.sessionEpoch, { session });
+    const projectKey = `local:${session.workspaceId.replaceAll("-", "").toLowerCase()}`;
+    await page.getByTestId("nav-tables").click();
+    const table = await createSimpleTable(page, "Other Application Tasks", "Text");
+    await applyProductMutation(page, table.tableId, [{ kind: "insert", recordId: null,
+      values: { [table.field.physicalName]: "WORKSPACE_B_PRIVATE_RECORD" } }], "application-other-workspace");
+    await installApplication(page, runtime);
+    const installed = (await catalog(projectKey)).find(item => item.pluginId === A);
+    recorder.check("the same package has a distinct installation authority in each workspace",
+      installed.pluginId === first.pluginId && installed.packageHash === first.packageHash
+        && installed.installationId !== first.installationId && installed.projectKey === projectKey, { first, installed });
+    let frame = await openApplication(page);
+    const freshContext = await frame.evaluate(() => call("context.read"));
+    const privateBefore = await frame.evaluate(() => call("storage.get", { key: "scope" }));
+    const visibleRows = await frame.locator("#rows").innerText();
+    recorder.check("new workspace has a working fresh plugin scope without old private settings",
+      freshContext.projectKey === projectKey && freshContext.collection === table.tableId && privateBefore === null
+        && visibleRows.includes("WORKSPACE_B_PRIVATE_RECORD") && !visibleRows.includes("synthetic original"), { freshContext, privateBefore, visibleRows });
+    const denied = await frame.evaluate(async ({ oldToken, grantId, collection }) => {
+      const attempt = async (method, params, token) => {
+        try { return { accepted: true, value: await call(method, params, token) }; }
+        catch (error) { return { code: error.code, message: error.message }; }
+      };
+      return {
+        token: await attempt("context.read", {}, oldToken),
+        grant: await attempt("file.read", { grantId }),
+        table: await attempt("data.query", { contract: "vibetable.plugin-query.v2", collection, fields: ["id"], pageSize: 1 }),
+      };
+    }, { oldToken, grantId: held.grantId, collection: state.tableId });
+    recorder.check("old workspace token, unread grant and table cannot authorize the same plugin in the new workspace",
+      denied.token.code === "plugin_source_denied" && denied.grant.code === "plugin_file_denied"
+        && denied.table.code === "plugin_read_denied" && originalFrame.isDetached()
+        && !JSON.stringify(denied).includes("synthetic original") && !JSON.stringify(denied).includes("WORKSPACE_A_PRIVATE_FILE"), { denied, oldFrameDetached: originalFrame.isDetached() });
+    await fs.writeFile(readControl, `${secondFile}\n`);
+    const freshFile = await frame.evaluate(async () => {
+      const grant = await call("file.pickRead", { mediaTypes: ["text/plain"] });
+      const block = await call("file.read", { grantId: grant.grantId });
+      await call("file.release", { grantId: grant.grantId });
+      return block;
+    });
+    recorder.check("new workspace file authorization reads only its newly selected source",
+      freshFile.eof === true && Buffer.from(freshFile.base64, "base64").toString("utf8") === "WORKSPACE_B_FILE");
+    await frame.evaluate(() => call("storage.set", { key: "scope", value: "workspace-b" }));
+    const secondRows = await rows(table.tableId);
+    const returned = await switchWorkspaceByName(page, "E2E Product Workspace", session.sessionEpoch);
+    recorder.check("workspace UI switches back to the exact original identity", returned.payload.session.workspaceId === state.workspaceId);
+    await page.getByTestId("nav-tables").click(); await selectTable(page, "Application Tasks");
+    frame = await openApplication(page);
+    recorder.check("returning to the original workspace preserves its private value and exact business rows",
+      await frame.evaluate(() => call("storage.get", { key: "scope" })) === "plugin-a"
+        && JSON.stringify(await rows(state.tableId)) === JSON.stringify(oldRows));
+    return { frame, sessionEpoch: returned.payload.session.sessionEpoch,
+      crossWorkspace: { workspaceId: session.workspaceId, projectKey, tableId: table.tableId,
+        installationId: installed.installationId, revision: installed.revision, packageHash: installed.packageHash,
+        version: installed.version, rows: secondRows } };
+  } finally { await fs.writeFile(readControl, previousRead); }
+}
+
+export async function verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers, state) {
+  const { rawBridgeRequest, switchWorkspaceByName, selectTable } = helpers;
+  const other = state.crossWorkspace;
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const opened = await switchWorkspaceByName(page, "E2E Plugin Scope Isolation", session.sessionEpoch);
+  recorder.check("lifecycle isolation reopens the same second workspace", opened.payload.session.workspaceId === other.workspaceId);
+  const installed = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: other.projectKey })).payload.find(item => item.pluginId === A);
+  recorder.check("upgrading and uninstalling the original workspace cannot change the other installation",
+    installed?.installationId === other.installationId && installed.revision === other.revision
+      && installed.packageHash === other.packageHash && installed.version === other.version, { installed, expected: other });
+  await page.getByTestId("nav-tables").click(); await selectTable(page, "Other Application Tasks");
+  const frame = await openApplication(page);
+  const context = await frame.evaluate(() => call("context.read"));
+  const privateValue = await frame.evaluate(() => call("storage.get", { key: "scope" }));
+  const rows = (await rawBridgeRequest(page, "query.page", { tableId: other.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
+  recorder.check("other workspace still has a usable plugin with its own unchanged settings and business rows",
+    context.projectKey === other.projectKey && context.collection === other.tableId && privateValue === "workspace-b"
+      && JSON.stringify(rows) === JSON.stringify(other.rows), { context, rows });
+  const current = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", current.sessionEpoch);
+  recorder.check("post-lifecycle return restores the original workspace", returned.payload.session.workspaceId === state.workspaceId);
+  await page.getByTestId("nav-tables").click(); await selectTable(page, "Application Tasks");
+  const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload;
+  recorder.check("original workspace keeps its explicit uninstall and the second plugin", !catalog.some(item => item.pluginId === A) && catalog.some(item => item.pluginId === B));
+}
+
 export async function runPluginApplications(page, recorder, runtime, helpers, statePath = null) {
   const { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
     activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
@@ -187,6 +306,12 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   recorder.check("close/reopen obtains a fresh token and keeps private state",
     await frame.evaluate(() => window.name) !== token
       && await frame.evaluate(() => call("storage.get", { key: "scope" })) === "plugin-a");
+  if (!statePath) {
+    const isolated = await exerciseApplicationWorkspaceIsolation(page, recorder, runtime, helpers, state, frame);
+    frame = isolated.frame;
+    state.crossWorkspace = isolated.crossWorkspace;
+    state.sessionEpoch = isolated.sessionEpoch;
+  }
   await nativePluginInput(runtime, "observe", "plugin-manage", "application").then(result =>
     recorder.check("actual WPF management chrome is visible and reachable", result.status === "completed", { result }));
 
@@ -326,6 +451,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   await page.getByTestId(APP(A)).waitFor({ state: "hidden" });
   const rows = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
   recorder.check("uninstall retains business table and committed records", rows.payload.rows.length === 1 && Object.values(rows.payload.rows[0]).includes("native-approved"), { rows });
+  await verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers, state);
   frame = await openApplication(page, B);
   await runApplicationPrint(page, frame, recorder, runtime, () => openApplication(page, B));
   return { workspaceId: state.workspaceId, uninstalled: A };

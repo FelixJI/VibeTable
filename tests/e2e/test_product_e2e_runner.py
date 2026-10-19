@@ -7616,3 +7616,56 @@ def test_other_scenarios_keep_existing_host_environment(
     assert environment["PATH"] == "existing-parent-tools"
     assert evidence == {}
     assert runner.os.environ["PATH"] == "existing-parent-tools"
+
+
+@pytest.mark.parametrize("include_other_workspace", [True, False])
+def test_application_restart_requires_and_preserves_second_workspace_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, include_other_workspace: bool
+) -> None:
+    scenario = runner.Scenario("48-plugin-applications", "applications", "workspace isolation")
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    other = {
+        "workspaceId": "22222222-2222-4222-8222-222222222222",
+        "projectKey": "local:22222222222242228222222222222222",
+        "tableId": "other-table",
+        "installationId": "other-installation",
+        "revision": 2,
+        "version": "1.0.0",
+        "packageHash": "sha256:" + "ab" * 32,
+        "rows": [{"id": "other-row", "text": "other workspace private row"}],
+    }
+    calls: list[str] = []
+
+    def phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent.phase)
+        if persistent.phase == "resume":
+            state = json.loads(persistent.state_path.read_text(encoding="utf-8"))
+            assert state["workspaceId"] == workspace_id
+            assert state["crossWorkspace"] == other
+            return {"status": "passed", "lifecycle": {"status": "passed"}}
+        _plugin_restart_workspace(persistent)
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "projectKey": "local:11111111222241118111111111111111",
+            "tableId": "original-table",
+            "pluginId": "com.vibetable.e2e.application-a",
+            "packageHash": "sha256:" + "ab" * 32,
+            "sessionEpoch": 5,
+            **({"crossWorkspace": other} if include_other_workspace else {}),
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+    if include_other_workspace:
+        assert result["status"] == "passed"
+        assert calls == ["seed", "resume"]
+    else:
+        assert result["status"] == "failed"
+        assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+        assert calls == ["seed"]
