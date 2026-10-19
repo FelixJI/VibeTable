@@ -26,7 +26,10 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
       await page.getByTestId("nav-plugins").click();
       await page.getByTestId("plugin-install-package").click();
       await page.getByTestId("plugin-install-plan").waitFor({ timeout: 30000 });
+      await beginBridgeMessageCapture(page, ["plugin.install.commit", "operation.failed"]);
       await page.getByTestId("plugin-install-commit").click();
+      const committed = await waitForCapturedBridgeMessage(page, 30000);
+      recorder.check(`native SDK ${example} package commits before catalog enable`, committed.type === "plugin.install.commit", { committed });
       const row = page.locator("button.plugin-row").filter({ hasText: `com.vibetable.examples.${example}` });
       await row.waitFor({ timeout: 60000 }); await row.click();
       await page.waitForFunction(() => document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));

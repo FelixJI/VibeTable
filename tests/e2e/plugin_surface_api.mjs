@@ -26,7 +26,10 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     await page.getByTestId("nav-plugins").click();
     await page.getByTestId("plugin-install-package").click();
     await page.getByTestId("plugin-install-plan").waitFor({ timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["plugin.install.commit", "operation.failed"]);
     await page.getByTestId("plugin-install-commit").click();
+    const committed = await waitForCapturedBridgeMessage(page, 30_000);
+    recorder.check("native API3 package commit succeeds before catalog enable", committed.type === "plugin.install.commit", { committed });
     const row = page.locator("button.plugin-row").filter({ hasText: id });
     await row.waitFor({ timeout: 60_000 });
     await row.click();
@@ -51,7 +54,7 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
   for (const method of ["plugin.action.describe", "plugin.action.start"]) {
     const rejected = await rawBridgeRequest(page, method, { projectKey, pluginId: retiredId, actionId: "allowed-plan", context, ...(method.endsWith("start") ? { input: {} } : {}) });
     recorder.check(`${method} explicitly rejects the retired executor`,
-      rejected.type === "operation.failed" && rejected.payload?.error?.code === "plugin_worker_retired", { rejected });
+      rejected.type === "operation.failed" && rejected.payload?.code === "plugin_worker_retired", { rejected });
     await acknowledgeExpectedBridgeFailure(page, rejected);
   }
   const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload;

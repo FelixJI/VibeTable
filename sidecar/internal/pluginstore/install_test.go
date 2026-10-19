@@ -87,6 +87,125 @@ func nativeizeFrozenManifest(t *testing.T, value any) {
 	manifest["ui"] = map[string]any{"customViews": views}
 }
 
+// TestCommitPlanAcceptsRealHostInstallPlanDump pins the real Host adapter
+// contract (backend InstallPlan.model_dump(by_alias=True)): every commit
+// entry receives the complete plan object, whose inspection diagnostic
+// blockingReasons list is always present and must be empty for a
+// commitable plan. Non-empty lists reject fail-closed with the submitted
+// diagnosis, malformed shapes stay invalidPayload, and clearing the list
+// can never bypass the independent legacy-manifest rejection.
+func TestCommitPlanAcceptsRealHostInstallPlanDump(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	basePlan, baseRevision := frozenNativeInstallRequest(t)
+	withRealDumpFields := func(t *testing.T, raw json.RawMessage, changes map[string]any) json.RawMessage {
+		t.Helper()
+		var object map[string]any
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&object); err != nil {
+			t.Fatal(err)
+		}
+		// The adapter always dumps every field, including explicit nulls
+		// for the optional install identities and the empty diagnostic list.
+		object["targetInstallationId"] = nil
+		object["targetRevision"] = nil
+		object["blockingReasons"] = []any{}
+		for key, value := range changes {
+			object[key] = value
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	installPlan := withRealDumpFields(t, basePlan, nil)
+	installed, err := service.CommitInstall(ctx, installPlan, baseRevision)
+	if err != nil {
+		t.Fatalf("real adapter install plan rejected: %v", err)
+	}
+	bound := withRealDumpFields(t, basePlan, map[string]any{
+		"targetInstallationId": jsonText(installed, "installationId"),
+		"targetRevision":       1,
+	})
+	if _, err := service.CommitUpgrade(ctx, bound, baseRevision); err != nil {
+		t.Fatalf("real adapter upgrade plan rejected: %v", err)
+	}
+	rollback := withRealDumpFields(t, basePlan, map[string]any{
+		"targetInstallationId": jsonText(installed, "installationId"),
+		"targetRevision":       2,
+	})
+	rolledBack, err := service.CommitRollback(ctx, rollback, baseRevision)
+	if err != nil || jsonInt(rolledBack, "revision") != 3 {
+		t.Fatalf("real adapter rollback plan = %s err = %v", rolledBack, err)
+	}
+	blocked := withRealDumpFields(t, basePlan, map[string]any{
+		"blockingReasons": []any{"plugin_signature_invalid"},
+	})
+	if _, err := service.CommitInstall(ctx, blocked, baseRevision); err == nil {
+		t.Fatal("blocked plan committed")
+	} else {
+		storeErr, ok := err.(*Error)
+		if !ok || storeErr.Code != "plugin_blocked" {
+			t.Fatalf("blocked plan rejection = %v", err)
+		}
+		if reasons, _ := storeErr.Details["blockingReasons"].([]string); len(reasons) != 1 || reasons[0] != "plugin_signature_invalid" {
+			t.Fatalf("blocked plan details = %#v", storeErr.Details)
+		}
+	}
+	for name, malformed := range map[string]any{
+		"string":     "ignored",
+		"numbers":    []any{1, 2},
+		"empty-item": []any{"ok", ""},
+		"null":       nil,
+	} {
+		if _, err := service.CommitInstall(ctx, withRealDumpFields(t, basePlan, map[string]any{"blockingReasons": malformed}), baseRevision); err == nil {
+			t.Fatalf("%s blockingReasons accepted", name)
+		} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != "plugin.request_invalid" {
+			t.Fatalf("%s blockingReasons rejection = %v", name, err)
+		}
+	}
+	// A plan that drops the required sourceLocation stays invalid; the
+	// closed-set widening never loosened the original required texts.
+	withoutSourceLocation := withRealDumpFields(t, basePlan, nil)
+	var trimmed map[string]any
+	trimmedDecoder := json.NewDecoder(strings.NewReader(string(withoutSourceLocation)))
+	trimmedDecoder.UseNumber()
+	if err := trimmedDecoder.Decode(&trimmed); err != nil {
+		t.Fatal(err)
+	}
+	delete(trimmed, "sourceLocation")
+	trimmedRaw, err := json.Marshal(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CommitInstall(ctx, trimmedRaw, baseRevision); err == nil {
+		t.Fatal("plan without sourceLocation accepted")
+	} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != "plugin.request_invalid" {
+		t.Fatalf("plan without sourceLocation rejection = %v", err)
+	}
+	// Clearing the diagnostic list can never bypass the independent
+	// legacy Worker rejection: the frozen v1 plan with blockingReasons [] is
+	// still refused by the native-manifest boundary.
+	legacyPlan, legacyRevision := frozenInstallRequest(t)
+	if _, err := service.CommitInstall(ctx, withRealDumpFields(t, legacyPlan, nil), legacyRevision); err == nil {
+		t.Fatal("cleared legacy plan committed")
+	} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != WorkerRetiredReason {
+		t.Fatalf("cleared legacy plan rejection = %v", err)
+	}
+	count, err := service.app.CountRecords(recordsCollection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// install + upgrade + rollback of one plugin (same package hash) leave
+	// exactly its own records: one installation, one package revision and
+	// three lifecycle audits.
+	if count != 5 {
+		t.Fatalf("persisted %d records after real-dump commits", count)
+	}
+}
+
 func TestCommitPackageRejectsLegacyWorkerContract(t *testing.T) {
 	// The frozen v1 oracle plan is exactly the legacy Worker shape #486
 	// retires: every commit flavor must reject it fail-closed without

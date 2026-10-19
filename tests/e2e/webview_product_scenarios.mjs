@@ -6668,7 +6668,10 @@ async function scenario11(page, recorder, _network, runtime) {
   await installPlan.waitFor({ timeout: 30_000 });
   recorder.check("plugin permission and install plan was shown before approval",
     (await installPlan.innerText()).includes("E2E"), { installPlan: await installPlan.innerText() });
+  await beginBridgeMessageCapture(page, ["plugin.install.commit", "operation.failed"]);
   await page.getByTestId("plugin-install-commit").click();
+  const committed = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("native boundary package commits before lifecycle enable", committed.type === "plugin.install.commit", { committed });
   const pluginId = "com.vibetable.e2e.mutation-boundary";
   const pluginRow = page.locator("button.plugin-row").filter({ hasText: pluginId });
   await pluginRow.waitFor({ timeout: 60_000 }); await pluginRow.click();
