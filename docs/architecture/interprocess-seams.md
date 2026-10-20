@@ -187,6 +187,8 @@ Go 在同一短事务内读取代际、重验安装身份及读取原 JSON；数
 审计、删除和旧库导入的每次提交都推进代际，期间发生写入就中止导出，避免混合或漏项。
 Host 只从可信 workspace cache 按已有 packageHash 读取原包，不信任记录中的 localPath；
 按安装时的规范化 ZIP 成员摘要校验原包，并持有同一禁止写入/替换的句柄完成复制。
+Host 内的托管解压库兼容安装权威接受的 Stored、Deflate、BZIP2、LZMA 与 Zstandard（93），
+保持名称编码、成员/总量预算与取消校验，不启动 Python 或 Node；旧方法 20 仍被拒绝。
 内容损坏会中止保全。ZIP 包含 records.json、原 vtplugin 与
 preservation.json；缺包明确报告，不生成替代空包。取消、工作区退役或失败不会提交半成品，
 该通道不修改安装、私有设置、审计或业务数据。

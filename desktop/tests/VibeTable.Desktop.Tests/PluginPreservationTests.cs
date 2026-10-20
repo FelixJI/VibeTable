@@ -196,4 +196,117 @@ public sealed class PluginPreservationTests
         }
         finally { File.Delete(path); Directory.Delete(directory); }
     }
+
+    private static (byte[] Bytes, string Hash) CompressionFixture(string name)
+    {
+        using Stream fixture = typeof(PluginPreservationTests).Assembly.GetManifestResourceStream("PluginPreservationCompressionFixtures")!;
+        using var document = JsonDocument.Parse(fixture);
+        JsonElement value = document.RootElement.GetProperty("cases").GetProperty(name);
+        return (value.GetProperty("archive").GetBytesFromBase64(), value.GetProperty("packageHash").GetString()!);
+    }
+
+    [TestMethod]
+    [DataRow("bzip2")]
+    [DataRow("lzma")]
+    [DataRow("zstandard")]
+    [DataRow("zip64-lzma")]
+    [DataRow("descriptor-bzip2")]
+    public async Task AuthorityCompressedPackagesPreserveTheirExactOriginalBytes(string name)
+    {
+        var fixture = CompressionFixture(name);
+        string directory = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = PluginRetainedPackage.PathFor(directory, fixture.Hash)!;
+        byte[] row = JsonSerializer.SerializeToUtf8Bytes(new { recordId = RecordId, kind = "installation", rawPayload = JsonSerializer.Serialize(new { packageHash = fixture.Hash }) });
+        try
+        {
+            await File.WriteAllBytesAsync(path, fixture.Bytes);
+            using var output = new MemoryStream();
+            Assert.AreEqual(0, await PluginPreservationRequestController.WriteArchiveAsync(output, Pages(row), directory, CancellationToken.None));
+            output.Position = 0;
+            using var archive = new ZipArchive(output, ZipArchiveMode.Read);
+            using var preserved = new MemoryStream();
+            await archive.GetEntry($"packages/{fixture.Hash[7..]}.vtplugin")!.Open().CopyToAsync(preserved);
+            CollectionAssert.AreEqual(fixture.Bytes, preserved.ToArray());
+        }
+        finally { File.Delete(path); Directory.Delete(directory); }
+    }
+
+    [TestMethod]
+    [DataRow("corrupt-bzip2")]
+    [DataRow("corrupt-lzma")]
+    [DataRow("corrupt-zstandard")]
+    [DataRow("excess-output-bzip2")]
+    [DataRow("excess-output-lzma")]
+    [DataRow("excess-output-zstandard")]
+    [DataRow("oversized-member")]
+    [DataRow("oversized-zstandard-window")]
+    [DataRow("unsupported-zstandard-20")]
+    public async Task CompressionCorruptionAndBudgetsFailClosed(string name)
+    {
+        var fixture = CompressionFixture(name);
+        string path = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N") + ".vtplugin");
+        try
+        {
+            await File.WriteAllBytesAsync(path, fixture.Bytes);
+            await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await Assert.ThrowsAsync<IOException>(() => PluginRetainedPackage.VerifyAsync(source, fixture.Hash, CancellationToken.None));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task LargeAdvertisedLzmaDictionaryDoesNotAllocateItsFullWindow()
+    {
+        var fixture = CompressionFixture("large-lzma-dictionary");
+        string path = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N") + ".vtplugin");
+        try
+        {
+            await File.WriteAllBytesAsync(path, fixture.Bytes);
+            await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            long before = GC.GetTotalAllocatedBytes(precise: true);
+            await PluginRetainedPackage.VerifyAsync(source, fixture.Hash, CancellationToken.None);
+            Assert.IsLessThan(16L * 1024 * 1024, GC.GetTotalAllocatedBytes(precise: true) - before,
+                "A tiny preserved member must not allocate its advertised 64 MiB dictionary.");
+        }
+        finally { File.Delete(path); }
+    }
+
+    private sealed class CancelOnPackageRead(string path, CancellationTokenSource cancellation)
+        : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true)
+    {
+        internal bool Started { get; private set; }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+        {
+            Started = true;
+            cancellation.Cancel();
+            return base.ReadAsync(buffer, token);
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token)
+        {
+            Started = true;
+            cancellation.Cancel();
+            return base.ReadAsync(buffer, offset, count, token);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("bzip2")]
+    [DataRow("lzma")]
+    [DataRow("zstandard")]
+    public async Task CompressionVerificationHonorsCancellationAfterInputStarts(string name)
+    {
+        var fixture = CompressionFixture(name);
+        string path = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N") + ".vtplugin");
+        try
+        {
+            await File.WriteAllBytesAsync(path, fixture.Bytes);
+            using var cancellation = new CancellationTokenSource();
+            await using var source = new CancelOnPackageRead(path, cancellation);
+            await Assert.ThrowsAsync<OperationCanceledException>(() => PluginRetainedPackage.VerifyAsync(source, fixture.Hash, cancellation.Token));
+            Assert.IsTrue(source.Started);
+        }
+        finally { File.Delete(path); }
+    }
 }

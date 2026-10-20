@@ -3,6 +3,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using SharpCompress.Common;
+using SharpCompress.IO;
+using SharpCompress.Readers;
+using DecoderArchive = SharpCompress.Archives.Zip.ZipArchive;
 
 namespace VibeTable.Desktop.Services;
 
@@ -38,11 +42,12 @@ internal static class PluginRetainedPackage
         // Python zipfile uses CP437 when the entry does not declare UTF-8.
         using var archive = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true,
             entryNameEncoding: CodePagesEncodingProvider.Instance.GetEncoding(437));
-        var members = new List<(ZipArchiveEntry Entry, byte[] Name)>();
+        var members = new List<(ZipArchiveEntry Entry, byte[] Name, int Index)>();
         var names = new HashSet<string>(StringComparer.Ordinal);
         long total = 0;
-        foreach (ZipArchiveEntry entry in archive.Entries)
+        for (int index = 0; index < archive.Entries.Count; index++)
         {
+            ZipArchiveEntry entry = archive.Entries[index];
             token.ThrowIfCancellationRequested();
             if (entry.FullName.EndsWith('/')) continue;
             string path = entry.FullName.Replace('\\', '/').Normalize(NormalizationForm.FormC);
@@ -55,8 +60,13 @@ internal static class PluginRetainedPackage
             if (name.Length == 0 || !names.Add(name) || members.Count >= 2048
                 || entry.Length > 32 * 1024 * 1024 || (total += entry.Length) > 256 * 1024 * 1024)
                 throw new IOException("Invalid retained package member or size.");
-            members.Add((entry, Encoding.UTF8.GetBytes(name)));
+            members.Add((entry, Encoding.UTF8.GetBytes(name), index));
         }
+        // Keep BCL names/metadata; the decoder only supplies bytes in the same central-directory order.
+        source.Position = 0;
+        using var decoder = DecoderArchive.OpenArchive(source, ReaderOptions.ForExternalStream);
+        var entries = decoder.Entries.ToArray();
+        if (entries.Length != archive.Entries.Count) throw new IOException("Invalid retained package directory.");
         using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         byte[] length = new byte[8];
         byte[] buffer = new byte[64 * 1024];
@@ -69,15 +79,33 @@ internal static class PluginRetainedPackage
             digest.AppendData(member.Name);
             BinaryPrimitives.WriteUInt64BigEndian(length, (ulong)member.Entry.Length);
             digest.AppendData(length);
-            await using Stream content = member.Entry.Open();
-            long readTotal = 0;
-            int count;
-            while ((count = await content.ReadAsync(buffer, token).ConfigureAwait(false)) != 0)
+            var entry = entries[member.Index];
+            if (entry.Size != member.Entry.Length || entry.CompressedSize != member.Entry.CompressedLength
+                || entry.IsEncrypted || entry.CompressionType is not (CompressionType.None or CompressionType.Deflate
+                    or CompressionType.BZip2 or CompressionType.LZMA or CompressionType.ZStandard))
+                throw new IOException("Invalid or unsupported retained package member.");
+            try
             {
-                if ((readTotal += count) > member.Entry.Length) throw new IOException("Invalid retained package size.");
-                digest.AppendData(buffer, 0, count);
+                await using Stream content = await entry.OpenEntryStreamAsync(token).ConfigureAwait(false);
+                // ZIP64/descriptor entries expose a non-owning decoder wrapper; release its codec buffers too.
+                await using Stream? ownedDecoder = content is SharpCompressStream { LeaveStreamOpen: true } wrapper
+                    ? wrapper.BaseStream() : null;
+                long readTotal = 0;
+                while (true)
+                {
+                    token.ThrowIfCancellationRequested();
+                    int count = await content.ReadAsync(buffer.AsMemory(0,
+                        (int)Math.Min(buffer.Length, member.Entry.Length - readTotal + 1)), token).ConfigureAwait(false);
+                    if (count == 0) break;
+                    if ((readTotal += count) > member.Entry.Length) throw new IOException("Invalid retained package size.");
+                    digest.AppendData(buffer, 0, count);
+                }
+                if (readTotal != member.Entry.Length) throw new IOException("Incomplete retained package member.");
             }
-            if (readTotal != member.Entry.Length) throw new IOException("Incomplete retained package member.");
+            catch (SharpCompressException error)
+            {
+                throw new IOException("Invalid retained package compression.", error);
+            }
         }
         string actual = "sha256:" + Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
         if (actual != packageHash) throw new IOException("Retained package differs from its installed identity.");
