@@ -675,12 +675,17 @@ def test_native_preview_requires_real_success_from_a_verified_owned_visible_help
         assert result["helperIdentityVerified"] is True
 
 
-@pytest.mark.parametrize("outcome", ["late-success", "failed", "missing", "too-late"])
+@pytest.mark.parametrize("outcome", ["late-success", "cold-start", "failed", "missing", "too-late"])
 def test_preview_observation_uses_its_existing_correlated_budget_without_an_early_file_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     request, data, controls, source = _native_document_fixture(tmp_path)
     request["action"] = "preview-observe"
+    budget = runner.DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS
+    # A real cold helper can exceed the former 10s budget before DoPreview
+    # even starts (CI 39247421333: 11.07s pre-DoPreview chain); success inside
+    # the single correlated budget must pass.
+    result_after = {"late-success": 6.0, "cold-start": 11.5}.get(outcome, float("inf"))
     clock = [0.0]
     original_read = runner._read_json
     evidence = {
@@ -696,9 +701,9 @@ def test_preview_observation_uses_its_existing_correlated_budget_without_an_earl
         if outcome == "failed":
             return {**evidence, "outcome": "failed"}
         if outcome == "too-late":
-            clock[0] = 11
+            clock[0] = budget + 1
             return evidence
-        return evidence if outcome == "late-success" and clock[0] >= 6 else None
+        return evidence if clock[0] >= result_after else None
 
     monkeypatch.setattr(runner, "_read_json", read)
     monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
@@ -723,29 +728,37 @@ def test_preview_observation_uses_its_existing_correlated_budget_without_an_earl
         request, host_scope=scope, local_data=data, controls=controls
     )
     assert result["requestId"] == request["requestId"]
-    if outcome == "late-success":
+    if outcome in {"late-success", "cold-start"}:
         assert result["status"] == "observed"
-        assert 6 <= clock[0] < 10
         assert result["preview"] == evidence
         assert result["helperIdentityVerified"] is True
+        if outcome == "cold-start":
+            assert budget > 11.5
+            assert 11.5 <= clock[0] < 12
+        else:
+            assert 6 <= clock[0] < budget
     else:
         assert result["status"] == "unverified"
         if outcome == "failed":
             assert clock[0] == 0
         elif outcome == "too-late":
-            assert clock[0] == 11
+            # A record arriving after the single deadline cannot be rescued by
+            # the visibility wait: the shared budget is already exhausted.
+            assert clock[0] == budget + 1
+            assert "did not become visible" in result["error"]
         else:
-            assert 10 <= clock[0] < 10.1
+            assert budget <= clock[0] < budget + 0.1
 
 
 @pytest.mark.parametrize(
-    "outcome", ["visible", "hidden", "owner-changed", "helper-retired", "late"]
+    "outcome", ["visible", "cold-visible", "hidden", "owner-changed", "helper-retired", "late"]
 )
 def test_preview_visibility_wait_preserves_identity_and_original_observation_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     request, data, controls, source = _native_document_fixture(tmp_path)
     request["action"] = "preview-observe"
+    budget = runner.DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS
     clock = [0.0]
     original_read = runner._read_json
     evidence = {
@@ -759,7 +772,11 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         if path.name != "document-native-preview-result.json":
             return original_read(path)
         if outcome == "late":
-            clock[0] = 9.95
+            clock[0] = budget - 0.05
+        elif outcome == "cold-visible":
+            # A cold helper returning after the former 10s budget must still
+            # be observed when visibility follows inside the same budget.
+            clock[0] = 11.5
         return evidence
 
     monkeypatch.setattr(runner, "_read_json", read)
@@ -771,7 +788,15 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         owner=lambda _hwnd: 99 if outcome == "owner-changed" and clock[0] >= 0.05 else 43,
         user32=SimpleNamespace(
             IsWindowVisible=lambda _hwnd: (
-                outcome != "hidden" and clock[0] >= (10.05 if outcome == "late" else 0.1)
+                outcome != "hidden"
+                and clock[0]
+                >= (
+                    budget + 0.05
+                    if outcome == "late"
+                    else 11.7
+                    if outcome == "cold-visible"
+                    else 0.1
+                )
             )
         ),
         close=lambda: None,
@@ -792,10 +817,14 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         assert result["status"] == "observed"
         assert result["preview"] == evidence
         assert 0.1 <= clock[0] < 0.2
+    elif outcome == "cold-visible":
+        assert result["status"] == "observed"
+        assert result["preview"] == evidence
+        assert 11.7 <= clock[0] < 12
     else:
         assert result["status"] == "unverified"
         if outcome in {"hidden", "late"}:
-            assert 10 <= clock[0] < 10.1
+            assert budget <= clock[0] < budget + 0.1
         else:
             assert 0.05 <= clock[0] < 0.1
 
@@ -5125,6 +5154,8 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("collection_formula_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_document_native_operations_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("source_import_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("isolated_native_clipboard_guard.test.mjs"),
     ]
     _run_node_contract_files(

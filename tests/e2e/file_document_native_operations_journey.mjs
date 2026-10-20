@@ -37,6 +37,12 @@ export function requireNativeDocumentUnchanged(before, after, expectedBytes) {
   assert.ok(after.managedBytes.equals(expectedBytes), "native action changed managed bytes");
 }
 
+// The Python observer bounds the real DoPreview result and helper visibility
+// with one 30s correlated budget (the helper's pre-DoPreview chain measured
+// 11.1s on CI 39247421333). The preview ack wait must outlast that whole
+// budget with bounded margin — never race the same deadline.
+export const PREVIEW_ACK_TIMEOUT_MS = 35_000;
+
 async function writeJson(file, value) {
   const temporary = `${file}.tmp`;
   await fs.writeFile(temporary, JSON.stringify(value), "utf8");
@@ -133,7 +139,8 @@ export async function runFileDocumentNativeOperationsJourney(page, recorder, run
       requestId, operationId, action, workspaceId, relativePath: fixture.name, ...extra,
     });
     const result = await waitJson(path.join(runtime.evidenceDir, "file-document-native-result.json"),
-      value => value.requestId === requestId, 10000);
+      value => value.requestId === requestId,
+      action === "preview-observe" ? PREVIEW_ACK_TIMEOUT_MS : 10_000);
     recorder.check(`native ${action} observation is verified`,
       result.status === (action === "copy" || action === "cancel" ? "injected" : "observed"), result);
     return result;

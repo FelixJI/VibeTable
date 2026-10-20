@@ -44,6 +44,12 @@ NATIVE_UIA_OBSERVER_EXE = NATIVE_UIA_OBSERVER_DIRECTORY / "output/NativeUiaObser
 _native_uia_observer_prepared = False
 NORMAL_CLOSE_CONTROL_FILE = "host-normal-close.request"
 LIFECYCLE_EXIT_TIMEOUT_SECONDS = 35.0
+# One correlated budget bounds the S42 DoPreview result AND helper window
+# visibility together; expiry grants no second budget. CI 39247421333
+# measured the helper's pre-DoPreview chain at 11.1s, so the former 10s
+# failed before DoPreview started; 30s stays inside the 180s driver and 35s
+# lifecycle budgets.
+DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS = 30.0
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -1908,9 +1914,11 @@ def _handle_document_native_request(
     # the observer's own UIA_STAGE clock (observer begin carries a UTC timestamp).
     started_at_utc: str | None = None
     started_at: float | None = None
-    # The existing Node nativeRequest owns a single 10s correlated observation.
-    # Missing preview evidence is pending, not a second operation or a new budget.
-    observation_deadline = time.monotonic() + 10
+    # The existing Node nativeRequest owns one correlated observation: this
+    # single deadline bounds the real DoPreview result and the helper window
+    # visibility together. Missing preview evidence is pending, not a second
+    # operation or a new budget.
+    observation_deadline = time.monotonic() + DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
