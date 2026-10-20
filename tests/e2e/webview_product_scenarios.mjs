@@ -3331,7 +3331,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
       matches: value => typeof value === "string" && /:00Z$/u.test(value)
         && Date.parse(value) <= Date.now() && Date.now() - Date.parse(value) < 120_000 },
   ];
-  for (const item of cases) {
+  async function saveFormulaCase(item) {
     await page.getByTestId("toolbar-field-manager").click();
     await page.getByTestId("field-display-name").locator("input").fill(item.name);
     const typeSelect = page.getByTestId("field-logical-type");
@@ -3379,6 +3379,10 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     recorder.check(`${item.name} is saved through the real formula editor`,
       described.payload.definition.logicalType === "formula", { source: described.payload.definition.formula.source });
   }
+  // Keep the successful CSV snapshot free of clock-driven backfills; pending
+  // computed cells must still fail closed when export crosses a minute boundary.
+  const deterministicCases = cases.filter(item => !item.matches);
+  for (const item of deterministicCases) await saveFormulaCase(item);
   await chooseToolbarMore(page, "refresh");
   const cell = page.locator(
     `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${quantity.physicalName}"].tabulator-editable`,
@@ -3392,8 +3396,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
   await editor.press("Enter");
   const expected = await waitForQueryPage(page,
     { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
-    result => cases.every(item => item.matches ? item.matches(result?.rows?.[0]?.[item.physicalName])
-      : result?.rows?.[0]?.[item.physicalName] === item.after));
+    result => deterministicCases.every(item => result?.rows?.[0]?.[item.physicalName] === item.after));
   recorder.check("editing quantity recomputes all common formula columns", !!expected.payload?.rows?.length);
   const deadlineField = cases.find(item => item.name === "到期日期");
   const textField = cases.find(item => item.name === "日期文本");
@@ -3418,10 +3421,11 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const csv = parseCsv(exported);
-  recorder.check("date-chain CSV matches preview and authoritative grid values", cases.filter(item => !item.matches).every(item => {
+  recorder.check("date-chain CSV matches preview and authoritative grid values", deterministicCases.every(item => {
     const index = csv[0]?.indexOf(item.physicalName) ?? -1;
     return index >= 0 && csv[1]?.[index] === String(item.after);
   }), { exported });
+  for (const item of cases.filter(item => item.matches)) await saveFormulaCase(item);
   return { tableId, tableName, cases };
 }
 
