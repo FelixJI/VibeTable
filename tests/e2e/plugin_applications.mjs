@@ -182,12 +182,24 @@ export async function exerciseApplicationWorkspaceIsolation(page, recorder, runt
     await fs.writeFile(readControl, `${secondFile}\n`);
     const freshFile = await frame.evaluate(async () => {
       const grant = await call("file.pickRead", { mediaTypes: ["text/plain"] });
-      const block = await call("file.read", { grantId: grant.grantId });
-      await call("file.release", { grantId: grant.grantId });
-      return block;
+      const chunks = [];
+      let bytes = 0;
+      try {
+        for (;;) {
+          const block = await call("file.read", { grantId: grant.grantId });
+          const chunk = atob(block.base64);
+          if (typeof block.eof !== "boolean" || chunk.length > 256 * 1024
+            || bytes + chunk.length > 1024 * 1024 || chunk.length === 0 && !block.eof)
+            throw new Error("invalid workspace file block");
+          chunks.push(chunk);
+          bytes += chunk.length;
+          if (block.eof) return { base64: btoa(chunks.join("")), eof: true, blocks: chunks.length, bytes };
+        }
+      } finally { await call("file.release", { grantId: grant.grantId }); }
     });
     recorder.check("new workspace file authorization reads only its newly selected source",
-      freshFile.eof === true && Buffer.from(freshFile.base64, "base64").toString("utf8") === "WORKSPACE_B_FILE");
+      freshFile.eof === true && Buffer.from(freshFile.base64, "base64").toString("utf8") === "WORKSPACE_B_FILE",
+      { eof: freshFile.eof, blocks: freshFile.blocks, bytes: freshFile.bytes });
     await frame.evaluate(() => call("storage.set", { key: "scope", value: "workspace-b" }));
     const secondRows = await rows(table.tableId);
     const returned = await switchWorkspaceByName(page, "E2E Product Workspace", session.sessionEpoch);

@@ -311,49 +311,73 @@ function removePickerControls(directory) {
   fs.rmdirSync(directory);
 }
 
-test("S11 file grants use existing scoped Host controls and restore them after success", async () => {
-  const directory = createPickerControls();
-  const fsPromises = fs.promises;
-  try {
-    const runtime = { controlsDir: directory };
-    const readControl = path.join(directory, "attachment-replacement-source.txt");
-    const writeControl = path.join(directory, "attachment-target.txt");
-    fs.writeFileSync(readControl, "previous source\n"); fs.writeFileSync(writeControl, "previous target\n");
-    const bytes = Buffer.from("scoped synthetic bytes\n");
-    fs.writeFileSync(path.join(directory, "52-input.csv"), bytes);
-    let result;
-    const frame = { locator(selector) {
-      if (selector === "#files") return { async click() {
-        const source = fs.readFileSync(readControl, "utf8").trim();
-        const target = fs.readFileSync(writeControl, "utf8").trim();
-        assert.equal(source, path.join(directory, "52-input.csv"));
-        assert.equal(target, path.join(directory, "52-output.bin"));
-        fs.copyFileSync(source, target);
-        result = JSON.stringify({ kind: "files", status: "succeeded", bytes: bytes.length });
+for (const existingTarget of [true, false]) {
+  test(`S11 file grants restore scoped Host controls after success (target exists: ${existingTarget})`, async () => {
+    const directory = createPickerControls();
+    const fsPromises = fs.promises;
+    try {
+      const runtime = { controlsDir: directory };
+      const readControl = path.join(directory, "attachment-replacement-source.txt");
+      const writeControl = path.join(directory, "attachment-target.txt");
+      fs.writeFileSync(readControl, "previous source\n"); if (existingTarget) fs.writeFileSync(writeControl, "previous target\n");
+      const bytes = Buffer.from("scoped synthetic bytes\n");
+      fs.writeFileSync(path.join(directory, "52-input.csv"), bytes);
+      let result;
+      const frame = { locator(selector) {
+        if (selector === "#files") return { async click() {
+          const source = fs.readFileSync(readControl, "utf8").trim();
+          const target = fs.readFileSync(writeControl, "utf8").trim();
+          assert.equal(source, path.join(directory, "52-input.csv"));
+          assert.equal(target, path.join(directory, "52-output.bin"));
+          fs.copyFileSync(source, target);
+          result = JSON.stringify({ kind: "files", status: "succeeded", bytes: bytes.length });
+        } };
+        assert.equal(selector, "#result");
+        return { filter() { return { async waitFor() {} }; }, async innerText() { return result; } };
       } };
-      assert.equal(selector, "#result");
-      return { filter() { return { async waitFor() {} }; }, async innerText() { return result; } };
-    } };
-    const recorded = [];
-    const recorder = { check(name, passed, evidence) { assert.ok(passed, name); recorded.push(evidence); } };
-    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fsPromises, path);
-    await run({}, recorder, runtime, frame);
-    assert.equal(recorded[0].picker, "Host test-mode controls");
-    assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
-    assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
-  } finally { removePickerControls(directory); }
-});
+      const recorded = [];
+      const recorder = { check(name, passed, evidence) { assert.ok(passed, name); recorded.push(evidence); } };
+      const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fsPromises, path);
+      await run({}, recorder, runtime, frame);
+      assert.equal(recorded[0].picker, "Host test-mode controls");
+      assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
+      if (existingTarget) assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
+      else assert.equal(fs.existsSync(writeControl), false);
+    } finally { removePickerControls(directory); }
+  });
+}
 
 test("S11 restores its scoped picker controls when a real file grant fails", async () => {
   const directory = createPickerControls();
   try {
     const readControl = path.join(directory, "attachment-replacement-source.txt");
     const writeControl = path.join(directory, "attachment-target.txt");
-    fs.writeFileSync(readControl, "previous source\n"); fs.writeFileSync(writeControl, "previous target\n");
+    const previousRead = Buffer.from([0xff, 0, 0x61, 13, 10]);
+    const previousWrite = Buffer.from([0xfe, 0x62, 13, 10]);
+    fs.writeFileSync(readControl, previousRead); fs.writeFileSync(writeControl, previousWrite);
     const frame = { locator() { return { async click() { throw new Error("file grant rejected"); } }; } };
     const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fs.promises, path);
     await assert.rejects(run({}, {}, { controlsDir: directory }, frame), /file grant rejected/);
+    assert.deepEqual(fs.readFileSync(readControl), previousRead);
+    assert.deepEqual(fs.readFileSync(writeControl), previousWrite);
+  } finally { removePickerControls(directory); }
+});
+
+test("S11 propagates an unreadable target control without invoking the file grant", async () => {
+  const directory = createPickerControls();
+  try {
+    const readControl = path.join(directory, "attachment-replacement-source.txt");
+    const writeControl = path.join(directory, "attachment-target.txt");
+    fs.writeFileSync(readControl, "previous source\n");
+    const failure = Object.assign(new Error("target control denied"), { code: "EACCES" });
+    const fileSystem = { ...fs.promises, async readFile(file, ...args) {
+      if (file === writeControl) throw failure;
+      return fs.promises.readFile(file, ...args);
+    } };
+    const frame = { locator() { assert.fail("must not invoke a grant before control state is saved"); } };
+    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fileSystem, path);
+    await assert.rejects(run({}, {}, { controlsDir: directory }, frame), error => error === failure);
     assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
-    assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
+    assert.equal(fs.existsSync(writeControl), false);
   } finally { removePickerControls(directory); }
 });

@@ -24,7 +24,7 @@ async function harness(options = {}) {
   const stores = new Map([[first, { entries: [installed(first), installed(first, B)], value: "plugin-a", rows: [{ id: "row-a", text: "synthetic original" }] }],
     [second, { entries: [], value: null, rows: [] }]]);
   let active = first, epoch = 1, serial = 0, capture = false, opened = false;
-  const grants = new Map(), frames = [], checks = [], events = [];
+  const grants = new Map(), frames = [], checks = [], events = [], fileReads = [], released = [];
   const frame = () => {
     const workspace = active, token = `token-${++serial}`;
     const value = { detached: false, isDetached() { return this.detached; }, locator(selector) {
@@ -43,9 +43,16 @@ async function harness(options = {}) {
         if (method === "file.read") {
           const grant = grants.get(params.grantId);
           if (!grant || grant.workspace !== workspace && !options.allowOldGrant) return deny("plugin_file_denied");
-          return { eof: true, base64: (await fs.readFile(grant.source)).toString("base64") };
+          const content = await fs.readFile(grant.source);
+          const offset = grant.offset ?? 0;
+          const bytes = options.emptyNonterminal && workspace === second ? Buffer.alloc(0)
+            : content.subarray(offset, offset + (options.chunkSize ?? 256 * 1024));
+          grant.offset = offset + bytes.length;
+          const eof = !options.emptyNonterminal && bytes.length === 0;
+          fileReads.push({ grantId: params.grantId, workspace, bytes: bytes.length, eof });
+          return { eof, base64: bytes.toString("base64") };
         }
-        if (method === "file.release") { grants.delete(params.grantId); return { released: true }; }
+        if (method === "file.release") { released.push(params.grantId); grants.delete(params.grantId); return { released: true }; }
         if (method === "data.query") return deny("plugin_read_denied");
         throw new Error(`unhandled method ${method}`);
       };
@@ -82,7 +89,7 @@ async function harness(options = {}) {
   const seed = new Function("fs", "path", "A", "installApplication", "openApplication", `return (${seedSource});`)(fs, path, A, installApplication, openApplication);
   const verify = new Function("A", "B", "openApplication", `return (${verifySource});`)(A, B, openApplication);
   const recorder = { check(name, passed) { assert.ok(passed, name); checks.push(name); } };
-  return { first, second, stores, checks, events, readControl, controlsDir,
+  return { first, second, stores, checks, events, fileReads, released, readControl, controlsDir,
     async seed() { return seed(page, recorder, { controlsDir }, helpers, first, originalFrame); },
     async verify(crossWorkspace) { stores.get(first).entries = [installed(first, B)]; return verify(page, recorder, helpers, { ...first, crossWorkspace }); },
     async cleanup() {
@@ -99,6 +106,11 @@ test("same-plugin workspace acceptance returns and persists the other authority 
     const seeded = await h.seed();
     assert.equal(seeded.crossWorkspace.workspaceId, h.second.workspaceId);
     assert.equal(seeded.sessionEpoch, 3);
+    const reads = h.fileReads.filter(item => item.workspace === h.second);
+    assert.deepEqual(reads.map(({ bytes, eof }) => ({ bytes, eof })), [
+      { bytes: 16, eof: false }, { bytes: 0, eof: true },
+    ]);
+    assert.deepEqual(h.released, [reads[0].grantId]);
     assert.equal(h.stores.get(h.first).value, "plugin-a");
     assert.equal(h.stores.get(h.second).value, "workspace-b");
     assert.equal(await fs.readFile(h.readControl, "utf8"), "original controls\n");
@@ -121,5 +133,27 @@ test("post-uninstall verification rejects a changed other-workspace installation
     const seeded = await h.seed();
     h.stores.get(h.second).entries[0].revision++;
     await assert.rejects(h.verify(seeded.crossWorkspace), /cannot change the other installation/u);
+  } finally { await h.cleanup(); }
+});
+
+test("new workspace file acceptance consumes every content block before the empty EOF block", async () => {
+  const h = await harness({ chunkSize: 4 });
+  try {
+    await h.seed();
+    const reads = h.fileReads.filter(item => item.workspace === h.second);
+    assert.deepEqual(reads.map(item => item.bytes), [4, 4, 4, 4, 0]);
+    assert.deepEqual(reads.map(item => item.eof), [false, false, false, false, true]);
+    assert.deepEqual(h.released, [reads[0].grantId]);
+  } finally { await h.cleanup(); }
+});
+
+test("new workspace file acceptance rejects an empty nonterminal block and releases its grant", async () => {
+  const h = await harness({ emptyNonterminal: true });
+  try {
+    await assert.rejects(h.seed(), /invalid workspace file block/u);
+    const reads = h.fileReads.filter(item => item.workspace === h.second);
+    assert.equal(reads.length, 1);
+    assert.deepEqual(h.released, [reads[0].grantId]);
+    assert.equal(await fs.readFile(h.readControl, "utf8"), "original controls\n");
   } finally { await h.cleanup(); }
 });

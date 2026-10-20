@@ -6620,8 +6620,10 @@ async function openMutationBoundary(page) {
 async function mutationBoundaryFiles(page, recorder, runtime, frame) {
   const readControl = path.join(runtime.controlsDir, "attachment-replacement-source.txt");
   const writeControl = path.join(runtime.controlsDir, "attachment-target.txt");
-  const previousRead = await fs.readFile(readControl, "utf8");
-  const previousWrite = await fs.readFile(writeControl, "utf8");
+  const previousRead = await fs.readFile(readControl);
+  let previousWrite;
+  try { previousWrite = await fs.readFile(writeControl); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
   try {
     // Existing Host test-mode pickers accept these fixed synthetic paths. Actual
     // owned Windows picker UIA/SendInput remains the independent S52 CI gate.
@@ -6637,7 +6639,8 @@ async function mutationBoundaryFiles(page, recorder, runtime, frame) {
         && !JSON.stringify(receipt).includes(runtime.controlsDir), { receipt, picker: "Host test-mode controls" });
   } finally {
     await fs.writeFile(readControl, previousRead);
-    await fs.writeFile(writeControl, previousWrite);
+    if (previousWrite === undefined) await fs.rm(writeControl, { force: true });
+    else await fs.writeFile(writeControl, previousWrite);
   }
 }
 
