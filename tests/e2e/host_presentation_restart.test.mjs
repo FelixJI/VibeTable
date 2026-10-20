@@ -381,3 +381,61 @@ test("S11 propagates an unreadable target control without invoking the file gran
     assert.equal(fs.existsSync(writeControl), false);
   } finally { removePickerControls(directory); }
 });
+
+
+const migrateHistoricalPluginSource = extract("async function migrateHistoricalPlugin", "async function resumePluginHostRestart").replaceAll("import.meta.url", "importMetaUrl");
+for (const invalid of [null, "plan-target", "reinstall"]) {
+  test(`S11 historical upgrade uses the inspected Host lease and preserves controls (${invalid})`, async () => {
+    const directory = createPickerControls();
+    const sourceControl = path.join(directory, "plugin-source.txt");
+    const targetControl = path.join(directory, "plugin-preservation-target.txt");
+    fs.writeFileSync(sourceControl, "original source\n"); fs.writeFileSync(targetControl, "original export\n");
+    const legacy = { pluginId: "com.vibetable.e2e.legacy-worker", installationId: "legacy000000001",
+      projectKey: "local:workspace", revision: 1, packageHash: "old", blockingReasons: ["plugin_worker_retired"] };
+    const upgraded = { ...legacy, installationId: invalid === "reinstall" ? "replacement" : legacy.installationId,
+      version: "2.0.0", revision: 2, packageHash: "new", status: "enabled", blockingReasons: [],
+      manifest: { $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" } } };
+    const plan = { projectKey: legacy.projectKey, targetInstallationId: invalid === "plan-target" ? "replacement" : legacy.installationId,
+      targetRevision: 1, packageHash: "new", manifest: { ...upgraded.manifest, pluginId: legacy.pluginId, version: "2.0.0" } };
+    const events = []; let committed = false, capture = 0, fileRoundtrip = 0, archiveRead = 0;
+    const frame = { locator(selector) { return {
+      filter() { return { async waitFor() { assert.equal(selector, "#status"); } }; },
+      async innerText() { assert.equal(selector, "#result"); return '{"status":"succeeded"}'; },
+    }; } };
+    const page = { getByTestId(id) { return {
+      async click() {
+        assert.ok(["nav-plugins", "plugin-upgrade", "nav-tables", "plugin-app-return", "plugin-preservation-export",
+          `nav-plugin-app-${legacy.pluginId}/open-boundary`].includes(id), `unexpected lifecycle command ${id}`);
+        events.push(id);
+        if (id === "plugin-upgrade") assert.equal(fs.readFileSync(sourceControl, "utf8").trim(), path.join(directory, "legacy-worker-api3.vtplugin"));
+        if (id === "plugin-preservation-export") assert.ok(committed && fileRoundtrip === 1);
+      },
+      async innerText() { assert.equal(id, "plugin-upgrade-permission-delta"); return "added query permission"; },
+    }; }, locator(selector) {
+      assert.equal(selector, "button.plugin-row"); return { filter({ hasText }) { assert.equal(hasText, legacy.pluginId); return { async click() {} }; } };
+    }, frameLocator(selector) { assert.equal(selector, ".surface-shell iframe"); assert.ok(committed); return frame; } };
+    const run = new Function("fs", "path", "fileURLToPath", "importMetaUrl", "execFileSync", "findCatalogEntry", "rawBridgeRequest",
+      "beginBridgeMessageCapture", "waitForCapturedBridgeMessage", "commitInspectedApplicationUpgrade", "selectTable", "mutationBoundaryFiles",
+      `return (${migrateHistoricalPluginSource});`)(fs.promises, path, () => directory, import.meta.url,
+      (_python, args) => { archiveRead++; assert.equal(JSON.parse(args.at(-1)).installationId, legacy.installationId);
+        return JSON.stringify({ migrationValidated: true, originalPackagePreserved: true }); },
+      (catalog, id) => catalog.find(item => item.pluginId === id),
+      async (_page, method) => { assert.equal(method, "plugin.catalog.list"); return { payload: [committed ? upgraded : legacy] }; },
+      async () => { capture++; },
+      async () => capture === 1 ? { type: "plugin.install.inspect", payload: plan }
+        : { type: "pluginPreservation.exportCompleted", payload: { missingPackages: 0, cancelled: false } },
+      async (_page, inspected) => { assert.equal(inspected, plan); events.push("approved-upgrade"); committed = true; return upgraded; },
+      async (_page, name) => { assert.equal(name, "E2E Plugin Target"); },
+      async (_page, _recorder, _runtime, selected) => { assert.equal(selected, frame); fileRoundtrip++; });
+    const recorder = { check(name, passed) { assert.ok(passed, name); } };
+    const execute = () => run(page, recorder, { controlsDir: directory, pythonExecutable: "locked-python", pluginStatePath: path.join(directory, "state.json") },
+      { projectKey: legacy.projectKey }, legacy);
+    try {
+      if (invalid) await assert.rejects(execute(), /exact existing installation|without reinstalling/u);
+      else { assert.equal((await execute()).installationId, legacy.installationId); assert.equal(fileRoundtrip, 1); assert.equal(archiveRead, 1);
+        assert.ok(events.indexOf("approved-upgrade") > events.indexOf("plugin-upgrade")); }
+      assert.equal(fs.readFileSync(sourceControl, "utf8"), "original source\n");
+      assert.equal(fs.readFileSync(targetControl, "utf8"), "original export\n");
+    } finally { fs.unlinkSync(sourceControl); fs.unlinkSync(targetControl); fs.rmdirSync(directory); }
+  });
+}

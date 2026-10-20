@@ -112,6 +112,107 @@ async function headless(page, id, actionId) {
   await page.getByTestId("plugin-headless-runner").waitFor({ timeout: 30000 });
 }
 
+export async function exerciseApplicationConfirmationExpiry(page, frame, recorder, runtime, helpers, state) {
+  const { rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage } = helpers;
+  const rows = async () => (await rawBridgeRequest(page, "query.page", {
+    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  })).payload.rows;
+  const audit = async () => (await rawBridgeRequest(page, "plugin.audit.list", {
+    projectKey: state.projectKey, pluginId: A,
+  })).payload;
+  const task = async taskId => (await rawBridgeRequest(page, "plugin.task.get", { taskId })).payload;
+  const unchanged = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  async function begin(value) {
+    await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);
+    const began = Date.now();
+    const planId = await frame.evaluate(async value => {
+      const context = await call("context.read");
+      const description = await call("data.describe", { accepts: ["vibetable.plugin-data.v2"], collection: context.collection });
+      const field = description.fields.find(item => !item.readonly && item.logicalType === "text").fieldId;
+      const page = await call("data.query", { contract: "vibetable.plugin-query.v2", collection: context.collection,
+        fields: ["id", field], sorts: [{ field: "id", direction: "asc" }], pageSize: 200 });
+      const row = page.items[0];
+      const preview = await call("mutation.preview", { contract: "vibetable.surface-mutation-plan.v1",
+        collection: description.collection, schemaRevision: description.schemaRevision,
+        operations: [{ kind: "update", primaryKey: String(row.id), expectedDigest: page.rowGuards[String(row.id)], values: { [field]: value } }] });
+      const probe = window.__applicationConfirmationQualification = { planId: preview.planId, terminal: null };
+      void call("mutation.submit", { planId: preview.planId }).then(
+        result => { probe.terminal = { result }; }, error => { probe.terminal = { error: error.code ?? error.message }; });
+      return preview.planId;
+    }, value);
+    const pending = await waitForCapturedBridgeMessage(page, 30000);
+    await page.locator(".host-confirmation").waitFor({ timeout: 30000 });
+    const taskId = await page.locator(".host-runtime:has(.host-confirmation)").getAttribute("data-task-id");
+    const snapshot = await task(taskId);
+    recorder.check("confirmation qualification binds the real Host task and exact interaction",
+      Boolean(planId) && snapshot.state === "running" && snapshot.runId === pending.payload?.snapshot?.runId
+        && snapshot.pluginId === A && snapshot.projectKey === state.projectKey
+        && snapshot.collection === state.tableId, { planId, task: snapshot, pending });
+    return { planId, taskId, runId: snapshot.runId, pending: pending.payload.snapshot.pendingConfirmation, began };
+  }
+  async function terminal() {
+    await frame.waitForFunction(() => Boolean(window.__applicationConfirmationQualification?.terminal), null, { timeout: 30000 });
+    return frame.evaluate(() => window.__applicationConfirmationQualification.terminal);
+  }
+  async function replay(planId) {
+    return frame.evaluate(async planId => {
+      try { return { result: await call("mutation.submit", { planId }) }; }
+      catch (error) { return { error: error.code ?? error.message }; }
+    }, planId);
+  }
+
+  const original = await rows();
+  const expired = await begin("must-not-commit-after-expiry");
+  const observed = await nativePluginInput(runtime, "observe", "plugin-confirm-approve", "confirm");
+  const expiresAt = expired.pending.expiresAt * 1000;
+  recorder.check("real native confirmation retains the product's full 120 second validity",
+    observed.status === "completed" && Number.isFinite(expiresAt) && expiresAt - expired.began >= 120000,
+    { observed, began: expired.began, expiresAt });
+  // Leave the real WPF confirmation untouched through expiry and two 250 ms native timer ticks.
+  while (Date.now() <= expiresAt + 500) await page.waitForTimeout(Math.min(1000, expiresAt + 501 - Date.now()));
+  const expiredReceipt = await terminal();
+  await page.locator(".host-confirmation").waitFor({ state: "hidden", timeout: 30000 });
+  const expiredTask = await task(expired.taskId);
+  const expiredAudit = await audit();
+  recorder.check("unanswered confirmation expires as a known timeout with zero business writes",
+    expiredReceipt.error === "plugin_timeout" && expiredTask.state === "failed"
+      && expiredTask.error?.code === "plugin_timeout" && unchanged(original, await rows())
+      && expiredAudit.filter(event => event.eventType === "action" && event.runId === expired.runId
+        && event.outcome === "failed" && event.errorCode === "plugin_timeout").length === 1,
+    { expiredReceipt, task: expiredTask, events: expiredAudit, original });
+  const lateNative = await nativePluginInput(runtime, "click", "plugin-confirm-approve", "confirm");
+  const late = await rawBridgeRequest(page, "plugin.interaction.resolve", {
+    runId: expired.runId, interactionId: expired.pending.interactionId, decision: "approved",
+  });
+  const stale = await replay(expired.planId);
+  recorder.check("expired native confirmation and consumed plan cannot be revived or automatically replayed",
+    lateNative.status === "failed" && lateNative.error === "expected one current owned native plugin window"
+      && late.type === "plugin.interaction.resolve" && late.payload?.status === "expired"
+      && stale.error === "plugin_plan_stale" && unchanged(original, await rows())
+      && unchanged(expiredTask, await task(expired.taskId)) && unchanged(expiredAudit, await audit()),
+    { lateNative, late, stale });
+
+  const fresh = await begin("native-approved");
+  recorder.check("expiry recovery requests a fresh plan and confirmation", fresh.planId !== expired.planId
+    && fresh.pending.interactionId !== expired.pending.interactionId);
+  const approved = await nativePluginInput(runtime, "click", "plugin-confirm-approve", "approved");
+  const receipt = await terminal();
+  const confirmedTask = await task(fresh.taskId);
+  const confirmedRows = await rows();
+  const confirmedAudit = await audit();
+  recorder.check("fresh plan recovers through one actual native approval and one durable success",
+    approved.status === "completed" && receipt.result?.status === "succeeded" && receipt.result.taskId === fresh.taskId
+      && receipt.result.receipt && confirmedTask.state === "succeeded"
+      && confirmedRows.length === original.length && Object.values(confirmedRows[0]).includes("native-approved")
+      && confirmedAudit.filter(event => event.eventType === "action" && event.runId === fresh.runId
+        && event.outcome === "succeeded").length === 1, { approved, receipt, task: confirmedTask, rows: confirmedRows });
+  const repeated = await replay(fresh.planId);
+  recorder.check("repeated confirmed mutation.submit preserves its acknowledged receipt without another write or audit",
+    repeated.error === "plugin_plan_stale"
+      && unchanged(confirmedTask, await task(fresh.taskId)) && unchanged(confirmedRows, await rows())
+      && unchanged(confirmedAudit, await audit()), { repeated, receipt, task: confirmedTask });
+}
+
 export async function exerciseApplicationWorkspaceIsolation(page, recorder, runtime, helpers, state, originalFrame) {
   const { rawBridgeRequest, createSimpleTable, applyProductMutation, openWorkspaceCenterFromSwitcher,
     beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage, switchWorkspaceByName, selectTable } = helpers;
@@ -405,6 +506,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     recorder.check(`real native ${decision} uses owned input and exact plan`, actual.status === "completed", { actual });
     await terminalText(frame, expected);
   }
+  await exerciseApplicationConfirmationExpiry(page, frame, recorder, runtime, helpers, state);
   await page.getByTestId("plugin-app-return").click();
   await selectPlugin(page, A);
   await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, "app-upgrade.vtplugin")}\n`);

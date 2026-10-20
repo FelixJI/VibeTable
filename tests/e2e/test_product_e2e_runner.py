@@ -5123,6 +5123,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_surface_api.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
@@ -5871,8 +5872,9 @@ def _plugin_restart_workspace(persistent: runner._PersistentScenarioRun) -> None
     )
 
 
+@pytest.mark.parametrize("migrated", [False, True])
 def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, migrated: bool
 ) -> None:
     scenario = runner.Scenario("11-plugin-mutation", "plugin", "restart")
     workspace_id = "11111111-2222-4111-8111-111111111111"
@@ -5885,7 +5887,11 @@ def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
         calls.append(persistent)
         _plugin_restart_workspace(persistent)
         if persistent.phase != "seed":
-            return {"status": "passed", "lifecycle": {"status": "passed"}}
+            return {
+                "status": "passed",
+                "lifecycle": {"status": "passed"},
+                **({"legacyMigration": {"installationId": "legacy000000001"}} if migrated else {}),
+            }
         return {
             "status": "passed",
             "lifecycle": {"status": "passed"},
@@ -5912,7 +5918,9 @@ def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
         scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
     )
 
-    assert result["status"] == "passed"
+    assert result["status"] == ("passed" if migrated else "failed")
+    if not migrated:
+        assert result["error"]["code"] == "PLUGIN_HISTORICAL_PRESERVATION_CHANGED"
     assert [run.phase for run in calls] == ["seed", "resume"]
     assert calls[0].readiness_dir == calls[1].readiness_dir
     assert calls[1].workspace_root == calls[0].workspace_root
@@ -7731,3 +7739,149 @@ def test_application_restart_requires_and_preserves_second_workspace_authority(
         assert result["status"] == "failed"
         assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
         assert calls == ["seed"]
+
+
+def test_retired_plugin_migration_fixture_builds_a_separate_native_application(
+    tmp_path: Path,
+) -> None:
+    from backend.infrastructure.plugin_package import inspect_plugin_package
+
+    runner._prepare_retired_plugin_packages(tmp_path, active=True)
+    old = inspect_plugin_package(tmp_path / "legacy-worker.vtplugin").manifest
+    native = inspect_plugin_package(tmp_path / "legacy-worker-api3.vtplugin").manifest
+    assert old["$schema"] == "vibetable.plugin-manifest.v1"
+    assert old["compatibility"]["pluginApi"] == "2.x"
+    assert old["actions"][0]["workerEntry"]
+    assert native["pluginId"] == old["pluginId"]
+    assert native["$schema"] == "vibetable.plugin-manifest.v2"
+    assert native["compatibility"]["pluginApi"] == "3.x"
+    assert native["version"] == "2.0.0"
+    assert native["actions"][0]["presentation"] == "application"
+    assert native["actions"][0]["entry"] == "ui/index.html"
+    assert native["permissions"]["privateStorage"] is True
+    assert (tmp_path / "legacy-worker-api3/dist/boundary.js").is_file()
+
+
+def _migrated_plugin_records(proof: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    actual = json.loads(json.dumps(proof["records"]))
+    installation = next(row for row in actual if row["kind"] == "installation")
+    payload = json.loads(installation["rawPayload"])
+    manifest = json.loads(
+        (runner.ROOT / "tests/fixtures/plugins/mutation-boundary/manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest.update(pluginId=proof["pluginId"], version="2.0.0")
+    payload.update(
+        version="2.0.0",
+        packageHash="sha256:" + "f" * 64,
+        manifest=manifest,
+        revision=2,
+        blockingReasons=[],
+    )
+    installation["rawPayload"] = json.dumps(payload)
+    prior = next(row for row in actual if row["kind"] == "revision")
+    prior["rawPayload"] = json.dumps(json.loads(prior["rawPayload"]) | {"state": "rollback"})
+    actual.extend(
+        [
+            {
+                "recordId": "native000000001",
+                "kind": "revision",
+                "itemKey": payload["packageHash"],
+                "rawPayload": json.dumps(
+                    {"packageHash": payload["packageHash"], "state": "current"}
+                ),
+                "seq": 10,
+            },
+            {
+                "recordId": "native000000002",
+                "kind": "audit",
+                "itemKey": "upgraded",
+                "rawPayload": json.dumps(
+                    {"eventType": "upgrade", "packageHash": payload["packageHash"]}
+                ),
+                "seq": 11,
+            },
+        ]
+    )
+    return actual, {
+        key: payload[key] for key in ("pluginId", "version", "packageHash", "revision")
+    } | {"installationId": proof["installationId"]}
+
+
+@pytest.mark.parametrize("change", [None, "setting", "audit", "reinstall", "not-upgraded"])
+def test_migration_proof_only_allows_in_place_upgrade_and_preserves_originals(
+    tmp_path: Path, change: str | None
+) -> None:
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    runner._seed_retired_plugin(workspace, approved, seed)
+    proof = json.loads((approved / "legacy-plugin-preservation.json").read_text(encoding="utf-8"))
+    actual, migration = _migrated_plugin_records(proof)
+    if change in {"setting", "audit"}:
+        next(row for row in actual if row["kind"] == change)["rawPayload"] += " "
+    elif change == "reinstall":
+        next(row for row in actual if row["kind"] == "installation")["recordId"] = "other0000000001"
+    elif change == "not-upgraded":
+        actual = proof["records"]
+    if change:
+        with pytest.raises(ValueError, match=r"historical|migration"):
+            runner._verify_legacy_migration_records(actual, proof, migration)
+    else:
+        runner._verify_legacy_migration_records(actual, proof, migration)
+        with (
+            closing(sqlite3.connect(workspace / ".vibetable/data/data.db")) as connection,
+            connection,
+        ):
+            connection.execute("DELETE FROM vibetable_plugin_records")
+            connection.executemany(
+                "INSERT INTO vibetable_plugin_records (id,kind,project_key,plugin_id,item_key,payload_json,seq) VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        row["recordId"],
+                        row["kind"],
+                        "local:test",
+                        proof["pluginId"],
+                        row["itemKey"],
+                        row["rawPayload"],
+                        row["seq"],
+                    )
+                    for row in actual
+                ],
+            )
+        assert (
+            runner._verify_retired_plugin_preservation(workspace, approved, migration)[
+                "migrationValidated"
+            ]
+            is True
+        )
+
+
+def test_historical_archive_accepts_wire_sequence_strings_but_preserves_raw_bytes(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    runner._seed_retired_plugin(workspace, approved, seed)
+    proof_path = approved / "legacy-plugin-preservation.json"
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    records = [row | {"seq": str(row["seq"])} for row in proof["records"]]
+    archive_path = approved / "preserved.zip"
+
+    def write_archive() -> None:
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("records.json", json.dumps(records))
+            archive.writestr(
+                "preservation.json", json.dumps({"missingPackages": 0, "diagnostics": []})
+            )
+            archive.writestr(
+                "packages/" + proof["packageHash"][7:] + ".vtplugin",
+                Path(seed["legacyPackage"]).read_bytes(),
+            )
+
+    write_archive()
+    assert runner._verify_legacy_plugin_archive(archive_path, proof_path)["rawPreserved"] is True
+    records[2]["rawPayload"] += " "
+    write_archive()
+    with pytest.raises(ValueError, match="historical raw records changed"):
+        runner._verify_legacy_plugin_archive(archive_path, proof_path)

@@ -2695,6 +2695,31 @@ def _prepare_retired_plugin_packages(controls: Path, *, active: bool) -> None:
         cwd=ROOT,
         check=True,
     )
+    migration = controls / "legacy-worker-api3"
+    shutil.copytree(target, migration)
+    migrated = json.loads((migration / "manifest.json").read_text(encoding="utf-8"))
+    migrated["pluginId"] = manifest["pluginId"]
+    migrated["version"] = "2.0.0"
+    migrated["displayName"] = {"zh-CN": "E2E 旧插件迁移应用"}
+    migrated["ui"] = {"customViews": []}
+    for action in migrated["actions"]:
+        action["presentation"] = "application"
+        action["entry"] = "ui/index.html"
+    (migration / "manifest.json").write_text(
+        json.dumps(migrated, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/vibetable_plugin.py"),
+            "pack",
+            str(migration),
+            "--output",
+            str(controls / "legacy-worker-api3.vtplugin"),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
     (controls / "plugin-source.txt").write_text(str(target.resolve()) + "\n", encoding="utf-8")
     (controls / "52-input.csv").write_text("native plugin file grant\n", encoding="utf-8")
 
@@ -2837,7 +2862,9 @@ def _seed_retired_plugin(
     return {key: value for key, value in proof.items() if key != "records"}
 
 
-def _verify_retired_plugin_preservation(workspace: Path, approved_root: Path) -> dict[str, Any]:
+def _verify_retired_plugin_preservation(
+    workspace: Path, approved_root: Path, migration: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Compare originals after normal Host close, using the synthetic run's proof only."""
     workspace = workspace.resolve(strict=True)
     approved_root = approved_root.resolve(strict=True)
@@ -2864,12 +2891,112 @@ def _verify_retired_plugin_preservation(workspace: Path, approved_root: Path) ->
                 (proof["pluginId"],),
             )
         ]
-    if actual != proof["records"]:
+    if migration is not None:
+        _verify_legacy_migration_records(actual, proof, migration)
+    elif actual != proof["records"]:
         raise ValueError("historical raw records changed while reopening or exporting")
     retained = workspace / ".vibetable/data/state/plugin-packages" / proof["packageName"]
     if retained.read_bytes() != original.read_bytes():
         raise ValueError("historical original package changed while reopening or exporting")
-    return {"recordCount": len(actual), "rawUnchanged": True, "originalPackageUnchanged": True}
+    return {
+        "recordCount": len(actual),
+        "rawUnchanged": migration is None,
+        "originalPackageUnchanged": True,
+        **({"migrationValidated": True} if migration else {}),
+    }
+
+
+def _verify_legacy_migration_records(
+    actual: list[dict[str, Any]], proof: Mapping[str, Any], migration: Mapping[str, Any]
+) -> None:
+    by_id = {record["recordId"]: record for record in actual}
+    if len(by_id) != len(actual):
+        raise ValueError("duplicate preservation record identity")
+    for original in proof["records"]:
+        current = by_id.get(original["recordId"])
+        if current is None:
+            raise ValueError("historical record disappeared during migration")
+        if original["kind"] in {"setting", "audit"} and current != original:
+            raise ValueError("historical private setting or audit changed during migration")
+        if original["kind"] == "revision":
+            expected = json.loads(original["rawPayload"]) | {"state": "rollback"}
+            if {k: v for k, v in current.items() if k != "rawPayload"} != {
+                k: v for k, v in original.items() if k != "rawPayload"
+            } or json.loads(current["rawPayload"]) != expected:
+                raise ValueError("historical revision changed beyond the upgrade rollback state")
+    installed = by_id[proof["installationId"]]
+    payload = json.loads(installed["rawPayload"])
+    before = json.loads(
+        next(row["rawPayload"] for row in proof["records"] if row["kind"] == "installation")
+    )
+    if (
+        installed["kind"] != "installation"
+        or installed["itemKey"] != "current"
+        or migration.get("installationId") != proof["installationId"]
+        or migration.get("pluginId") != proof["pluginId"]
+        or payload.get("projectKey") != before["projectKey"]
+        or payload.get("pluginId") != proof["pluginId"]
+        or payload.get("packageHash") != migration.get("packageHash")
+        or payload.get("packageHash") == proof["packageHash"]
+        or payload.get("version") != "2.0.0"
+        or migration.get("version") != "2.0.0"
+        or payload.get("revision") != proof["revision"] + 1
+        or migration.get("revision") != payload["revision"]
+        or payload.get("status") != "enabled"
+        or payload.get("blockingReasons")
+        or payload.get("manifest", {}).get("$schema") != "vibetable.plugin-manifest.v2"
+        or payload.get("manifest", {}).get("compatibility", {}).get("pluginApi") != "3.x"
+    ):
+        raise ValueError(
+            "migration did not upgrade the same installation to the approved native package"
+        )
+    payloads = [(row["kind"], json.loads(row["rawPayload"])) for row in actual]
+    if not any(
+        kind == "revision"
+        and value.get("packageHash") == payload["packageHash"]
+        and value.get("state") == "current"
+        for kind, value in payloads
+    ):
+        raise ValueError("migration has no current native package revision")
+    if not any(
+        kind == "audit"
+        and value.get("eventType") == "upgrade"
+        and value.get("packageHash") == payload["packageHash"]
+        for kind, value in payloads
+    ):
+        raise ValueError("migration has no durable upgrade audit")
+
+
+def _verify_legacy_plugin_archive(
+    archive_path: Path, proof_path: Path, migration: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    with zipfile.ZipFile(archive_path) as archive:
+        actual = json.loads(archive.read("records.json"))
+        for record in actual:
+            # Go transports seq as a decimal string; SQLite proof keeps its exact integer.
+            sequence = record["seq"]
+            if isinstance(sequence, str) and sequence.isascii() and sequence.isdecimal():
+                record["seq"] = int(sequence)
+        if migration is None:
+            if sorted(actual, key=lambda row: row["recordId"]) != proof["records"]:
+                raise ValueError("historical raw records changed while reopening or exporting")
+        else:
+            _verify_legacy_migration_records(actual, proof, migration)
+        metadata = json.loads(archive.read("preservation.json"))
+        if metadata["missingPackages"] != 0 or metadata["diagnostics"]:
+            raise ValueError("preservation package material is missing")
+        if (
+            archive.read("packages/" + proof["packageHash"][7:] + ".vtplugin")
+            != Path(proof["originalPackage"]).read_bytes()
+        ):
+            raise ValueError("historical original package changed while reopening or exporting")
+        return {
+            "records": len(actual),
+            "rawPreserved": migration is None,
+            "originalPackagePreserved": True,
+            "migrationValidated": migration is not None,
+        }
 
 
 def run_scenario(
@@ -3720,8 +3847,11 @@ def _run_host_presentation_restart_acceptance(
         )
     if scenario.id == "11-plugin-mutation":
         try:
+            migration = resume.get("legacyMigration")
+            if not isinstance(migration, dict):
+                raise ValueError("historical native upgrade receipt is missing")
             resume["historicalPreservationAfterClose"] = _verify_retired_plugin_preservation(
-                workspace_root, persistent_root
+                workspace_root, persistent_root, migration
             )
         except OSError, ValueError, sqlite3.Error:
             return _host_presentation_phase_failure(

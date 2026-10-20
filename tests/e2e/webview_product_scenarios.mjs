@@ -6,7 +6,7 @@ import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
-import { runPluginApplications, runHeadlessBudget } from "./plugin_applications.mjs";
+import { runPluginApplications, runHeadlessBudget, commitInspectedApplicationUpgrade } from "./plugin_applications.mjs";
 import { runApplicationSecurity, selectExpectedPluginSecurityConsoleEntries } from "./plugin_application_security.mjs";
 import { runPluginSurfaceApi } from "./plugin_surface_api.mjs";
 import fs from "node:fs/promises";
@@ -7688,11 +7688,70 @@ async function scenario33(page, recorder, _network, runtime) {
   };
 }
 
-// S11 resume: after a real Host restart, daily catalog/audit reads must be
-// answered by the Go authority with zero Python/Node processes, a plugin
-// action must still execute through a lazily started Python, and a missing
-// local retained cache must fail closed with a diagnosable error while the
-// catalog entry survives.
+// S11 keeps cold-reopen preservation and missing-package checks before an
+// explicitly approved in-place upgrade of the historical Worker installation.
+async function migrateHistoricalPlugin(page, recorder, runtime, state, legacy) {
+  const sourceControl = path.join(runtime.controlsDir, "plugin-source.txt");
+  const preservationControl = path.join(runtime.controlsDir, "plugin-preservation-target.txt");
+  const previousSource = await fs.readFile(sourceControl);
+  const previousTarget = await fs.readFile(preservationControl);
+  try {
+    await page.getByTestId("nav-plugins").click();
+    await page.locator("button.plugin-row").filter({ hasText: legacy.pluginId }).click();
+    await fs.writeFile(sourceControl, `${path.join(runtime.controlsDir, "legacy-worker-api3.vtplugin")}\n`);
+    await beginBridgeMessageCapture(page, ["plugin.install.inspect", "operation.failed"]);
+    await page.getByTestId("plugin-upgrade").click();
+    const inspected = await waitForCapturedBridgeMessage(page, 30_000);
+    const plan = inspected.payload;
+    recorder.check("historical migration inspects a native package against the exact existing installation",
+      inspected.type === "plugin.install.inspect" && plan?.manifest?.pluginId === legacy.pluginId
+        && plan.manifest.$schema === "vibetable.plugin-manifest.v2" && plan.manifest.compatibility.pluginApi === "3.x"
+        && plan.manifest.version === "2.0.0" && plan.targetInstallationId === legacy.installationId
+        && plan.targetRevision === legacy.revision && !plan.blockingReasons?.length, { plan });
+    recorder.check("historical native migration exposes its added permissions before approval",
+      (await page.getByTestId("plugin-upgrade-permission-delta").innerText()).includes("query"));
+    const before = findCatalogEntry((await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload, legacy.pluginId);
+    recorder.check("inspection alone keeps the historical installation and package unchanged",
+      before?.installationId === legacy.installationId && before.revision === legacy.revision
+        && before.packageHash === legacy.packageHash && before.blockingReasons?.includes("plugin_worker_retired"), { before });
+    const upgraded = await commitInspectedApplicationUpgrade(page, plan, { rawBridgeRequest, waitForCapturedBridgeMessage });
+    recorder.check("approved Worker-to-API3 upgrade keeps installation identity without reinstalling",
+      upgraded?.installationId === legacy.installationId && upgraded.revision === legacy.revision + 1
+        && upgraded.version === "2.0.0" && upgraded.packageHash === plan.packageHash
+        && upgraded.packageHash !== legacy.packageHash && upgraded.status === "enabled"
+        && upgraded.manifest.$schema === "vibetable.plugin-manifest.v2"
+        && upgraded.manifest.compatibility.pluginApi === "3.x" && !upgraded.blockingReasons?.length, { upgraded });
+    await page.getByTestId("nav-tables").click(); await selectTable(page, "E2E Plugin Target");
+    await page.getByTestId(`nav-plugin-app-${legacy.pluginId}/open-boundary`).click();
+    const frame = page.frameLocator(".surface-shell iframe");
+    await frame.locator("#status").filter({ hasText: /^ready$/u }).waitFor({ timeout: 30_000 });
+    await mutationBoundaryFiles(page, recorder, runtime, frame);
+    recorder.check("the upgraded historical plugin runs its real API3 application and scoped file grants",
+      (await frame.locator("#result").innerText()).includes('"status":"succeeded"'));
+    await page.getByTestId("plugin-app-return").click();
+    await page.getByTestId("nav-plugins").click();
+    await page.locator("button.plugin-row").filter({ hasText: legacy.pluginId }).click();
+    const destination = path.join(runtime.controlsDir, "legacy-plugin-migrated-preservation.zip");
+    await fs.writeFile(preservationControl, `${destination}\n`);
+    await beginBridgeMessageCapture(page, ["pluginPreservation.exportCompleted", "operation.failed"]);
+    await page.getByTestId("plugin-preservation-export").click();
+    const exported = await waitForCapturedBridgeMessage(page, 60_000);
+    recorder.check("upgraded installation still exports its original material through the Host",
+      exported.type === "pluginPreservation.exportCompleted" && exported.payload?.missingPackages === 0
+        && exported.payload.cancelled === false, { exported });
+    const proof = JSON.parse(execFileSync(runtime.pythonExecutable, ["-c",
+      "import json,sys;from pathlib import Path;from tests.e2e.product_e2e_runner import _verify_legacy_plugin_archive;print(json.dumps(_verify_legacy_plugin_archive(Path(sys.argv[1]),Path(sys.argv[2]),json.loads(sys.argv[3]))))",
+      destination, path.join(path.dirname(runtime.pluginStatePath), "legacy-plugin-preservation.json"), JSON.stringify(upgraded)],
+    { cwd: fileURLToPath(new URL("../../", import.meta.url)), encoding: "utf8", timeout: 30_000, windowsHide: true }));
+    recorder.check("migration preserves original private settings, audit and package while recording a genuine upgrade",
+      proof.migrationValidated === true && proof.originalPackagePreserved === true, { proof });
+    return upgraded;
+  } finally {
+    await fs.writeFile(sourceControl, previousSource);
+    await fs.writeFile(preservationControl, previousTarget);
+  }
+}
+
 async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
   const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
@@ -7733,16 +7792,9 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   recorder.check("historical package can be preserved through the real Host export UI",
     exported.type === "pluginPreservation.exportCompleted" && exported.payload?.cancelled === false && exported.payload?.missingPackages === 0, { exported });
   if (!runtime.pythonExecutable) throw new Error("The locked test Python is required for archive inspection.");
-  const archiveProof = JSON.parse(execFileSync(runtime.pythonExecutable, ["-c", [
-    "import json,sys,zipfile,pathlib",
-    "proof=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8'))",
-    "with zipfile.ZipFile(sys.argv[1]) as archive:",
-    " actual=json.loads(archive.read('records.json')); expected=proof['records']",
-    " assert sorted(actual,key=lambda r:r['recordId'])==sorted(expected,key=lambda r:r['recordId'])",
-    " meta=json.loads(archive.read('preservation.json')); assert meta['missingPackages']==0 and meta['diagnostics']==[]",
-    " assert archive.read('packages/'+proof['packageHash'][7:]+'.vtplugin')==pathlib.Path(proof['originalPackage']).read_bytes()",
-    "print(json.dumps({'records':len(actual),'rawPreserved':True,'originalPackagePreserved':True}))",
-  ].join("\n"), exportPath, path.join(path.dirname(statePath), "legacy-plugin-preservation.json")], {
+  const archiveProof = JSON.parse(execFileSync(runtime.pythonExecutable, ["-c",
+    "import json,sys;from pathlib import Path;from tests.e2e.product_e2e_runner import _verify_legacy_plugin_archive;print(json.dumps(_verify_legacy_plugin_archive(Path(sys.argv[1]),Path(sys.argv[2]))))",
+    exportPath, path.join(path.dirname(statePath), "legacy-plugin-preservation.json")], {
     cwd: fileURLToPath(new URL("../../", import.meta.url)), encoding: "utf8", timeout: 30_000, windowsHide: true,
   }));
   recorder.check("export preserves four original raw records, large unknown settings and original package bytes",
@@ -7791,8 +7843,13 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   recorder.check("restoring the exact retained package reopens a working fresh surface", await page.locator(".surface-shell iframe").isVisible());
   await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
   await assertZeroExecutionProcesses("restored native plugin remains independent of retired execution processes");
+  const legacyMigration = await migrateHistoricalPlugin(page, recorder,
+    { ...runtime, pluginStatePath: statePath }, state, legacy);
+  const migratedProcesses = await requestPackagedProcessKill(runtime, "observe-processes", "historical native upgrade");
+  recorder.check("historical migration never launches a Node execution runtime",
+    countProcessMembers(migratedProcesses.members, "node.exe") === 0, { migratedProcesses });
   return { workspaceId: state.workspaceId, projectKey: state.projectKey, pluginId: state.pluginId,
-    tableId: state.tableId, packageHash: state.packageHash, historicalPreservation: archiveProof };
+    tableId: state.tableId, packageHash: state.packageHash, historicalPreservation: archiveProof, legacyMigration };
 }
 
 async function resumeHostPresentation(page, recorder, statePath, runtime) {
