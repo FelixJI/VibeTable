@@ -777,6 +777,83 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetiredSurfaceCloseAcknowledgesBothDestroyOrdersWithoutReplayingEvents(bool nativeFirst)
+    {
+        const string hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var revision = PluginPackageRevision.Create(@"C:\plugins\clean", hash);
+        resources.RegisterInstalled("workspace-a", "same-plugin", revision);
+        resources.RegisterInstalled("workspace-b", "same-plugin", revision);
+        var old = resources.OpenSurface("workspace-a", "same-plugin", "ui/index.html");
+        var replacement = resources.OpenSurface("workspace-b", "same-plugin", "ui/index.html");
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources);
+        int events = 0, cleanups = 0;
+        dispatcher.SurfaceEventReceived += _ => events++;
+        surfaces.Closed += _ => cleanups++;
+        var close = new RoutedWebRequest("plugin.surface.event", null, JsonSerializer.SerializeToElement(new
+        {
+            contract = PluginContractVersions.Surface, surfaceToken = old.SurfaceToken,
+            @event = PluginSurfaceEvents.Close, payload = new { status = "succeeded" },
+        }), string.Empty);
+
+        if (nativeFirst) resources.CloseSurface(old.SurfaceToken);
+        await dispatcher.DispatchAsync(close);
+        resources.CloseSurface(old.SurfaceToken);
+        await dispatcher.DispatchAsync(close);
+
+        Assert.IsNull(reply.FailureCode);
+        Assert.AreEqual(2, reply.NotificationCount);
+        Assert.AreEqual("plugin.surface.event", reply.NotificationType);
+        Assert.AreEqual(new PluginSurfaceAcceptance(true), reply.NotificationPayload);
+        Assert.AreEqual(nativeFirst ? 0 : 1, events, "Retired close cannot replay task/finish events.");
+        Assert.AreEqual(1, cleanups);
+        Assert.IsFalse(surfaces.IsActive(old.SurfaceToken));
+        Assert.IsTrue(surfaces.IsActive(replacement.SurfaceToken));
+        Assert.AreEqual(replacement.SurfaceToken,
+            resources.OpenSurface("workspace-b", "same-plugin", "ui/index.html").SurfaceToken);
+    }
+
+    [TestMethod]
+    [DataRow("ready")]
+    [DataRow("action")]
+    [DataRow("unknown")]
+    [DataRow("contract")]
+    public async Task RetiredSurfaceCloseCannotAuthorizeOtherEventsOrUnknownTokens(string rejected)
+    {
+        const string hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var revision = PluginPackageRevision.Create(@"C:\plugins\clean", hash);
+        var old = surfaces.Open("workspace-a", "same-plugin", revision, "ui/index.html");
+        var replacement = surfaces.Open("workspace-b", "same-plugin", revision, "ui/index.html");
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources);
+        int events = 0;
+        dispatcher.SurfaceEventReceived += _ => events++;
+        resources.CloseSurface(old.SurfaceToken);
+        await dispatcher.DispatchAsync(new RoutedWebRequest("plugin.surface.event", null,
+            JsonSerializer.SerializeToElement(new
+            {
+                contract = rejected == "contract" ? "vibetable.plugin-surface.v0" : PluginContractVersions.Surface,
+                surfaceToken = rejected == "unknown" ? new string('f', 64) : old.SurfaceToken,
+                @event = rejected is "ready" or "action" ? rejected : PluginSurfaceEvents.Close,
+                payload = new { status = "succeeded" },
+            }), string.Empty));
+
+        Assert.AreEqual("PLUGIN_SURFACE_TOKEN_INVALID", reply.FailureCode);
+        Assert.AreEqual(0, reply.NotificationCount);
+        Assert.AreEqual(0, events);
+        Assert.IsFalse(surfaces.IsActive(old.SurfaceToken));
+        Assert.IsTrue(surfaces.IsActive(replacement.SurfaceToken));
+    }
+
+    [TestMethod]
     public async Task InspectInstallResolvesHostPickerWithoutReturningNativePathToWeb()
     {
         const string nativePath = @"C:\trusted\clean.vtplugin";

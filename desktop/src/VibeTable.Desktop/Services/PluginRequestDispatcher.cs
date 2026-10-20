@@ -452,6 +452,11 @@ public sealed class PluginRequestDispatcher : IDisposable
         var surfaceEvent = Read<PluginSurfaceEvent>(request.Payload);
         if (!_surfaces.TryAccept(surfaceEvent, out _))
         {
+            if (_surfaces.TryAcknowledgeRetiredClose(surfaceEvent))
+            {
+                _reply.PostResponse(request.Type, request.RequestId, new PluginSurfaceAcceptance(true));
+                return;
+            }
             throw new PluginDispatchException(
                 "PLUGIN_SURFACE_TOKEN_INVALID",
                 "Plugin surface token is invalid or expired.");

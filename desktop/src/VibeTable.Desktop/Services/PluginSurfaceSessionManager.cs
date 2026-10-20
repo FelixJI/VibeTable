@@ -63,7 +63,10 @@ public sealed class PluginSurfaceSessionManager
         "--vt-plugin-space-unit",
     };
 
+    internal const int RetiredCloseLimit = 256;
     private readonly object _gate = new();
+    private readonly HashSet<string> _retiredTokens = new(StringComparer.Ordinal);
+    private readonly Queue<string> _retiredOrder = new();
     private readonly ConcurrentDictionary<string, PluginSurfaceSession> _sessions =
         new(StringComparer.Ordinal);
 
@@ -103,18 +106,26 @@ public sealed class PluginSurfaceSessionManager
         if (message is null
             || !string.Equals(message.Contract, PluginContractVersions.Surface, StringComparison.Ordinal)
             || string.IsNullOrWhiteSpace(message.SurfaceToken)
-            || !AllowedEvents.Contains(message.Event)
-            || !_sessions.TryGetValue(message.SurfaceToken, out var active))
+            || !AllowedEvents.Contains(message.Event))
         {
             return false;
         }
 
-        session = active;
-        if (string.Equals(message.Event, PluginSurfaceEvents.Close, StringComparison.Ordinal))
-        {
-            Close(message.SurfaceToken);
-        }
+        if (!string.Equals(message.Event, PluginSurfaceEvents.Close, StringComparison.Ordinal))
+            return _sessions.TryGetValue(message.SurfaceToken, out session);
+        if (!TryRetire(message.SurfaceToken, out session)) return false;
+        Closed?.Invoke(message.SurfaceToken);
         return true;
+    }
+
+    // Native frame destruction/session drain can precede the trusted renderer's
+    // unmount notification. A known retired close only acknowledges that cleanup.
+    internal bool TryAcknowledgeRetiredClose(PluginSurfaceEvent message)
+    {
+        if (message is null || message.Contract != PluginContractVersions.Surface
+            || message.Event != PluginSurfaceEvents.Close
+            || string.IsNullOrWhiteSpace(message.SurfaceToken)) return false;
+        lock (_gate) return _retiredTokens.Contains(message.SurfaceToken);
     }
 
     public PluginSurfaceHostMessage UpdateTheme(
@@ -135,10 +146,23 @@ public sealed class PluginSurfaceSessionManager
 
     public bool Close(string surfaceToken)
     {
-        lock (_gate)
-            if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out _)) return false;
+        if (!TryRetire(surfaceToken, out _)) return false;
         Closed?.Invoke(surfaceToken);
         return true;
+    }
+
+    private bool TryRetire(string surfaceToken, out PluginSurfaceSession? session)
+    {
+        session = null;
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out session)) return false;
+            _retiredTokens.Add(surfaceToken);
+            _retiredOrder.Enqueue(surfaceToken);
+            while (_retiredOrder.Count > RetiredCloseLimit)
+                _retiredTokens.Remove(_retiredOrder.Dequeue());
+            return true;
+        }
     }
 
     // Synchronous post only. Close/Bind serialize here; callbacks run after Close releases this lock.
