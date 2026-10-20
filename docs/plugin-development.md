@@ -151,8 +151,9 @@ Worker 的 15 秒/64 次总寿命。
 客户端关闭会发送仍持有句柄的释放请求；页面/surface 退役由 Host 清理其所有句柄。
 查询取消通过原 requestId 同时回收迟到创建的句柄，客户端已收到但尚未交付的句柄也会释放。
 
-完整示例和同包 `47-plugin-surface-api` 会在禁用旧 Node 执行器时
-完成 550 条查询和拒绝/取消/批准保存；测试环境开关仅设置在该合成 Host 子进程。
+完整示例和同包 `47-plugin-surface-api` 在 Host 子进程无法找到 Node 运行时的环境中
+完成 550 条查询和拒绝/取消/批准保存；runner 收窄子进程 PATH，并用独立 probe 核验。
+旧插件 Worker 执行器已删除，Node/npm 仅用于构建。
 
 ### 2.2 应用与无界面动作形态（#482）
 
@@ -172,8 +173,8 @@ Worker 的 15 秒/64 次总寿命。
 - `presentation: "surface"`（缺省）：行为与旧版完全一致（`ui.customViews` 绑定，entry 不允许
   出现在 action 上）。v1 清单拒绝新字段。
 
-旧栈（未升级的 Python/Go）安装 application/headless 包会明确失败；新栈保持旧 v1/v2 包语义与
-序列化字节不变（新字段为默认值时不写入清单）。完整示例见
+新包使用 v2 / pluginApi 3.x 合同；旧 v1/v2 Worker 包仅用于识别、诊断和原件保全，
+不能安装或继续执行，需迁移到新合同并重新授权。完整示例见
 `examples/plugins/team-tasks-app`（application 三页 hash 路由 + headless 动作，同一包、同一 API）与
 `examples/plugins/record-manager`（类型化 SDK 构建的完整记录管理应用，见下节）。
 
@@ -445,7 +446,7 @@ Go 在同一读取事务中读取 pluginstore 的 installation/status/grants/rev
 
 v2 错误包括 `plugin_api_unsupported`（未协商/旧插件）、`plugin_read_denied`（授权不足/安装禁用）、`plugin_capability_invalid`（未知键/请求形态）、`plugin_query_limit`（页或ID上限）、`query.operator.unsupported`、`query.cursor.unsupported_sort`、`plugin_query_computed_unsupported`、`plugin_cursor_invalid`（句柄不存在/已消费/请求改变）、`plugin_cursor_stale`（安装或computed依赖修订改变）和 Go 的 `query.cursor_stale`（schema/data/clock变化）。取消、超时和消息上限继续使用 `plugin_cancel_requested` / `plugin_timeout` 等既有码，不得把失败结果解释为成功全量。
 
-Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capabilities-v2.json`，SDK/offlineHost/BFF 均使用它。以合成库重建：在根目录设置 `VIBETABLE_PLUGIN_DATA_CAPTURE=../../../tests/contract/fixtures/plugin-capabilities-v2.json` 后，从 sidecar 执行 `go test ./internal/app -run '^TestPluginDataRealAuthorityPaginationAndGrants$' -count=1`；只归一化表/字段/记录/游标标识及schema修订，保留Go原值和元数据。真实跨进程本地合同设置 `VIBETABLE_PLUGIN_HOST_CONTRACT=1` 后运行 `go test ./internal/app -run '^TestPluginData' -count=1 -v`，需要仓库已同步Python依赖与Node；完整WPF安装执行由 `11-plugin-mutation` 产品场景覆盖。
+Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capabilities-v2.json`，Go 权威测试与 SDK 数据合同测试使用它。以合成库重建：在根目录设置 `VIBETABLE_PLUGIN_DATA_CAPTURE=../../../tests/contract/fixtures/plugin-capabilities-v2.json` 后，从 sidecar 执行 `go test ./internal/app -run '^TestPluginDataRealAuthorityPaginationAndGrants$' -count=1`；只归一化表/字段/记录/游标标识及schema修订，保留Go原值和元数据。新链 Go 合同从 sidecar 执行 `go test ./internal/app -run '^TestPluginSurfaceReal550ReadWriteAndLiveAuthority$' -count=1`，Host 层由 `PluginSurfaceApiTests` 覆盖；完整 WPF/WebView2 安装和执行由 `11-plugin-mutation`、`47-plugin-surface-api` 产品场景验证。旧 Node/BFF 合同桥及其 `VIBETABLE_PLUGIN_HOST_CONTRACT` 开关已退役。
 
 
 ### 应用与无界面动作的运行预算
