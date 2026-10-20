@@ -40,6 +40,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/startup"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -624,9 +625,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		"--origins=http://127.0.0.1",
 	})
 	if err := pb.Bootstrap(); err != nil {
+		options.Logger.Error("sidecar.bootstrap_failed", "errorCode", startup.FailureDiagnosticCode(err))
 		return nil, fmt.Errorf("bootstrap PocketBase before startup migrations: %w", err)
 	}
 	if err := pb.RunAllMigrations(); err != nil {
+		options.Logger.Error("sidecar.migrations_failed", "errorCode", startup.FailureDiagnosticCode(err))
 		resetErr := pb.ResetBootstrapState()
 		return nil, errors.Join(fmt.Errorf("run startup migrations: %w", err), resetErr)
 	}

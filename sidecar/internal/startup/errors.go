@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"modernc.org/sqlite"
 )
 
 const (
@@ -34,6 +36,16 @@ func (err *Error) Error() string {
 
 func (err *Error) Unwrap() error {
 	return err.Cause
+}
+
+// FailureDiagnosticCode exposes only a recognized SQLite numeric result, never
+// the wrapped SQL, filesystem path, record value, or unknown cause text.
+func FailureDiagnosticCode(err error) string {
+	var databaseError *sqlite.Error
+	if errors.As(err, &databaseError) {
+		return fmt.Sprintf("sqlite.result_%d", databaseError.Code())
+	}
+	return CodeStartFailed
 }
 
 // CheckDataDirectory performs a real create/write/sync/remove probe before
