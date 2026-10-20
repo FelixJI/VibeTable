@@ -10,7 +10,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, BinaryIO, ClassVar
 
 from backend._version import __version__
 from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
@@ -643,6 +643,13 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
         )
     if not zipfile.is_zipfile(source):
         raise PluginPackageError("invalid_package", "source is neither a folder nor a ZIP package")
+    return _read_archive_entries(source, policy)
+
+
+def _read_archive_entries(
+    source: Path | BinaryIO, policy: PackagePolicy
+) -> list[tuple[str, bytes]]:
+    """Use the same ZIP names, metadata and decoding for install and preservation."""
     with zipfile.ZipFile(source) as archive:
         members = [member for member in archive.infolist() if not member.is_dir()]
         for member in members:

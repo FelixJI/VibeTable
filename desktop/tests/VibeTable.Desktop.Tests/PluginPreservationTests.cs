@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -211,6 +212,8 @@ public sealed class PluginPreservationTests
     [DataRow("zstandard")]
     [DataRow("zip64-lzma")]
     [DataRow("descriptor-bzip2")]
+    [DataRow("central-bzip2-local-8")]
+    [DataRow("central-bzip2-local-98")]
     public async Task AuthorityCompressedPackagesPreserveTheirExactOriginalBytes(string name)
     {
         var fixture = CompressionFixture(name);
@@ -257,7 +260,7 @@ public sealed class PluginPreservationTests
 
     [TestMethod]
     [DoNotParallelize]
-    public async Task LargeAdvertisedLzmaDictionaryDoesNotAllocateItsFullWindow()
+    public async Task LargeAdvertisedLzmaDictionaryIsParsedOutsideHost()
     {
         var fixture = CompressionFixture("large-lzma-dictionary");
         string path = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N") + ".vtplugin");
@@ -268,7 +271,7 @@ public sealed class PluginPreservationTests
             long before = GC.GetTotalAllocatedBytes(precise: true);
             await PluginRetainedPackage.VerifyAsync(source, fixture.Hash, CancellationToken.None);
             Assert.IsLessThan(16L * 1024 * 1024, GC.GetTotalAllocatedBytes(precise: true) - before,
-                "A tiny preserved member must not allocate its advertised 64 MiB dictionary.");
+                "The Host must not allocate the external parser dictionary.");
         }
         finally { File.Delete(path); }
     }
@@ -309,4 +312,76 @@ public sealed class PluginPreservationTests
         }
         finally { File.Delete(path); }
     }
+    [TestMethod]
+    public void VerificationUsesOnlyTheTrustedBackendAndFixedMode()
+    {
+        ProcessStartInfo start = PluginPackageVerificationProcess.CreateStartInfo();
+        Assert.IsTrue(Path.IsPathFullyQualified(start.FileName));
+        Assert.IsTrue(start.Arguments.EndsWith("--verify-retained-plugin-package", StringComparison.Ordinal));
+        Assert.IsFalse(start.Arguments.Contains("vtplugin", StringComparison.Ordinal));
+        Assert.IsFalse(start.Arguments.Contains("plugin-path", StringComparison.Ordinal));
+    }
+
+    private static ProcessStartInfo PythonProbe(string code)
+    {
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            string python = Path.Combine(directory.FullName, ".venv", "Scripts", "python.exe");
+            if (!File.Exists(python)) continue;
+            var start = new ProcessStartInfo(python) { WorkingDirectory = directory.FullName };
+            start.ArgumentList.Add("-c");
+            start.ArgumentList.Add(code);
+            return start;
+        }
+        throw new DirectoryNotFoundException("Locked test Python was not found.");
+    }
+
+    [TestMethod]
+    [DataRow("success")]
+    [DataRow("exit")]
+    [DataRow("identity")]
+    [DataRow("stdout")]
+    [DataRow("stderr")]
+    [DataRow("handshake")]
+    [DataRow("cancel")]
+    [DataRow("timeout")]
+    public async Task RealVerificationProcessesExitBeforeReturning(string mode)
+    {
+        var fixture = CompressionFixture("central-bzip2-local-98");
+        string path = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N") + ".vtplugin");
+        Process? observed = null;
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            await File.WriteAllBytesAsync(path, fixture.Bytes);
+            await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // Success goes through the real fixed entry point and its authority parser.
+            string code = mode == "success"
+                ? "import runpy,sys;sys.argv=['backend','--verify-retained-plugin-package'];runpy.run_module('backend',run_name='__main__')"
+                : "import sys,time;sys.stdout.buffer.write(b'" + (mode == "handshake" ? "INVALID_PROTOCOL!" : "VTPLUGIN_VERIFY 1")
+                    + "\\n');sys.stdout.buffer.flush();"
+                    + (mode == "stdout" ? "sys.stdout.buffer.write(b'x'*10000);sys.stdout.buffer.flush();time.sleep(30)"
+                        : mode == "stderr" ? "sys.stderr.buffer.write(b'x'*10000);sys.stderr.buffer.flush();time.sleep(30)"
+                        : mode == "exit" ? "sys.stdin.buffer.read();sys.exit(7)"
+                        : mode == "identity" ? "sys.stdin.buffer.read();sys.stdout.buffer.write(b'sha256:'+b'0'*64+b'\\n');sys.stdout.buffer.flush()"
+                        : "time.sleep(30)");
+            Task running = PluginPackageVerificationProcess.VerifyAsync(source, fixture.Hash, PythonProbe(code),
+                TimeSpan.FromSeconds(mode == "timeout" ? 2 : 30), cancellation.Token, id =>
+                {
+                    observed = Process.GetProcessById(id);
+                    _ = observed.Handle;
+                    if (mode == "cancel") cancellation.Cancel();
+                });
+            if (mode == "success") await running;
+            else if (mode == "cancel") await Assert.ThrowsAsync<OperationCanceledException>(() => running);
+            else if (mode == "timeout") await Assert.ThrowsExactlyAsync<TimeoutException>(() => running);
+            else await Assert.ThrowsAsync<IOException>(() => running);
+            if (mode == "handshake") Assert.AreEqual(0L, source.Position,
+                "No original package bytes may be read before the fixed-mode handshake succeeds.");
+            Assert.IsNotNull(observed);
+            Assert.IsTrue(observed.HasExited, "The exact helper process must exit before success/failure/cancel returns.");
+        }
+        finally { observed?.Dispose(); File.Delete(path); }
+    }
+
 }

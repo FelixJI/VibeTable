@@ -1,12 +1,4 @@
-using System.Buffers.Binary;
 using System.IO;
-using System.IO.Compression;
-using System.Security.Cryptography;
-using System.Text;
-using SharpCompress.Common;
-using SharpCompress.IO;
-using SharpCompress.Readers;
-using DecoderArchive = SharpCompress.Archives.Zip.ZipArchive;
 
 namespace VibeTable.Desktop.Services;
 
@@ -33,81 +25,7 @@ internal static class PluginRetainedPackage
         return Path.Combine(Path.GetFullPath(cacheRoot), new string(encoded[..count]) + ".vtplugin");
     }
 
-    // The install authority hashes normalized ZIP members, including integrity.json,
-    // rather than ZIP bytes (backend.infrastructure.plugin_package._normalized_package_digest).
-    // Keep this read handle open through copying so Windows denies cache replacement.
-    internal static async Task VerifyAsync(FileStream source, string packageHash, CancellationToken token)
-    {
-        if (source.Length > 64 * 1024 * 1024) throw new IOException("Package exceeds its installed size limit.");
-        // Python zipfile uses CP437 when the entry does not declare UTF-8.
-        using var archive = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true,
-            entryNameEncoding: CodePagesEncodingProvider.Instance.GetEncoding(437));
-        var members = new List<(ZipArchiveEntry Entry, byte[] Name, int Index)>();
-        var names = new HashSet<string>(StringComparer.Ordinal);
-        long total = 0;
-        for (int index = 0; index < archive.Entries.Count; index++)
-        {
-            ZipArchiveEntry entry = archive.Entries[index];
-            token.ThrowIfCancellationRequested();
-            if (entry.FullName.EndsWith('/')) continue;
-            string path = entry.FullName.Replace('\\', '/').Normalize(NormalizationForm.FormC);
-            string[] parts = path.Split('/');
-            if (path.StartsWith('/') || path.Contains('\0') || parts.Contains("..")
-                || (path.Length >= 2 && char.IsAsciiLetter(path[0]) && path[1] == ':')
-                || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000)
-                throw new IOException("Invalid retained package member.");
-            string name = string.Join('/', parts.Where(part => part is not ("" or ".")));
-            if (name.Length == 0 || !names.Add(name) || members.Count >= 2048
-                || entry.Length > 32 * 1024 * 1024 || (total += entry.Length) > 256 * 1024 * 1024)
-                throw new IOException("Invalid retained package member or size.");
-            members.Add((entry, Encoding.UTF8.GetBytes(name), index));
-        }
-        // Keep BCL names/metadata; the decoder only supplies bytes in the same central-directory order.
-        source.Position = 0;
-        using var decoder = DecoderArchive.OpenArchive(source, ReaderOptions.ForExternalStream);
-        var entries = decoder.Entries.ToArray();
-        if (entries.Length != archive.Entries.Count) throw new IOException("Invalid retained package directory.");
-        using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        byte[] length = new byte[8];
-        byte[] buffer = new byte[64 * 1024];
-        // UTF-8 lexical order matches the authority's Unicode code-point order.
-        foreach (var member in members.OrderBy(member => member.Name,
-            Comparer<byte[]>.Create((left, right) => left.AsSpan().SequenceCompareTo(right))))
-        {
-            BinaryPrimitives.WriteUInt64BigEndian(length, (ulong)member.Name.Length);
-            digest.AppendData(length);
-            digest.AppendData(member.Name);
-            BinaryPrimitives.WriteUInt64BigEndian(length, (ulong)member.Entry.Length);
-            digest.AppendData(length);
-            var entry = entries[member.Index];
-            if (entry.Size != member.Entry.Length || entry.CompressedSize != member.Entry.CompressedLength
-                || entry.IsEncrypted || entry.CompressionType is not (CompressionType.None or CompressionType.Deflate
-                    or CompressionType.BZip2 or CompressionType.LZMA or CompressionType.ZStandard))
-                throw new IOException("Invalid or unsupported retained package member.");
-            try
-            {
-                await using Stream content = await entry.OpenEntryStreamAsync(token).ConfigureAwait(false);
-                // ZIP64/descriptor entries expose a non-owning decoder wrapper; release its codec buffers too.
-                await using Stream? ownedDecoder = content is SharpCompressStream { LeaveStreamOpen: true } wrapper
-                    ? wrapper.BaseStream() : null;
-                long readTotal = 0;
-                while (true)
-                {
-                    token.ThrowIfCancellationRequested();
-                    int count = await content.ReadAsync(buffer.AsMemory(0,
-                        (int)Math.Min(buffer.Length, member.Entry.Length - readTotal + 1)), token).ConfigureAwait(false);
-                    if (count == 0) break;
-                    if ((readTotal += count) > member.Entry.Length) throw new IOException("Invalid retained package size.");
-                    digest.AppendData(buffer, 0, count);
-                }
-                if (readTotal != member.Entry.Length) throw new IOException("Incomplete retained package member.");
-            }
-            catch (SharpCompressException error)
-            {
-                throw new IOException("Invalid retained package compression.", error);
-            }
-        }
-        string actual = "sha256:" + Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
-        if (actual != packageHash) throw new IOException("Retained package differs from its installed identity.");
-    }
+    // Verify bytes from this same retained read handle before the caller rewinds and copies.
+    internal static Task VerifyAsync(FileStream source, string packageHash, CancellationToken token) =>
+        PluginPackageVerificationProcess.VerifyAsync(source, packageHash, token);
 }

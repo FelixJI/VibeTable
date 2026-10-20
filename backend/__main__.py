@@ -292,5 +292,15 @@ async def _main() -> None:
             await plugin_service.close()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    if sys.argv[1:] == ["--verify-retained-plugin-package"]:
+        from backend.infrastructure.plugin_package_verifier import run
+
+        raise SystemExit(run(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))
+    if sys.argv[1:]:
+        raise SystemExit("unsupported backend mode")
     asyncio.run(_main())
+
+
+if __name__ == "__main__":
+    main()

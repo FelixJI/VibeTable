@@ -187,8 +187,12 @@ Go 在同一短事务内读取代际、重验安装身份及读取原 JSON；数
 审计、删除和旧库导入的每次提交都推进代际，期间发生写入就中止导出，避免混合或漏项。
 Host 只从可信 workspace cache 按已有 packageHash 读取原包，不信任记录中的 localPath；
 按安装时的规范化 ZIP 成员摘要校验原包，并持有同一禁止写入/替换的句柄完成复制。
-Host 内的托管解压库兼容安装权威接受的 Stored、Deflate、BZIP2、LZMA 与 Zstandard（93），
-保持名称编码、成员/总量预算与取消校验，不启动 Python 或 Node；旧方法 20 仍被拒绝。
+Host 从同一读句柄向生产 backend 的固定 `--verify-retained-plugin-package` 单次模式传递
+有界 ZIP 字节（最多 64MiB，不传路径），复用安装权威的 ZIP 读取与成员 identity；
+不套用当前 manifest/Worker 准入规则，中央目录方法及 CP437/UTF-8 行为与 Python 一致。
+该固定平台文件能力不建 BFF/RPC server、不执行插件代码；Job 绑定和 ready 握手完成后才发送 ZIP，
+沿用单次文档解析的 1GiB 内存、30 秒执行和 5 秒退出宽限预算。stdout/stderr 有界，失败、
+取消或超时均结束并确认进程退出；成功退出后才从原读句柄复制，不遗留 Python/Node 插件执行器。
 内容损坏会中止保全。ZIP 包含 records.json、原 vtplugin 与
 preservation.json；缺包明确报告，不生成替代空包。取消、工作区退役或失败不会提交半成品，
 该通道不修改安装、私有设置、审计或业务数据。

@@ -7799,7 +7799,7 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   }));
   recorder.check("export preserves four original raw records, large unknown settings and original package bytes",
     archiveProof.records === 4 && archiveProof.rawPreserved && archiveProof.originalPackagePreserved, { archiveProof });
-  await assertZeroExecutionProcesses("cold catalog, audit and historical export never start Python or Node");
+  await assertZeroExecutionProcesses("cold catalog and audit avoid plugin execution; the fixed preservation verifier has exited without Python or Node residue");
   await page.getByTestId("nav-tables").click(); await selectTable(page, "E2E Plugin Target");
   await page.getByTestId("nav-plugins").click(); await pluginRow.click();
   const frame = await openMutationBoundary(page);

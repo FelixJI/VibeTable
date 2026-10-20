@@ -75,6 +75,16 @@
       "packageHash": "sha256:1a05dfc923465d17dd2612e5f8a6164261e93c72920951348915cc4b4ddef345",
       "archive": "UEsDBBQAAABdAAAAIQD/nNk1CgAAAAEAAAAOAAAAaGlzdG9yaWNhbC50eHQotS/9AJAJAABBUEsBAhQAFAAAAF0AAAAhAP+c2TUKAAAAAQAAAA4AAAAAAAAAAAAAAIABAAAAAGhpc3RvcmljYWwudHh0UEsFBgAAAAABAAEAPAAAADYAAAAAAA==",
       "authorityAccepted": false
+    },
+    "central-bzip2-local-8": {
+      "packageHash": "sha256:1a05dfc923465d17dd2612e5f8a6164261e93c72920951348915cc4b4ddef345",
+      "archive": "UEsDBC4AAAAIAAAAIQAAAAAADgAAAAAAAAAJAAAAZW1wdHkudHh0QlpoORdyRThQkAAAAABQSwMELgAAAAwAAAAhALbN4oFuAAAAgBEAAA4AAABoaXN0b3JpY2FsLnR4dEJaaDkxQVkmU1nIOYC7AAc/0YAAEEAAOq/WADAA2AUNNMABQ00wABVU0Hqeo09T1FgIAdgMANQHoDICgEgEgMgJAcgNwHgCwEAIAUA4AUAgB6AwAoBYCAFgOgGwCgHwDACQH4u5IpwoSGQcwF2AUEsDBC4AAAAMAAAAIQDGvO9K6QAAABYBAAAOAAAAaW50ZWdyaXR5Lmpzb25CWmg5MUFZJlNZhEEFhQAAiRmAEAV/8D/33GowAMxYqeQp7Ro1Twk8UYmjQRBNNHoTEMgaGAqn5MJkyQgGQAPecudg256aoIaDg9Hcda0vi1aXyGBkmVtF4iqAquL1UabLrlC1YBYXeTOAyKKPD1vMAVkh6XTZqi1nu4my4mVRXAGWyTSsDJUI5BmMc4drCtASue6g9yRolBkgAbapfe2JxFwuWlaIRsoaeDIkxEmx3ns6yUJZt8TnLUHRWwoRsKEXeqJ6HH3euV8RgDCn8YZ/+IDFMzDUMzFWFVEtQo3F3JFOFCQhEEFhQFBLAwQuAAAADAAAACEANqcrlewAAAAeAQAADQAAAG1hbmlmZXN0Lmpzb25CWmg5MUFZJlNZb17IIAAAih+AFAdiECBhSQo/59/qMADZZDVMJoMmmmQAANNAap+qe1KemkejUeU0AAMINMqT0yg9NQ0aHqGh6hmora8YamxHY2YCjTclV8SdYJJIZQrH8D1SCBjKV6pcMncRA1QRZm0tuT3wkBiArA7Onffbfdnl0E5qBSM2IUPTKGJHiFdnUJGhr2XotMlvsUFloZTitbg4l4ecFOcbDtEq6sxh9VLHMQ54DMKXFAV4xhjJuKBMLsjEVb9DmwpuGyQVvNCaIm2j4VXuktYQgjS3LQA6AaH4u5IpwoSDevZBAFBLAQIuAy4AAAAMAAAAIQAAAAAADgAAAAAAAAAJAAAAAAAAAAAAAACkgQAAAABlbXB0eS50eHRQSwECLgMuAAAADAAAACEAts3igW4AAACAEQAADgAAAAAAAAAAAAAApIE1AAAAaGlzdG9yaWNhbC50eHRQSwECLgMuAAAADAAAACEAxrzvSukAAAAWAQAADgAAAAAAAAAAAAAApIHPAAAAaW50ZWdyaXR5Lmpzb25QSwECLgMuAAAADAAAACEANqcrlewAAAAeAQAADQAAAAAAAAAAAAAApIHkAQAAbWFuaWZlc3QuanNvblBLBQYAAAAABAAEAOoAAAD7AgAAAAA=",
+      "authorityAccepted": true
+    },
+    "central-bzip2-local-98": {
+      "packageHash": "sha256:1a05dfc923465d17dd2612e5f8a6164261e93c72920951348915cc4b4ddef345",
+      "archive": "UEsDBC4AAABiAAAAIQAAAAAADgAAAAAAAAAJAAAAZW1wdHkudHh0QlpoORdyRThQkAAAAABQSwMELgAAAAwAAAAhALbN4oFuAAAAgBEAAA4AAABoaXN0b3JpY2FsLnR4dEJaaDkxQVkmU1nIOYC7AAc/0YAAEEAAOq/WADAA2AUNNMABQ00wABVU0Hqeo09T1FgIAdgMANQHoDICgEgEgMgJAcgNwHgCwEAIAUA4AUAgB6AwAoBYCAFgOgGwCgHwDACQH4u5IpwoSGQcwF2AUEsDBC4AAAAMAAAAIQDGvO9K6QAAABYBAAAOAAAAaW50ZWdyaXR5Lmpzb25CWmg5MUFZJlNZhEEFhQAAiRmAEAV/8D/33GowAMxYqeQp7Ro1Twk8UYmjQRBNNHoTEMgaGAqn5MJkyQgGQAPecudg256aoIaDg9Hcda0vi1aXyGBkmVtF4iqAquL1UabLrlC1YBYXeTOAyKKPD1vMAVkh6XTZqi1nu4my4mVRXAGWyTSsDJUI5BmMc4drCtASue6g9yRolBkgAbapfe2JxFwuWlaIRsoaeDIkxEmx3ns6yUJZt8TnLUHRWwoRsKEXeqJ6HH3euV8RgDCn8YZ/+IDFMzDUMzFWFVEtQo3F3JFOFCQhEEFhQFBLAwQuAAAADAAAACEANqcrlewAAAAeAQAADQAAAG1hbmlmZXN0Lmpzb25CWmg5MUFZJlNZb17IIAAAih+AFAdiECBhSQo/59/qMADZZDVMJoMmmmQAANNAap+qe1KemkejUeU0AAMINMqT0yg9NQ0aHqGh6hmora8YamxHY2YCjTclV8SdYJJIZQrH8D1SCBjKV6pcMncRA1QRZm0tuT3wkBiArA7Onffbfdnl0E5qBSM2IUPTKGJHiFdnUJGhr2XotMlvsUFloZTitbg4l4ecFOcbDtEq6sxh9VLHMQ54DMKXFAV4xhjJuKBMLsjEVb9DmwpuGyQVvNCaIm2j4VXuktYQgjS3LQA6AaH4u5IpwoSDevZBAFBLAQIuAy4AAAAMAAAAIQAAAAAADgAAAAAAAAAJAAAAAAAAAAAAAACkgQAAAABlbXB0eS50eHRQSwECLgMuAAAADAAAACEAts3igW4AAACAEQAADgAAAAAAAAAAAAAApIE1AAAAaGlzdG9yaWNhbC50eHRQSwECLgMuAAAADAAAACEAxrzvSukAAAAWAQAADgAAAAAAAAAAAAAApIHPAAAAaW50ZWdyaXR5Lmpzb25QSwECLgMuAAAADAAAACEANqcrlewAAAAeAQAADQAAAAAAAAAAAAAApIHkAQAAbWFuaWZlc3QuanNvblBLBQYAAAAABAAEAOoAAAD7AgAAAAA=",
+      "authorityAccepted": true
     }
   },
   "generation": {
@@ -113,7 +123,8 @@
     "acceptedVariants": {
       "zip64-lzma": "method14; write each member via archive.open(info,\"w\",force_zip64=True)",
       "descriptor-bzip2": "method12; BytesIO subclass seekable()=False and seek() raises io.UnsupportedOperation",
-      "large-lzma-dictionary": "method14; historical.txt LZMA properties dictionary bytes changed to little-endian 64MiB; Python zipfile read-back and normalized identity checked"
+      "large-lzma-dictionary": "method14; historical.txt LZMA properties dictionary bytes changed to little-endian 64MiB; Python zipfile read-back and normalized identity checked",
+      "central-bzip2-local-8/98": "valid method12 package; only empty.txt local header method at ZipInfo.header_offset+8 changed to8/98; central method12 and fixed identity unchanged; unmodified zipfile read-back accepts both"
     },
     "negativeVariants": {
       "corrupt-*": "repack using the named method, replacing original with tampered in historical.txt; keep original integrity.json and expected identity",
