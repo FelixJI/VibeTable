@@ -19,9 +19,9 @@ import (
 // writes, no migration and no new hashing; per-record revisions reuse the
 // existing stored CAS revision (installation/setting payloads) or the stored
 // per-project seq (revision/audit rows). The Host fail-closes when the
-// installation identity/revision changes between pages.
+// database generation or installation identity/revision changes between pages.
 const (
-	PreservationContractVersion = "1.0"
+	PreservationContractVersion = "2.0"
 	PreservationChunkBytes      = 256 * 1024
 	// RecordOffset is capped at 1 GiB in 256 KiB shard steps, mirroring the
 	// frozen legacyLayout.snapshot cursor budget. Stored payloads are bounded
@@ -34,7 +34,8 @@ var preservationRecordIDPattern = regexp.MustCompile(`^[a-zA-Z0-9]{15}$`)
 // PreservationSnapshotRequest is the closed Host-only request: the four
 // identity fields are required; afterRecordId is empty or a 15-character
 // alphanumeric record id and recordOffset is a non-negative 256 KiB
-// multiple within the cursor budget.
+// multiple within the cursor budget. Continuations require the initial
+// snapshotRevision, including the terminal page.
 type PreservationSnapshotRequest struct {
 	ProjectKey           string `json:"projectKey"`
 	PluginID             string `json:"pluginId"`
@@ -42,6 +43,7 @@ type PreservationSnapshotRequest struct {
 	InstallationRevision int64  `json:"installationRevision"`
 	AfterRecordID        string `json:"afterRecordId"`
 	RecordOffset         int64  `json:"recordOffset"`
+	SnapshotRevision     string `json:"snapshotRevision"`
 }
 
 // PreservationSnapshotPage carries one bounded byte shard. Chunk holds the
@@ -55,6 +57,7 @@ type PreservationSnapshotRequest struct {
 // rows; empty when absent) — no new hash is introduced.
 type PreservationSnapshotPage struct {
 	ContractVersion   string `json:"contractVersion"`
+	SnapshotRevision  string `json:"snapshotRevision"`
 	RecordID          string `json:"recordId"`
 	Kind              string `json:"kind"`
 	ItemKey           string `json:"itemKey"`
@@ -95,14 +98,16 @@ func (service *Service) PreservationSnapshot(
 		return page, err
 	}
 	if request.PluginID == "" || request.InstallationID == "" || request.InstallationRevision < 1 ||
-		!validPreservationCursor(request.AfterRecordID, request.RecordOffset) {
+		!validPreservationCursor(request.AfterRecordID, request.RecordOffset) ||
+		!validPreservationSnapshotRevision(request.SnapshotRevision) ||
+		(request.SnapshotRevision == "" && (request.AfterRecordID != "" || request.RecordOffset != 0)) {
 		return page, requestError(
 			"plugin.request_invalid",
 			"preservation identity or cursor is invalid", nil,
 		)
 	}
 	// Every page revalidates the workspace project and the installation
-	// identity/revision; a concurrent lifecycle change fails closed here.
+	// identity/revision; any committed plugin-record write fails closed here.
 	// The installation identity is the authoritative PocketBase record id,
 	// never a payload field.
 	if err := service.ValidateProject(request.ProjectKey); err != nil {
@@ -119,6 +124,15 @@ func (service *Service) PreservationSnapshot(
 	// Pin identity validation and the page read to the same database view;
 	// uninstall cleanup must not turn a remaining record into a successful EOF.
 	err := service.app.RunInTransaction(func(txApp core.App) error {
+		// shortcut: a write to any plugin invalidates this export; scope the
+		// counter per plugin if unrelated plugin traffic prevents preservation.
+		var revision int64
+		if err := txApp.DB().NewQuery(
+			"SELECT revision FROM vibetable_plugin_preservation_revision WHERE singleton = 1",
+		).WithContext(ctx).Row(&revision); err != nil || revision < 0 {
+			return storageError()
+		}
+		page.SnapshotRevision = strconv.FormatInt(revision, 10)
 		stored, err := findRecord(
 			txApp, KindInstallation, request.ProjectKey, request.PluginID, "current",
 		)
@@ -137,6 +151,9 @@ func (service *Service) PreservationSnapshot(
 			return revisionConflict(
 				KindInstallation, request.InstallationRevision, "installation changed",
 			)
+		}
+		if request.SnapshotRevision != "" && request.SnapshotRevision != page.SnapshotRevision {
+			return requestError("plugin.preservation_changed", "plugin records changed during preservation", nil)
 		}
 		queryErr = txApp.DB().NewQuery(
 			"SELECT id, kind, item_key, payload_json, seq FROM {{" + recordsCollection + "}} " +
@@ -233,4 +250,12 @@ func preservationRecordRevision(kind, payload string, seq int64) string {
 		return strconv.FormatInt(seq, 10)
 	}
 	return ""
+}
+
+func validPreservationSnapshotRevision(revision string) bool {
+	if revision == "" {
+		return true
+	}
+	value, err := strconv.ParseInt(revision, 10, 64)
+	return err == nil && value >= 0 && strconv.FormatInt(value, 10) == revision
 }

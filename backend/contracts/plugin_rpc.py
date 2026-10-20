@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.contracts.plugin import (
     CommandContext,
@@ -165,3 +165,13 @@ class PluginPreservationPageParams(PluginContract):
     installation_revision: int = Field(strict=True, ge=1)
     after_record_id: str = Field(default="", pattern=r"^(?:[A-Za-z0-9]{15})?$")
     record_offset: int = Field(default=0, strict=True, ge=0, le=1 << 30, multiple_of=256 * 1024)
+    snapshot_revision: str = Field(default="", pattern=r"^(?:0|[1-9][0-9]{0,18})?$")
+
+    @model_validator(mode="after")
+    def require_snapshot_revision_for_cursor(self) -> Self:
+        if not self.snapshot_revision:
+            if self.after_record_id or self.record_offset:
+                raise ValueError("continuation requires the initial snapshot revision")
+        elif int(self.snapshot_revision) > (1 << 63) - 1:
+            raise ValueError("snapshot revision exceeds the storage counter")
+        return self

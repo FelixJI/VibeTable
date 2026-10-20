@@ -647,6 +647,52 @@ describe("field settings service", () => {
     expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
   });
 
+  it.each(["definition", "path"])("retires a pending %s lookup catalog on collection replacement and permits a fresh load", async stage => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    store.patchDraft({ logicalType: "lookup", lookup: { path: [], targetFieldId: "" } });
+    const snapshot = {
+      contract: "vibetable.schema.v2", tableId: "tbl_opaque", displayName: "订单", kind: "base",
+      schemaRevision: "schema_7", dataRevision: 0,
+      archivePolicy: { mode: "none", fieldId: null, archivedValue: null }, fields: [], capabilities: [],
+    };
+    store.lookupSchemas = [relationSchema("tbl_customers").schema];
+    store.lookupCurrentFields = [definition()];
+    store.lookupConditionSchema = relationSchema("tbl_customers").schema;
+    store.lookupConditionFields = [definition()];
+    let finishOld!: (value: unknown) => void;
+    if (stage === "path") request.mockResolvedValueOnce(snapshot);
+    request.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+    const oldLoad = service.loadLookupCatalog();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.lookupCatalogLoading).toBe(true);
+    useWorkspaceStore().setOpened([{ collection: "tbl_opaque" }], { tbl_opaque: "订单" });
+    expect(store.lookupCatalogLoading).toBe(false);
+    expect(store.lookupCatalogError).toBeNull();
+    expect(store.lookupSchemas).toEqual([]);
+    expect(store.lookupCurrentFields).toEqual([]);
+    expect(store.lookupConditionSchema).toBeNull();
+    expect(store.lookupConditionFields).toEqual([]);
+
+    let finishNew!: (value: unknown) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }))
+      .mockResolvedValueOnce(relationSchema("tbl_opaque"));
+    const newLoad = service.loadLookupCatalog();
+    expect(store.lookupCatalogLoading).toBe(true);
+    finishOld(stage === "path" ? relationSchema("tbl_opaque") : snapshot);
+    await oldLoad;
+    expect(store.lookupCatalogLoading).toBe(true);
+    expect(store.lookupSchemas).toEqual([]);
+    finishNew(snapshot);
+    await newLoad;
+    expect(store.lookupCatalogLoading).toBe(false);
+    expect(store.lookupCatalogError).toBeNull();
+    expect(store.lookupSchemas.map(item => item.collection)).toEqual(["tbl_opaque"]);
+    service.dispose();
+  });
+
   it("previews path aggregations with the terminal source revision and cancels stale results", async () => {
     request.mockResolvedValueOnce(describeResult(true));
     const service = useFieldSettingsService();

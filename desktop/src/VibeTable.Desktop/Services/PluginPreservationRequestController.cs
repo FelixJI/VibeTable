@@ -100,8 +100,8 @@ internal sealed class PluginPreservationRequestController
                 await using var output = new FileStream(target.TemporaryPath, FileMode.Create, FileAccess.Write,
                     FileShare.None, 64 * 1024, useAsync: true);
                 missing = await WriteArchiveAsync(output,
-                    (after, offset, ct) => gateway.ReadPluginPreservationAsync(context.ProjectKey, pluginId,
-                        installationId, revision, after, offset, ct), cache, linked.Token).ConfigureAwait(true);
+                    (after, offset, snapshot, ct) => gateway.ReadPluginPreservationAsync(context.ProjectKey, pluginId,
+                        installationId, revision, after, offset, snapshot, ct), cache, linked.Token).ConfigureAwait(true);
                 await output.FlushAsync(linked.Token).ConfigureAwait(true);
             }
             finally { finished.TrySetResult(); }
@@ -120,7 +120,7 @@ internal sealed class PluginPreservationRequestController
     }
 
     internal static async Task<int> WriteArchiveAsync(Stream output,
-        Func<string, int, CancellationToken, Task<JsonElement>> readPage, string? cacheRoot, CancellationToken token)
+        Func<string, int, string, CancellationToken, Task<JsonElement>> readPage, string? cacheRoot, CancellationToken token)
     {
         using var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true);
         var packages = new HashSet<string>(StringComparer.Ordinal);
@@ -128,16 +128,23 @@ internal sealed class PluginPreservationRequestController
         await using (Stream records = archive.CreateEntry("records.json").Open())
         {
             await records.WriteAsync("["u8.ToArray(), token);
-            string after = "", current = "", revision = "";
+            string after = "", current = "", revision = "", snapshotRevision = "";
             int offset = 0;
             bool first = true;
             using var record = new MemoryStream();
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                JsonElement page = await readPage(after, offset, token).ConfigureAwait(true);
+                JsonElement page = await readPage(after, offset, snapshotRevision, token).ConfigureAwait(true);
                 token.ThrowIfCancellationRequested();
-                if (page.GetProperty("contractVersion").GetString() != "1.0") throw new IOException("Invalid preservation contract.");
+                if (page.GetProperty("contractVersion").GetString() != "2.0") throw new IOException("Invalid preservation contract.");
+                string snapshot = page.GetProperty("snapshotRevision").GetString() ?? "";
+                if (!long.TryParse(snapshot, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out long generation) || generation < 0
+                    || generation.ToString(System.Globalization.CultureInfo.InvariantCulture) != snapshot
+                    || (snapshotRevision != "" && snapshotRevision != snapshot))
+                    throw new IOException("Plugin records changed during preservation.");
+                snapshotRevision = snapshot;
                 byte[] chunk = page.GetProperty("chunk").GetBytesFromBase64();
                 string id = page.GetProperty("recordId").GetString() ?? "";
                 string next = page.GetProperty("nextAfterRecordId").GetString() ?? "";
@@ -204,6 +211,8 @@ internal sealed class PluginPreservationRequestController
                 throw new IOException("Package cache must not resolve through a link.");
             await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                 64 * 1024, useAsync: true);
+            await PluginRetainedPackage.VerifyAsync(source, hash, token).ConfigureAwait(true);
+            source.Position = 0;
             await using Stream entry = archive.CreateEntry($"packages/{hash[7..]}.vtplugin", CompressionLevel.NoCompression).Open();
             await source.CopyToAsync(entry, token);
         }

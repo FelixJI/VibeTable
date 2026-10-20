@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"strconv"
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
@@ -23,13 +24,15 @@ type pluginPreservationParams struct {
 	InstallationRevision int64  `json:"installationRevision"`
 	AfterRecordID        string `json:"afterRecordId"`
 	RecordOffset         int64  `json:"recordOffset"`
+	SnapshotRevision     string `json:"snapshotRevision"`
 }
 
 // decodePluginPreservationParams enforces the closed request set: the four
 // identity fields are required, afterRecordId is empty or a 15-character
 // alphanumeric id, recordOffset is a non-negative 256 KiB multiple within
 // the 1 GiB cursor budget, and explicit nulls, unknown fields, wrong types
-// and trailing JSON are all rejected.
+// and trailing JSON are all rejected. Continuations require the canonical
+// decimal snapshotRevision returned by the initial page.
 func decodePluginPreservationParams(raw json.RawMessage) (pluginPreservationParams, error) {
 	var params pluginPreservationParams
 	invalid := func() (pluginPreservationParams, error) {
@@ -45,7 +48,7 @@ func decodePluginPreservationParams(raw json.RawMessage) (pluginPreservationPara
 	for key, value := range fields {
 		switch key {
 		case "projectKey", "pluginId", "installationId", "installationRevision",
-			"afterRecordId", "recordOffset":
+			"afterRecordId", "recordOffset", "snapshotRevision":
 		default:
 			return invalid()
 		}
@@ -73,6 +76,13 @@ func decodePluginPreservationParams(raw json.RawMessage) (pluginPreservationPara
 	if params.RecordOffset < 0 ||
 		params.RecordOffset%pluginstore.PreservationChunkBytes != 0 ||
 		params.RecordOffset > 1<<30 {
+		return invalid()
+	}
+	if params.SnapshotRevision == "" {
+		if params.AfterRecordID != "" || params.RecordOffset != 0 {
+			return invalid()
+		}
+	} else if revision, err := strconv.ParseInt(params.SnapshotRevision, 10, 64); err != nil || revision < 0 || strconv.FormatInt(revision, 10) != params.SnapshotRevision {
 		return invalid()
 	}
 	return params, nil
@@ -106,6 +116,7 @@ func pluginPreservationSnapshotRegistration(service *pluginstore.Service) produc
 				InstallationRevision: params.InstallationRevision,
 				AfterRecordID:        params.AfterRecordID,
 				RecordOffset:         params.RecordOffset,
+				SnapshotRevision:     params.SnapshotRevision,
 			})
 			if pageErr != nil {
 				return nil, pluginPublicError(pageErr)

@@ -182,8 +182,12 @@ Python supervisor 的固定平台进程清理和 DocumentDiff.Worker 继续保�
 ## 旧插件原件保全
 
 插件中心通过 Host-only `pluginPreservation.snapshot` 分页读取当前工作区的四类原始记录。
-Go 每页重验安装身份和修订，保留原 JSON 文本；Host 只从可信 workspace cache 按已有
-packageHash 读取原包，不信任记录中的 localPath。ZIP 包含 records.json、原 vtplugin 与
+分页协议 v2 首次返回 snapshotRevision，后续分片及终页必须携带并匹配同一代际。
+Go 在同一短事务内读取代际、重验安装身份及读取原 JSON；数据库触发器让设置、包修订、
+审计、删除和旧库导入的每次提交都推进代际，期间发生写入就中止导出，避免混合或漏项。
+Host 只从可信 workspace cache 按已有 packageHash 读取原包，不信任记录中的 localPath；
+按安装时的规范化 ZIP 成员摘要校验原包，并持有同一禁止写入/替换的句柄完成复制。
+内容损坏会中止保全。ZIP 包含 records.json、原 vtplugin 与
 preservation.json；缺包明确报告，不生成替代空包。取消、工作区退役或失败不会提交半成品，
 该通道不修改安装、私有设置、审计或业务数据。
 

@@ -148,7 +148,17 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   const stopLookupWatch = watch(
     () => [workspace.phase, workspace.collections, store.result, tableStore.schemaRevision,
       store.open, store.draft?.logicalType] as const,
-    () => { lookupCatalogGeneration += 1; lookupDraft = null; invalidateLookupPreview(); },
+    () => {
+      lookupCatalogGeneration += 1;
+      lookupDraft = null;
+      store.lookupCatalogLoading = false;
+      store.lookupCatalogError = null;
+      store.lookupSchemas = [];
+      store.lookupCurrentFields = [];
+      store.lookupConditionSchema = null;
+      store.lookupConditionFields = [];
+      invalidateLookupPreview();
+    },
     { flush: "sync" },
   );
 

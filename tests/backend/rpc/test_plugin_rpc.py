@@ -145,7 +145,12 @@ def test_preservation_page_requires_bound_identity_and_aligned_bounded_offsets()
     assert page.record_offset == 0
     assert (
         PluginPreservationPageParams.model_validate(
-            {**identity, "afterRecordId": "A0" + "a" * 13, "recordOffset": 256 * 1024}
+            {
+                **identity,
+                "afterRecordId": "A0" + "a" * 13,
+                "recordOffset": 256 * 1024,
+                "snapshotRevision": "12",
+            }
         ).record_offset
         == 256 * 1024
     )
@@ -162,6 +167,13 @@ def test_preservation_page_requires_bound_identity_and_aligned_bounded_offsets()
         {"recordOffset": None},
         {"recordOffset": True},
         {"unknown": "field"},
+        {"afterRecordId": "a" * 15},
+        {"recordOffset": 256 * 1024},
+        {"snapshotRevision": None},
+        {"snapshotRevision": 12},
+        {"snapshotRevision": "-1"},
+        {"snapshotRevision": "01"},
+        {"snapshotRevision": "9223372036854775808"},
     ):
         with pytest.raises(ValidationError):
             PluginPreservationPageParams.model_validate({**identity, **patch})

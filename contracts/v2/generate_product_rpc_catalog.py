@@ -751,7 +751,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "pluginPreservation.snapshot": _manual(
             "PluginPreservationPageResult",
             {
-                "contractVersion": "1.0",
+                "contractVersion": "2.0",
+                "snapshotRevision": "0",
                 "recordId": "",
                 "kind": "",
                 "itemKey": "",

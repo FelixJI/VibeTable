@@ -85,10 +85,10 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, IHostCom
 
 
     internal Task<JsonElement> ReadPluginPreservationAsync(string projectKey, string pluginId,
-        string installationId, int installationRevision, string afterRecordId, int recordOffset, CancellationToken token)
+        string installationId, int installationRevision, string afterRecordId, int recordOffset, string snapshotRevision, CancellationToken token)
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
             .InvokeAsync("pluginPreservation.snapshot", JsonSerializer.SerializeToElement(new
-                { projectKey, pluginId, installationId, installationRevision, afterRecordId, recordOffset }), token);
+                { projectKey, pluginId, installationId, installationRevision, afterRecordId, recordOffset, snapshotRevision }), token);
 
     public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)
         => InvokeStrictElement<FieldSettingsDescribeResultV2>("field.settings.describe", p, t);

@@ -181,6 +181,7 @@ func TestPreservationSnapshotStreamsAllKindsVerbatimWithBoundedPages(t *testing.
 			seen[row.ID] = true
 			delete(streams, page.RecordID)
 		}
+		request.SnapshotRevision = page.SnapshotRevision
 		request.AfterRecordID = page.NextAfterRecordID
 		request.RecordOffset = page.NextRecordOffset
 		if pages > 10_000 {
@@ -232,6 +233,11 @@ func TestPreservationSnapshotFailsClosedOnIdentityCursorAndCancellation(t *testi
 		InstallationID:       jsonText(installation, "installationId"),
 		InstallationRevision: jsonInt(installation, "revision"),
 	}
+	firstPage, err := service.PreservationSnapshot(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.SnapshotRevision = firstPage.SnapshotRevision
 	storeErrCode := func(request PreservationSnapshotRequest) string {
 		_, err := service.PreservationSnapshot(ctx, request)
 		var storeErr *Error
@@ -300,7 +306,7 @@ func TestPreservationSnapshotFailsClosedOnIdentityCursorAndCancellation(t *testi
 	terminal, err := service.PreservationSnapshot(ctx, PreservationSnapshotRequest{
 		ProjectKey: base.ProjectKey, PluginID: base.PluginID,
 		InstallationID: base.InstallationID, InstallationRevision: base.InstallationRevision,
-		AfterRecordID: highest,
+		AfterRecordID: highest, SnapshotRevision: base.SnapshotRevision,
 	})
 	if err != nil || !terminal.CollectionDone || len(terminal.Chunk) != 0 {
 		t.Fatalf("terminal page = %+v err = %v", terminal, err)
@@ -377,6 +383,14 @@ func TestPreservationSnapshotDoesNotReportEOFWhenUninstallCleansNextRecord(t *te
 		t.Fatal(err)
 	}
 
+	initialPage, err := service.PreservationSnapshot(ctx, PreservationSnapshotRequest{
+		ProjectKey: request.ProjectKey, PluginID: request.PluginID, InstallationID: request.InstallationID, InstallationRevision: request.InstallationRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SnapshotRevision = initialPage.SnapshotRevision
+
 	// A separate PocketBase connection commits the actual uninstall while
 	// preservation has already validated identity but has not queried its page.
 	writerApp := core.NewBaseApp(core.BaseAppConfig{DataDir: service.app.DataDir()})
@@ -419,10 +433,156 @@ func TestPreservationSnapshotDoesNotReportEOFWhenUninstallCleansNextRecord(t *te
 		t.Fatalf("uninstall did not actually clean settings: %s, error = %v", got, err)
 	}
 	// Revalidation on the next page must reject the retired installation.
+	request.SnapshotRevision = page.SnapshotRevision
 	request.AfterRecordID = page.NextAfterRecordID
 	_, err = service.PreservationSnapshot(ctx, request)
 	var storeErr *Error
 	if !errors.As(err, &storeErr) || storeErr.Code != "plugin.not_found" {
 		t.Fatalf("page after committed uninstall = %v", err)
+	}
+}
+
+func TestPreservationSnapshotRejectsSettingAndAuditWritesAcrossPages(t *testing.T) {
+	for _, operation := range []string{"save-setting", "delete-setting", "audit", "caller-owned-audit", "package-revision"} {
+		t.Run(operation, func(t *testing.T) {
+			service := newTestService(t)
+			ctx := context.Background()
+			plan, revision := frozenNativeInstallRequest(t)
+			installation, err := service.CommitInstall(ctx, plan, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := PreservationSnapshotRequest{
+				ProjectKey: service.ProjectKey(), PluginID: jsonText(installation, "pluginId"),
+				InstallationID: jsonText(installation, "installationId"), InstallationRevision: jsonInt(installation, "revision"),
+			}
+			setting := []byte(`{"projectKey":"` + request.ProjectKey + `","pluginId":"` + request.PluginID + `","settingKey":"private","value":{"before":true},"revision":1}`)
+			if _, err := service.SavePrivateSetting(ctx, setting, nil, request.InstallationID, request.InstallationRevision); err != nil {
+				t.Fatal(err)
+			}
+			first, err := service.PreservationSnapshot(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.SnapshotRevision = first.SnapshotRevision
+			request.AfterRecordID = first.NextAfterRecordID
+			request.RecordOffset = first.NextRecordOffset
+			event, err := lifecycleAudit(service.now(), installation, "preservation-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch operation {
+			case "save-setting":
+				setting = bytes.Replace(setting, []byte(`"revision":1`), []byte(`"revision":2`), 1)
+				_, err = service.SavePrivateSetting(ctx, setting, int64Ptr(1), request.InstallationID, request.InstallationRevision)
+			case "delete-setting":
+				_, err = service.DeletePrivateSetting(ctx, request.ProjectKey, request.PluginID, "private")
+			case "audit":
+				_, err = service.RecordAudit(ctx, event)
+			case "caller-owned-audit":
+				err = service.app.RunInTransaction(func(tx core.App) error {
+					_, err := New(tx, service.workspaceID).RecordAuditInTransaction(ctx, event)
+					return err
+				})
+			case "package-revision":
+				_, err = service.SavePackageRevision(ctx, revision)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := service.GetInstallation(ctx, request.ProjectKey, request.PluginID)
+			if err != nil || jsonInt(current, "revision") != request.InstallationRevision {
+				t.Fatalf("fixture changed the installation revision: %s, %v", current, err)
+			}
+			_, err = service.PreservationSnapshot(ctx, request)
+			var storeErr *Error
+			if !errors.As(err, &storeErr) || storeErr.Code != "plugin.preservation_changed" {
+				t.Fatalf("mixed snapshot was not rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestPreservationSnapshotRejectsDeleteBeforeTerminalPage(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenNativeInstallRequest(t)
+	installation, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := PreservationSnapshotRequest{ProjectKey: service.ProjectKey(), PluginID: jsonText(installation, "pluginId"),
+		InstallationID: jsonText(installation, "installationId"), InstallationRevision: jsonInt(installation, "revision")}
+	setting := []byte(`{"projectKey":"` + request.ProjectKey + `","pluginId":"` + request.PluginID + `","settingKey":"private","value":1,"revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, request.InstallationID, request.InstallationRevision); err != nil {
+		t.Fatal(err)
+	}
+	// Page through the last row without accepting EOF yet.
+	for range readPreservationRows(t, service) {
+		page, err := service.PreservationSnapshot(ctx, request)
+		if err != nil || page.CollectionDone || !page.RecordDone {
+			t.Fatalf("page = %+v, %v", page, err)
+		}
+		request.SnapshotRevision = page.SnapshotRevision
+		request.AfterRecordID, request.RecordOffset = page.NextAfterRecordID, page.NextRecordOffset
+	}
+	if _, err := service.DeletePrivateSetting(ctx, request.ProjectKey, request.PluginID, "private"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreservationSnapshot(ctx, request); err == nil {
+		t.Fatal("accepted EOF after deletion")
+	}
+}
+
+func TestPreservationRevisionTracksLegacyImport(t *testing.T) {
+	service := newTestService(t)
+	var before, after int64
+	query := "SELECT revision FROM vibetable_plugin_preservation_revision WHERE singleton = 1"
+	if err := service.app.DB().NewQuery(query).Row(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ImportLegacySQLite(context.Background(), frozenLegacyFixture(t, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.app.DB().NewQuery(query).Row(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != 0 || after <= before {
+		t.Fatalf("legacy import revision: %d -> %d", before, after)
+	}
+}
+
+func TestPreservationSnapshotRejectsSettingWriteBetweenFragments(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenNativeInstallRequest(t)
+	installation, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := PreservationSnapshotRequest{ProjectKey: service.ProjectKey(), PluginID: jsonText(installation, "pluginId"),
+		InstallationID: jsonText(installation, "installationId"), InstallationRevision: jsonInt(installation, "revision")}
+	service.app.OnRecordCreate(recordsCollection).BindFunc(func(event *core.RecordEvent) error {
+		if event.Record.GetString("kind") == KindSetting {
+			event.Record.Id = "000000000000000"
+		}
+		return event.Next()
+	})
+	setting := []byte(`{"projectKey":"` + request.ProjectKey + `","pluginId":"` + request.PluginID + `","settingKey":"private","value":"` + strings.Repeat("x", PreservationChunkBytes) + `","revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, request.InstallationID, request.InstallationRevision); err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.PreservationSnapshot(ctx, request)
+	if err != nil || page.Kind != KindSetting || page.RecordDone {
+		t.Fatalf("fragment = %+v, %v", page, err)
+	}
+	request.SnapshotRevision = page.SnapshotRevision
+	request.AfterRecordID, request.RecordOffset = page.NextAfterRecordID, page.NextRecordOffset
+	setting = bytes.Replace(setting, []byte(`"revision":1`), []byte(`"revision":2`), 1)
+	if _, err := service.SavePrivateSetting(ctx, setting, int64Ptr(1), request.InstallationID, request.InstallationRevision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreservationSnapshot(ctx, request); err == nil {
+		t.Fatal("accepted fragments from different setting revisions")
 	}
 }

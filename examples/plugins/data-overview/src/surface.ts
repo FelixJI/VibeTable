@@ -56,22 +56,26 @@ function fillFields(description: DataDescription, selected?: string): void {
   }
 }
 
+let loadGeneration = 0;
 async function load(): Promise<void> {
+  const current = ++loadGeneration;
   refresh.disabled = true;
   try {
     const result = await collectOverview(api, {
       fieldId: field.value === "" ? undefined : field.value,
       contains: contains.value === "" ? undefined : contains.value,
     });
+    if (current !== loadGeneration) return;
     fillFields(result.description, result.stats.fieldId ?? undefined);
     // 数值/日期等字段不声明 contains：禁用文本筛选而不是发送不支持的运算符。
     contains.disabled = !supportsContains(result.description, result.stats.fieldId);
     contains.title = contains.disabled ? "该字段不支持文本筛选" : "";
     render(result);
   } catch (error) {
+    if (current !== loadGeneration) return;
     status.textContent = error instanceof Error ? error.message : String(error);
   } finally {
-    refresh.disabled = false;
+    if (current === loadGeneration) refresh.disabled = false;
   }
 }
 

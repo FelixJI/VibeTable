@@ -67,12 +67,18 @@ func TestPluginPreservationSnapshotRegistrationContract(t *testing.T) {
 	if registration.ValidateParams(json.RawMessage(cursor)) != nil {
 		t.Fatal("empty cursor rejected")
 	}
-	boundary := strings.Replace(valid, `}`, `,"recordOffset":1073741824}`, 1)
+	boundary := strings.Replace(valid, `}`, `,"recordOffset":1073741824,"snapshotRevision":"0"}`, 1)
 	if registration.ValidateParams(json.RawMessage(boundary)) != nil {
 		t.Fatal("1 GiB cursor boundary rejected")
 	}
 	for _, invalid := range []string{
 		`{}`,
+		valid[:len(valid)-1] + `,"snapshotRevision":null}`,
+		valid[:len(valid)-1] + `,"snapshotRevision":1}`,
+		valid[:len(valid)-1] + `,"snapshotRevision":"-1"}`,
+		valid[:len(valid)-1] + `,"snapshotRevision":"01"}`,
+		valid[:len(valid)-1] + `,"snapshotRevision":"9223372036854775808"}`,
+		valid[:len(valid)-1] + `,"afterRecordId":"aaaaaaaaaaaaaaa"}`,
 		`{"projectKey":"local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7"}`,
 		strings.Replace(valid, `"installationRevision":4`, `"installationRevision":"4"`, 1),
 		strings.Replace(valid, `"installationRevision":4`, `"installationRevision":4.5`, 1),
@@ -124,8 +130,8 @@ func TestPluginPreservationSnapshotHandlerStreamsAndFailsClosed(t *testing.T) {
 	}
 	// Only one record exists: the next page terminates the collection.
 	terminal, err := registration.Handler(ctx, json.RawMessage(fmt.Sprintf(
-		`{"projectKey":%q,"pluginId":"com.example.preserved","installationId":"%s","installationRevision":4,"afterRecordId":"%s"}`,
-		service.ProjectKey(), installationID, page.RecordID,
+		`{"projectKey":%q,"pluginId":"com.example.preserved","installationId":"%s","installationRevision":4,"afterRecordId":"%s","snapshotRevision":"%s"}`,
+		service.ProjectKey(), installationID, page.RecordID, page.SnapshotRevision,
 	)))
 	if err != nil {
 		t.Fatal(err)

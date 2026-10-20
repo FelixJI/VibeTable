@@ -16689,7 +16689,8 @@
           "nextRecordOffset",
           "recordDone",
           "recordId",
-          "revision"
+          "revision",
+          "snapshotRevision"
         ],
         "properties": {
           "chunk": {
@@ -16721,6 +16722,9 @@
           },
           "revision": {
             "type": "string"
+          },
+          "snapshotRevision": {
+            "type": "string"
           }
         }
       },
@@ -16734,14 +16738,16 @@
           "installationId": "00000000-0000-4000-8000-000000000001",
           "installationRevision": 1,
           "afterRecordId": "",
-          "recordOffset": 0
+          "recordOffset": 0,
+          "snapshotRevision": ""
         }
       },
       "success": {
         "jsonrpc": "2.0",
         "id": "rpc-070",
         "result": {
-          "contractVersion": "1.0",
+          "contractVersion": "2.0",
+          "snapshotRevision": "0",
           "recordId": "",
           "kind": "",
           "itemKey": "",
