@@ -136,6 +136,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let formulaValidationGeneration = 0;
   let formulaCollectionGeneration = 0;
   let lookupCatalogGeneration = 0;
+  let lookupLoadGeneration = 0;
   let lookupPreviewGeneration = 0;
   let lookupPreviewTimer: ReturnType<typeof setTimeout> | null = null;
   let lookupDraft: NonNullable<FieldDraftV2["lookup"]> | null = null;
@@ -146,9 +147,10 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     store.lookupPreview = { loading: false, ready: false, value: undefined, error: null };
   }
   const stopLookupWatch = watch(
-    () => [workspace.phase, workspace.collections, store.result, tableStore.schemaRevision,
-      store.open, store.draft?.logicalType] as const,
+    [() => workspace.phase, () => workspace.collections, () => store.result,
+      () => tableStore.schemaRevision, () => store.open, () => store.draft?.logicalType],
     () => {
+      lookupLoadGeneration += 1;
       lookupCatalogGeneration += 1;
       lookupDraft = null;
       store.lookupCatalogLoading = false;
@@ -541,27 +543,30 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   }
 
   async function loadLookupCatalog(): Promise<void> {
-    if (!store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
+    if (!store.open || !store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
     const tableId = store.result.tableId;
     const current = generation;
+    const request = ++lookupLoadGeneration;
     const collections = workspace.collections;
+    const isLive = () => request === lookupLoadGeneration && current === generation
+      && collections === workspace.collections && store.open && store.draft?.logicalType === "lookup";
     store.setRelationTables(workspace.collections.map(item => ({
       tableId: item.collection, displayName: collectionLabel(item, workspace.displayNames),
     })));
     try {
       store.beginLookupCatalog();
       const raw = await bridge.request("schema.getTable", { tableId });
-      if (current !== generation || collections !== workspace.collections || !store.open) return;
+      if (!isLive()) return;
       const schema = parseSchemaSnapshotV2(unwrapFieldResult(raw));
       if (schema.tableId !== tableId || schema.schemaRevision !== store.result.schemaRevision) {
         throw new Error("当前字段目录已变化，请重新打开字段设置");
       }
       store.lookupCurrentFields = schema.fields;
       await loadLookupSchemas(store.draft.lookup.path);
-      if (current !== generation || collections !== workspace.collections || !store.open) return;
+      if (!isLive()) return;
       if (store.draft.lookup.condition) await selectLookupSource(store.draft.lookup.condition.sourceTableId);
     } catch (error) {
-      if (current === generation && collections === workspace.collections && store.open) {
+      if (isLive()) {
         store.failLookupCatalog(error);
       }
     }
