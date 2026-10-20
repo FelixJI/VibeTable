@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NIcon } from "naive-ui";
 import { Box, GitBranch, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "@lucide/vue";
-import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
+import type { PluginAction, PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
 import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
@@ -213,6 +213,10 @@ function blockingReasons(snapshot: PluginSnapshot): readonly string[] {
     : snapshot.disabledReason ? [snapshot.disabledReason] : [];
   return reasons.map(blockerLabel);
 }
+function canRunAction(snapshot: PluginSnapshot, action: PluginAction): boolean {
+  return !store.busy && snapshot.status === "enabled"
+    && !blockingReasons(snapshot).length && action.invocation === "manual";
+}
 function compatibility(value: Readonly<Record<string, unknown>>): string {
   return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`).join(" · ") || "未声明";
 }
@@ -307,6 +311,9 @@ watch(() => [store.plugins, store.installPlan], () => {
     void cancelPlan();
 }, { deep: true });
 async function openAction(pluginId: string, actionId: string): Promise<void> {
+  const plugin = store.plugins.find(item => item.pluginId === pluginId);
+  const action = plugin?.manifest.actions.find(item => item.actionId === actionId);
+  if (!plugin || !action || !canRunAction(plugin, action)) return;
   await safely(() => service.describeAction(pluginId, actionId, commandContext()));
 }
 async function selectPlugin(pluginId: string): Promise<void> {
@@ -496,7 +503,7 @@ onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); cancelPluginP
             <div><strong>{{ localize(action.displayName, action.actionId) }}</strong><code>{{ action.actionId }}</code></div>
             <span class="risk-chip" :data-risk="action.risk">{{ riskLabel(action.risk) }}</span>
             <p>{{ localize(action.description, action.mode) }}</p>
-            <button class="run-button" type="button" :disabled="store.busy || plugin.status !== 'enabled' || action.invocation !== 'manual'" @click="openAction(plugin.pluginId, action.actionId)"><Play :size="13" />运行</button>
+            <button class="run-button" type="button" :disabled="!canRunAction(plugin, action)" @click="openAction(plugin.pluginId, action.actionId)"><Play :size="13" />运行</button>
           </article>
           <p v-if="!plugin.manifest.actions.length" class="empty-line">此插件不注册桌面动作。</p>
         </section>
