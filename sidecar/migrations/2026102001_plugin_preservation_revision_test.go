@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -51,8 +52,18 @@ func TestPluginPreservationRevisionTracksRawWritesAndRollsBackAtomically(t *test
 	if revision() != 3 {
 		t.Fatal("delete did not advance revision")
 	}
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
+	list := core.MigrationsList{}
+	for _, migration := range core.AppMigrations.Items() {
+		if strings.HasPrefix(migration.File, "2026102001_") {
+			list.Register(migration.Up, migration.Down, migration.File)
+		}
+	}
+	runner := core.NewMigrationsRunner(app, list)
+	if reverted, err := runner.Down(1); err != nil || len(reverted) != 1 {
+		t.Fatalf("Down(1) = %v, %v", reverted, err)
+	}
+	if applied, err := runner.Up(); err != nil || len(applied) != 1 {
+		t.Fatalf("Up() after rollback = %v, %v", applied, err)
 	}
 	if revision() != 3 {
 		t.Fatal("migration replay reset the revision")
@@ -62,5 +73,41 @@ func TestPluginPreservationRevisionTracksRawWritesAndRollsBackAtomically(t *test
 	}
 	if _, err := app.DB().NewQuery(insert).Execute(); err == nil {
 		t.Fatal("overflow silently lost the monotonic counter")
+	}
+}
+
+func TestPluginPreservationRevisionRejectsIncompatibleSchemaOnReapply(t *testing.T) {
+	for _, corrupt := range []string{"table", "trigger", "counter"} {
+		t.Run(corrupt, func(t *testing.T) {
+			app := newMigratedTestApp(t)
+			list := core.MigrationsList{}
+			for _, migration := range core.AppMigrations.Items() {
+				if strings.HasPrefix(migration.File, "2026102001_") {
+					list.Register(migration.Up, migration.Down, migration.File)
+				}
+			}
+			runner := core.NewMigrationsRunner(app, list)
+			if _, err := runner.Down(1); err != nil {
+				t.Fatal(err)
+			}
+			statement := ""
+			switch corrupt {
+			case "table":
+				statement = `ALTER TABLE vibetable_plugin_preservation_revision ADD COLUMN unexpected TEXT`
+			case "trigger":
+				if _, err := app.DB().NewQuery(`DROP TRIGGER plugin_preservation_update`).Execute(); err != nil {
+					t.Fatal(err)
+				}
+				statement = `CREATE TRIGGER plugin_preservation_update AFTER UPDATE ON vibetable_plugin_records BEGIN SELECT 1; END`
+			case "counter":
+				statement = `DELETE FROM vibetable_plugin_preservation_revision`
+			}
+			if _, err := app.DB().NewQuery(statement).Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Up(); err == nil {
+				t.Fatal("accepted incompatible preservation state")
+			}
+		})
 	}
 }

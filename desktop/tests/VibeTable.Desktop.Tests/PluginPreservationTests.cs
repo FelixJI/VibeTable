@@ -171,4 +171,29 @@ public sealed class PluginPreservationTests
         }
         finally { File.Delete(path); Directory.Delete(directory); }
     }
+
+    [TestMethod]
+    public async Task PythonCP437PackagePreservesInstalledIdentityAndOriginalBytes()
+    {
+        // Python zipfile read-back: flags=0, raw filename 82 2e 74 78 74 -> é.txt.
+        // The digest is produced by the same install authority as the UTF-8 fixture above.
+        const string hash = "sha256:baecc7d3bc1fa0e8418f065f0374a3ba60b5f336d0607174d95ef530539534a4";
+        byte[] original = Convert.FromBase64String("UEsDBBQAAAAAAAAAIQBxcS3rbAAAAGwAAAAOAAAAaW50ZWdyaXR5Lmpzb257ImFsZ29yaXRobSI6InNoYTI1NiIsImZpbGVzIjp7IsOpLnR4dCI6IjgzM2YzODExODRjZDBjNzk3NDM5NDMyZDQyMjg4ZWM1ZWZmYzkwM2I4MTU5ZTA0MWY2OTE3NjNlNTkyOWI1MjEifX1QSwMEFAAAAAAAAAAhAL/EiMERAAAAEQAAAAUAAACCLnR4dGxlZ2FjeSBuYW1lZCBmaWxlUEsBAhQDFAAAAAAAAAAhAHFxLetsAAAAbAAAAA4AAAAAAAAAAAAAAKSBAAAAAGludGVncml0eS5qc29uUEsBAhQDFAAAAAAAAAAhAL/EiMERAAAAEQAAAAUAAAAAAAAAAAAAAKSBmAAAAIIudHh0UEsFBgAAAAACAAIAbwAAAMwAAAAAAA==");
+        string directory = Path.Combine(Path.GetTempPath(), "plugin-preservation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = PluginRetainedPackage.PathFor(directory, hash)!;
+        byte[] row = JsonSerializer.SerializeToUtf8Bytes(new { recordId = RecordId, kind = "installation", rawPayload = JsonSerializer.Serialize(new { packageHash = hash }) });
+        try
+        {
+            await File.WriteAllBytesAsync(path, original);
+            using var output = new MemoryStream();
+            Assert.AreEqual(0, await PluginPreservationRequestController.WriteArchiveAsync(output, Pages(row), directory, CancellationToken.None));
+            output.Position = 0;
+            using var archive = new ZipArchive(output, ZipArchiveMode.Read);
+            using var preserved = new MemoryStream();
+            await archive.GetEntry($"packages/{hash[7..]}.vtplugin")!.Open().CopyToAsync(preserved);
+            CollectionAssert.AreEqual(original, preserved.ToArray());
+        }
+        finally { File.Delete(path); Directory.Delete(directory); }
+    }
 }

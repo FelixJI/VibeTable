@@ -35,7 +35,9 @@ internal static class PluginRetainedPackage
     internal static async Task VerifyAsync(FileStream source, string packageHash, CancellationToken token)
     {
         if (source.Length > 64 * 1024 * 1024) throw new IOException("Package exceeds its installed size limit.");
-        using var archive = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true);
+        // Python zipfile uses CP437 when the entry does not declare UTF-8.
+        using var archive = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true,
+            entryNameEncoding: CodePagesEncodingProvider.Instance.GetEncoding(437));
         var members = new List<(ZipArchiveEntry Entry, byte[] Name)>();
         var names = new HashSet<string>(StringComparer.Ordinal);
         long total = 0;
