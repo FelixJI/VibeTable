@@ -7470,6 +7470,36 @@ def test_native_foreground_settling_requires_accepted_activation_and_live_budget
     assert calls == []
 
 
+def _plugin_records_schema_from_migration() -> tuple[tuple[str, str], ...]:
+    """The real Go-owned columns, parsed live from the PocketBase migration."""
+    source = (
+        runner.ROOT / "sidecar" / "migrations" / "2026092601_plugin_shared_state.go"
+    ).read_text(encoding="utf-8")
+    fields = source.split('name: "vibetable_plugin_records"', 1)[1].split("uniqueGroups", 1)[0]
+    columns: list[tuple[str, str]] = [("id", "TEXT PRIMARY KEY")]
+    for part in fields.split('{name: "')[1:]:
+        name = part.split('"', 1)[0]
+        kind = part.split('kind: "', 1)[1].split('"', 1)[0]
+        columns.append((name, "INTEGER" if kind == "number" else "TEXT"))
+    return tuple(columns)
+
+
+def test_legacy_plugin_fixture_schema_matches_the_pocketbase_migration() -> None:
+    # The synthetic-fixture table below is derived from this real declaration,
+    # so a helper writing columns the Go collection does not have (CI 4da:
+    # created/updated) fails in these tests instead of only on CI, and any
+    # future migration drift breaks here loudly.
+    assert _plugin_records_schema_from_migration() == (
+        ("id", "TEXT PRIMARY KEY"),
+        ("kind", "TEXT"),
+        ("project_key", "TEXT"),
+        ("plugin_id", "TEXT"),
+        ("item_key", "TEXT"),
+        ("payload_json", "TEXT"),
+        ("seq", "INTEGER"),
+    )
+
+
 def _closed_legacy_plugin_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
     approved = tmp_path / "persistent"
     workspace = approved / "workspace"
@@ -7480,9 +7510,10 @@ def _closed_legacy_plugin_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str,
         json.dumps({"workspaceId": workspace_id}), encoding="utf-8"
     )
     with closing(sqlite3.connect(data / "data.db")) as connection, connection:
-        connection.execute(
-            "CREATE TABLE vibetable_plugin_records (id TEXT PRIMARY KEY,kind TEXT,project_key TEXT,plugin_id TEXT,item_key TEXT,payload_json TEXT,seq INTEGER,created TEXT,updated TEXT)"
+        columns = ",".join(
+            f"{name} {kind}" for name, kind in _plugin_records_schema_from_migration()
         )
+        connection.execute(f"CREATE TABLE vibetable_plugin_records ({columns})")
     controls = tmp_path / "seed/controls"
     controls.mkdir(parents=True)
     runner._prepare_retired_plugin_packages(controls, active=False)

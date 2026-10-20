@@ -220,7 +220,7 @@ export async function runFileDocumentNativeOperationsJourney(page, recorder, run
   recorder.check("production FileDocument preview reaches its actual handler",
     previewReply.type === "document.actionCompleted" && previewReply.payload?.action === "preview"
       && previewReply.payload.entryHandle === previewEntry.entryHandle, { previewReply });
-  // One existing 10s correlated observation waits for actual DoPreview and
+  // One existing 30s correlated observation waits for actual DoPreview and
   // verifies the owned child HWND; process input-idle is only launch evidence.
   const preview = await nativeRequest("preview-observe", randomUUID(), { relativePath: previewName });
   const previewAfter = await nativeDocumentState(previewEntry, previewOriginal);

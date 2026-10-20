@@ -2799,8 +2799,12 @@ def _seed_retired_plugin(
             record_id = f"legacy{index:09d}"
             raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             sequence = maximum + index
+            # vibetable_plugin_records is the Go-owned PocketBase collection
+            # (sidecar/migrations/2026092601_plugin_shared_state.go): its only
+            # columns are id plus the six declared fields — there are no
+            # created/updated timestamps (CI 4da resilience evidence).
             connection.execute(
-                "INSERT INTO vibetable_plugin_records (id,kind,project_key,plugin_id,item_key,payload_json,seq,created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO vibetable_plugin_records (id,kind,project_key,plugin_id,item_key,payload_json,seq) VALUES (?,?,?,?,?,?,?)",
                 (
                     record_id,
                     kind,
@@ -2809,8 +2813,6 @@ def _seed_retired_plugin(
                     key,
                     raw,
                     sequence,
-                    "2026-01-01 00:00:00.000Z",
-                    "2026-01-01 00:00:00.000Z",
                 ),
             )
             expected.append(
