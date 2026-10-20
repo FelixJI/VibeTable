@@ -539,6 +539,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       tableId: item.collection, displayName: collectionLabel(item, workspace.displayNames),
     })));
     try {
+      store.beginLookupCatalog();
       const raw = await bridge.request("schema.getTable", { tableId });
       if (current !== generation || collections !== workspace.collections || !store.open) return;
       const schema = parseSchemaSnapshotV2(unwrapFieldResult(raw));

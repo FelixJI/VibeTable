@@ -541,7 +541,7 @@ describe("field settings service", () => {
     expect(store.relationPair).toEqual(pair);
   });
 
-  it("resolves an eight-hop-capable Lookup catalog by display metadata without mutating the draft", async () => {
+  it("loads the complete Lookup catalog without exposing a partial editor or mutating the draft", async () => {
     const base = fixture<CapabilityV2>("capability.json");
     const lookupCapability: CapabilityV2 = {
       ...base,
@@ -601,14 +601,10 @@ describe("field settings service", () => {
     const regions = schema("tbl_regions", undefined, {
       fieldId: "fld_region_name", title: "区域名称",
     });
+    let finishCurrentCatalog!: (value: unknown) => void;
     request
       .mockResolvedValueOnce(described)
-      .mockResolvedValueOnce({
-        contract: "vibetable.schema.v2", tableId: described.tableId, displayName: "订单",
-        kind: "base", schemaRevision: described.schemaRevision, dataRevision: 1,
-        archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
-        fields: [], capabilities: [],
-      })
+      .mockImplementationOnce(() => new Promise(resolve => { finishCurrentCatalog = resolve; }))
       .mockResolvedValueOnce(orders)
       .mockResolvedValueOnce(customers)
       .mockResolvedValueOnce(regions)
@@ -627,8 +623,18 @@ describe("field settings service", () => {
         targetFieldId: "fld_region_name",
       },
     });
-    await service.loadLookupCatalog();
+    const loading = service.loadLookupCatalog();
+    expect(request).toHaveBeenLastCalledWith("schema.getTable", { tableId: described.tableId });
+    expect(store.lookupCatalogLoading).toBe(true);
+    finishCurrentCatalog({
+      contract: "vibetable.schema.v2", tableId: described.tableId, displayName: "订单",
+      kind: "base", schemaRevision: described.schemaRevision, dataRevision: 1,
+      archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+      fields: [], capabilities: [],
+    });
+    await loading;
 
+    expect(store.lookupCatalogLoading).toBe(false);
     expect(store.lookupSchemas.map(item => item.collection)).toEqual([
       "tbl_opaque", "tbl_customers", "tbl_regions",
     ]);
