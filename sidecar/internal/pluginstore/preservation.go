@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 )
 
 // The #486 Host-owned read-only preservation snapshot. It pages the stored
@@ -107,25 +108,6 @@ func (service *Service) PreservationSnapshot(
 	if err := service.ValidateProject(request.ProjectKey); err != nil {
 		return page, err
 	}
-	stored, err := findRecord(
-		service.app, KindInstallation, request.ProjectKey, request.PluginID, "current",
-	)
-	if err != nil {
-		return page, err
-	}
-	if stored == nil {
-		return page, notFound()
-	}
-	installation, err := recordFromStored(stored)
-	if err != nil {
-		return page, err
-	}
-	if stored.Id != request.InstallationID ||
-		jsonInt(installation.Payload, "revision") != request.InstallationRevision {
-		return page, revisionConflict(
-			KindInstallation, request.InstallationRevision, "installation changed",
-		)
-	}
 	var row struct {
 		ID      string `db:"id"`
 		Kind    string `db:"kind"`
@@ -133,13 +115,47 @@ func (service *Service) PreservationSnapshot(
 		Payload string `db:"payload_json"`
 		Seq     int64  `db:"seq"`
 	}
-	queryErr := service.app.DB().NewQuery(
-		"SELECT id, kind, item_key, payload_json, seq FROM {{" + recordsCollection + "}} " +
-			"WHERE project_key={:project} AND plugin_id={:plugin} AND id > {:after} " +
-			"ORDER BY id LIMIT 1",
-	).Bind(dbx.Params{
-		"project": request.ProjectKey, "plugin": request.PluginID, "after": request.AfterRecordID,
-	}).WithContext(ctx).One(&row)
+	var queryErr error
+	// Pin identity validation and the page read to the same database view;
+	// uninstall cleanup must not turn a remaining record into a successful EOF.
+	err := service.app.RunInTransaction(func(txApp core.App) error {
+		stored, err := findRecord(
+			txApp, KindInstallation, request.ProjectKey, request.PluginID, "current",
+		)
+		if err != nil {
+			return err
+		}
+		if stored == nil {
+			return notFound()
+		}
+		installation, err := recordFromStored(stored)
+		if err != nil {
+			return err
+		}
+		if stored.Id != request.InstallationID ||
+			jsonInt(installation.Payload, "revision") != request.InstallationRevision {
+			return revisionConflict(
+				KindInstallation, request.InstallationRevision, "installation changed",
+			)
+		}
+		queryErr = txApp.DB().NewQuery(
+			"SELECT id, kind, item_key, payload_json, seq FROM {{" + recordsCollection + "}} " +
+				"WHERE project_key={:project} AND plugin_id={:plugin} AND id > {:after} " +
+				"ORDER BY id LIMIT 1",
+		).Bind(dbx.Params{
+			"project": request.ProjectKey, "plugin": request.PluginID, "after": request.AfterRecordID,
+		}).WithContext(ctx).One(&row)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+			return storageError()
+		}
+		return nil
+	})
+	if err != nil {
+		return page, err
+	}
 	if errors.Is(queryErr, sql.ErrNoRows) {
 		if request.RecordOffset != 0 {
 			return page, requestError(
@@ -149,9 +165,6 @@ func (service *Service) PreservationSnapshot(
 		}
 		page.CollectionDone = true
 		return page, nil
-	}
-	if queryErr != nil {
-		return page, storageError()
 	}
 	if err := ctx.Err(); err != nil {
 		return page, err

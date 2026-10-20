@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 )
 
 type preservationStoredRow struct {
@@ -309,5 +312,117 @@ func TestPreservationSnapshotFailsClosedOnIdentityCursorAndCancellation(t *testi
 	}
 	if after := readPreservationRows(t, service); !reflect.DeepEqual(rows, after) {
 		t.Fatal("rejected preservation pages wrote records")
+	}
+}
+
+// preservationPageHookApp pauses only the raw page query, after the real
+// installation lookup has completed, including inside a transaction.
+type preservationPageHookApp struct {
+	core.App
+	beforePage func()
+}
+
+func (app *preservationPageHookApp) DB() dbx.Builder {
+	return preservationPageHookBuilder{Builder: app.App.DB(), beforePage: app.beforePage}
+}
+
+func (app *preservationPageHookApp) RunInTransaction(apply func(core.App) error) error {
+	return app.App.RunInTransaction(func(tx core.App) error {
+		return apply(&preservationPageHookApp{App: tx, beforePage: app.beforePage})
+	})
+}
+
+type preservationPageHookBuilder struct {
+	dbx.Builder
+	beforePage func()
+}
+
+func (builder preservationPageHookBuilder) NewQuery(statement string) *dbx.Query {
+	query := builder.Builder.NewQuery(statement)
+	if strings.HasPrefix(statement, "SELECT id, kind, item_key, payload_json, seq FROM ") {
+		query.WithExecHook(func(_ *dbx.Query, execute func() error) error {
+			builder.beforePage()
+			return execute()
+		})
+	}
+	return query
+}
+
+func TestPreservationSnapshotDoesNotReportEOFWhenUninstallCleansNextRecord(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenNativeInstallRequest(t)
+	installation, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := PreservationSnapshotRequest{
+		ProjectKey: service.ProjectKey(), PluginID: jsonText(installation, "pluginId"),
+		InstallationID:       jsonText(installation, "installationId"),
+		InstallationRevision: jsonInt(installation, "revision"),
+	}
+	setting := []byte(`{"projectKey":"` + request.ProjectKey + `","pluginId":"` + request.PluginID + `","settingKey":"private","value":{"unknown":"preserve me"},"revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, request.InstallationID, request.InstallationRevision); err != nil {
+		t.Fatal(err)
+	}
+	rows := readPreservationRows(t, service)
+	request.AfterRecordID = rows[len(rows)-1].ID
+	const settingID = "zzzzzzzzzzzzzzz"
+	if request.AfterRecordID >= settingID {
+		t.Fatal("fixture needs room for a final private setting")
+	}
+	if _, err := service.app.DB().NewQuery(
+		"UPDATE {{" + recordsCollection + "}} SET id={:id} WHERE kind={:kind}",
+	).Bind(dbx.Params{"id": settingID, "kind": KindSetting}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A separate PocketBase connection commits the actual uninstall while
+	// preservation has already validated identity but has not queried its page.
+	writerApp := core.NewBaseApp(core.BaseAppConfig{DataDir: service.app.DataDir()})
+	if err := writerApp.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	writerApp.Settings().Logs.MaxDays = 0
+	t.Cleanup(func() { _ = writerApp.ResetBootstrapState() })
+	writerApp.OnRecordCreate(recordsCollection).BindFunc(func(event *core.RecordEvent) error {
+		if event.Record.GetString("kind") == KindAudit {
+			event.Record.Id = "000000000000000"
+		}
+		return event.Next()
+	})
+	writer := New(writerApp, service.workspaceID)
+	uninstalled := false
+	service.app = &preservationPageHookApp{App: service.app, beforePage: func() {
+		deleted, deleteErr := writer.DeleteInstallation(ctx, request.ProjectKey, request.PluginID,
+			request.InstallationID, request.InstallationRevision, true)
+		if deleteErr != nil || !deleted {
+			t.Fatalf("interleaved uninstall = %v, error = %v", deleted, deleteErr)
+		}
+		uninstalled = true
+	}}
+	page, err := service.PreservationSnapshot(ctx, request)
+	if !uninstalled {
+		t.Fatal("uninstall did not commit between identity validation and page query")
+	}
+	if err != nil || page.CollectionDone || page.RecordID != settingID || !page.RecordDone {
+		t.Fatalf("page after interleaved cleanup = %+v, error = %v", page, err)
+	}
+	var document preservationDocument
+	if err := json.Unmarshal(page.Chunk, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.RawPayload != string(setting) {
+		t.Fatalf("preserved private setting = %q, want %q", document.RawPayload, setting)
+	}
+	if got, err := writer.GetPrivateSetting(ctx, request.ProjectKey, request.PluginID, "private"); err != nil || got != nil {
+		t.Fatalf("uninstall did not actually clean settings: %s, error = %v", got, err)
+	}
+	// Revalidation on the next page must reject the retired installation.
+	request.AfterRecordID = page.NextAfterRecordID
+	_, err = service.PreservationSnapshot(ctx, request)
+	var storeErr *Error
+	if !errors.As(err, &storeErr) || storeErr.Code != "plugin.not_found" {
+		t.Fatalf("page after committed uninstall = %v", err)
 	}
 }
