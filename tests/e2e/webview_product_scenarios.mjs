@@ -8105,6 +8105,16 @@ export async function closeDocumentDiffThroughUi(page, sessionId) {
   return closed;
 }
 
+export async function startAndCancelDocumentDiffThroughUi(page) {
+  await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+  // Arm cancellation before compare action/trace bookkeeping consumes the busy window.
+  await Promise.all([
+    page.getByTestId("diff-cancel").click({ timeout: 10_000 }),
+    page.getByTestId("compare-revision").first().click(),
+  ]);
+  return await waitForCapturedBridgeMessage(page, 30_000);
+}
+
 async function scenario14(page, recorder, _network, runtime, shell = waitForShell) {
   await shell(page, recorder, { requireDatabaseOpened: true });
   await page.evaluate(installDocumentDiffReadCaptureInPage);
@@ -8395,10 +8405,7 @@ async function qualifyDocumentDiff(page, recorder, runtime) {
     { originalHistorical, unchangedHistorical, effectiveRevisionId: newTree.result.effectiveRevisionId });
     let closed = await closeDocumentDiffThroughUi(page, session.sessionId);
     if (!normalized) {
-      await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
-      await page.getByTestId("compare-revision").first().click();
-      await page.getByTestId("diff-cancel").click({ timeout: 10_000 });
-      const cancelled = await waitForCapturedBridgeMessage(page, 30_000);
+      const cancelled = await startAndCancelDocumentDiffThroughUi(page);
       recorder.check("actual DOCX cancellation returns no ready session", cancelled.payload?.outcome === "failure"
         && cancelled.payload?.failure === "cancelled" && cancelled.payload?.session === null, { cancelled });
       recorder.check("cancelled DOCX cleans all registered Worker outputs",
