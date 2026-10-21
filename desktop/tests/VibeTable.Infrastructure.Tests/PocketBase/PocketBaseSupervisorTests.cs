@@ -1260,9 +1260,8 @@ public sealed class PocketBaseSupervisorTests
             "\"durationMs\":12.5",
             "\"durationMs\":12.5,\"query\":\"secret\"",
             StringComparison.Ordinal);
-        string logPath = Path.Combine(
-            Path.GetTempPath(),
-            $"vibetable-supervisor-{Guid.NewGuid():N}.log");
+        DirectoryInfo logDirectory = Directory.CreateTempSubdirectory("vibetable-supervisor-");
+        string logPath = Path.Combine(logDirectory.FullName, "pocketbase.log");
         var received = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         int lines = 0;
@@ -1299,6 +1298,7 @@ public sealed class PocketBaseSupervisorTests
         finally
         {
             File.Delete(logPath);
+            logDirectory.Delete();
         }
     }
 
