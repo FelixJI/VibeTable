@@ -18,12 +18,17 @@ type testOutbox struct {
 	acked        map[string]bool
 	acknowledged []string
 	failOnce     bool
+	pendingError error
+	afterPending func()
 }
 
 func (outbox *testOutbox) Pending(
 	_ context.Context,
 	limit int,
 ) ([]Envelope, error) {
+	if outbox.pendingError != nil {
+		return nil, outbox.pendingError
+	}
 	result := make([]Envelope, 0, limit)
 	for _, envelope := range outbox.pending {
 		if !outbox.acked[envelope.EventID] {
@@ -32,6 +37,9 @@ func (outbox *testOutbox) Pending(
 		if len(result) == limit {
 			break
 		}
+	}
+	if outbox.afterPending != nil {
+		outbox.afterPending()
 	}
 	return result, nil
 }
@@ -135,6 +143,7 @@ func TestDrainContinuesUntilAllBatchesAreAcknowledged(t *testing.T) {
 	}
 	report, err := drainer.Drain(context.Background(), outbox)
 	if err != nil ||
+		report.Phase != "completed" || report.PendingCalls != 3 || report.AppendCalls != 3 || report.AcknowledgeCalls != 3 ||
 		report.Appended != 3 ||
 		report.Acknowledged != 3 ||
 		report.Anchor.SourceEpoch != "epoch-1" ||
@@ -166,11 +175,12 @@ func TestDrainRetriesAcknowledgementWithoutDuplicatingLedgerEvent(t *testing.T) 
 		failOnce: true,
 	}
 	first, err := drainer.Drain(context.Background(), outbox)
-	if err == nil || first.Appended != 1 || first.Acknowledged != 0 {
+	if err == nil || first.Phase != "ack" || first.Appended != 1 || first.Acknowledged != 0 || first.Anchor.LedgerSequence != 1 || first.AppendCalls != 1 || first.AcknowledgeCalls != 1 {
 		t.Fatalf("first drain = %#v, %v", first, err)
 	}
 	second, err := drainer.Drain(context.Background(), outbox)
 	if err != nil ||
+		second.Phase != "completed" || second.PendingCalls != 2 || second.AppendCalls != 1 || second.AcknowledgeCalls != 1 ||
 		second.Appended != 0 ||
 		second.Duplicates != 1 ||
 		second.Acknowledged != 1 ||
@@ -314,5 +324,54 @@ func TestLedgerRejectsSourceGapAndExportsVerifiablePrefix(t *testing.T) {
 	tampered, _ := json.Marshal(prefix)
 	if _, err := VerifyPrefix(tampered); !errors.Is(err, ErrChainCorrupt) {
 		t.Fatalf("tampered prefix accepted: %v", err)
+	}
+}
+
+func TestDrainReportsFailedStage(t *testing.T) {
+	for _, phase := range []string{"pending", "append", "ack", "between_records"} {
+		t.Run(phase, func(t *testing.T) {
+			ledger, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ledger.Close()
+			drainer, err := NewDrainer(ledger, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			outbox := &testOutbox{pending: []Envelope{envelopeAt(t, "event-1", 1)}, acked: map[string]bool{}}
+			expected := errors.New("synthetic pending failure")
+			appendCalls, ackCalls := 0, 0
+			switch phase {
+			case "pending":
+				outbox.pendingError = expected
+			case "append":
+				outbox.pending = []Envelope{envelopeAt(t, "gap", 2)}
+				expected = ErrSourceGap
+				appendCalls = 1
+			case "ack":
+				outbox.failOnce = true
+				appendCalls, ackCalls = 1, 1
+			case "between_records":
+				outbox.afterPending = cancel
+				expected = context.Canceled
+			}
+			report, err := drainer.Drain(ctx, outbox)
+			if err == nil || report.Phase != phase || report.PendingCalls != 1 ||
+				report.AppendCalls != appendCalls || report.AcknowledgeCalls != ackCalls {
+				t.Fatalf("phase=%s report=%#v error=%v", phase, report, err)
+			}
+			if phase != "ack" && !errors.Is(err, expected) {
+				t.Fatalf("error changed: %v", err)
+			}
+			if report.PendingDuration < 0 || report.AppendDuration < 0 || report.AcknowledgeDuration < 0 || report.AppendMaxDuration > report.AppendDuration {
+				t.Fatalf("negative duration: %#v", report)
+			}
+			if appendCalls == 0 && report.AppendDuration != 0 || ackCalls == 0 && report.AcknowledgeDuration != 0 {
+				t.Fatalf("duration attributed to an operation that never ran: %#v", report)
+			}
+		})
 	}
 }

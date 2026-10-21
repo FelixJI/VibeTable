@@ -30,6 +30,12 @@ internal static class FeishuBaseFileSource
     internal const int MaxRecordsPerTable = 50_000;
     private const int MaxJsonDepth = 128;
     internal const string LocalFileSuffix = "（.base 本地文件）";
+    /// <summary>Durable source identity persisted in the Go import journal
+    /// and rendered by the migration history. It deliberately stays the
+    /// historical "feishu" value so old receipts and new local-file imports
+    /// share one stable label; the wire wizard request uses the distinct
+    /// retired-cloud-safe "feishuBase" provider instead.</summary>
+    internal const string ProviderName = "feishu";
     /// <summary>Go validWindow only accepts snapshot|window; a local file
     /// read is a point-in-time snapshot, not a bounded read window.</summary>
     internal const string Consistency = "snapshot";
@@ -141,7 +147,7 @@ internal static class FeishuBaseFileSource
             if (!baseObject.TryGetProperty("token", out JsonElement tokenElement)
                 || tokenElement.ValueKind != JsonValueKind.String
                 || tokenElement.GetString() is not { Length: > 0 } fileToken
-                || !FeishuSourceImportClient.IsValidToken(fileToken))
+                || !IsValidToken(fileToken))
                 throw new InvalidDataException(MsgBaseIdentity);
             if (containerToken is null)
             {
@@ -211,10 +217,10 @@ internal static class FeishuBaseFileSource
         var readWindow = new HostSourceImportReadWindow(startedAt, finishedAt, Consistency);
         string displayName = (baseName.Length == 0 ? "飞书多维表格" : baseName) + LocalFileSuffix;
         string baseVersion = "base-rev-" + baseRevision.ToString(CultureInfo.InvariantCulture);
-        var result = new HostSourceImportSnapshot(FeishuSourceImportConnector.ProviderName,
-            containerToken, displayName, baseVersion, readWindow, tables.ToArray(), []);
-        var observation = new HostSourceImportObservation(baseVersion, tableVersions);
         string[] notices = [.. generalNotices, .. tableNotices];
+        var result = new HostSourceImportSnapshot(ProviderName,
+            containerToken, displayName, baseVersion, readWindow, tables.ToArray(), [], notices);
+        var observation = new HostSourceImportObservation(baseVersion, tableVersions);
         return new FeishuBaseFileDocument(result, observation, notices);
     }
     private enum CellPlan
@@ -240,6 +246,7 @@ internal static class FeishuBaseFileSource
         JsonElement table, JsonElement recordMap, string timezone, List<string> notices,
         ref bool anyPersonField, CancellationToken token)
     {
+        string tableDisplay = NoticeLabel(tableName);
         JsonElement fieldMap = RequireObject(table, "fieldMap");
         if (fieldMap.EnumerateObject().Count() > MaxFieldsPerTable)
             throw new InvalidDataException(MsgFieldCap);
@@ -264,7 +271,7 @@ internal static class FeishuBaseFileSource
             string fieldId = fieldProperty.Name;
             string fieldName = field.TryGetProperty("name", out JsonElement name)
                 && name.ValueKind == JsonValueKind.String ? name.GetString()! : "";
-            string fieldDisplay = fieldName.Length > 0 ? fieldName : fieldId;
+            string fieldDisplay = NoticeLabel(fieldName.Length > 0 ? fieldName : fieldId);
             int type = field.TryGetProperty("type", out JsonElement typeElement)
                 && typeElement.ValueKind == JsonValueKind.Number
                 && typeElement.TryGetInt32(out int typeValue) ? typeValue : -1;
@@ -300,7 +307,13 @@ internal static class FeishuBaseFileSource
                     break;
                 case 17 when verified:
                     plan = CellPlan.File;
-                    notices.Add($"表 {tableName} 的字段 {fieldDisplay} 是附件字段：.base 导出不包含文件字节，仅保留元数据快照且不会下载，需要用户确认。");
+                    // The observed .base container carries attachment
+                    // metadata only — no file bytes. The official client can
+                    // additionally export attachments as a separate ZIP,
+                    // which this phase does not support; the notice states
+                    // both facts instead of claiming every export lacks
+                    // attachment bytes.
+                    notices.Add($"表 {tableDisplay} 的字段 {fieldDisplay} 是附件字段：该 .base 文件不包含附件字节，仅保留元数据快照且不会下载；如需附件请另行导出附件 ZIP（本期暂不支持导入 ZIP），需要用户确认。");
                     break;
                 case 19 when verified:
                     plan = CellPlan.Lookup;
@@ -316,11 +329,11 @@ internal static class FeishuBaseFileSource
                     string typeLabel = uiType.Length > 0
                         ? type.ToString(CultureInfo.InvariantCulture) + "/" + uiType
                         : type.ToString(CultureInfo.InvariantCulture);
-                    notices.Add($"表 {tableName} 的字段 {fieldDisplay}（本地类型 {typeLabel}）缺少已验证的原生映射，整列按原始 JSON 快照迁移，需要用户确认。");
+                    notices.Add($"表 {tableDisplay} 的字段 {fieldDisplay}（本地类型 {NoticeLabel(typeLabel)}）缺少已验证的原生映射，整列按原始 JSON 快照迁移，需要用户确认。");
                     break;
             }
             if (plan is CellPlan.TextSnapshot or CellPlan.UrlSnapshot)
-                notices.Add($"表 {tableName} 的字段 {fieldDisplay} 包含无法保真拼接的富文本或链接内容（多段链接或显示名称与链接地址不一致），整列按原始 JSON 快照迁移，需要用户确认。");
+                notices.Add($"表 {tableDisplay} 的字段 {fieldDisplay} 包含无法保真拼接的富文本或链接内容（多段链接或显示名称与链接地址不一致），整列按原始 JSON 快照迁移，需要用户确认。");
             (string kind, string valueKind) = plan switch
             {
                 CellPlan.TextNative => ("text", "text"),
@@ -436,7 +449,7 @@ internal static class FeishuBaseFileSource
         }
         foreach (FieldPlan plan in plans.Values)
         {
-            string display = plan.Field.Name.Length > 0 ? plan.Field.Name : plan.Field.Id;
+            string display = NoticeLabel(plan.Field.Name.Length > 0 ? plan.Field.Name : plan.Field.Id);
             if (plan.Plan is CellPlan.Formula or CellPlan.Lookup)
             {
                 int cached = records.Count(record => record.Values.ContainsKey(plan.Field.Id));
@@ -444,17 +457,34 @@ internal static class FeishuBaseFileSource
                 string detail = cached == 0
                     ? "计算值未随文件导出，迁移后该列将为空"
                     : $"仅保留 {cached}/{records.Count} 条已导出的缓存值，未导出的结果仍为空，不保留动态计算";
-                notices.Add($"表 {tableName} 的字段 {display}（{label}）：{detail}，需要用户确认。");
+                notices.Add($"表 {tableDisplay} 的字段 {display}（{label}）：{detail}，需要用户确认。");
             }
             if (selectForeign.Contains(plan.Field.Id))
-                notices.Add($"表 {tableName} 的字段 {display} 存在不在选项身份表中的选择值，已按原始字符串保留，需要用户确认。");
+                notices.Add($"表 {tableDisplay} 的字段 {display} 存在不在选项身份表中的选择值，已按原始字符串保留，需要用户确认。");
             if (personSkipped.Contains(plan.Field.Id))
-                notices.Add($"表 {tableName} 的字段 {display} 含无法安全识别的人员成员，相关单元格已留空，需要用户确认。");
+                notices.Add($"表 {tableDisplay} 的字段 {display} 含无法安全识别的人员成员，相关单元格已留空，需要用户确认。");
         }
         return new HostSourceImportTable(tableId, tableName,
             "table-rev-" + tableRevision.ToString(CultureInfo.InvariantCulture),
             primaryId, mappedFields.ToArray(), records.ToArray());
     }
+
+    // Up to three display labels must fit Go's 512-rune notice limit without truncating the disclosure.
+    private static string NoticeLabel(string value)
+    {
+        const int maxRunes = 128;
+        const string suffix = "…（已截断）";
+        value = value.Replace("\0", "\\0").Replace("\r", "\\r").Replace("\n", "\\n");
+        Rune[] prefix = value.EnumerateRunes().Take(maxRunes + 1).ToArray();
+        return prefix.Length <= maxRunes ? value : string.Concat(prefix.Take(maxRunes - suffix.Length)) + suffix;
+    }
+    /// <summary>Token-charset rule for the .base identity members, kept
+    /// byte-identical to the retired online client's gate: 8–128 ASCII
+    /// letters/digits/underscore/hyphen. Local only — no network
+    /// counterpart exists anymore.</summary>
+    private static bool IsValidToken(string value) =>
+        value.Length is >= 8 and <= 128
+        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
 
     private static bool IsPureTextValue(JsonElement value)
     {
@@ -769,8 +799,10 @@ internal sealed class FeishuBaseFileDocument
 /// <summary>
 /// Provider over the frozen document snapshot. ReadAsync/ObserveAsync return
 /// the same frozen facts (consistency=snapshot), OpenAttachmentAsync always
-/// fails closed because .base exports carry no attachment bytes, and Dispose
-/// only flips the session state — there is no client or file handle left.
+/// fails closed because the observed .base container carries no attachment
+/// bytes (a separately exported attachment ZIP is out of scope this phase),
+/// and Dispose only flips the session state — there is no client or file
+/// handle left.
 /// </summary>
 internal sealed class FeishuBaseFileSourceProvider : IHostSourceImportProvider
 {

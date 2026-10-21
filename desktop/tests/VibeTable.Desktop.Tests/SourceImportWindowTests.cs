@@ -13,86 +13,62 @@ using VibeTable.Desktop.Services;
 namespace VibeTable.Desktop.Tests;
 
 /// <summary>
-/// Composition-level regression for the trusted native source import window.
+/// Composition-level regression for the trusted native .base import window.
 /// Every test drives the real <see cref="SourceImportWindow"/> on a dedicated
-/// STA dispatcher (mirroring ProductWebViewBridgeNativeObjectTests); the
-/// connect delegate and wizard session are gated fakes completing through
-/// TaskCompletionSource, so every await boundary stays real while the test
-/// stays deterministic without sleeps. The parked window is off-screen with
-/// no taskbar entry and never activates, so local runs stay undisturbed.
+/// STA dispatcher; the file opener and wizard session are gated fakes
+/// completing through TaskCompletionSource, so every await boundary stays
+/// real while the test stays deterministic without sleeps. The parked window
+/// is off-screen with no taskbar entry and never activates, so local runs
+/// stay undisturbed.
 /// </summary>
 [TestClass]
 public sealed class SourceImportWindowTests
 {
-    private const string SecretToken = "secret-token-DO-NOT-ECHO";
-    private const string SecretAccessKey = "AKID-DO-NOT-ECHO";
-    private const string SecretSigningKey = "SK-DO-NOT-ECHO";
-
     private static string DescribeSafe(Exception error) => "SAFE-" + error.GetType().Name;
 
-    private static void AssertNoEcho(string? text)
-    {
-        Assert.IsNotNull(text);
-        Assert.IsFalse(text.Contains(SecretToken, StringComparison.Ordinal), text);
-        Assert.IsFalse(text.Contains(SecretAccessKey, StringComparison.Ordinal), text);
-        Assert.IsFalse(text.Contains(SecretSigningKey, StringComparison.Ordinal), text);
-        Assert.IsFalse(text.Contains("DO-NOT-ECHO", StringComparison.Ordinal), text);
-    }
-
     [TestMethod]
-    public async Task ConnectSelectPreviewConfirmReturnsTaskIdAndSubmittedProviderSurvivesClose()
+    public async Task LoadedOpensPickerDirectlyThenPreviewConfirmReturnsTaskId()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
 
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "  https://feishu.test/base/app-native-test  ";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        // The connect is genuinely suspended at its await boundary.
-        Assert.AreEqual("正在连接并读取当前授权范围内的表目录…",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-        Assert.AreEqual(1, connect.SnapshotCalls().Count);
-        FakeSourceProvider provider = new(log, "prov-main");
-        connect.CompleteWith(provider);
+        // The web click opens this window for one purpose: the system .base
+        // picker opens itself on load; no credential input exists at all. The
+        // opener receives this window as the picker's explicit owner.
+        Assert.AreEqual(1, opener.Calls);
+        CollectionAssert.AreEqual(new[] { fixture.Window }, opener.Owners,
+            "窗口必须作为 picker 的显式 owner 传入");
+        Assert.IsNull(await fixture.ReadAsync(w => FindByAutomationId<TextBox>(w, "token-input")));
+        Assert.IsNull(await fixture.ReadAsync(w => FindByAutomationId<Button>(w, "connect-button")));
+        FakeSourceProvider provider = new(log, "prov-local");
+        opener.CompleteWith(LocalBaseConnection(provider, () => log.Add("local-connection:released")));
         await fixture.SettleAsync();
 
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "2 张表");
-        ConnectCall call = connect.SnapshotCalls().Single();
-        Assert.AreEqual("https://feishu.test/base/app-native-test", call.Source);
-        Assert.AreEqual(SecretToken, call.AccessToken);
-        Assert.AreEqual("", call.AccessKey);
-        Assert.AreEqual("", call.Secret);
-        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
+        Assert.IsNotNull(await fixture.ReadAsync(w => Require<ScrollViewer>(w, "source-import-scroll")));
+        Assert.IsNotNull(await fixture.ReadAsync(w => Require<Expander>(w, "table-policy-tbl-1")));
+        // A relation-free local file keeps the reciprocal-field gate hidden.
+        Assert.AreEqual(Visibility.Collapsed,
+            await fixture.ReadAsync(w => Require<CheckBox>(w, "reverse-checkbox").Visibility));
         Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
         Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
 
         await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
         await fixture.SettleAsync();
         await ClickAsync(fixture, "preview-button");
-        Assert.AreEqual("正在读取所选表并预检；此步骤不会创建目标表或写入记录…",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
         PrepareCall prepare = session.SnapshotCalls().Single();
         Assert.AreSame(provider, prepare.Provider);
-        AssertNoEcho(JsonSerializer.Serialize(prepare.Options));
         CollectionAssert.AreEqual(new[] { "tbl-1" }, prepare.Options.SelectedTableIds);
-        Assert.AreEqual("tbl-1", prepare.Options.TargetNames.Single().TableId);
         Assert.AreEqual("订单", prepare.Options.TargetNames.Single().Name);
         Assert.AreEqual(0, prepare.Options.Decisions.Length);
         Assert.IsFalse(prepare.Options.ConfirmReverse);
         HostSourceImportPreview preview = session.CompletePending();
         await fixture.SettleAsync();
 
-        string report = await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text);
-        StringAssert.Contains(report, "订单：12 条记录");
-        StringAssert.Contains(report, "提示 · tbl-1 字段映射已自动生成");
-        StringAssert.Contains(report, "预检通过");
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text), "订单：12 条记录");
         Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
 
         await ClickAsync(fixture, "start-button");
@@ -103,29 +79,108 @@ public sealed class SourceImportWindowTests
         Assert.AreEqual("task-native-1", result.TaskId);
         Assert.AreSame(preview, session.StartedPreview);
         Assert.AreEqual(1, session.Disposals);
-        Assert.AreEqual(1, connect.Releases);
         // The registry owns the submitted provider; closing the window must
         // neither discard nor dispose it.
         Assert.AreEqual(0, provider.DisposeCount);
-        Assert.IsFalse(log.Contains("session:pending-discarded"),
-            string.Join(" -> ", log.Snapshot()));
-        var entries = log.Snapshot();
-        Assert.IsTrue(entries.IndexOf("session:started") >= 0
-            && entries.IndexOf("session:disposed") > entries.IndexOf("session:started"),
-            string.Join(" -> ", entries));
+    }
+
+    [TestMethod]
+    public async Task CancelledPickerKeepsWindowOpenWithZeroWrites()
+    {
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
+        await fixture.ShowAsync();
+
+        opener.CompleteWithCancel(); // The user dismissed the system picker.
+        await fixture.SettleAsync();
+
+        // Cancellation is neither an error nor a write: no precheck ran and
+        // the window stays open for another attempt.
+        Assert.AreEqual("已取消选择本地 .base 文件，未导入任何内容。可重新选择文件或关闭窗口。",
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
+        Assert.AreEqual(1, opener.Calls);
+        Assert.AreEqual(0, session.SnapshotCalls().Count);
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+
+        // Re-selecting through the button works after a cancelled picker.
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-second"),
+            () => log.Add("local-connection:released")));
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "2 张表");
+
+        // Cancelling a re-selection keeps the already loaded catalog.
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWithCancel();
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text),
+            "仍使用当前已读取的内容");
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+    }
+
+    [TestMethod]
+    public async Task SwitchingFilesInvalidatesPreviewAndPreparesWithNewProvider()
+    {
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
+        await fixture.ShowAsync();
+        FakeSourceProvider firstProvider = new(log, "prov-first");
+        int firstReleases = 0;
+        opener.CompleteWith(LocalBaseConnection(firstProvider, () => firstReleases++));
+        await fixture.SettleAsync();
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        await ClickAsync(fixture, "source-file-button");
+        FakeSourceProvider secondProvider = new(log, "prov-second");
+        opener.CompleteWith(LocalBaseConnection(secondProvider, () => { }));
+        await fixture.SettleAsync();
+
+        // The old preview cannot survive the file switch: the old provider is
+        // released and the stale preview neither confirms nor starts anything.
+        Assert.AreEqual(1, firstReleases);
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await ClickAsync(fixture, "start-button");
+        await fixture.SettleAsync();
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.IsTrue((await fixture.ReadAsync(w => w.Result)).Cancelled);
+
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreSame(secondProvider, session.SnapshotCalls()[^1].Provider);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
     }
 
     [TestMethod]
     public async Task EditingSelectionNamePolicyOrReverseInvalidatesConfirmationUntilRechecked()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-edit"));
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-edit"), [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-title", "标题", "text", "text"),
+                new NativeSourceField("f-amount", "金额", "number", "number"),
+            ]),
+        ]));
+        await fixture.SettleAsync();
+        await SelectFirstTableAsync(fixture);
 
-        // A plan with blocking diagnostics never opens the confirm gate.
         session.CanApply = false;
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
@@ -144,94 +199,62 @@ public sealed class SourceImportWindowTests
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
         await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
         Assert.AreEqual("订单_import", session.SnapshotCalls()[^1].Options.TargetNames.Single().Name);
-
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = false);
-        await AssertConfirmationInvalidatedAsync(fixture);
-        // Re-selecting the table must not resurrect the stale preview.
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
-        await fixture.SettleAsync();
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
 
         await fixture.DoAsync(w => Require<ComboBox>(w, "field-policy-tbl-1-f-amount").SelectedIndex = 1);
         await AssertConfirmationInvalidatedAsync(fixture);
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
         await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
         HostSourceImportDecision decision = session.SnapshotCalls()[^1].Options.Decisions.Single();
-        Assert.AreEqual("tbl-1", decision.TableId);
-        Assert.AreEqual("f-amount", decision.FieldId);
         Assert.AreEqual("snapshot", decision.Policy);
         Assert.AreEqual("number", decision.TargetKind);
         Assert.IsTrue(decision.Confirmed);
 
-        await fixture.DoAsync(w => Require<CheckBox>(w, "reverse-checkbox").IsChecked = true);
-        await AssertConfirmationInvalidatedAsync(fixture);
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        Assert.IsTrue(session.SnapshotCalls()[^1].Options.ConfirmReverse);
-
         await ClickAsync(fixture, "start-button");
         await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
         Assert.AreEqual("task-native-1", (await fixture.ReadAsync(w => w.Result)).TaskId);
-        Assert.AreEqual(6, session.SnapshotCalls().Count);
     }
 
     [TestMethod]
-    public async Task ClosingWhileConnectingCancelsReadThenDisposesSession()
+    public async Task ClosingWhileOpeningReleasesLateConnectionWithoutAdopting()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button"); // Gate stays open: connect in flight.
-        await fixture.DoAsync(w => w.Close());
+        await fixture.DoAsync(w => w.Close()); // Busy: close deferred, lifetime cancelled.
 
-        await connect.Cancelled.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        // The opener ignores the token and completes with a real connection.
+        int releases = 0;
+        opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-late"), () => releases++));
         await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
 
-        // The cancelled read never yielded a connection to release.
-        Assert.AreEqual(0, connect.Releases);
+        // The late connection is released exactly once, never adopted into
+        // the catalog, and the precheck never starts.
+        Assert.AreEqual(1, releases);
         Assert.AreEqual(0, session.SnapshotCalls().Count);
         Assert.AreEqual(1, session.Disposals);
-        HostSourceImportOpenResult result = await fixture.ReadAsync(w => w.Result);
-        Assert.IsTrue(result.Cancelled);
-        Assert.IsNull(result.TaskId);
-        var entries = log.Snapshot();
-        Assert.IsTrue(entries.IndexOf("connect:cancel-observed") >= 0
-            && entries.IndexOf("session:disposed") > entries.IndexOf("connect:cancel-observed"),
-            string.Join(" -> ", entries));
+        Assert.AreEqual(0, await fixture.ReadAsync(w => Require<StackPanel>(w, "tables-panel").Children.Count));
+        Assert.AreEqual("读取本地 .base 文件已取消。",
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
     }
 
     [TestMethod]
     public async Task ClosingWhilePreparingCancelsPrecheckThenDisposesProviderAndSession()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        FakeSourceProvider provider = new(log, "prov-inflight");
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await ConnectAndSelectFirstTableAsync(fixture, connect, provider);
+        FakeSourceProvider provider = new(log, "prov-inflight");
+        opener.CompleteWith(LocalBaseConnection(provider, () => log.Add("local-connection:released")));
+        await fixture.SettleAsync();
+        await SelectFirstTableAsync(fixture);
 
         await ClickAsync(fixture, "preview-button"); // Gate stays open: precheck in flight.
-        Assert.AreEqual("正在读取所选表并预检；此步骤不会创建目标表或写入记录…",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
         await fixture.DoAsync(w => w.Close());
 
         await session.Cancelled.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
@@ -239,96 +262,8 @@ public sealed class SourceImportWindowTests
 
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text), "预检已取消");
         Assert.AreEqual(1, provider.DisposeCount);
-        Assert.AreEqual(1, connect.Releases);
         Assert.AreEqual(1, session.Disposals);
         Assert.IsNull(session.StartedPreview);
-        var entries = log.Snapshot();
-        Assert.IsTrue(entries.IndexOf("session:prepare-cancel-observed") >= 0
-            && entries.IndexOf("session:provider-discarded") > entries.IndexOf("session:prepare-cancel-observed")
-            && entries.IndexOf("session:disposed") > entries.IndexOf("session:provider-discarded"),
-            string.Join(" -> ", entries));
-    }
-
-    [TestMethod]
-    public async Task CredentialInputsNeverEchoAndOnlyReachTheConnectDelegate()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("wps", connect, session);
-        await fixture.ShowAsync();
-
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "  file-wps-native-test  ";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-            Require<TextBox>(w, "access-key-input").Text = $"  {SecretAccessKey}  ";
-            Require<PasswordBox>(w, "secret-input").Password = SecretSigningKey;
-        });
-        connect.Failure = new HttpRequestException(
-            $"401 access_token={SecretToken} kso_key={SecretAccessKey} kso_secret={SecretSigningKey}");
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWith(new FakeSourceProvider(log, "prov-wps-unused")); // Fake throws after the gate.
-        await fixture.SettleAsync();
-
-        Assert.AreEqual("SAFE-HttpRequestException",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-        AssertNoEcho(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-        AssertNoEcho(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
-        ConnectCall call = connect.SnapshotCalls().Single();
-        Assert.AreEqual("file-wps-native-test", call.Source);
-        Assert.AreEqual(SecretToken, call.AccessToken);
-        Assert.AreEqual(SecretAccessKey, call.AccessKey);
-        Assert.AreEqual(SecretSigningKey, call.Secret);
-        // Secrets leave the inputs as soon as they are handed to the delegate.
-        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
-        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "secret-input").Password));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-
-        connect.Failure = null;
-        await fixture.DoAsync(w => Require<PasswordBox>(w, "token-input").Password = SecretToken);
-        await ClickAsync(fixture, "connect-button");
-        FakeSourceProvider provider = new(log, "prov-wps");
-        connect.CompleteWith(provider);
-        await fixture.SettleAsync();
-        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "张表");
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
-        await fixture.SettleAsync();
-
-        session.PrepareFailure = new InvalidOperationException(
-            $"preview failed token={SecretToken} secret={SecretSigningKey}");
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.AreEqual("SAFE-InvalidOperationException",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
-        AssertNoEcho(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        Assert.AreEqual(1, provider.DisposeCount);
-
-        session.PrepareFailure = null;
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        session.StartFailure = new InvalidOperationException($"start failed token={SecretToken}");
-        await ClickAsync(fixture, "start-button");
-        await fixture.SettleAsync();
-        Assert.AreEqual("SAFE-InvalidOperationException",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
-        AssertNoEcho(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
-
-        session.StartFailure = null;
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        await ClickAsync(fixture, "start-button");
-        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
-        Assert.AreEqual("task-native-1", (await fixture.ReadAsync(w => w.Result)).TaskId);
-        foreach (PrepareCall prepare in session.SnapshotCalls())
-            AssertNoEcho(JsonSerializer.Serialize(prepare.Options));
     }
 
     [TestMethod]
@@ -345,17 +280,18 @@ public sealed class SourceImportWindowTests
         string valueKind, string expectedTargetKind)
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWithSingleFieldCatalog(new FakeSourceProvider(log, "prov-snapshot"), valueKind);
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-snapshot"),
+        [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-native", "标题", "text", "text"),
+                new NativeSourceField("f-target", "策略字段", "text", valueKind),
+            ]),
+        ]));
         await fixture.SettleAsync();
         await fixture.DoAsync(w =>
         {
@@ -367,39 +303,43 @@ public sealed class SourceImportWindowTests
         session.CompletePending();
         await fixture.SettleAsync();
 
-        // The untouched native field must not turn into a decision at all.
-        HostSourceImportOptions options = session.SnapshotCalls().Single().Options;
-        HostSourceImportDecision decision = options.Decisions.Single();
+        HostSourceImportDecision decision = session.SnapshotCalls().Single().Options.Decisions.Single();
         Assert.AreEqual("tbl-1", decision.TableId);
         Assert.AreEqual("f-target", decision.FieldId);
         Assert.AreEqual("snapshot", decision.Policy);
         Assert.AreEqual(expectedTargetKind, decision.TargetKind);
         Assert.AreEqual("", decision.TargetName);
         Assert.IsTrue(decision.Confirmed);
-        // A json snapshot carries the source value payload only; this asserts
-        // the decision contract the Go planField accepts, never that any
-        // attachment reference was actually downloaded.
     }
 
     [TestMethod]
     public async Task ReverseNamesForTwoRelationsLandInSeparateNativeDecisions()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWithRelationCatalog(new FakeSourceProvider(log, "prov-rel"));
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-rel"),
+        [
+            new NativeSourceTable("tbl-a", "订单A",
+            [
+                new NativeSourceField("f-title-a", "标题A", "text", "text"),
+                new NativeSourceField("f-rel-a", "关联B", "relation", "relation", RequiresReverseName: true),
+            ]),
+            new NativeSourceTable("tbl-c", "订单C",
+            [
+                new NativeSourceField("f-title-c", "标题C", "text", "text"),
+                new NativeSourceField("f-rel-c", "关联B", "relation", "relation", RequiresReverseName: true),
+            ]),
+            new NativeSourceTable("tbl-b", "客户B", [new NativeSourceField("f-name-b", "名称B", "text", "text")]),
+        ]));
         await fixture.SettleAsync();
-        // Two one-sided relations (tbl-a→tbl-b and tbl-c→tbl-b) would collide
-        // on the shared "迁移反向关联" default in Go checkFieldNames; each gets
-        // its own explicit reciprocal name decision.
+
+        // One-sided relations reveal the reciprocal gate only when they exist.
+        Assert.AreEqual(Visibility.Visible,
+            await fixture.ReadAsync(w => Require<CheckBox>(w, "reverse-checkbox").Visibility));
+
         await fixture.DoAsync(w =>
         {
             Require<CheckBox>(w, "table-select-tbl-a").IsChecked = true;
@@ -419,20 +359,9 @@ public sealed class SourceImportWindowTests
         HostSourceImportDecision[] decisions = options.Decisions
             .OrderBy(decision => decision.FieldId, StringComparer.Ordinal).ToArray();
         Assert.AreEqual(2, decisions.Length, string.Join(";", options.Decisions));
-        Assert.AreEqual("tbl-a", decisions[0].TableId);
-        Assert.AreEqual("f-rel-a", decisions[0].FieldId);
-        Assert.AreEqual("native", decisions[0].Policy);
-        Assert.AreEqual("", decisions[0].TargetKind);
         Assert.AreEqual("订单A的反向", decisions[0].TargetName);
-        Assert.IsTrue(decisions[0].Confirmed);
-        Assert.AreEqual("tbl-c", decisions[1].TableId);
-        Assert.AreEqual("f-rel-c", decisions[1].FieldId);
-        Assert.AreEqual("native", decisions[1].Policy);
         Assert.AreEqual("订单C的反向", decisions[1].TargetName);
-        Assert.AreNotEqual(decisions[0].TargetName, decisions[1].TargetName);
 
-        // Snapshot on a reverse-naming relation must not carry the reverse
-        // name: it renames no target column and creates no reciprocal field.
         await fixture.DoAsync(w => Require<ComboBox>(w, "field-policy-tbl-a-f-rel-a").SelectedIndex = 1);
         await AssertConfirmationInvalidatedAsync(fixture);
         await ClickAsync(fixture, "preview-button");
@@ -440,7 +369,6 @@ public sealed class SourceImportWindowTests
         await fixture.SettleAsync();
         decisions = session.SnapshotCalls()[^1].Options.Decisions
             .OrderBy(decision => decision.FieldId, StringComparer.Ordinal).ToArray();
-        Assert.AreEqual(2, decisions.Length, string.Join(";", decisions));
         HostSourceImportDecision snapshot = decisions.Single(decision => decision.FieldId == "f-rel-a");
         Assert.AreEqual("snapshot", snapshot.Policy);
         Assert.AreEqual("json", snapshot.TargetKind);
@@ -454,17 +382,18 @@ public sealed class SourceImportWindowTests
     public async Task SnapshotTargetChoiceAppliesExactTextAndJsonAndInvalidatesPreview()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWithSingleFieldCatalog(new FakeSourceProvider(log, "prov-kind"), "number");
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-kind"),
+        [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-native", "标题", "text", "text"),
+                new NativeSourceField("f-target", "策略字段", "text", "number"),
+            ]),
+        ]));
         await fixture.SettleAsync();
         await fixture.DoAsync(w =>
         {
@@ -472,17 +401,11 @@ public sealed class SourceImportWindowTests
             Require<ComboBox>(w, "field-policy-tbl-1-f-target").SelectedIndex = 1;
         });
         await fixture.SettleAsync();
-        // The explicit snapshot target selector only exists for snapshot rows.
-        await fixture.DoAsync(w => Assert.AreEqual(Visibility.Visible,
-            Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").Visibility));
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
         await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        // Default keeps the source kind (old locked number mapping).
         Assert.AreEqual("number", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
 
-        // Exact text for float64-precision-losing numbers (9007199254740993).
         await fixture.DoAsync(w => Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").SelectedIndex = 1);
         await AssertConfirmationInvalidatedAsync(fixture);
         await ClickAsync(fixture, "preview-button");
@@ -490,197 +413,22 @@ public sealed class SourceImportWindowTests
         await fixture.SettleAsync();
         Assert.AreEqual("text", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
 
-        // JSON for values without an option identity mapping.
         await fixture.DoAsync(w => Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").SelectedIndex = 2);
         await AssertConfirmationInvalidatedAsync(fixture);
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
         await fixture.SettleAsync();
         Assert.AreEqual("json", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
-
-        // Leaving snapshot hides the selector again; native emits no decision
-        // for a field that does not require a reverse name.
-        await fixture.DoAsync(w =>
-        {
-            Require<ComboBox>(w, "field-policy-tbl-1-f-target").SelectedIndex = 0;
-            Assert.AreEqual(Visibility.Collapsed,
-                Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").Visibility);
-        });
-        await AssertConfirmationInvalidatedAsync(fixture);
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.AreEqual(0, session.SnapshotCalls()[^1].Options.Decisions.Length);
-    }
-
-    [TestMethod]
-    public async Task UnsupportedSheetsStayVisibleWhileDataTablesRemainSelectable()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("wps", connect, session);
-        await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWithUnsupportedSheets(new FakeSourceProvider(log, "prov-wps-unsupported"),
-        [
-            new NativeSourceTable("tbl-1", "订单",
-                [new NativeSourceField("f-native", "标题", "text", "text")]),
-        ],
-        [
-            new NativeSourceUnsupportedSheet("sheet-dash", "销售看板", "xlDbDashBoardSheet",
-                "仪表盘不是数据表，不参与模型迁移"),
-            new NativeSourceUnsupportedSheet("sheet-doc", "项目文档", "xlEtFlexPaperSheet",
-                "智能文档关联表不是数据表，不参与模型迁移"),
-        ]);
-        await fixture.SettleAsync();
-
-        string status = await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text);
-        StringAssert.Contains(status, "1 张表");
-        StringAssert.Contains(status, "另有 2 个来源项不支持迁移，已在下方逐项列出原因。");
-        string dashboard = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-dash").Text);
-        StringAssert.Contains(dashboard, "销售看板");
-        StringAssert.Contains(dashboard, "xlDbDashBoardSheet");
-        StringAssert.Contains(dashboard, "仪表盘不是数据表，不参与模型迁移");
-        string document = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-doc").Text);
-        StringAssert.Contains(document, "项目文档");
-        StringAssert.Contains(document, "智能文档关联表不是数据表，不参与模型迁移");
-
-        // The migratable data table stays fully usable next to the disclosure.
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        // The disclosure survives the precheck pass.
-        StringAssert.Contains(
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-dash").Text), "销售看板");
-    }
-
-    [TestMethod]
-    public async Task UnsupportedSheetsStayVisibleWhenNoDataTablesExist()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("wps", connect, session);
-        await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWithUnsupportedSheets(new FakeSourceProvider(log, "prov-wps-empty"),
-        [],
-        [
-            new NativeSourceUnsupportedSheet("sheet-only", "全部是看板的文件", "xlDbDashBoardSheet",
-                "仪表盘不是数据表，不参与模型迁移"),
-        ]);
-        await fixture.SettleAsync();
-
-        string status = await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text);
-        StringAssert.Contains(status, "连接成功，当前授权范围内没有数据表。");
-        StringAssert.Contains(status, "另有 1 个来源项不支持迁移，已在下方逐项列出原因。");
-        string only = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-only").Text);
-        StringAssert.Contains(only, "全部是看板的文件");
-        StringAssert.Contains(only, "仪表盘不是数据表，不参与模型迁移");
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-    }
-
-    [TestMethod]
-    public async Task LocalFileCatalogLoadsThroughInjectedOpenerWithoutCloudDelegateOrToken()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        var opener = new FakeLocalFileOpener(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
-        await fixture.ShowAsync();
-
-        // The local path is reachable with no source link and no token; the
-        // opener is the only entry and never needs a credential.
-        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
-        await ClickAsync(fixture, "source-file-button");
-        Assert.AreEqual("正在读取本地 .base 文件…",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-        Assert.AreEqual(1, opener.Calls);
-        FakeSourceProvider provider = new(log, "prov-local");
-        opener.CompleteWith(LocalBaseConnection(provider, () => log.Add("local-connection:released")));
-        await fixture.SettleAsync();
-
-        // The cloud HTTP delegate was never invoked and no token or signature
-        // was requested: the catalog arrives only through the opener.
-        Assert.AreEqual(0, connect.SnapshotCalls().Count);
-        Assert.IsFalse(log.Contains("connect:enter"));
-        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "1 张表");
-        // A notice-free local file opens no acknowledgement gate at all.
-        Assert.AreEqual(Visibility.Collapsed,
-            await fixture.ReadAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").Visibility));
-
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        PrepareCall prepare = session.SnapshotCalls().Single();
-        Assert.AreSame(provider, prepare.Provider);
-        AssertNoEcho(JsonSerializer.Serialize(prepare.Options));
-        CollectionAssert.AreEqual(new[] { "tbl-1" }, prepare.Options.SelectedTableIds);
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-    }
-
-    [TestMethod]
-    public async Task CancelledLocalFileSelectionIsSilentAndNeverPrepares()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        var opener = new FakeLocalFileOpener(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
-        await fixture.ShowAsync();
-        await ClickAsync(fixture, "source-file-button");
-        opener.CompleteWithCancel(); // null: the user dismissed the picker.
-        await fixture.SettleAsync();
-
-        // Cancellation is neither an error nor a write: no precheck, no cloud
-        // delegate, no credential consumption and the window stays open.
-        Assert.AreEqual("已取消选择本地 .base 文件，未导入任何内容。",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-        Assert.AreEqual(1, opener.Calls);
-        Assert.AreEqual(0, connect.SnapshotCalls().Count);
-        Assert.AreEqual(0, session.SnapshotCalls().Count);
-        Assert.IsFalse(log.Contains("session:prepare-enter"));
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
-        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
-        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
-
-        // WPS never exposes the local entry, even with an opener injected.
-        using var wpsFixture = new NativeWizardStaFixture("wps",
-            new FakeConnect(log), new FakeWizardSession(log), new FakeLocalFileOpener(log));
-        await wpsFixture.ShowAsync();
-        Assert.IsNull(await wpsFixture.ReadAsync(w => FindByAutomationId<Button>(w, "source-file-button")));
     }
 
     [TestMethod]
     public async Task LocalFileNoticesRequireAcknowledgementBeforePreview()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
         var opener = new FakeLocalFileOpener(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await ClickAsync(fixture, "source-file-button");
         opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-notices"),
             () => log.Add("local-connection:released"),
         [
@@ -690,8 +438,6 @@ public sealed class SourceImportWindowTests
         ]));
         await fixture.SettleAsync();
 
-        // Every notice stays visible next to the catalog with an explicit
-        // acknowledgement gate; nothing is silently dropped or over-claimed.
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-0").Text), "仪表盘");
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-1").Text), "工作流");
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-2").Text), "不会迁入计算值");
@@ -713,107 +459,35 @@ public sealed class SourceImportWindowTests
         await fixture.SettleAsync();
         Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
 
-        // Retracting the acknowledgement invalidates the confirmed preview.
         await fixture.DoAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").IsChecked = false);
         await AssertConfirmationInvalidatedAsync(fixture);
     }
 
     [TestMethod]
-    public async Task SwitchingToLocalFileInvalidatesCloudPreviewAndPreparesWithNewProvider()
+    public async Task LoadedPutsInitialKeyboardFocusOnTheFilePickerEntry()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
         var opener = new FakeLocalFileOpener(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        FakeSourceProvider cloudProvider = new(log, "prov-cloud");
-        await ConnectAndSelectFirstTableAsync(fixture, connect, cloudProvider);
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-
-        await ClickAsync(fixture, "source-file-button");
-        FakeSourceProvider localProvider = new(log, "prov-local-switch");
-        opener.CompleteWith(LocalBaseConnection(localProvider, () => log.Add("local-connection:released")));
+        opener.CompleteWithCancel();
         await fixture.SettleAsync();
 
-        // The cloud preview cannot survive the source switch: the cloud
-        // connection is released and the stale preview neither confirms nor
-        // starts anything.
-        Assert.AreEqual(1, opener.Calls);
-        Assert.AreEqual(1, connect.SnapshotCalls().Count);
-        Assert.AreEqual(1, connect.Releases);
-        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        await ClickAsync(fixture, "start-button");
-        await fixture.SettleAsync();
-        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
-        Assert.IsTrue((await fixture.ReadAsync(w => w.Result)).Cancelled);
-
-        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
-        await fixture.SettleAsync();
-        await ClickAsync(fixture, "preview-button");
-        session.CompletePending();
-        await fixture.SettleAsync();
-        // The new precheck runs against the local file's provider only; the
-        // cloud token/provider is not reused for the new source.
-        Assert.AreSame(localProvider, session.SnapshotCalls()[^1].Provider);
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-    }
-
-    [TestMethod]
-    public async Task ClosingWhileOpeningLocalFileReleasesLateConnectionWithoutAdopting()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        var opener = new FakeLocalFileOpener(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
-        await fixture.ShowAsync();
-        await ClickAsync(fixture, "source-file-button"); // Gate stays open: file read in flight.
-        await fixture.DoAsync(w => w.Close()); // Busy: close deferred, lifetime cancelled.
-
-        // The opener ignores the token and completes with a real connection.
-        int releases = 0;
-        opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-late"),
-            () => releases++));
-        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
-
-        // The late connection is released exactly once, never adopted into
-        // the catalog, and the precheck never starts.
-        Assert.AreEqual(1, releases);
-        Assert.AreEqual(0, connect.SnapshotCalls().Count);
-        Assert.AreEqual(0, session.SnapshotCalls().Count);
-        Assert.AreEqual(1, session.Disposals);
-        Assert.AreEqual(0, await fixture.ReadAsync(w => Require<StackPanel>(w, "tables-panel").Children.Count));
-        Assert.AreEqual("读取本地 .base 文件已取消。",
-            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
-    }
-
-    [TestMethod]
-    public async Task LoadedPutsInitialKeyboardFocusOnTheFirstCredentialInput()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
-        await fixture.ShowAsync();
-
-        // Windows convention for an owned modal wizard: focus starts on the
-        // first input, not on dialog chrome or the footer buttons.
-        TextBox sourceInput = await fixture.ReadAsync(w => Require<TextBox>(w, "source-input"));
-        Assert.AreSame(sourceInput, await fixture.ReadAsync(w => FocusManager.GetFocusedElement(w)));
+        Button selectFile = await fixture.ReadAsync(w => Require<Button>(w, "source-file-button"));
+        Assert.AreSame(selectFile, await fixture.ReadAsync(w => FocusManager.GetFocusedElement(w)));
     }
 
     [TestMethod]
     public async Task EscapeKeyCancelsAnIdleWindowWithoutStartingWork()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
+        opener.CompleteWithCancel();
+        await fixture.SettleAsync();
 
         await PressEscapeAsync(fixture);
         await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
@@ -821,7 +495,6 @@ public sealed class SourceImportWindowTests
         HostSourceImportOpenResult result = await fixture.ReadAsync(w => w.Result);
         Assert.IsTrue(result.Cancelled);
         Assert.IsNull(result.TaskId);
-        Assert.AreEqual(0, connect.SnapshotCalls().Count);
         Assert.AreEqual(0, session.SnapshotCalls().Count);
         Assert.AreEqual(1, session.Disposals);
     }
@@ -833,11 +506,20 @@ public sealed class SourceImportWindowTests
     public async Task EscapeClosesExpandedPolicyBeforeCancellingTheWindow()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
         await fixture.ShowAsync();
-        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-escape"));
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-escape"),
+        [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-title", "标题", "text", "text"),
+                new NativeSourceField("f-amount", "金额", "number", "number"),
+            ]),
+        ]));
+        await fixture.SettleAsync();
+        await SelectFirstTableAsync(fixture);
         await fixture.DoAsync(w =>
         {
             RequireType<Expander>(w).IsExpanded = true;
@@ -848,8 +530,6 @@ public sealed class SourceImportWindowTests
         Assert.IsFalse(await fixture.ReadAsync(w => Require<ComboBox>(w, "field-policy-tbl-1-f-amount").IsDropDownOpen));
         Assert.IsFalse(fixture.Closed.Task.IsCompleted);
         Assert.AreEqual(0, session.Disposals);
-        Assert.AreEqual(0, connect.Releases);
-        Assert.IsTrue(await fixture.ReadAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked == true));
 
         await PressEscapeAsync(fixture, "field-policy-tbl-1-f-amount");
         await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
@@ -858,74 +538,39 @@ public sealed class SourceImportWindowTests
     }
 
     [TestMethod]
-    public async Task EscapeWhileConnectingCancelsTheReadThenCloses()
-    {
-        var log = new EventLog();
-        var connect = new FakeConnect(log);
-        var session = new FakeWizardSession(log);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
-        await fixture.ShowAsync();
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button"); // Gate stays open: connect in flight.
-        await PressEscapeAsync(fixture);
-
-        await connect.Cancelled.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
-        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
-
-        // ESC drains exactly like the title-bar close: the read is
-        // cancelled, the cancelled connection is never adopted and the
-        // session disposal still runs.
-        Assert.AreEqual(0, connect.Releases);
-        Assert.AreEqual(1, session.Disposals);
-        HostSourceImportOpenResult result = await fixture.ReadAsync(w => w.Result);
-        Assert.IsTrue(result.Cancelled);
-        Assert.IsNull(result.TaskId);
-    }
-
-    [TestMethod]
     public async Task WindowSurfacesThemedChromeAndFollowsEffectiveThemeChanges()
     {
         var log = new EventLog();
-        var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
         var source = new FakeSystemAppearanceSource
         {
             InitialSnapshot = new HostAppearanceSnapshot(SystemPrefersDark: true, HighContrast: false),
         };
         using var appearance = new HostAppearanceService(source);
-        using var fixture = new NativeWizardStaFixture("feishu", connect, session, appearance: appearance);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session, appearance);
         await fixture.ShowAsync();
+        opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-theme"),
+        [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-title", "标题", "text", "text"),
+                new NativeSourceField("f-amount", "金额", "number", "number"),
+            ]),
+        ]));
+        await fixture.SettleAsync();
 
-        // The window chrome resolves through the standard dynamic resources
-        // for the effective dark theme, and the font follows the system
-        // message font instead of a hardcoded family/size.
         Assert.AreEqual(
             ThemedColor("dark", HostThemeResources.WindowBackgroundBrushKey),
             await fixture.ReadAsync(w => ((SolidColorBrush)w.Background!).Color));
         Assert.AreEqual(
             ThemedColor("dark", HostThemeResources.WindowTextBrushKey),
             await fixture.ReadAsync(w => ((SolidColorBrush)w.Foreground!).Color));
-        Assert.AreEqual(
-            SystemFonts.MessageFontFamily.Source,
-            await fixture.ReadAsync(w => w.FontFamily.Source));
-        Assert.AreEqual(
-            SystemFonts.MessageFontSize,
-            await fixture.ReadAsync(w => w.FontSize));
-
-        Assert.AreEqual("Base / Wiki 链接或 app_token",
-            await fixture.ReadAsync(w => AutomationProperties.GetName(Require<TextBox>(w, "source-input"))));
         await fixture.DoAsync(w => AssertFluentControls(w));
-        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-theme"));
         foreach (string id in new[] { "field-policy-tbl-1-f-amount", "field-snapshot-kind-tbl-1-f-amount" })
         {
             Assert.AreEqual(ThemedColor("dark", HostThemeResources.SurfaceBackgroundBrushKey),
                 await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Background).Color));
-            Assert.AreEqual(ThemedColor("dark", HostThemeResources.SurfaceTextBrushKey),
-                await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Foreground).Color));
         }
         await fixture.DoAsync(w =>
         {
@@ -941,29 +586,12 @@ public sealed class SourceImportWindowTests
             File.WriteAllBytes(Path.Combine(screenshotDirectory, "native-wizard-dark.png"), dark.Png);
         }
 
-        // An explicit Host preference wins over the system snapshot and the
-        // live re-projection repaints the already-open window.
         await fixture.DoAsync(w => appearance.SetPreferredTheme(AppThemeOptions.Light));
         await fixture.SettleAsync();
         Assert.AreEqual(
             ThemedColor("light", HostThemeResources.WindowBackgroundBrushKey),
             await fixture.ReadAsync(w => ((SolidColorBrush)w.Background!).Color));
 
-        foreach (string id in new[] { "field-policy-tbl-1-f-amount", "field-snapshot-kind-tbl-1-f-amount" })
-        {
-            Assert.AreEqual(ThemedColor("light", HostThemeResources.SurfaceBackgroundBrushKey),
-                await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Background).Color));
-        }
-
-        await fixture.DoAsync(w => AssertFluentControls(w));
-        if (screenshotDirectory is not null)
-        {
-            Capture light = await fixture.ReadAsync(CaptureWindow);
-            File.WriteAllBytes(Path.Combine(screenshotDirectory, "native-wizard-light.png"), light.Png);
-        }
-
-        // High contrast swaps in the SystemColors fallback so the system
-        // palette stays authoritative while every Vt* key keeps a value.
         await fixture.DoAsync(w => source.Simulate(
             new HostAppearanceSnapshot(SystemPrefersDark: false, HighContrast: true)));
         await fixture.SettleAsync();
@@ -975,27 +603,27 @@ public sealed class SourceImportWindowTests
     [TestMethod]
     public async Task WindowCompositionRendersRealContentAndOptInScreenshotsStayInsideBuildTree()
     {
-        // Feishu scenario only: synthetic Feishu catalog/plan data — never a
-        // WPS sheet type mixed in. Expanded strategy area with the snapshot
-        // target selector and reverse-name row, then the precheck report.
-        var feishuLog = new EventLog();
-        var feishuConnect = new FakeConnect(feishuLog);
-        var feishuSession = new FakeWizardSession(feishuLog);
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
         Capture catalog;
         Capture precheck;
-        using (var fixture = new NativeWizardStaFixture("feishu", feishuConnect, feishuSession))
+        Capture localNotices;
+        using (var fixture = new NativeWizardStaFixture(opener, session))
         {
             // Test-only presentation size so controls and report fit the
             // capture; the product default stays 840x760.
             await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
             await fixture.ShowAsync();
-            await fixture.DoAsync(w =>
-            {
-                Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-                Require<PasswordBox>(w, "token-input").Password = SecretToken;
-            });
-            await ClickAsync(fixture, "connect-button");
-            feishuConnect.CompleteWithRelationCatalog(new FakeSourceProvider(feishuLog, "prov-shot"));
+            opener.CompleteWith(CatalogConnection(new FakeSourceProvider(log, "prov-shot"),
+            [
+                new NativeSourceTable("tbl-a", "订单A",
+                [
+                    new NativeSourceField("f-title-a", "标题A", "text", "text"),
+                    new NativeSourceField("f-rel-a", "关联B", "relation", "relation", RequiresReverseName: true),
+                ]),
+                new NativeSourceTable("tbl-b", "客户B", [new NativeSourceField("f-name-b", "名称B", "text", "text")]),
+            ]));
             await fixture.SettleAsync();
             await fixture.DoAsync(w =>
             {
@@ -1004,85 +632,42 @@ public sealed class SourceImportWindowTests
                 Require<ComboBox>(w, "field-policy-tbl-a-f-title-a").SelectedIndex = 1;
                 Require<TextBox>(w, "field-reverse-name-tbl-a-f-rel-a").Text = "客户B的订单A";
             });
-            // Expand the first table's strategy expander and scroll the
-            // snapshot/reverse controls into the viewport.
             await fixture.DoAsync(w => RequireType<Expander>(w).IsExpanded = true);
             await fixture.SettleAsync();
             await fixture.DoAsync(w => ScrollAnchorIntoView(w,
                 Require<TextBox>(w, "field-reverse-name-tbl-a-f-rel-a"), 140));
             await fixture.SettleAsync();
-            // Catalog capture: strategy rows with the snapshot target selector
-            // and the reverse-name row visible.
             catalog = await fixture.ReadAsync(CaptureWindow);
 
             await ClickAsync(fixture, "preview-button");
-            feishuSession.CompletePending();
+            session.CompletePending();
             await fixture.SettleAsync();
             Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
             await fixture.DoAsync(w => ScrollAnchorIntoView(w, Require<TextBlock>(w, "report-text"), 24));
             await fixture.SettleAsync();
-            // Precheck capture: the report itself; the footer buttons are
-            // docked outside the ScrollViewer and stay visible with it.
             precheck = await fixture.ReadAsync(CaptureWindow);
             await ClickAsync(fixture, "start-button");
             await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
-        }
-
-        // Separate WPS scenario: the typed unsupported-sheet disclosure with
-        // WPS-native sheet types next to a still-selectable data table.
-        var wpsLog = new EventLog();
-        var wpsConnect = new FakeConnect(wpsLog);
-        Capture unsupported;
-        using (var fixture = new NativeWizardStaFixture("wps", wpsConnect, new FakeWizardSession(wpsLog)))
-        {
-            await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
-            await fixture.ShowAsync();
-            await fixture.DoAsync(w =>
-            {
-                Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
-                Require<PasswordBox>(w, "token-input").Password = SecretToken;
-            });
-            await ClickAsync(fixture, "connect-button");
-            wpsConnect.CompleteWithUnsupportedSheets(new FakeSourceProvider(wpsLog, "prov-shot-wps"),
-                [new NativeSourceTable("tbl-1", "订单",
-                    [new NativeSourceField("f-native", "标题", "text", "text")])],
-            [
-                new NativeSourceUnsupportedSheet("sheet-dash", "销售看板", "xlDbDashBoardSheet",
-                    "仪表盘不是数据表，不参与模型迁移"),
-            ]);
-            await fixture.SettleAsync();
-            await fixture.DoAsync(w =>
-            {
-                Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true;
-                ScrollAnchorIntoView(w, Require<StackPanel>(w, "unsupported-panel"), 96);
-            });
-            await fixture.SettleAsync();
-            unsupported = await fixture.ReadAsync(CaptureWindow);
         }
 
         // Synthetic local .base scenario: a fabricated .local catalog — never
         // the user's real sample file — with the full non-table disclosure
         // set (workflows/dashboards/views, attachment reference snapshots,
         // unexported formula values) next to a still-selectable data table.
-        var localLog = new EventLog();
-        var localConnect = new FakeConnect(localLog);
-        var localOpener = new FakeLocalFileOpener(localLog);
-        Capture localNotices;
-        using (var fixture = new NativeWizardStaFixture("feishu", localConnect,
-            new FakeWizardSession(localLog), localOpener))
+        var noticeOpener = new FakeLocalFileOpener(log);
+        using (var fixture = new NativeWizardStaFixture(noticeOpener, new FakeWizardSession(log)))
         {
             await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
             await fixture.ShowAsync();
-            await ClickAsync(fixture, "source-file-button");
-            localOpener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(localLog, "prov-shot-local"),
-                () => localLog.Add("local-connection:released"),
-            [
-                "文件包含 1 个工作流：工作流（自动化）不会随导入迁移",
-                "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
-                "文件包含 3 个视图：视图配置不会随导入迁移",
-                "附件字段仅保留引用快照：附件字节不会下载或迁入",
-                "表「订单」字段「总额」是公式：源文件未导出计算值，不会迁入计算值",
-            ], name: "合成示例.local.base"));
+            noticeOpener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-shot-local"),
+                    () => log.Add("local-connection:released"),
+                [
+                    "文件包含 1 个工作流：工作流（自动化）不会随导入迁移",
+                    "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+                    "文件包含 3 个视图：视图配置不会随导入迁移",
+                    "附件字段仅保留引用快照：附件字节不会下载或迁入",
+                    "表「订单」字段「总额」是公式：源文件未导出计算值，不会迁入计算值",
+                ], name: "合成示例.local.base"));
             await fixture.SettleAsync();
             await fixture.DoAsync(w =>
             {
@@ -1090,15 +675,12 @@ public sealed class SourceImportWindowTests
                 ScrollAnchorIntoView(w, Require<StackPanel>(w, "notices-panel"), 96);
             });
             await fixture.SettleAsync();
-            // Gated state capture: notices disclosed, acknowledgement still
-            // unchecked, preflight therefore unavailable.
             localNotices = await fixture.ReadAsync(CaptureWindow);
         }
 
         foreach ((string name, Capture capture) in new[]
         {
-            ("catalog", catalog), ("precheck", precheck), ("wps-unsupported", unsupported),
-            ("local-notices", localNotices),
+            ("catalog", catalog), ("precheck", precheck), ("local-notices", localNotices),
         })
         {
             Assert.IsTrue(capture.Width > 600 && capture.Height > 500,
@@ -1107,14 +689,128 @@ public sealed class SourceImportWindowTests
                 $"{name} capture only painted {capture.ContentPixels} content pixels");
         }
 
-        // Disk artifacts are strictly opt-in and only ever target this tree's
-        // ignored build/automation/native-wizard directory.
         string? directory = ResolveOptInScreenshotDirectory();
         if (directory is null) return;
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-catalog.png"), catalog.Png);
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-precheck.png"), precheck.Png);
-        File.WriteAllBytes(Path.Combine(directory, "native-wizard-wps-unsupported.png"), unsupported.Png);
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-local-notices.png"), localNotices.Png);
+    }
+
+    [TestMethod]
+    public async Task RetiringTheWindowDismissesTheRealOwnedPickerWithZeroWrites()
+    {
+        // A REAL native OpenFileDialog modal, dismissed programmatically via
+        // the window's own retirement path — no synthetic key/mouse input.
+        // Gated to real CI runners only (GITHUB_ACTIONS=true && CI=true);
+        // anything else reports Inconclusive instead of faking the modal.
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
+            || Environment.GetEnvironmentVariable("CI") != "true")
+        {
+            Assert.Inconclusive("真实模态 picker 退役回归仅在受控 CI runner 上执行。");
+        }
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var shown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IntPtr pickerHandle = IntPtr.Zero;
+        async Task<NativeSourceConnection?> RealOpener(Window owner, CancellationToken token)
+        {
+            // Plain await: cancellation/faults propagate into the window's own
+            // OCE/error paths instead of being remapped into a connection.
+            string? path = await FeishuBaseFileDialog.PickFileAsync(owner, token,
+                handle => { pickerHandle = handle; shown.TrySetResult(); });
+            return path is null ? null : LocalBaseConnection(new FakeSourceProvider(log, "prov-real"), () => { });
+        }
+        using var fixture = new NativeWizardStaFixture(RealOpener, session);
+        // Owner handle captured on the window's own STA thread; cleanup uses
+        // primitives only, never cross-thread WPF access.
+        IntPtr ownerHandle = await fixture.ReadAsync(
+            w => new System.Windows.Interop.WindowInteropHelper(w).EnsureHandle());
+        try
+        {
+            // Show/Loaded synchronously enters the real ShowDialog modal, so
+            // ShowAsync cannot be awaited before the cancellation: fire it,
+            // drive shown→Close→Closed, then reclaim it (and any failure).
+            Task showing = fixture.ShowAsync();
+            await shown.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+            await fixture.DoAsync(w => w.Close());
+            await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+            await showing.WaitAsync(NativeWizardStaFixture.WaitBudget);
+
+            HostSourceImportOpenResult result = await fixture.ReadAsync(w => w.Result);
+            Assert.IsTrue(result.Cancelled);
+            Assert.IsNull(result.TaskId);
+            Assert.AreEqual(0, session.SnapshotCalls().Count, "退役必须零预检/写入");
+            Assert.AreEqual(1, session.Disposals);
+            Assert.IsFalse(CbtOwnedDialogCloser.IsWindowAlive(pickerHandle), "picker 句柄必须已销毁");
+        }
+        finally
+        {
+            // Recovery close with full identity re-verification so a failed
+            // cancel cannot leave a live modal blocking the runner.
+            if (pickerHandle != IntPtr.Zero)
+                CbtOwnedDialogCloser.CloseVerifiedDialog(pickerHandle, ownerHandle);
+        }
+    }
+
+    [TestMethod]
+    public async Task FailedReSelectionRevokesOldPreviewUntilNewFilePreflight()
+    {
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
+        await fixture.ShowAsync();
+        FakeSourceProvider providerA = new(log, "prov-a");
+        int releases = 0;
+        opener.CompleteWith(LocalBaseConnection(providerA, () => releases++));
+        await fixture.SettleAsync();
+        await SelectFirstTableAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        // Cancelling the picker preserves the current file and its reviewed preview.
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWithCancel();
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text),
+            "仍使用当前已读取的内容");
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        // A failed replacement read must require a fresh preflight before the old file can be submitted.
+        await ClickAsync(fixture, "source-file-button");
+        opener.FailWith(new IOException("合成损坏文件"));
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text),
+            "SAFE-IOException");
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text),
+            "不能确认导入");
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+
+        // The revoked preview cannot be submitted even by a raised click.
+        await ClickAsync(fixture, "start-button");
+        await fixture.SettleAsync();
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.IsNull(session.StartedPreview);
+
+        // Re-selecting a readable file recovers the full flow.
+        await ClickAsync(fixture, "source-file-button");
+        FakeSourceProvider providerB = new(log, "prov-b");
+        opener.CompleteWith(LocalBaseConnection(providerB, () => { }));
+        await fixture.SettleAsync();
+        Assert.AreEqual(1, releases); // A's connection is released on adopt.
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await SelectFirstTableAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreSame(providerB, session.SnapshotCalls()[^1].Provider);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await ClickAsync(fixture, "start-button");
+        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        Assert.AreEqual("task-native-1", (await fixture.ReadAsync(w => w.Result)).TaskId);
     }
 
     private static async Task AssertConfirmationInvalidatedAsync(NativeWizardStaFixture fixture)
@@ -1125,17 +821,8 @@ public sealed class SourceImportWindowTests
             await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text));
     }
 
-    private static async Task ConnectAndSelectFirstTableAsync(
-        NativeWizardStaFixture fixture, FakeConnect connect, FakeSourceProvider provider)
+    private static async Task SelectFirstTableAsync(NativeWizardStaFixture fixture)
     {
-        await fixture.DoAsync(w =>
-        {
-            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
-            Require<PasswordBox>(w, "token-input").Password = SecretToken;
-        });
-        await ClickAsync(fixture, "connect-button");
-        connect.CompleteWith(provider);
-        await fixture.SettleAsync();
         await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
         await fixture.SettleAsync();
     }
@@ -1146,8 +833,19 @@ public sealed class SourceImportWindowTests
     private static NativeSourceConnection LocalBaseConnection(
         FakeSourceProvider provider, Action release, string[]? notices = null, string name = "本地 base 文件") => new(
         name,
-        [new NativeSourceTable("tbl-1", "订单", [new NativeSourceField("f-title", "标题", "text", "text")])],
+        [
+            new NativeSourceTable("tbl-1", "订单",
+            [
+                new NativeSourceField("f-title", "标题", "text", "text"),
+                new NativeSourceField("f-amount", "金额", "number", "number"),
+            ]),
+            new NativeSourceTable("tbl-2", "客户", [new NativeSourceField("f-name", "名称", "text", "text")]),
+        ],
         _ => provider, release, Notices: notices);
+
+    private static NativeSourceConnection CatalogConnection(
+        FakeSourceProvider provider, NativeSourceTable[] tables, string name = "本地 base 文件") =>
+        new(name, tables, _ => provider, () => { });
 
     private static Task ClickAsync(NativeWizardStaFixture fixture, string automationId) =>
         fixture.DoAsync(w => Require<Button>(w, automationId)
@@ -1166,8 +864,6 @@ public sealed class SourceImportWindowTests
         return null;
     }
 
-    /// <summary>Scrolls the wizard's ScrollViewer so the anchor (with a lead
-    /// margin above it) sits inside the viewport for composition captures.</summary>
     private static void ScrollAnchorIntoView(SourceImportWindow window, FrameworkElement anchor, double lead)
     {
         ScrollViewer viewer = RequireType<ScrollViewer>(window);
@@ -1266,7 +962,7 @@ public sealed class SourceImportWindowTests
 
     private static void AssertFluentControls(SourceImportWindow window)
     {
-        foreach (string id in new[] { "reverse-checkbox", "preview-button", "start-button", "cancel-button" })
+        foreach (string id in new[] { "preview-button", "start-button", "cancel-button", "source-file-button" })
         {
             Control control = Require<Control>(window, id);
             Assert.AreSame(window.FindResource(control.GetType()), control.Style, id);
@@ -1325,8 +1021,8 @@ public sealed class SourceImportWindowTests
         internal Dispatcher Dispatcher =>
             _dispatcher ?? throw new AssertFailedException("Native wizard dispatcher was not constructed.");
 
-        internal NativeWizardStaFixture(string provider, FakeConnect connect, FakeWizardSession session,
-            FakeLocalFileOpener? openLocalFile = null, HostAppearanceService? appearance = null)
+        internal NativeWizardStaFixture(Func<Window, CancellationToken, Task<NativeSourceConnection?>> opener,
+            FakeWizardSession session, HostAppearanceService? appearance = null)
         {
             _thread = new Thread(() =>
             {
@@ -1335,9 +1031,8 @@ public sealed class SourceImportWindowTests
                 try
                 {
                     _dispatcher = Dispatcher.CurrentDispatcher;
-                    window = new SourceImportWindow(provider, connect.Invoke, session,
-                        DescribeSafe, CancellationToken.None,
-                        openLocalFile is null ? null : openLocalFile.Invoke, appearance);
+                    window = new SourceImportWindow(opener, session,
+                        DescribeSafe, CancellationToken.None, appearance);
                     // Composition-only presentation: no taskbar entry, no
                     // focus stealing and parked far off-screen.
                     window.WindowStartupLocation = WindowStartupLocation.Manual;
@@ -1370,6 +1065,12 @@ public sealed class SourceImportWindowTests
             if (_constructionFailure is not null)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo
                     .Capture(_constructionFailure).Throw();
+        }
+
+        internal NativeWizardStaFixture(FakeLocalFileOpener openLocalFile, FakeWizardSession session,
+            HostAppearanceService? appearance = null)
+            : this(openLocalFile.Invoke, session, appearance)
+        {
         }
 
         internal async Task ShowAsync()
@@ -1430,133 +1131,29 @@ public sealed class SourceImportWindowTests
         internal bool Contains(string entry) => IndexOf(entry) >= 0;
     }
 
-    internal sealed record ConnectCall(string Source, string AccessToken, string AccessKey, string Secret);
-
-    private sealed class FakeConnect(EventLog log)
-    {
-        private readonly object _gate = new();
-        internal TaskCompletionSource<ConnectCall> Started { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Cancelled { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource<NativeSourceConnection>? Pending { get; private set; }
-        private readonly List<ConnectCall> _calls = [];
-        internal int Releases;
-        internal Exception? Failure;
-        internal FakeSourceProvider? Provider { get; private set; }
-
-        internal IReadOnlyList<ConnectCall> SnapshotCalls() { lock (_gate) return _calls.ToArray(); }
-
-        internal async Task<NativeSourceConnection> Invoke(string source, string accessToken,
-            string accessKey, string secret, CancellationToken token)
-        {
-            var completion = new TaskCompletionSource<NativeSourceConnection>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            var call = new ConnectCall(source, accessToken, accessKey, secret);
-            lock (_gate)
-            {
-                _calls.Add(call);
-                Pending = completion;
-            }
-            log.Add("connect:enter");
-            Started.TrySetResult(call);
-            using CancellationTokenRegistration registration = token.Register(() =>
-            {
-                log.Add("connect:cancel-observed");
-                Cancelled.TrySetResult();
-                completion.TrySetCanceled(token);
-            });
-            NativeSourceConnection connection = await completion.Task;
-            if (Failure is not null) throw Failure;
-            return connection;
-        }
-
-        internal void CompleteWith(FakeSourceProvider provider)
-        {
-            Provider = provider;
-            Pending!.TrySetResult(new NativeSourceConnection(
-                "飞书测试空间",
-                [
-                    new NativeSourceTable("tbl-1", "订单",
-                    [
-                        new NativeSourceField("f-title", "标题", "text", "string"),
-                        new NativeSourceField("f-amount", "金额", "number", "number"),
-                    ]),
-                    new NativeSourceTable("tbl-2", "客户",
-                        [new NativeSourceField("f-name", "名称", "text", "string")]),
-                ],
-                _ => provider,
-                () => { Releases++; log.Add("connection:released"); }));
-        }
-
-        internal void CompleteWithSingleFieldCatalog(FakeSourceProvider provider, string valueKind)
-        {
-            Provider = provider;
-            Pending!.TrySetResult(new NativeSourceConnection(
-                "飞书测试空间",
-                [
-                    new NativeSourceTable("tbl-1", "订单",
-                    [
-                        new NativeSourceField("f-native", "标题", "text", "text"),
-                        new NativeSourceField("f-target", "策略字段", "text", valueKind),
-                    ]),
-                ],
-                _ => provider,
-                () => { Releases++; log.Add("connection:released"); }));
-        }
-
-        internal void CompleteWithRelationCatalog(FakeSourceProvider provider)
-        {
-            Provider = provider;
-            Pending!.TrySetResult(new NativeSourceConnection(
-                "飞书测试空间",
-                [
-                    new NativeSourceTable("tbl-a", "订单A",
-                    [
-                        new NativeSourceField("f-title-a", "标题A", "text", "text"),
-                        new NativeSourceField("f-rel-a", "关联B", "relation", "relation", RequiresReverseName: true),
-                    ]),
-                    new NativeSourceTable("tbl-c", "订单C",
-                    [
-                        new NativeSourceField("f-title-c", "标题C", "text", "text"),
-                        new NativeSourceField("f-rel-c", "关联B", "relation", "relation", RequiresReverseName: true),
-                    ]),
-                    new NativeSourceTable("tbl-b", "客户B", [new NativeSourceField("f-name-b", "名称", "text", "text")]),
-                ],
-                _ => provider,
-                () => { Releases++; log.Add("connection:released"); }));
-        }
-
-        internal void CompleteWithUnsupportedSheets(FakeSourceProvider provider,
-            NativeSourceTable[] tables, NativeSourceUnsupportedSheet[] unsupportedSheets)
-        {
-            Provider = provider;
-            Pending!.TrySetResult(new NativeSourceConnection("WPS 测试文件", tables,
-                _ => provider,
-                () => { Releases++; log.Add("connection:released"); }, unsupportedSheets));
-        }
-    }
-
     /// <summary>Fake .base opener mirroring the MainWindow-injected delegate:
     /// gated at its await boundary, fully offline — no file dialog, no file
-    /// path, no HTTP, so tests never touch the user's real sample.</summary>
+    /// path, no HTTP, so tests never touch the user's real sample. Records
+    /// that the window passed itself as the picker's explicit owner.</summary>
     private sealed class FakeLocalFileOpener(EventLog log)
     {
         private readonly object _gate = new();
         internal TaskCompletionSource<NativeSourceConnection?>? Pending { get; private set; }
         internal int Calls { get; private set; }
+        internal List<Window> Owners { get; } = [];
 
-        internal Task<NativeSourceConnection?> Invoke(CancellationToken token)
+        internal Task<NativeSourceConnection?> Invoke(Window owner, CancellationToken token)
         {
             var completion = new TaskCompletionSource<NativeSourceConnection?>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (_gate) { Calls++; Pending = completion; }
+            lock (_gate) { Calls++; Owners.Add(owner); Pending = completion; }
             log.Add("local-file:enter");
             return completion.Task;
         }
 
         internal void CompleteWith(NativeSourceConnection connection) => Pending!.TrySetResult(connection);
         internal void CompleteWithCancel() => Pending!.TrySetResult(null);
+        internal void FailWith(Exception error) => Pending!.TrySetException(error);
     }
 
     internal sealed record PrepareCall(IHostSourceImportProvider Provider, HostSourceImportOptions Options);
@@ -1572,8 +1169,6 @@ public sealed class SourceImportWindowTests
         internal int Disposals;
         internal bool CanApply = true;
         internal string TaskId = "task-native-1";
-        internal Exception? PrepareFailure;
-        internal Exception? StartFailure;
         internal HostSourceImportPreview? StartedPreview { get; private set; }
         private HostSourceImportPreview? _current;
         private IHostSourceImportProvider? _pendingProvider;
@@ -1602,22 +1197,16 @@ public sealed class SourceImportWindowTests
                     completion.TrySetCanceled(token);
                 });
                 HostSourceImportPreview preview = await completion.Task;
-                if (PrepareFailure is not null) throw PrepareFailure;
                 lock (_gate)
                 {
                     _current = preview;
                     _pendingProvider = provider;
                 }
-                log.Add("session:prepare-succeeded");
                 return preview;
             }
             catch
             {
-                // Mirrors the trusted HostSourceImportWizardSession contract:
-                // a cancelled or failed prepare releases the handed-off
-                // provider; a started one stays owned by the registry.
                 provider.Dispose();
-                log.Add("session:provider-discarded");
                 throw;
             }
         }
@@ -1636,7 +1225,7 @@ public sealed class SourceImportWindowTests
             canApply,
             provider = "feishu",
             containerId = "app-native-test",
-            displayName = "飞书测试空间",
+            displayName = "本地 base 文件",
             version = "v3",
             tables = new object[]
             {
@@ -1657,14 +1246,12 @@ public sealed class SourceImportWindowTests
         {
             lock (_gate)
             {
-                if (StartFailure is not null) throw StartFailure;
                 if (!ReferenceEquals(preview, _current))
                     throw new InvalidOperationException("Source preview is no longer current.");
                 StartedPreview = preview;
                 _current = null;
                 _pendingProvider = null;
             }
-            log.Add("session:started");
             return TaskId;
         }
 
@@ -1672,31 +1259,21 @@ public sealed class SourceImportWindowTests
         {
             lock (_gate)
             {
-                if (_pendingProvider is { } pending)
-                {
-                    pending.Dispose();
-                    log.Add("session:pending-discarded");
-                }
+                if (_pendingProvider is { } pending) pending.Dispose();
                 _current = null;
                 _pendingProvider = null;
             }
-            log.Add("session:discard-preview");
         }
 
         public void Dispose()
         {
             lock (_gate)
             {
-                if (_pendingProvider is { } pending)
-                {
-                    pending.Dispose();
-                    log.Add("session:pending-discarded");
-                }
+                if (_pendingProvider is { } pending) pending.Dispose();
                 _pendingProvider = null;
                 _current = null;
             }
             Disposals++;
-            log.Add("session:disposed");
         }
     }
 

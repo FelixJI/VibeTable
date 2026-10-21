@@ -1485,6 +1485,13 @@ def persist_product_e2e_evidence(
                 "35-source-import-reopened.png",
                 "35-source-import-negative.png",
                 "35-source-import-attachment-download.png",
+                "35-base-import-cancel.png",
+                "35-base-import-cancel.json",
+                "35-base-import-window.png",
+                "35-base-import-preview.png",
+                "35-base-import.json",
+                "35-base-import-history.png",
+                "35-base-import-reopened.png",
             ),
             "36-backend-import-exit": (
                 "36-import-aborted-after-backend-exit.png",

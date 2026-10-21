@@ -17,12 +17,16 @@ TITLES = {
     "write": "保存托管附件",
     "import": "Import table data",
     "export": "Export table data",
+    "base": "导入飞书 .base 文件",
 }
 FILES = {
     "read": "52-input.csv",
     "write": "52-output.bin",
     "import": "52-import.csv",
     "export": "52-export.csv",
+    # Fixed synthetic .base envelope written by the scenario 35 journey into
+    # the same Job-owned controls root; the picker never accepts a path.
+    "base": "35-feishu-base-import.base",
 }
 
 
@@ -47,7 +51,7 @@ def validate_file_request(request: dict[str, Any], controls: Path) -> Path:
     for part in (target, *target.parents):
         if part.exists() and getattr(part.lstat(), "st_file_attributes", 0) & 0x400:
             raise ValueError("picker target contains reparse point")
-    if request["kind"] in {"read", "import"} and not target.is_file():
+    if request["kind"] in {"read", "import", "base"} and not target.is_file():
         raise ValueError("picker source is missing")
     return target
 

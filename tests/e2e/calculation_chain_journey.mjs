@@ -282,6 +282,11 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
 
   // Change the source through its visible cell, then edit an already saved formula.
   await selectTable(page, sourceName);
+  // Dataset readiness precedes view restoration; only search the restored source grid.
+  await page.waitForFunction(field =>
+    document.querySelector(`.grid-wrapper .tabulator-col[tabulator-field="${field}"]`)
+      && document.querySelector('[data-testid="view-query-controls"][aria-busy="false"]'),
+  amount.physicalName);
   await fillNInput(page, "view-keyword", sources[0].marker);
   await waitForVisibleRowCount(page, 1);
   const sourceCell = page.locator(`.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${amount.physicalName}"]`).first();

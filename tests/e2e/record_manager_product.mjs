@@ -28,6 +28,17 @@ export async function setRecordManagerEnabled(page, recorder, rawBridgeRequest, 
   return after;
 }
 
+// The stale create form can hold the same value until the authoritative edit query settles.
+export async function waitForRecordEditForm(frame, fieldId, authoritativeValue) {
+  await frame.waitForFunction(({ fieldId, value }) => {
+    const form = document.querySelector("#record-form");
+    const save = form?.querySelector("#record-save");
+    if (!(save instanceof HTMLButtonElement) || save.textContent !== "预览并保存") return false;
+    const input = form.querySelector(`input[data-field-id="${fieldId}"]`);
+    return input instanceof HTMLInputElement && input.value === value;
+  }, { fieldId, value: authoritativeValue }, { timeout: 30000 });
+}
+
 /** Independent same-package WPF scenario; the original scenario 52 keeps its budget. */
 export async function runRecordManagerProduct(page, recorder, runtime, helpers) {
   const evidence = { authority: [], native: [] };
@@ -67,6 +78,7 @@ export async function runRecordManagerProduct(page, recorder, runtime, helpers) 
     recorder.check("record-manager create reaches authority exactly once", rows.length === 2 && !!created);
     await frame.locator('nav a[data-page="list"]').click();
     const createdRow = frame.locator("#list-body tr").filter({ hasText: "record-manager-created" }); await createdRow.waitFor(); await createdRow.click();
+    await waitForRecordEditForm(frame, field.fieldId, "record-manager-created");
     await input().fill("record-manager-updated");
     await frame.getByRole("button", { name: "预览并保存", exact: true }).click(); await confirm("update");
     rows = await authority();

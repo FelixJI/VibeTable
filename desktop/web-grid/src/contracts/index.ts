@@ -2126,7 +2126,7 @@ export interface WebPayloadMap {
     readonly operationId: string;
   };
   "command.list": Record<string, never>;
-  "sourceImport.open": { readonly provider: "feishu" | "wps" };
+  "sourceImport.open": { readonly provider: "feishuBase" };
   "command.run": { readonly commandId: "export.query"; readonly params: HostExportParameters };
   "shortcut.list": Record<string, never>;
   "shortcut.save": { readonly shortcut: HostShortcut };

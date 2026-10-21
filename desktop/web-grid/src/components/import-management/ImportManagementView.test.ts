@@ -48,6 +48,7 @@ function sourceMigration(overrides: Partial<SourceImportEntry> = {}): SourceImpo
     readWindow: null,
     snapshotFieldCount: 0,
     skippedFieldCount: 0,
+    notices: [],
     ...overrides,
   };
 }
@@ -78,26 +79,28 @@ describe("ImportManagementView", () => {
     );
   });
 
-  it("keeps local picker and native cloud intents distinct", async () => {
-    const wrapper = mountView({ canStartCloud: true });
+  it("keeps local picker and .base wizard intents distinct", async () => {
+    const wrapper = mountView({ canStartBaseImport: true });
     await wrapper.get('[data-testid="import-source-csv"]').trigger("click");
     await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
     expect(wrapper.emitted("newImport")).toHaveLength(2);
-    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
-    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
-    expect(wrapper.emitted("newCloudImport")).toEqual([["feishu"], ["wps"]]);
+    await wrapper.get('[data-testid="import-source-feishuBase"]').trigger("click");
+    expect(wrapper.emitted("newBaseImport")).toEqual([["feishuBase"]]);
     expect(wrapper.emitted("newImport")).toHaveLength(2);
-    expect(wrapper.get('[data-testid="import-source-wps"]').text()).toContain("file_id");
+    // The retired online cloud cards are gone from the catalog.
+    expect(wrapper.find('[data-testid="import-source-feishu"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="import-source-wps"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="import-source-feishuBase"]').text()).toContain(".base");
   });
 
-  it("allows create-only cloud import without an existing target table", async () => {
-    const wrapper = mountView({ canStart: false, canStartCloud: true });
+  it("allows create-only .base import without an existing target table", async () => {
+    const wrapper = mountView({ canStart: false, canStartBaseImport: true });
     expect((wrapper.get('[data-testid="import-source-csv"]').element as HTMLButtonElement).disabled).toBe(true);
-    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
-    expect(wrapper.emitted("newCloudImport")).toEqual([["feishu"]]);
-    await wrapper.setProps({ canStartCloud: false });
-    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
-    expect(wrapper.emitted("newCloudImport")).toHaveLength(1);
+    await wrapper.get('[data-testid="import-source-feishuBase"]').trigger("click");
+    expect(wrapper.emitted("newBaseImport")).toEqual([["feishuBase"]]);
+    await wrapper.setProps({ canStartBaseImport: false });
+    expect((wrapper.get('[data-testid="import-source-feishuBase"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect(wrapper.emitted("newBaseImport")).toHaveLength(1);
   });
   it("disables starting a new import while a data task is busy", () => {
     const wrapper = mountView({ canStart: false });

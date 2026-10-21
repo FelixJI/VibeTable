@@ -43,6 +43,11 @@ type Snapshot struct {
 	ReadWindow  ReadWindow   `json:"readWindow"`
 	Tables      []Table      `json:"tables"`
 	Attachments []Attachment `json:"attachments"`
+	// Notices are provider-authored fidelity disclosures (for example which
+	// source content a local export cannot carry). They are safe display
+	// text — never paths, credentials or URLs — and Preview bounds them
+	// before they reach the reviewed plan and the durable receipt.
+	Notices []string `json:"notices,omitempty"`
 }
 
 type Table struct {
@@ -170,6 +175,12 @@ type Plan struct {
 	ReadWindow  ReadWindow   `json:"readWindow"`
 	Tables      []TablePlan  `json:"tables"`
 	Attachments []Attachment `json:"attachments"`
+	// Notices mirrors the frozen source disclosures verbatim so the reviewed
+	// plan and the durable Result carry exactly what the user acknowledged.
+	// They never merge into Diagnostics: diagnostics are preflight review
+	// outcomes with a fixed code map, notices are source-level disclosure
+	// text that must stay visible in the history receipt.
+	Notices []string `json:"notices,omitempty"`
 	// Fields mirrors the durable Result provenance summaries exactly, so the
 	// persisted job records what was reviewed without rebuilding it later.
 	Fields      []FieldSummary `json:"fields"`

@@ -19,6 +19,16 @@ const (
 	MaxRecords       = 50000
 	MaxFields        = 512
 	MaxDiagnostics   = 100
+	// Source notices are bounded separately from diagnostics: they ride the
+	// durable receipt verbatim, so an over-budget list truncates with an
+	// explicit marker instead of consuming diagnostic review slots.
+	MaxSourceNotices      = 256
+	MaxSourceNoticeLength = 512
+	// Notices share the 1MiB PocketBase result_json column with the ≤512KiB
+	// provenance summaries and diagnostics; 128KiB keeps the whole envelope
+	// comfortably below the existing column budget. Never raise the database
+	// limit to fit unbounded disclosure text.
+	MaxSourceNoticeBytes = 128 << 10
 	// PocketBase JSON columns default to 1MiB. The provenance budget keeps
 	// headroom for the durable Result envelope around the field summaries.
 	MaxProvenanceBytes = 512 << 10
@@ -90,6 +100,12 @@ func Preview(ctx context.Context, source Snapshot, options Options, existingName
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
+	// Truncated disclosures must not consume the whole-source capacity budget.
+	notices, err := freezeNotices(source.Notices)
+	if err != nil {
+		return Plan{}, err
+	}
+	source.Notices = notices
 	raw, err := json.Marshal(source)
 	if err != nil || len(raw) > MaxSnapshotBytes {
 		return Plan{}, &Error{Code: "source_import.source_invalid", Message: "来源数据无法解析或超过本次迁移容量"}
@@ -108,8 +124,8 @@ func Preview(ctx context.Context, source Snapshot, options Options, existingName
 	}
 	plan := Plan{Contract: Contract, Provider: source.Provider, ContainerID: source.ContainerID,
 		DisplayName: source.DisplayName, Version: source.Version, ReadWindow: source.ReadWindow,
-		Tables: []TablePlan{}, Attachments: []Attachment{}, Fields: []FieldSummary{},
-		Diagnostics: []Diagnostic{}, CanApply: true}
+		Tables: []TablePlan{}, Attachments: []Attachment{}, Notices: notices,
+		Fields: []FieldSummary{}, Diagnostics: []Diagnostic{}, CanApply: true}
 	collector := &diagnosticCollector{plan: &plan}
 	add := collector.add
 	if source.ReadWindow.Consistency == "window" {
@@ -298,6 +314,69 @@ func Preview(ctx context.Context, source Snapshot, options Options, existingName
 
 func validID(value string) bool {
 	return strings.TrimSpace(value) == value && value != "" && len(value) <= 512 && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+// Keep a bounded prefix of the acknowledged file disclosures, including the
+// truncation marker and JSON array overhead in the durable byte budget.
+func freezeNotices(notices []string) ([]string, error) {
+	limit := MaxSourceNotices
+	truncated := len(notices) > limit
+	if truncated {
+		limit--
+	}
+	frozen := make([]string, 0, limit)
+	size, totalSize := 2, 2 // JSON array brackets
+	stopped := false
+	for index, notice := range notices {
+		if strings.TrimSpace(notice) != notice || notice == "" ||
+			utf8.RuneCountInString(notice) > MaxSourceNoticeLength ||
+			strings.ContainsAny(notice, "\x00\r\n") {
+			return nil, &Error{Code: "source_import.notices_invalid", Message: "来源告知内容或长度无效，已停止解析"}
+		}
+		encoded := jsonNoticeBytes(notice)
+		totalSize += encoded
+		if index > 0 {
+			totalSize++
+		}
+		if stopped {
+			continue
+		}
+		addition := encoded
+		if len(frozen) > 0 {
+			addition++
+		}
+		if len(frozen) >= limit || size+addition > MaxSourceNoticeBytes {
+			stopped, truncated = true, true
+			continue
+		}
+		frozen = append(frozen, notice)
+		size += addition
+	}
+	if !truncated {
+		return frozen, nil
+	}
+	for {
+		marker := fmt.Sprintf(
+			"来源告知共 %d 条（编码后约 %d KiB），超过 %d 条或 %d KiB 持久化预算，仅保留前 %d 条；其余告知已在导入窗口确认，未随本回执持久化",
+			len(notices), (totalSize+1023)/1024, MaxSourceNotices, MaxSourceNoticeBytes>>10, len(frozen))
+		addition := jsonNoticeBytes(marker)
+		if len(frozen) > 0 {
+			addition++
+		}
+		if size+addition <= MaxSourceNoticeBytes {
+			return append(frozen, marker), nil
+		}
+		size -= jsonNoticeBytes(frozen[len(frozen)-1])
+		frozen = frozen[:len(frozen)-1]
+		if len(frozen) > 0 {
+			size--
+		}
+	}
+}
+
+func jsonNoticeBytes(notice string) int {
+	encoded, _ := json.Marshal(notice) // Marshaling a string cannot fail.
+	return len(encoded)
 }
 
 // reciprocalDefaultName is the fixed local display name for the reverse

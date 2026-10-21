@@ -1,6 +1,6 @@
 """Read-only projections of Go source migrations; Python executes no migrations."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -89,6 +89,12 @@ class SourceImportResult(CamelModel):
     session_epoch: int = Field(ge=1)
     read_window: SourceImportWindow
     fields: list[SourceImportFieldSummary]
+    # Acknowledged source fidelity disclosures persisted by the Go receipt
+    # (a bounded summary; Go enforces the entry-count/length/byte budget at
+    # preflight). Optional on the wire: legacy receipts predate it.
+    notices: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
+        default_factory=list, max_length=256
+    )
 
     @model_validator(mode="after")
     def validate_counts(self) -> SourceImportResult:
