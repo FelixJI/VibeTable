@@ -6997,7 +6997,7 @@ internal sealed class ValueOnlyPeer(FrameworkElement owner) : FrameworkElementAu
 
 
 def test_native_document_observer_rejects_over_limit_value_pattern(
-    native_value_only_fixture: Path,
+    native_value_only_fixture: Path, tmp_path: Path
 ) -> None:
     runner._prepare_native_uia_observer()
     with _owned_native_uia_window([str(native_value_only_fixture)]) as (native, hwnd):
@@ -7012,6 +7012,33 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
         assert "PRIVATE_VALUE_ONLY" not in error.stderr
         assert "VALUE_ONLY_FIXTURE" not in error.stderr
         assert "output end" not in error.stderr
+        # The same real WPF window verifies the plugin-chrome observer's fixed
+        # stage boundaries (root, tree, capture, serialize): each named line
+        # carries only elapsedMs, so a future timeout can locate its stall.
+        chrome_png = tmp_path / "plugin-chrome-stages.png"
+        chrome = subprocess.run(
+            [
+                str(runner.NATIVE_UIA_OBSERVER_EXE),
+                "--screenshot",
+                str(hwnd),
+                str(chrome_png),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert json.loads(chrome.stdout)["buttons"] == []
+        for stage in (
+            "plugin-root end",
+            "plugin-tree end",
+            "plugin-capture end",
+            "plugin-serialize end",
+        ):
+            assert f"UIA_STAGE {stage} elapsedMs=" in chrome.stderr
+        assert chrome_png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 @pytest.mark.parametrize(

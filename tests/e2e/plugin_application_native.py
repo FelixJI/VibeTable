@@ -444,6 +444,23 @@ def handle_plugin_native_request(
             "action": request.get("action"),
             "stage": request.get("stage"),
         }
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            # TimeoutExpired/CalledProcessError already carry the observer's
+            # stderr stages; str(error) alone drops them. Keep the bounded
+            # uiaFailure contract of the document observer path (bytes decode,
+            # 4096 boundary), never stdout, which holds chrome document content.
+            stderr = error.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            uia_failure: dict[str, str | int | float | None] = {
+                "returnCode": error.returncode
+                if isinstance(error, subprocess.CalledProcessError)
+                else None,
+                "stderr": stderr[:4096],
+            }
+            if isinstance(error, subprocess.TimeoutExpired):
+                uia_failure["timeoutSeconds"] = error.timeout
+            result["uiaFailure"] = uia_failure
         if native is not None and getattr(native, "foreground_observation", None) is not None:
             result["foreground"] = native.foreground_observation
         if isinstance(error, ContrastRestorationError):

@@ -47,12 +47,15 @@ internal static class Program
         SetProcessDpiAwarenessContext(new IntPtr(-4));
         Console.OutputEncoding = new UTF8Encoding(false, true);
         var hwnd = new IntPtr(value);
+        Stage("plugin-root begin");
         var root = AutomationElement.FromHandle(hwnd);
         var bounds = root.Current.BoundingRectangle;
+        Stage("plugin-root end");
         var buttons = new List<object>();
         var nativeElements = new Stack<AutomationElement>();
         nativeElements.Push(root);
         int visited = 0;
+        Stage("plugin-tree begin");
         while (nativeElements.TryPop(out var element))
         {
             if (++visited > 512) return Reject("UIA_NATIVE_TREE_LIMIT");
@@ -73,11 +76,13 @@ internal static class Program
                 enabled = element.Current.IsEnabled, focused = element.Current.HasKeyboardFocus,
                 x = box.X, y = box.Y, width = box.Width, height = box.Height });
         }
+        Stage("plugin-tree end", $"count={buttons.Count}");
         if (args[0] == "--screenshot")
         {
             if (args.Length != 3 || !Path.IsPathFullyQualified(args[2])) return Reject("UIA_ARGUMENT_INVALID");
             int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
             if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
+            Stage("plugin-capture begin");
             IntPtr source = GetDC(IntPtr.Zero), destination = CreateCompatibleDC(source);
             IntPtr bitmap = CreateCompatibleBitmap(source, width, height);
             if (source == IntPtr.Zero || destination == IntPtr.Zero || bitmap == IntPtr.Zero)
@@ -99,10 +104,13 @@ internal static class Program
                 SelectObject(destination, prior); DeleteObject(bitmap); DeleteDC(destination);
                 ReleaseDC(IntPtr.Zero, source);
             }
+            Stage("plugin-capture end");
         }
+        Stage("plugin-serialize begin");
         Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid = root.Current.ProcessId,
             title = root.Current.Name, x = bounds.X, y = bounds.Y, width = bounds.Width,
             height = bounds.Height, dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
+        Stage("plugin-serialize end");
         return 0;
     }
 

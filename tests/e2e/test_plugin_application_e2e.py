@@ -431,6 +431,74 @@ def test_native_chrome_foreign_owner_fails_without_observation_retry(tmp_path, m
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("as_bytes", [True, False])
+@pytest.mark.parametrize("failure", ["timeout", "nonzero"])
+def test_native_plugin_observer_failure_keeps_bounded_stage_stderr_without_input(
+    tmp_path: Path, monkeypatch, failure: str, as_bytes: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    # The observer's stderr carries fixed UIA_STAGE boundaries; a failure
+    # result must keep them bounded (4096) instead of only str(error), must
+    # never keep the stdout chrome document, and must not send input.
+    sent: list[str] = []
+    stderr = (
+        "UIA_STAGE plugin-root begin elapsedMs=2\n"
+        "UIA_STAGE plugin-capture begin elapsedMs=4100\n" + "x" * 5000
+    )
+    command = ["NativeUiaObserver.exe", "--screenshot", "14"]
+    payload = stderr.encode("utf-8") if as_bytes else stderr
+
+    def observe(*_args, **_kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                command, 5, output=b'{"secret": "PRIVATE_CHROME_STDOUT"}', stderr=payload
+            )
+        raise subprocess.CalledProcessError(
+            1, command, output=b'{"secret": "PRIVATE_CHROME_STDOUT"}', stderr=payload
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native, "_send_input", lambda *_args, **_kwargs: sent.append("input"))
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *_args: None,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "observer-failure",
+            "action": "click",
+            "buttonId": "plugin-manage",
+            "stage": "application",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["requestId"] == "observer-failure"
+    uia_failure = result["uiaFailure"]
+    if failure == "timeout":
+        assert uia_failure["returnCode"] is None
+        assert uia_failure["timeoutSeconds"] == 5
+        assert "timed out after 5 seconds" in result["error"]
+    else:
+        assert uia_failure["returnCode"] == 1
+        assert "timeoutSeconds" not in uia_failure
+    assert uia_failure["stderr"].startswith("UIA_STAGE plugin-root begin elapsedMs=2")
+    assert len(uia_failure["stderr"]) == 4096
+    assert sent == []
+    assert "PRIVATE_CHROME_STDOUT" not in json.dumps(result)
+
+
 def test_failed_on_scheme_observation_still_restores_but_cannot_exempt_mismatch(
     tmp_path, monkeypatch
 ):
