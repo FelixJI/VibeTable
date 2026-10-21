@@ -2006,6 +2006,283 @@ def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Pa
     assert (destination / "product-e2e-report.json").is_file()
 
 
+def _s35_audit_drain_run(tmp_path: Path, status: str) -> Path:
+    run = tmp_path / "source" / "20261021T125835Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "scenarios": [{"scenario": "35-data-io-interoperability", "status": status}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    scenario_root = run / "35-data-io-interoperability"
+    scenario_root.mkdir()
+    for filename in SCENARIO_SCREENSHOTS["35-data-io-interoperability"]:
+        (scenario_root / filename).write_bytes(b"synthetic unit-test image payload")
+    return run
+
+
+def _s35_pocketbase_log_lines() -> list[str]:
+    full = json.dumps(
+        {
+            "durationMs": 12.5,
+            "errorCode": None,
+            "event": "snapshot.freeze.audit.drain.returned",
+            "jobId": None,
+            "level": "info",
+            "module": "snapshot",
+            "operationId": "op-full",
+            "requestId": None,
+            "sessionEpoch": None,
+            "timestamp": "2026-10-21T13:12:44.5471276Z",
+            "workspaceId": None,
+            "auditDrain": {
+                "source": "business",
+                "phase": "completed",
+                "appended": 3,
+                "duplicates": 1,
+                "acknowledged": 2,
+                "pendingCalls": 4,
+                "appendCalls": 5,
+                "ackCalls": 6,
+                "pbReadWaitCount": 7,
+                "pbWriteWaitCount": 8,
+                "pbReadInUseDelta": -2,
+                "pbWriteInUseDelta": 1,
+                "pendingMs": 0.25,
+                "appendMs": 1,
+                "appendMaxMs": 2.5,
+                "ackMs": 0,
+                "pbReadWaitMs": 0.5,
+                "pbWriteWaitMs": 1.5,
+            },
+        }
+    )
+    return [
+        "not json 正文 secret customer@example.com",
+        '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:44.1Z",'
+        '"auditDrain":{"source":"secret-source","phase":"ack"}}',
+        '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:44.2Z",'
+        '"auditDrain":{"source":"file","phase":"ack","appended":3,"query":"secret"}}',
+        '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:44.3Z",'
+        '"auditDrain":{"source":"business","phase":"ack","appended":true}}',
+        '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:44.4Z",'
+        '"auditDrain":{"source":"business","phase":"ack","appended":-1}}',
+        full,
+        '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:45.0Z",'
+        '"operationId":null,"auditDrain":{"source":"file","phase":"between_records","appended":2}}',
+    ]
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, status)
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "3eb51dfa-e249-44e1-bf06-2767f64ffd27"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+    (logs / "backend.log").write_text("backend secret body", encoding="utf-8")
+    (logs / "pocketbase.log").write_text(
+        "\n".join(_s35_pocketbase_log_lines()) + "\n",
+        encoding="utf-8",
+    )
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    evidence = destination / "35-data-io-interoperability" / "35-audit-drain.json"
+    serialized = evidence.read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["event"] == "snapshot.freeze.audit.drain.returned"
+    assert payload["status"] == "measured"
+    assert payload["logsRead"] == 1
+    assert payload["entriesTotal"] == 2
+    assert payload["truncated"] is False
+    assert payload["maximumEntries"] == 64
+    assert [entry["operationId"] for entry in payload["entries"]] == ["op-full", None]
+    first = payload["entries"][0]
+    assert first["source"] == "business"
+    assert first["phase"] == "completed"
+    assert first["appended"] == 3
+    assert first["pbReadInUseDelta"] == -2
+    assert first["pbWriteInUseDelta"] == 1
+    assert first["pendingMs"] == 0.25
+    second = payload["entries"][1]
+    assert second["source"] == "file"
+    assert second["phase"] == "between_records"
+    assert set(second) == {"timestamp", "operationId", "source", "phase", "appended"}
+    # Dirty bodies, unknown keys, and illegal values never reach the archive.
+    for forbidden in ("secret", "正文", "customer@", "query", "backend"):
+        assert forbidden not in serialized
+    if status == "passed":
+        # A passing run never archives the runtime tree or raw logs.
+        assert not (destination / "_runtime").exists()
+        assert not list(destination.rglob("pocketbase.log"))
+        assert not list(destination.rglob("backend.log"))
+    else:
+        # The existing failure diagnostics logic is unchanged and still
+        # archives the fixed runtime log whitelist next to the projection.
+        assert (
+            destination
+            / "_runtime"
+            / "35"
+            / "host"
+            / "workspace-logs"
+            / "3eb51dfa-e249-44e1-bf06-2767f64ffd27"
+            / "pocketbase.log"
+        ).is_file()
+
+
+def test_product_e2e_evidence_marks_missing_s35_audit_drain_logs_as_empty(
+    tmp_path: Path,
+) -> None:
+    _s35_audit_drain_run(tmp_path, "passed")
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["status"] == "empty"
+    assert payload["logsRead"] == 0
+    assert payload["entriesTotal"] == 0
+    assert payload["truncated"] is False
+    assert payload["entries"] == []
+
+
+@pytest.mark.parametrize(
+    "audit_drain",
+    [
+        {"source": ["business"], "phase": "ack"},
+        {"source": {"phase": "business"}, "phase": "ack"},
+        {"source": "business", "phase": ["ack"]},
+        {"source": "business", "phase": {"source": "ack"}},
+        {"source": "business", "phase": "ack", "appended": 2**64},
+        {"source": "business", "phase": "ack", "pbReadInUseDelta": -(2**63) - 1},
+        {"source": "business", "phase": "ack", "pendingMs": 2**64},
+        {"source": "business", "phase": "ack", "pendingMs": float("nan")},
+        {"source": "business", "phase": "ack", "pendingMs": float("inf")},
+    ],
+)
+def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
+    tmp_path: Path,
+    audit_drain: dict[str, object],
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+    (logs / "pocketbase.log").write_text(
+        json.dumps(
+            {
+                "event": "snapshot.freeze.audit.drain.returned",
+                "timestamp": "2026-10-21T13:12:44Z",
+                "operationId": "op-illegal",
+                "auditDrain": audit_drain,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    evidence = destination / "35-data-io-interoperability" / "35-audit-drain.json"
+    serialized = evidence.read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["status"] == "empty"
+    assert payload["logsRead"] == 1
+    assert payload["entries"] == []
+    assert "op-illegal" not in serialized
+
+
+def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+    lines = [
+        json.dumps(
+            {
+                "event": "snapshot.freeze.audit.drain.returned",
+                "timestamp": f"2026-10-21T13:13:{index:02d}Z",
+                "operationId": f"op-{index}",
+                "auditDrain": {"source": "business", "phase": "ack"},
+            }
+        )
+        for index in range(70)
+    ]
+    (logs / "pocketbase.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["status"] == "measured"
+    assert payload["entriesTotal"] == 70
+    assert payload["truncated"] is True
+    assert len(payload["entries"]) == 64
+    assert payload["entries"][0]["operationId"] == "op-0"
+    assert payload["entries"][-1]["operationId"] == "op-63"
+
+
 def test_product_e2e_evidence_persists_interrupted_report_and_required_gate_rejects_it(
     tmp_path: Path,
 ) -> None:
@@ -3173,6 +3450,10 @@ def test_scenario_screenshots_archive_only_declared_images(
         relative = f"{scenario_id}/{filename}"
         expected.add(relative)
         assert (retained / relative).read_bytes() == filename.encode()
+    if scenario_id == "35-data-io-interoperability":
+        # The bounded close-audit measurement projection is always archived,
+        # for passing and failed S35 runs alike.
+        expected.add(f"{scenario_id}/35-audit-drain.json")
     assert {
         path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
     } == expected
