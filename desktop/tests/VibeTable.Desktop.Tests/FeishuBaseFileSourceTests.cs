@@ -293,6 +293,62 @@ public sealed class FeishuBaseFileSourceTests
             "不得泛称所有 .base 导出不含附件");
     }
     [TestMethod]
+    [DataRow(17, "Attachment", false)]
+    [DataRow(999, "Widget", true)]
+    [DataRow(1, "Text", true)]
+    [DataRow(20, "Formula", true)]
+    [DataRow(3, "SingleSelect", false)]
+    [DataRow(11, "User", true)]
+    [DataRow(19, "Lookup", true)]
+    public async Task ReadFileAsync_LongNoticeLabelsFitGoContract(int type, string uiType, bool supplementary)
+    {
+        string tableName = new string('表', 121) + (supplementary ? "😀" : "表") + new string('表', 134);
+        string fieldName = new string('字', 121) + (supplementary ? "🚀" : "字") + new string('字', 134);
+        Assert.AreEqual(256, tableName.EnumerateRunes().Count());
+        Assert.AreEqual(256, fieldName.EnumerateRunes().Count());
+        if (type == 999) uiType = "类\0\r\n" + new string('类', 118) + "😀" + new string('余', 700);
+        object? value = type switch
+        {
+            1 => new object[] { Seg("前"), UrlSeg("链接", "https://example.com/notice") },
+            3 => "optNotDeclared00001",
+            11 => new { users = new[] { new { name = "缺少身份" } } },
+            20 => null,
+            _ => new { raw = "保留原值😀" },
+        };
+        var fields = new Dictionary<string, object?>
+        {
+            [FldTitleA] = Field("标题", 1, "Text"),
+            [FldOddB] = Field(fieldName, type, uiType, type == 3
+                ? new { options = new[] { new { id = "optDeclared00001", name = "已知选项" } } } : null),
+        };
+        var records = new Dictionary<string, object?>
+        {
+            ["recSynthetic000001"] = new Dictionary<string, object?> { [FldOddB] = Cell(value) },
+        };
+        FeishuBaseFileDocument document = await ReadEnvelopeAsync(WriteEnvelope(SnapshotOf(
+            TableItem(fields, records, FldTitleA, tableName: tableName))));
+        HostSourceImportTable table = document.Snapshot.Tables.Single();
+        Assert.AreEqual(tableName, table.Name);
+        Assert.AreEqual(fieldName, table.Fields.Single(field => field.Id == FldOddB).Name);
+        if (value is not null && type != 11)
+            Assert.AreEqual(JsonSerializer.SerializeToElement(value).GetRawText(), table.Records[0].Values[FldOddB].GetRawText());
+        string notice = document.Notices.Single(item => item.StartsWith("表 ", StringComparison.Ordinal));
+        Assert.IsTrue(notice.EnumerateRunes().Count() <= 512, "Go rejects notices longer than 512 runes.");
+        Assert.AreEqual(notice.Trim(), notice);
+        Assert.IsFalse(notice.Any(character => character is '\0' or '\r' or '\n'));
+        _ = new UTF8Encoding(false, true).GetBytes(notice);
+        Assert.IsFalse(notice.Contains('\uFFFD'));
+        StringAssert.Contains(notice, "已截断");
+        Assert.IsTrue(notice.EndsWith("需要用户确认。", StringComparison.Ordinal));
+        if (type == 17) StringAssert.Contains(notice, "本期暂不支持导入 ZIP");
+        if (type == 999)
+        {
+            StringAssert.Contains(notice, "缺少已验证的原生映射");
+            StringAssert.Contains(notice, @"\0\r\n");
+        }
+        CollectionAssert.AreEqual(document.Notices, document.Snapshot.Notices);
+    }
+    [TestMethod]
     public async Task ReadFileAsync_OptionalMembersAbsent_StillSucceeds()
     {
         FeishuBaseFileDocument document = await ReadEnvelopeAsync(WriteEnvelope(HappySnapshot()));
