@@ -18,7 +18,12 @@ def test_record_manager_real_source_dom_contract() -> None:
     node = resolve_node(ROOT)
     assert node is not None
     completed = subprocess.run(
-        [node, "--test", str(ROOT / "tests/e2e/record_manager_ui.test.mjs")],
+        [
+            node,
+            "--test",
+            str(ROOT / "tests/e2e/record_manager_ui.test.mjs"),
+            str(ROOT / "tests/e2e/record_manager_product.test.mjs"),
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,

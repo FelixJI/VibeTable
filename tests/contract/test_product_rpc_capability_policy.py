@@ -42,8 +42,19 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 117
-    assert len(manifest["eventTopics"]) == 7
+    assert len(manifest["rpcMethods"]) == 118
+    assert len(manifest["eventTopics"]) == 6
+    preservation = next(
+        item for item in manifest["rpcMethods"] if item["method"] == "pluginPreservation.snapshot"
+    )
+    assert preservation == {
+        "method": "pluginPreservation.snapshot",
+        "scope": "workspace",
+        "audience": "hostOnly",
+        "capabilityId": "plugin.preservation",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
         "method": "schema.getTable",
@@ -123,6 +134,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",
+        "pluginPreservation.snapshot",
         "preset.delete",
         "preset.list",
         "preset.save",
@@ -198,7 +210,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     assert events["realtime.recovered"]["owner"] == "goSidecar"
     assert events["task.changed"]["owner"] == "wpfHost"
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
-    assert events["plugin.file.requested"]["audience"] == "hostOnly"
+    assert "plugin.file.requested" not in events
 
 
 def test_generated_manifest_schema_is_closed_for_joined_entries() -> None:
@@ -315,6 +327,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",
+        "pluginPreservation.snapshot",
         "preset.delete",
         "preset.list",
         "preset.save",

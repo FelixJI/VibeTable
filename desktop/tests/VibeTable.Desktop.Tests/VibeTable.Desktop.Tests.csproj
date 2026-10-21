@@ -41,4 +41,8 @@
     <ProjectReference Include="..\..\src\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\plugin-preservation-compression.json"
+                      LogicalName="PluginPreservationCompressionFixtures" />
+  </ItemGroup>
 </Project>

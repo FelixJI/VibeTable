@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import { acknowledgeRetiredLookupFailuresInPage } from "./bridge_failure_policy.mjs";
+
 // #435 synthetic source-migration journey on the real WPF management page.
 //
 // The Host TestMode seam (Astra) owns the synthetic provider and its fixture;
@@ -871,6 +873,7 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   ];
   recorder.check("after reopen rows and relations still map to the same local records",
     reopenedGraphProblems.length === 0, { problems: reopenedGraphProblems });
+  await page.evaluate(acknowledgeRetiredLookupFailuresInPage, originalSession);
 
   await openManagement();
   const reopenedRow = page.locator(

@@ -344,6 +344,7 @@ export function usePluginService(): PluginService {
   }
 
   function consumeInstallPlan(plan: PluginInstallPlan): PluginInstallPlan {
+    if (plan.blockingReasons?.length) throw new Error("插件需要迁移，无法提交安装计划。");
     try {
       const consumed = installPlanLease.consume(plan, ensureProjectReady());
       syncInstallPlan();

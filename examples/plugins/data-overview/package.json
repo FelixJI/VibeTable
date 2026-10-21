@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "build": "uv run --project ../../.. python ../../../scripts/vibetable_plugin.py build ."
+    "build": "uv run --frozen --no-sync --project ../../.. python ../../../scripts/vibetable_plugin.py build ."
   },
   "devDependencies": {
     "esbuild": "0.28.1",

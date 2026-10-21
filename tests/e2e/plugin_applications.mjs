@@ -112,6 +112,238 @@ async function headless(page, id, actionId) {
   await page.getByTestId("plugin-headless-runner").waitFor({ timeout: 30000 });
 }
 
+export async function exerciseApplicationConfirmationExpiry(page, frame, recorder, runtime, helpers, state) {
+  const { rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage } = helpers;
+  const rows = async () => (await rawBridgeRequest(page, "query.page", {
+    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  })).payload.rows;
+  const audit = async () => (await rawBridgeRequest(page, "plugin.audit.list", {
+    projectKey: state.projectKey, pluginId: A,
+  })).payload;
+  const task = async taskId => (await rawBridgeRequest(page, "plugin.task.get", { taskId })).payload;
+  const unchanged = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  async function begin(value) {
+    await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);
+    const began = Date.now();
+    const planId = await frame.evaluate(async value => {
+      const context = await call("context.read");
+      const description = await call("data.describe", { accepts: ["vibetable.plugin-data.v2"], collection: context.collection });
+      const field = description.fields.find(item => !item.readonly && item.logicalType === "text").fieldId;
+      const page = await call("data.query", { contract: "vibetable.plugin-query.v2", collection: context.collection,
+        fields: ["id", field], sorts: [{ field: "id", direction: "asc" }], pageSize: 200 });
+      const row = page.items[0];
+      const preview = await call("mutation.preview", { contract: "vibetable.surface-mutation-plan.v1",
+        collection: description.collection, schemaRevision: description.schemaRevision,
+        operations: [{ kind: "update", primaryKey: String(row.id), expectedDigest: page.rowGuards[String(row.id)], values: { [field]: value } }] });
+      const probe = window.__applicationConfirmationQualification = { planId: preview.planId, terminal: null };
+      void call("mutation.submit", { planId: preview.planId }).then(
+        result => { probe.terminal = { result }; }, error => { probe.terminal = { error: error.code ?? error.message }; });
+      return preview.planId;
+    }, value);
+    const pending = await waitForCapturedBridgeMessage(page, 30000);
+    await page.locator(".host-confirmation").waitFor({ timeout: 30000 });
+    const taskId = await page.locator(".host-runtime:has(.host-confirmation)").getAttribute("data-task-id");
+    const snapshot = await task(taskId);
+    recorder.check("confirmation qualification binds the real Host task and exact interaction",
+      Boolean(planId) && snapshot.state === "running" && snapshot.runId === pending.payload?.snapshot?.runId
+        && snapshot.pluginId === A && snapshot.projectKey === state.projectKey
+        && snapshot.collection === state.tableId, { planId, task: snapshot, pending });
+    return { planId, taskId, runId: snapshot.runId, pending: pending.payload.snapshot.pendingConfirmation, began };
+  }
+  async function terminal() {
+    await frame.waitForFunction(() => Boolean(window.__applicationConfirmationQualification?.terminal), null, { timeout: 30000 });
+    return frame.evaluate(() => window.__applicationConfirmationQualification.terminal);
+  }
+  async function replay(planId) {
+    return frame.evaluate(async planId => {
+      try { return { result: await call("mutation.submit", { planId }) }; }
+      catch (error) { return { error: error.code ?? error.message }; }
+    }, planId);
+  }
+
+  const original = await rows();
+  const expired = await begin("must-not-commit-after-expiry");
+  const observed = await nativePluginInput(runtime, "observe", "plugin-confirm-approve", "confirm");
+  const expiresAt = expired.pending.expiresAt * 1000;
+  recorder.check("real native confirmation retains the product's full 120 second validity",
+    observed.status === "completed" && Number.isFinite(expiresAt) && expiresAt - expired.began >= 120000,
+    { observed, began: expired.began, expiresAt });
+  // Leave the real WPF confirmation untouched through expiry and two 250 ms native timer ticks.
+  while (Date.now() <= expiresAt + 500) await page.waitForTimeout(Math.min(1000, expiresAt + 501 - Date.now()));
+  const expiredReceipt = await terminal();
+  await page.locator(".host-confirmation").waitFor({ state: "hidden", timeout: 30000 });
+  const expiredTask = await task(expired.taskId);
+  const expiredAudit = await audit();
+  recorder.check("unanswered confirmation expires as a known timeout with zero business writes",
+    expiredReceipt.error === "plugin_timeout" && expiredTask.state === "failed"
+      && expiredTask.error?.code === "plugin_timeout" && unchanged(original, await rows())
+      && expiredAudit.filter(event => event.eventType === "action" && event.runId === expired.runId
+        && event.outcome === "failed" && event.errorCode === "plugin_timeout").length === 1,
+    { expiredReceipt, task: expiredTask, events: expiredAudit, original });
+  const lateNative = await nativePluginInput(runtime, "click", "plugin-confirm-approve", "confirm");
+  const late = await rawBridgeRequest(page, "plugin.interaction.resolve", {
+    runId: expired.runId, interactionId: expired.pending.interactionId, decision: "approved",
+  });
+  const stale = await replay(expired.planId);
+  recorder.check("expired native confirmation and consumed plan cannot be revived or automatically replayed",
+    lateNative.status === "failed" && lateNative.error === "expected one current owned native plugin window"
+      && late.type === "plugin.interaction.resolve" && late.payload?.status === "expired"
+      && stale.error === "plugin_plan_stale" && unchanged(original, await rows())
+      && unchanged(expiredTask, await task(expired.taskId)) && unchanged(expiredAudit, await audit()),
+    { lateNative, late, stale });
+
+  const fresh = await begin("native-approved");
+  recorder.check("expiry recovery requests a fresh plan and confirmation", fresh.planId !== expired.planId
+    && fresh.pending.interactionId !== expired.pending.interactionId);
+  const approved = await nativePluginInput(runtime, "click", "plugin-confirm-approve", "approved");
+  const receipt = await terminal();
+  const confirmedTask = await task(fresh.taskId);
+  const confirmedRows = await rows();
+  const confirmedAudit = await audit();
+  recorder.check("fresh plan recovers through one actual native approval and one durable success",
+    approved.status === "completed" && receipt.result?.status === "succeeded" && receipt.result.taskId === fresh.taskId
+      && receipt.result.receipt && confirmedTask.state === "succeeded"
+      && confirmedRows.length === original.length && Object.values(confirmedRows[0]).includes("native-approved")
+      && confirmedAudit.filter(event => event.eventType === "action" && event.runId === fresh.runId
+        && event.outcome === "succeeded").length === 1, { approved, receipt, task: confirmedTask, rows: confirmedRows });
+  const repeated = await replay(fresh.planId);
+  recorder.check("repeated confirmed mutation.submit preserves its acknowledged receipt without another write or audit",
+    repeated.error === "plugin_plan_stale"
+      && unchanged(confirmedTask, await task(fresh.taskId)) && unchanged(confirmedRows, await rows())
+      && unchanged(confirmedAudit, await audit()), { repeated, receipt, task: confirmedTask });
+}
+
+export async function exerciseApplicationWorkspaceIsolation(page, recorder, runtime, helpers, state, originalFrame) {
+  const { rawBridgeRequest, createSimpleTable, applyProductMutation, openWorkspaceCenterFromSwitcher,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage, switchWorkspaceByName, selectTable } = helpers;
+  const rows = async tableId => (await rawBridgeRequest(page, "query.page", {
+    tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  })).payload.rows;
+  const catalog = async projectKey => (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload;
+  const oldRows = await rows(state.tableId);
+  const first = (await catalog(state.projectKey)).find(item => item.pluginId === A);
+  const oldToken = await originalFrame.evaluate(() => window.name);
+  const readControl = path.join(runtime.controlsDir, "attachment-replacement-source.txt");
+  const previousRead = await fs.readFile(readControl, "utf8");
+  const firstFile = path.join(runtime.controlsDir, "48-workspace-a-private.txt");
+  const secondFile = path.join(runtime.controlsDir, "48-workspace-b-private.txt");
+  await fs.writeFile(firstFile, "WORKSPACE_A_PRIVATE_FILE");
+  await fs.writeFile(secondFile, "WORKSPACE_B_FILE");
+  try {
+    // Normal package inspection/install grants pickRead; the existing Host
+    // test-mode picker only chooses these scoped synthetic files, never a path RPC.
+    await fs.writeFile(readControl, `${firstFile}\n`);
+    const held = await originalFrame.evaluate(() => call("file.pickRead", { mediaTypes: ["text/plain"] }));
+    recorder.check("first workspace issues a real unread surface file grant", typeof held?.grantId === "string" && held.grantId.length > 0);
+    const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    await openWorkspaceCenterFromSwitcher(page);
+    await page.getByTestId("workspace-create").click();
+    await page.getByTestId("workspace-flow-modal").locator("input").first().fill("E2E Plugin Scope Isolation");
+    await page.getByTestId("workspace-flow-confirm").click();
+    const target = page.getByTestId("workspace-center").getByRole("button", { name: /E2E Plugin Scope Isolation/ });
+    await target.waitFor({ state: "visible", timeout: 60000 });
+    await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+    await target.click();
+    const opened = await waitForCapturedBridgeMessage(page, 60000);
+    const session = opened.payload.session;
+    recorder.check("same-plugin isolation uses a second real writable workspace and newer epoch",
+      session.workspaceId !== state.workspaceId && session.sessionEpoch > originalSession.sessionEpoch, { session });
+    const projectKey = `local:${session.workspaceId.replaceAll("-", "").toLowerCase()}`;
+    await page.getByTestId("nav-tables").click();
+    const table = await createSimpleTable(page, "Other Application Tasks", "Text");
+    await applyProductMutation(page, table.tableId, [{ kind: "insert", recordId: null,
+      values: { [table.field.physicalName]: "WORKSPACE_B_PRIVATE_RECORD" } }], "application-other-workspace");
+    await installApplication(page, runtime);
+    const installed = (await catalog(projectKey)).find(item => item.pluginId === A);
+    recorder.check("the same package has a distinct installation authority in each workspace",
+      installed.pluginId === first.pluginId && installed.packageHash === first.packageHash
+        && installed.installationId !== first.installationId && installed.projectKey === projectKey, { first, installed });
+    let frame = await openApplication(page);
+    const freshContext = await frame.evaluate(() => call("context.read"));
+    const privateBefore = await frame.evaluate(() => call("storage.get", { key: "scope" }));
+    const visibleRows = await frame.locator("#rows").innerText();
+    recorder.check("new workspace has a working fresh plugin scope without old private settings",
+      freshContext.projectKey === projectKey && freshContext.collection === table.tableId && privateBefore === null
+        && visibleRows.includes("WORKSPACE_B_PRIVATE_RECORD") && !visibleRows.includes("synthetic original"), { freshContext, privateBefore, visibleRows });
+    const denied = await frame.evaluate(async ({ oldToken, grantId, collection }) => {
+      const attempt = async (method, params, token) => {
+        try { return { accepted: true, value: await call(method, params, token) }; }
+        catch (error) { return { code: error.code, message: error.message }; }
+      };
+      return {
+        token: await attempt("context.read", {}, oldToken),
+        grant: await attempt("file.read", { grantId }),
+        table: await attempt("data.query", { contract: "vibetable.plugin-query.v2", collection, fields: ["id"], pageSize: 1 }),
+      };
+    }, { oldToken, grantId: held.grantId, collection: state.tableId });
+    recorder.check("old workspace token, unread grant and table cannot authorize the same plugin in the new workspace",
+      denied.token.code === "plugin_source_denied" && denied.grant.code === "plugin_file_denied"
+        && denied.table.code === "plugin_read_denied" && originalFrame.isDetached()
+        && !JSON.stringify(denied).includes("synthetic original") && !JSON.stringify(denied).includes("WORKSPACE_A_PRIVATE_FILE"), { denied, oldFrameDetached: originalFrame.isDetached() });
+    await fs.writeFile(readControl, `${secondFile}\n`);
+    const freshFile = await frame.evaluate(async () => {
+      const grant = await call("file.pickRead", { mediaTypes: ["text/plain"] });
+      const chunks = [];
+      let bytes = 0;
+      try {
+        for (;;) {
+          const block = await call("file.read", { grantId: grant.grantId });
+          const chunk = atob(block.base64);
+          if (typeof block.eof !== "boolean" || chunk.length > 256 * 1024
+            || bytes + chunk.length > 1024 * 1024 || chunk.length === 0 && !block.eof)
+            throw new Error("invalid workspace file block");
+          chunks.push(chunk);
+          bytes += chunk.length;
+          if (block.eof) return { base64: btoa(chunks.join("")), eof: true, blocks: chunks.length, bytes };
+        }
+      } finally { await call("file.release", { grantId: grant.grantId }); }
+    });
+    recorder.check("new workspace file authorization reads only its newly selected source",
+      freshFile.eof === true && Buffer.from(freshFile.base64, "base64").toString("utf8") === "WORKSPACE_B_FILE",
+      { eof: freshFile.eof, blocks: freshFile.blocks, bytes: freshFile.bytes });
+    await frame.evaluate(() => call("storage.set", { key: "scope", value: "workspace-b" }));
+    const secondRows = await rows(table.tableId);
+    const returned = await switchWorkspaceByName(page, "E2E Product Workspace", session.sessionEpoch);
+    recorder.check("workspace UI switches back to the exact original identity", returned.payload.session.workspaceId === state.workspaceId);
+    await page.getByTestId("nav-tables").click(); await selectTable(page, "Application Tasks");
+    frame = await openApplication(page);
+    recorder.check("returning to the original workspace preserves its private value and exact business rows",
+      await frame.evaluate(() => call("storage.get", { key: "scope" })) === "plugin-a"
+        && JSON.stringify(await rows(state.tableId)) === JSON.stringify(oldRows));
+    return { frame, sessionEpoch: returned.payload.session.sessionEpoch,
+      crossWorkspace: { workspaceId: session.workspaceId, projectKey, tableId: table.tableId,
+        installationId: installed.installationId, revision: installed.revision, packageHash: installed.packageHash,
+        version: installed.version, rows: secondRows } };
+  } finally { await fs.writeFile(readControl, previousRead); }
+}
+
+export async function verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers, state) {
+  const { rawBridgeRequest, switchWorkspaceByName, selectTable } = helpers;
+  const other = state.crossWorkspace;
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const opened = await switchWorkspaceByName(page, "E2E Plugin Scope Isolation", session.sessionEpoch);
+  recorder.check("lifecycle isolation reopens the same second workspace", opened.payload.session.workspaceId === other.workspaceId);
+  const installed = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: other.projectKey })).payload.find(item => item.pluginId === A);
+  recorder.check("upgrading and uninstalling the original workspace cannot change the other installation",
+    installed?.installationId === other.installationId && installed.revision === other.revision
+      && installed.packageHash === other.packageHash && installed.version === other.version, { installed, expected: other });
+  await page.getByTestId("nav-tables").click(); await selectTable(page, "Other Application Tasks");
+  const frame = await openApplication(page);
+  const context = await frame.evaluate(() => call("context.read"));
+  const privateValue = await frame.evaluate(() => call("storage.get", { key: "scope" }));
+  const rows = (await rawBridgeRequest(page, "query.page", { tableId: other.tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
+  recorder.check("other workspace still has a usable plugin with its own unchanged settings and business rows",
+    context.projectKey === other.projectKey && context.collection === other.tableId && privateValue === "workspace-b"
+      && JSON.stringify(rows) === JSON.stringify(other.rows), { context, rows });
+  const current = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", current.sessionEpoch);
+  recorder.check("post-lifecycle return restores the original workspace", returned.payload.session.workspaceId === state.workspaceId);
+  await page.getByTestId("nav-tables").click(); await selectTable(page, "Application Tasks");
+  const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload;
+  recorder.check("original workspace keeps its explicit uninstall and the second plugin", !catalog.some(item => item.pluginId === A) && catalog.some(item => item.pluginId === B));
+}
+
 export async function runPluginApplications(page, recorder, runtime, helpers, statePath = null) {
   const { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
     activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
@@ -187,6 +419,12 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   recorder.check("close/reopen obtains a fresh token and keeps private state",
     await frame.evaluate(() => window.name) !== token
       && await frame.evaluate(() => call("storage.get", { key: "scope" })) === "plugin-a");
+  if (!statePath) {
+    const isolated = await exerciseApplicationWorkspaceIsolation(page, recorder, runtime, helpers, state, frame);
+    frame = isolated.frame;
+    state.crossWorkspace = isolated.crossWorkspace;
+    state.sessionEpoch = isolated.sessionEpoch;
+  }
   await nativePluginInput(runtime, "observe", "plugin-manage", "application").then(result =>
     recorder.check("actual WPF management chrome is visible and reachable", result.status === "completed", { result }));
 
@@ -268,6 +506,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     recorder.check(`real native ${decision} uses owned input and exact plan`, actual.status === "completed", { actual });
     await terminalText(frame, expected);
   }
+  await exerciseApplicationConfirmationExpiry(page, frame, recorder, runtime, helpers, state);
   await page.getByTestId("plugin-app-return").click();
   await selectPlugin(page, A);
   await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, "app-upgrade.vtplugin")}\n`);
@@ -326,6 +565,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   await page.getByTestId(APP(A)).waitFor({ state: "hidden" });
   const rows = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
   recorder.check("uninstall retains business table and committed records", rows.payload.rows.length === 1 && Object.values(rows.payload.rows[0]).includes("native-approved"), { rows });
+  await verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers, state);
   frame = await openApplication(page, B);
   await runApplicationPrint(page, frame, recorder, runtime, () => openApplication(page, B));
   return { workspaceId: state.workspaceId, uninstalled: A };

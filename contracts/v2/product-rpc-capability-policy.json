@@ -58,7 +58,6 @@
     {"method":"plugin.cancelTask","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.commitInstall","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.describeAction","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
-    
     {"method":"plugin.inspectInstall","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.listAudit","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.listCatalog","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
@@ -71,6 +70,7 @@
     {"method":"plugin.startAction","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.uninstall","scope":"workspace","audience":"rendererInternal","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.upgrade","scope":"workspace","audience":"rendererInternal","capabilityId":"plugin.lifecycle"},
+    {"method":"pluginPreservation.snapshot","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.preservation"},
     {"method":"preset.delete","scope":"workspace","audience":"rendererPublic","capabilityId":"insights"},
     {"method":"preset.list","scope":"workspace","audience":"rendererPublic","capabilityId":"insights"},
     {"method":"preset.save","scope":"workspace","audience":"rendererPublic","capabilityId":"insights"},
@@ -123,7 +123,6 @@
   "eventTopics": [
     {"topic":"data.changed","scope":"workspace","audience":"rendererPublic","capabilityId":"realtime"},
     {"topic":"plugin.catalog.changed","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
-    {"topic":"plugin.file.requested","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.host"},
     {"topic":"plugin.interaction.requested","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.host"},
     {"topic":"plugin.task.changed","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"topic":"realtime.recovered","scope":"workspace","audience":"rendererPublic","capabilityId":"realtime"},

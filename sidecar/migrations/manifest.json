@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 17,
+  "schemaVersion": 18,
   "migrations": [
     {
       "id": 2026072401,
@@ -97,6 +97,12 @@
       "name": "source_import",
       "source": "2026100401_source_import.go",
       "sha256": "6d538494fcacf94b6fe62af51e29f3d05e5d6eef6d65cd13811295333cde2ce3"
+    },
+    {
+      "id": 2026102001,
+      "name": "plugin_preservation_revision",
+      "source": "2026102001_plugin_preservation_revision.go",
+      "sha256": "945df0e5fd4022eb0b708f95380d13c0d88bfb453bcfec5cd3174570b0afdd15"
     }
   ]
 }

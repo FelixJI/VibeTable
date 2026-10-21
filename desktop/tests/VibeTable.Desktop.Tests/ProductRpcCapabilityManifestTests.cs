@@ -90,6 +90,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "plugin.listCatalog:workspace",
                 "plugin.listPendingCleanup:workspace",
                 "plugin.setEnabled:workspace",
+                "pluginPreservation.snapshot:workspace",
                 "preset.delete:workspace",
                 "preset.list:workspace",
                 "preset.save:workspace",

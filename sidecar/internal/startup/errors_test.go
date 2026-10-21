@@ -1,7 +1,9 @@
 package startup
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -117,5 +119,31 @@ func assertStable(t *testing.T, err error, code, guidance string) {
 	}
 	if stable.Code != code || !strings.Contains(stable.Message, guidance) {
 		t.Fatalf("stable error = %#v", stable)
+	}
+}
+
+func TestFailureDiagnosticCodeKeepsOnlySQLiteExtendedResult(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	_, err = database.Exec(`CREATE TABLE private_records(value TEXT UNIQUE);
+        INSERT INTO private_records VALUES('private-cell');
+        INSERT INTO private_records VALUES('private-cell');`)
+	if err == nil {
+		t.Fatal("duplicate synthetic value unexpectedly succeeded")
+	}
+	cause := fmt.Errorf("private-workspace/data.db: %w", err)
+	if code := FailureDiagnosticCode(cause); code != "sqlite.result_2067" {
+		t.Fatalf("SQLite diagnostic code=%q", code)
+	}
+	for _, unknown := range []error{
+		errors.New("private unknown startup failure"),
+		&os.PathError{Op: "open", Path: "private-workspace/data.db", Err: os.ErrPermission},
+	} {
+		if code := FailureDiagnosticCode(unknown); code != CodeStartFailed {
+			t.Fatalf("unknown diagnostic code=%q", code)
+		}
 	}
 }

@@ -90,15 +90,15 @@ import {
   WORKSPACE_V2_WEB_MESSAGE_TYPES,
 } from "@/contracts/workspaceV2Bridge";
 import type {
-  LegacyLayoutHostMessageType,
-  LegacyLayoutRequestResults,
-  LegacyLayoutHostPayloadMap,
-  LegacyLayoutWebMessageType,
-  LegacyLayoutWebPayloadMap,
+  PreservationHostMessageType,
+  PreservationRequestResults,
+  PreservationHostPayloadMap,
+  PreservationWebMessageType,
+  PreservationWebPayloadMap,
 } from "@/contracts/surfaceBridgeContracts";
 import {
-  LEGACY_LAYOUT_HOST_MESSAGE_TYPES,
-  LEGACY_LAYOUT_WEB_MESSAGE_TYPES,
+  PRESERVATION_HOST_MESSAGE_TYPES,
+  PRESERVATION_WEB_MESSAGE_TYPES,
 } from "@/contracts/surfaceBridgeContracts";
 
 import type {
@@ -121,7 +121,7 @@ type HostMessageType =
   | AppPreferencesHostMessageType
   | AppearanceHostMessageType
   | ReleaseUpdateHostMessageType
-  | LegacyLayoutHostMessageType
+  | PreservationHostMessageType
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
@@ -130,7 +130,7 @@ type HostPayloadMap =
   & AppPreferencesHostPayloadMap
   & AppearanceHostPayloadMap
   & ReleaseUpdateHostPayloadMap
-  & LegacyLayoutHostPayloadMap
+  & PreservationHostPayloadMap
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
@@ -138,7 +138,7 @@ type WebMessageType =
   | RuntimeDiagnosticsWebMessageType
   | AppPreferencesWebMessageType
   | ReleaseUpdateWebMessageType
-  | LegacyLayoutWebMessageType
+  | PreservationWebMessageType
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
@@ -146,7 +146,7 @@ type WebPayloadMap =
   & RuntimeDiagnosticsWebPayloadMap
   & AppPreferencesWebPayloadMap
   & ReleaseUpdateWebPayloadMap
-  & LegacyLayoutWebPayloadMap
+  & PreservationWebPayloadMap
   & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
@@ -344,7 +344,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   ...APPEARANCE_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
-  ...LEGACY_LAYOUT_HOST_MESSAGE_TYPES,
+  ...PRESERVATION_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -463,7 +463,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   ...CLIPBOARD_WEB_MESSAGE_TYPES,
   ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
-  ...LEGACY_LAYOUT_WEB_MESSAGE_TYPES,
+  ...PRESERVATION_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
   "table.cursorRequested",
@@ -561,6 +561,7 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "tableAdmin.deleteRequested": ["database.collectionsChanged"],
   "legacyLayout.reportRequested": ["legacyLayout.reportLoaded"],
   "legacyLayout.exportRequested": ["legacyLayout.exportCompleted"],
+  "pluginPreservation.exportRequested": ["pluginPreservation.exportCompleted"],
   "document.listRequested": ["document.listLoaded"],
   "document.openRequested": ["document.actionCompleted"],
   "document.previewRequested": ["document.actionCompleted"],
@@ -602,6 +603,7 @@ const HOST_OWNED_TERMINAL_STATE_MESSAGES: ReadonlySet<WebMessageType> = new Set(
   // legacyLayout.cancelRequested.
   "legacyLayout.exportRequested",
   "legacyLayout.reportRequested",
+  "pluginPreservation.exportRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -667,10 +669,10 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): Promise<unknown>;
-  request<K extends LegacyLayoutWebMessageType>(
+  request<K extends PreservationWebMessageType>(
     type: K,
-    payload: LegacyLayoutWebPayloadMap[K],
-  ): Promise<LegacyLayoutRequestResults[K]>;
+    payload: PreservationWebPayloadMap[K],
+  ): Promise<PreservationRequestResults[K]>;
   request<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -684,10 +686,10 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
-  requestWithHandle<K extends LegacyLayoutWebMessageType>(
+  requestWithHandle<K extends PreservationWebMessageType>(
     type: K,
-    payload: LegacyLayoutWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<LegacyLayoutRequestResults[K]> };
+    payload: PreservationWebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<PreservationRequestResults[K]> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -701,9 +703,9 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): void;
-  notify<K extends LegacyLayoutWebMessageType>(
+  notify<K extends PreservationWebMessageType>(
     type: K,
-    payload: LegacyLayoutWebPayloadMap[K],
+    payload: PreservationWebPayloadMap[K],
   ): void;
   notify<K extends SharedWebMessageType>(
     type: K,
@@ -745,9 +747,9 @@ export interface HostBridge {
     type: K,
     handler: (payload: WorkspaceV2HostPayloadMap[K]) => void,
   ): () => void;
-  on<K extends LegacyLayoutHostMessageType>(
+  on<K extends PreservationHostMessageType>(
     type: K,
-    handler: (payload: LegacyLayoutHostPayloadMap[K]) => void,
+    handler: (payload: PreservationHostPayloadMap[K]) => void,
   ): () => void;
   on<K extends SharedHostMessageType>(
     type: K,
@@ -1102,7 +1104,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
-    const retiresWithWorkspace = type === "legacyLayout.reportRequested"
+    const retiresWithWorkspace = type === "pluginPreservation.exportRequested"
+      || type === "legacyLayout.reportRequested"
       || type === "legacyLayout.exportRequested"
       || type === "settings.readWorkCalendar" || type === "gridState.get"
       || type === "lookup.query" || type === "lookup.valuePage"

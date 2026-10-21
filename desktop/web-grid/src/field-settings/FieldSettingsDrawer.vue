@@ -32,6 +32,8 @@ import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import type { LookupConditionFieldOption } from "./lookup/lookupCondition";
 import { useFieldSettingsStore } from "./store";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useTableStore } from "@/stores/tableStore";
 import { formatNumberDisplay } from "@/number/numberDisplay";
 import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { getLocale } from "@/i18n";
@@ -55,6 +57,8 @@ const emit = defineEmits<{
 }>();
 
 const store = useFieldSettingsStore();
+const workspace = useWorkspaceStore();
+const table = useTableStore();
 const rootTab = ref("settings");
 const settingsTab = ref("general");
 const jsonDefaultText = ref("null");
@@ -70,14 +74,17 @@ watch(() => store.open, (open) => {
   }
 });
 watch(
-  () => [store.open, store.draft?.logicalType, store.result] as const,
-  ([open, logicalType, result], previous) => {
+  () => [store.open, store.draft?.logicalType, store.result, workspace.phase,
+    workspace.collections, table.schemaRevision] as const,
+  ([open, logicalType, result, phase, collections, schemaRevision], previous) => {
     if (open && logicalType === "relation"
       && (previous?.[0] !== open || previous?.[1] !== logicalType || previous?.[2] !== result)) {
       emit("loadRelationCatalog");
     }
     if (open && logicalType === "lookup"
-      && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
+      && (previous?.[0] !== open || previous?.[1] !== logicalType || previous?.[2] !== result
+        || phase === "opened" && (previous?.[3] !== phase || previous?.[4] !== collections
+          || previous?.[5] !== schemaRevision))) {
       emit("loadLookupCatalog");
     }
     if (open && logicalType === "formula"

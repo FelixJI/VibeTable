@@ -1,31 +1,27 @@
-"""Closed application surface for local-worker plugins."""
+"""Closed package lifecycle for code plugins; business execution belongs to the Host."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, cast
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Protocol
 
-from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_package_lifecycle import PluginPackageLifecycle
-from backend.application.plugin_registry import PluginRegistry, validate_install_plan
+from backend.application.plugin_registry import (
+    PluginRegistry,
+    PluginRegistryError,
+    validate_install_plan,
+)
 from backend.contracts.plugin import (
-    ActionAvailability,
-    CommandContext,
     InstallPlan,
-    InteractionDecision,
-    InteractionResolveResult,
-    PluginEventEnvelope,
     PluginPackageRevision,
     PluginSnapshot,
-    PluginTaskSnapshot,
     UninstallResult,
 )
-from backend.contracts.task import SessionPathGrant
-
-NotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
 
 class PluginStorePort(Protocol):
@@ -87,7 +83,7 @@ class PluginStorePort(Protocol):
 
 
 class PluginPlatformService:
-    """Coordinates package validation, registry state and local execution.
+    """Coordinates package validation and registry state.
 
     The Go-owned shared catalog answers the public catalog, audit and
     enable/disable surface; install commits are fixed atomic store
@@ -99,28 +95,13 @@ class PluginPlatformService:
         self,
         *,
         registry: PluginRegistry,
-        runtime: PluginExecutionRuntime,
         store: PluginStorePort,
         package_lifecycle: PluginPackageLifecycle,
-        confirmation_adapter: Any | None = None,
-        file_adapter: Any | None = None,
-        **_unused: Any,
     ) -> None:
         self._registry = registry
-        self._runtime = runtime
         self._store = store
         self._package_lifecycle = package_lifecycle
-        self._notification_sink: NotificationSink | None = None
-        self._confirmation_adapter = confirmation_adapter
-        self._file_adapter = file_adapter
-        runtime.set_notification_sink(self._emit)
-
-    def set_notification_sink(self, sink: NotificationSink) -> None:
-        self._notification_sink = sink
-        for adapter in (self._confirmation_adapter, self._file_adapter):
-            configure = getattr(adapter, "set_notification_sink", None)
-            if callable(configure):
-                configure(self._emit)
+        self._lifecycle_gates: dict[tuple[str, str], asyncio.Lock] = {}
 
     async def close(self) -> None:
         """No local resources: the Go-owned shared store owns its lifecycle."""
@@ -154,6 +135,12 @@ class PluginPlatformService:
             source_location=inspected.source_location,
             package_hash=inspected.package_hash,
             manifest=inspected.manifest,
+            blocking_reasons=(
+                []
+                if inspected.manifest.schema_id == "vibetable.plugin-manifest.v2"
+                and inspected.manifest.compatibility.get("pluginApi") == "3.x"
+                else ["plugin_worker_retired"]
+            ),
         )
 
     async def commit_install(
@@ -215,7 +202,7 @@ class PluginPlatformService:
         self._verify_execution_identity(
             plan, project_key=project_key, plugin_id=plugin_id, project_revision=project_revision
         )
-        async with self._runtime.lifecycle(
+        async with self._lifecycle(
             project_key,
             plugin_id,
             installation_id=plan.target_installation_id or "",
@@ -237,6 +224,7 @@ class PluginPlatformService:
             plugin_id=plugin_id,
             project_revision=project_revision,
         )
+        validate_install_plan(plan)
         self._recheck_plan_source(plan)
         previous_paths = [
             item.local_path
@@ -271,7 +259,7 @@ class PluginPlatformService:
         target = await self._registry.get(project_key, plugin_id)
         if target is None:
             raise ValueError("plugin is not installed")
-        async with self._runtime.lifecycle(
+        async with self._lifecycle(
             project_key,
             plugin_id,
             installation_id=target.installation_id or "",
@@ -315,6 +303,7 @@ class PluginPlatformService:
             manifest=rollback_revision.manifest,
             schemas=previous_installation.schemas,
         )
+        validate_install_plan(plan)
         snapshot = await self._store.commit_rollback(
             plan, package_revision=rollback_revision.model_copy(update={"state": "current"})
         )
@@ -330,7 +319,7 @@ class PluginPlatformService:
         installation_id: str,
         expected_revision: int,
     ) -> UninstallResult:
-        async with self._runtime.lifecycle(
+        async with self._lifecycle(
             project_key,
             plugin_id,
             installation_id=installation_id,
@@ -353,12 +342,19 @@ class PluginPlatformService:
         installation_id: str,
         expected_revision: int,
     ) -> PluginSnapshot:
-        async with self._runtime.lifecycle(
+        async with self._lifecycle(
             project_key,
             plugin_id,
             installation_id=installation_id,
             expected_revision=expected_revision,
-        ):
+        ) as current:
+            if enabled and (
+                current.manifest.schema_id != "vibetable.plugin-manifest.v2"
+                or current.manifest.compatibility.get("pluginApi") != "3.x"
+            ):
+                raise PluginRegistryError(
+                    "旧 Worker 插件需要迁移到 API 3.x。", code="plugin_worker_retired"
+                )
             return await self._store.set_enabled(
                 project_key,
                 plugin_id,
@@ -387,90 +383,31 @@ class PluginPlatformService:
             installation_id=installation_id,
             expected_revision=expected_revision,
         )
-        try:
-            await self._runtime.cancel_plugin_tasks(
-                project_key,
-                plugin_id,
-                installation_id=installation_id,
-            )
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Committed plugin uninstall; local task cleanup deferred", exc_info=True
-            )
         await self._cleanup_unreferenced_packages(retained_paths)
         return result
 
-    async def describe_action(
+    @asynccontextmanager
+    async def _lifecycle(
         self,
-        *,
         project_key: str,
         plugin_id: str,
-        action_id: str,
-        context: CommandContext,
-    ) -> ActionAvailability:
-        if context.project_key != project_key:
-            raise ValueError("plugin context project does not match request")
-        return await self._runtime.describe(plugin_id, action_id, context)
-
-    async def start_action(
-        self,
         *,
-        project_key: str,
-        plugin_id: str,
-        action_id: str,
-        context: CommandContext,
-        input_payload: dict[str, Any],
-        task_id: str,
-        run_id: str,
-    ) -> PluginTaskSnapshot:
-        if context.project_key != project_key:
-            raise ValueError("plugin context project does not match request")
-        return await self._runtime.start(
-            plugin_id,
-            action_id,
-            context,
-            input_payload,
-            task_id=task_id,
-            run_id=run_id,
-        )
-
-    async def resolve_interaction(
-        self,
-        *,
-        run_id: str,
-        interaction_id: str,
-        decision: InteractionDecision,
-    ) -> InteractionResolveResult:
-        resolver = getattr(self._confirmation_adapter, "try_resolve", None)
-        if not callable(resolver):
-            return InteractionResolveResult(status="expired")
-        result = await cast(
-            Callable[
-                [str, str, InteractionDecision],
-                Awaitable[InteractionResolveResult | None],
-            ],
-            resolver,
-        )(run_id, interaction_id, decision)
-        return result or InteractionResolveResult(status="expired")
-
-    async def resolve_file(self, *, request_id: str, grant: SessionPathGrant | None) -> bool:
-        resolver = getattr(self._file_adapter, "resolve", None)
-        if not callable(resolver):
-            return False
-        return bool(
-            await cast(
-                Callable[[str, SessionPathGrant | None], Awaitable[bool]],
-                resolver,
-            )(request_id, grant)
-        )
-
-    async def cancel_task(self, *, task_id: str) -> bool:
-        """Triggers the host-owned task's execution cancel handle.
-
-        Returns whether an active execution handle was found. Public task
-        state is owned by the WPF host registry; this is never a status query.
-        """
-        return await self._runtime.request_cancel(task_id)
+        installation_id: str,
+        expected_revision: int,
+    ) -> AsyncIterator[PluginSnapshot]:
+        # Host drains surface tasks before this package transition; Python owns no business task.
+        async with self._lifecycle_gates.setdefault((project_key, plugin_id), asyncio.Lock()):
+            current = await self._registry.get(project_key, plugin_id)
+            if (
+                not installation_id
+                or current is None
+                or current.installation_id != installation_id
+                or current.revision != expected_revision
+            ):
+                raise PluginRegistryError(
+                    "plugin installation changed", code="plugin_revision_conflict"
+                )
+            yield current
 
     def _verify_execution_identity(
         self,
@@ -519,10 +456,6 @@ class PluginPlatformService:
         if await self._store.is_package_path_referenced(path):
             return
         self._package_lifecycle.discard(path)
-
-    async def _emit(self, event: PluginEventEnvelope) -> None:
-        if self._notification_sink is not None:
-            await self._notification_sink(event)
 
 
 __all__ = ["PluginPlatformService"]

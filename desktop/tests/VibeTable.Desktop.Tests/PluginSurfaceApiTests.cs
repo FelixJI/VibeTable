@@ -365,7 +365,7 @@ public sealed class PluginSurfaceApiTests
     public async Task HostConfirmsExactPlanOnceAndLateCancelPreservesSuccessWithoutPythonGateway()
     {
         using var fixture = new Fixture { Decision = "approved" };
-        Assert.IsNull(fixture.Tasks.Capture());
+        Assert.IsNotNull(fixture.Tasks.CaptureNative());
         string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
         Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\",\"approved\":true}}")));
         var submitted = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
@@ -434,15 +434,15 @@ public sealed class PluginSurfaceApiTests
             string runId = fixture.LastInteraction!.RunId!;
             string interactionId = fixture.LastInteraction.PendingConfirmation!.InteractionId!;
             Assert.IsTrue(fixture.Tasks.RequiresNativeConfirmation(runId), presentation);
-            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _).Status);
-            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "rejected"), out _).Status);
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved")).Status);
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "rejected")).Status);
             Assert.IsTrue(fixture.Tasks.IsInteractionPending(new(runId, interactionId, "approved")));
             Assert.AreEqual(0, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
             // Only the exact one-shot native-host decision completes the submit.
-            Assert.AreEqual("resolved", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _, fromNativeHost: true).Status);
+            Assert.AreEqual("resolved", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), fromNativeHost: true).Status);
             Assert.AreEqual("succeeded", (await submitted).GetProperty("result").GetProperty("status").GetString());
             // The settled run keeps its terminal state; even the native entry cannot resolve it again.
-            Assert.AreEqual("expired", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _, fromNativeHost: true).Status);
+            Assert.AreEqual("expired", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), fromNativeHost: true).Status);
             Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
             Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
         }
@@ -452,7 +452,7 @@ public sealed class PluginSurfaceApiTests
         string cancelledPlan = (await cancelled.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
         await cancelled.Call("mutation.submit", $"{{\"planId\":\"{cancelledPlan}\"}}");
         Assert.IsFalse(cancelled.Tasks.IsInteractionPending(new(cancelled.LastInteraction!.RunId!, cancelled.LastInteraction.PendingConfirmation!.InteractionId!, "approved")));
-        Assert.AreEqual("expired", cancelled.Tasks.BeginInteractionResolve(new(cancelled.LastInteraction.RunId!, cancelled.LastInteraction.PendingConfirmation.InteractionId!, "approved"), out _, fromNativeHost: true).Status);
+        Assert.AreEqual("expired", cancelled.Tasks.BeginInteractionResolve(new(cancelled.LastInteraction.RunId!, cancelled.LastInteraction.PendingConfirmation.InteractionId!, "approved"), fromNativeHost: true).Status);
         Assert.AreEqual(0, cancelled.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
     }
 
@@ -798,7 +798,7 @@ public sealed class PluginSurfaceApiTests
             Api.Retire(Surface.SurfaceToken);
             var next = new PluginProjectContext("local:22222222222242228222222222222222", "workspace:8", 8);
             _authority.Transition(next);
-            Tasks.SetContext(next);
+            Tasks.RetireContext();
             Tasks.SetWorkspaceContext(next);
         }
         private bool _generationCurrent = true;
@@ -853,7 +853,7 @@ public sealed class PluginSurfaceApiTests
                 }
                 else if (Decision == "installation-retire") Surfaces.CloseForInstallation(Surface.ProjectKey, Surface.PluginId);
                 else if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
-                else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _,
+                else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision),
                     fromNativeHost: Tasks.RequiresNativeConfirmation(interaction.RunId));
             }
         }

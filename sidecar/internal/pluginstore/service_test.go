@@ -1,6 +1,7 @@
 package pluginstore
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -176,7 +177,10 @@ func TestListInstallationsOrdersByPluginID(t *testing.T) {
 func TestSetEnabledLifecycleMatchesFrozenOracle(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	snapshot := frozenInstallation(t)
+	// The frozen oracle snapshot itself is a legacy v1 Worker payload that
+	// #486 keeps permanently blocked; the enable/disable lifecycle runs on
+	// the native form a current Host installs.
+	snapshot := nativeFrozenInstallation(t)
 	if _, err := service.SaveInstallation(ctx, snapshot, nil); err != nil {
 		t.Fatalf("create installation: %v", err)
 	}
@@ -239,6 +243,102 @@ func TestSetEnabledBlockedFailClosed(t *testing.T) {
 	if !ok || public.Code != PublicCodeBlocked ||
 		public.Message != "plugin has blocking reasons" {
 		t.Fatalf("blocked public error = %+v ok=%v", public, ok)
+	}
+	// The derived Worker-retirement reason joins the stored reasons so the
+	// public diagnosis stays explicit about both blockers.
+	reasons, _ := public.Details["blockingReasons"].([]string)
+	if len(reasons) != 2 || reasons[0] != "plugin_signature_invalid" || reasons[1] != WorkerRetiredReason {
+		t.Fatalf("blocked public details = %#v", public.Details)
+	}
+}
+
+// nativeFrozenInstallation returns the frozen oracle install snapshot with
+// its manifest converted to the native post-#484 contract.
+func nativeFrozenInstallation(t *testing.T) json.RawMessage {
+	t.Helper()
+	var object map[string]any
+	if err := json.Unmarshal(frozenInstallation(t), &object); err != nil {
+		t.Fatal(err)
+	}
+	nativeizeFrozenManifest(t, object["manifest"])
+	raw, err := json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestLegacyWorkerInstallationProjectedBlockedAndNeverEnabled covers the
+// #486 read projection and enable boundary for stored schema v1 / API
+// 1.x-2.x installations: list/read views surface the retirement reason,
+// enables are rejected fail-closed with a stable diagnosis, disable keeps
+// working, and the stored identity/settings/audit payload is never
+// rewritten.
+func TestLegacyWorkerInstallationProjectedBlockedAndNeverEnabled(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	snapshot := frozenInstallation(t)
+	if _, err := service.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatalf("legacy raw snapshot must stay storable: %v", err)
+	}
+	project, plugin := jsonText(snapshot, "projectKey"), jsonText(snapshot, "pluginId")
+	containsReason := func(raw json.RawMessage) bool {
+		for _, reason := range jsonStrings(raw, "blockingReasons") {
+			if reason == WorkerRetiredReason {
+				return true
+			}
+		}
+		return false
+	}
+	read, err := service.GetInstallation(ctx, project, plugin)
+	if err != nil || !containsReason(read) {
+		t.Fatalf("get_installation projection = %s err=%v", read, err)
+	}
+	listed, err := service.ListInstallations(ctx, project)
+	if err != nil || len(listed) != 1 || !containsReason(listed[0]) {
+		t.Fatalf("list_installations projection = %s err=%v", listed, err)
+	}
+	stored, err := findRecord(service.app, KindInstallation, project, plugin, "current")
+	if err != nil || stored == nil {
+		t.Fatalf("stored installation missing: %v", err)
+	}
+	storedJSON, err := json.Marshal(stored.GetRaw("payload_json"))
+	if err != nil || bytes.Contains(storedJSON, []byte(WorkerRetiredReason)) {
+		t.Fatalf("projection rewrote the stored payload: %s err=%v", storedJSON, err)
+	}
+	// Enables are rejected fail-closed with the stable diagnosis; the
+	// stored reasons alone stay untouched.
+	if _, err := service.SetEnabled(ctx, project, plugin, true); err == nil {
+		t.Fatal("legacy Worker installation was enabled")
+	} else {
+		public, ok := PublicError(err)
+		if !ok || public.Code != PublicCodeBlocked {
+			t.Fatalf("legacy enable error = %v", err)
+		}
+		reasons, _ := public.Details["blockingReasons"].([]string)
+		if len(reasons) != 1 || reasons[0] != WorkerRetiredReason {
+			t.Fatalf("legacy enable details = %#v", public.Details)
+		}
+	}
+	// Disable remains available and audited; re-enable stays blocked.
+	disabled, err := service.SetEnabled(ctx, project, plugin, false)
+	if err != nil || stringField(disabled, "status") != "disabled" {
+		t.Fatalf("legacy disable = %s err=%v", disabled, err)
+	}
+	if _, err := service.SetEnabled(ctx, project, plugin, true); err == nil {
+		t.Fatal("legacy Worker installation was re-enabled after disable")
+	}
+	storedAfter, err := findRecord(service.app, KindInstallation, project, plugin, "current")
+	if err != nil || storedAfter == nil {
+		t.Fatalf("stored installation missing after lifecycle: %v", err)
+	}
+	storedAfterJSON, err := json.Marshal(storedAfter.GetRaw("payload_json"))
+	if err != nil || bytes.Contains(storedAfterJSON, []byte(WorkerRetiredReason)) {
+		t.Fatalf("lifecycle persisted the derived reason: %s err=%v", storedAfterJSON, err)
+	}
+	audit, err := service.ListAudit(ctx, project, plugin)
+	if err != nil || len(audit) != 1 || stringField(audit[0], "eventType") != "disable" {
+		t.Fatalf("legacy disable audit = %s err=%v", audit, err)
 	}
 }
 

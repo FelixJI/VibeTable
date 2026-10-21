@@ -5,6 +5,11 @@ import { flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/tes
 import { createPinia, setActivePinia } from "pinia";
 import FieldSettingsDrawer from "./FieldSettingsDrawer.vue";
 import { useFieldSettingsStore } from "./store";
+import { useFieldSettingsService } from "./service";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useTableStore } from "@/stores/tableStore";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import type { HostBridge } from "@/bridge/hostBridge";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import { NInputNumber, NSelect, NSwitch } from "naive-ui";
@@ -189,6 +194,89 @@ describe("FieldSettingsDrawer", () => {
   afterEach(() => {
     mounted.splice(0).forEach(wrapper => wrapper.unmount());
     document.body.innerHTML = "";
+  });
+
+  it.each(["collections", "schema"])("automatically reloads the open Lookup catalog after %s changes", async change => {
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "tbl_orders" }], { tbl_orders: "订单" });
+    const pending: ((value: unknown) => void)[] = [];
+    const source = lookupSchemaSnapshot("tbl_orders", [
+      { name: "f_amount", fieldId: "fld_amount", title: "金额", kind: "scalar", dataType: "decimal" },
+    ]);
+    const result = described("lookup");
+    const request = vi.fn((method: string) => {
+      if (method === "schema.getTable") return new Promise(resolve => { pending.push(resolve); });
+      if (method === "schema.describe") return Promise.resolve({
+        contract: "vibetable.schema-describe.v1", collection: "tbl_orders", requestGeneration: 0,
+        schema: source, capabilities: { lookupMaxDepth: 8 },
+      });
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useFieldSettingsService();
+    const wrapper = mount(FieldSettingsDrawer, {
+      attachTo: document.body,
+      props: { onLoadLookupCatalog: () => void service.loadLookupCatalog() },
+      global: { stubs: { teleport: true } },
+    });
+    mounted.push(wrapper);
+    const store = useFieldSettingsStore();
+    const snapshot = {
+      contract: "vibetable.schema.v2", tableId: "tbl_orders", displayName: "订单", kind: "base",
+      schemaRevision: "schema_7", dataRevision: 0,
+      archivePolicy: { mode: "none", fieldId: null, archivedValue: null }, fields: [], capabilities: [],
+    };
+    const invalidate = () => {
+      if (change === "collections") workspace.setCollections([
+        { collection: "tbl_orders" }, { collection: "tbl_new" },
+      ], { tbl_orders: "新订单", tbl_new: "新表" });
+      else useTableStore().revision = {
+        databaseSessionId: "session", schemaRevision: "new-schema", dataRevision: 1,
+      };
+    };
+    try {
+      store.beginOpen();
+      store.load({ ...result, definition: { ...definition("lookup"), lookup: { path: [], targetFieldId: "fld_amount", aggregation: "values" } } });
+      await flushPromises();
+      expect(pending).toHaveLength(1);
+      invalidate();
+      await flushPromises();
+      expect(pending).toHaveLength(2);
+      expect(store.lookupCatalogLoading).toBe(true);
+      pending[0]!(snapshot);
+      await flushPromises();
+      expect(store.lookupCatalogLoading).toBe(true);
+      expect(store.lookupSchemas).toEqual([]);
+      pending[1]!(snapshot);
+      await flushPromises();
+      expect(store.lookupCatalogLoading).toBe(false);
+      expect(store.lookupCatalogError).toBeNull();
+      expect(store.lookupSchemas.map(item => item.collection)).toEqual(["tbl_orders"]);
+      expect(request.mock.calls.filter(([method]) => method === "schema.describe")).toHaveLength(1);
+      expect(wrapper.find('[data-testid="number-display-scale"] input').exists()).toBe(true);
+      wrapper.findAllComponents(NSelect)
+        .find(item => item.attributes("data-testid") === "number-display-preset")!
+        .vm.$emit("update:value", "currency");
+      await flushPromises();
+      expect(store.draft?.display.preset).toBe("currency");
+      expect(wrapper.find('[data-testid="number-display-scale"] input').exists()).toBe(true);
+      expect(store.lookupSchemas.map(item => item.collection)).toEqual(["tbl_orders"]);
+      expect(pending).toHaveLength(2);
+      if (change === "collections") expect(store.relationTables).toEqual([
+        { tableId: "tbl_orders", displayName: "新订单" }, { tableId: "tbl_new", displayName: "新表" },
+      ]);
+      store.close();
+      workspace.setCollections([{ collection: "tbl_orders" }], { tbl_orders: "订单" });
+      await flushPromises();
+      store.beginOpen();
+      store.load(described("number"));
+      workspace.setCollections([{ collection: "tbl_orders" }], { tbl_orders: "订单" });
+      await flushPromises();
+      expect(pending).toHaveLength(2);
+    } finally {
+      service.dispose();
+      setHostBridgeForTesting(null);
+    }
   });
 
   it("展示加载和带错误码的失败状态", async () => {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -26,10 +27,304 @@ func frozenInstallRequest(t *testing.T) (json.RawMessage, json.RawMessage) {
 	return plan, loadFrozenOracleCase(t, "package-revision-persisted")
 }
 
+// frozenNativeInstallRequest adapts the frozen v1 oracle install case to the
+// post-#484 native contract: #486 rejects new commits of legacy Worker
+// packages, so the live install/upgrade/rollback flows are exercised through
+// the native form a current Host admission sends.
+func frozenNativeInstallRequest(t *testing.T) (json.RawMessage, json.RawMessage) {
+	t.Helper()
+	plan, revision := frozenInstallRequest(t)
+	decode := func(raw json.RawMessage) map[string]any {
+		var object map[string]any
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatal(err)
+		}
+		return object
+	}
+	planObject, revisionObject := decode(plan), decode(revision)
+	nativeizeFrozenManifest(t, planObject["manifest"])
+	nativeizeFrozenManifest(t, revisionObject["manifest"])
+	encodedPlan, err := json.Marshal(planObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedRevision, err := json.Marshal(revisionObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encodedPlan, encodedRevision
+}
+
+// nativeizeFrozenManifest converts the frozen v1 oracle manifest into the
+// native install contract (schema v2, pluginApi 3.x, workerEntry removed,
+// one custom view per action) without touching any other field.
+func nativeizeFrozenManifest(t *testing.T, value any) {
+	t.Helper()
+	manifest, ok := value.(map[string]any)
+	if !ok {
+		t.Fatal("frozen payload has no manifest")
+	}
+	manifest["$schema"] = "vibetable.plugin-manifest.v2"
+	compatibility, ok := manifest["compatibility"].(map[string]any)
+	if !ok {
+		t.Fatal("frozen manifest has no compatibility")
+	}
+	compatibility["pluginApi"] = "3.x"
+	views := []any{}
+	actions, ok := manifest["actions"].([]any)
+	if !ok {
+		t.Fatal("frozen manifest has no actions")
+	}
+	for _, item := range actions {
+		action, ok := item.(map[string]any)
+		if !ok {
+			t.Fatal("frozen manifest action is malformed")
+		}
+		delete(action, "workerEntry")
+		views = append(views, map[string]any{
+			"viewId": action["actionId"], "actionId": action["actionId"], "entry": "ui/index.html",
+		})
+	}
+	manifest["ui"] = map[string]any{"customViews": views}
+}
+
+// TestCommitPlanAcceptsRealHostInstallPlanDump pins the real Host adapter
+// contract (backend InstallPlan.model_dump(by_alias=True)): every commit
+// entry receives the complete plan object, whose inspection diagnostic
+// blockingReasons list is always present and must be empty for a
+// commitable plan. Non-empty lists reject fail-closed with the submitted
+// diagnosis, malformed shapes stay invalidPayload, and clearing the list
+// can never bypass the independent legacy-manifest rejection.
+func TestCommitPlanAcceptsRealHostInstallPlanDump(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	basePlan, baseRevision := frozenNativeInstallRequest(t)
+	withRealDumpFields := func(t *testing.T, raw json.RawMessage, changes map[string]any) json.RawMessage {
+		t.Helper()
+		var object map[string]any
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&object); err != nil {
+			t.Fatal(err)
+		}
+		// The adapter always dumps every field, including explicit nulls
+		// for the optional install identities and the empty diagnostic list.
+		object["targetInstallationId"] = nil
+		object["targetRevision"] = nil
+		object["blockingReasons"] = []any{}
+		for key, value := range changes {
+			object[key] = value
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	installPlan := withRealDumpFields(t, basePlan, nil)
+	installed, err := service.CommitInstall(ctx, installPlan, baseRevision)
+	if err != nil {
+		t.Fatalf("real adapter install plan rejected: %v", err)
+	}
+	bound := withRealDumpFields(t, basePlan, map[string]any{
+		"targetInstallationId": jsonText(installed, "installationId"),
+		"targetRevision":       1,
+	})
+	if _, err := service.CommitUpgrade(ctx, bound, baseRevision); err != nil {
+		t.Fatalf("real adapter upgrade plan rejected: %v", err)
+	}
+	rollback := withRealDumpFields(t, basePlan, map[string]any{
+		"targetInstallationId": jsonText(installed, "installationId"),
+		"targetRevision":       2,
+	})
+	rolledBack, err := service.CommitRollback(ctx, rollback, baseRevision)
+	if err != nil || jsonInt(rolledBack, "revision") != 3 {
+		t.Fatalf("real adapter rollback plan = %s err = %v", rolledBack, err)
+	}
+	blocked := withRealDumpFields(t, basePlan, map[string]any{
+		"blockingReasons": []any{"plugin_signature_invalid"},
+	})
+	if _, err := service.CommitInstall(ctx, blocked, baseRevision); err == nil {
+		t.Fatal("blocked plan committed")
+	} else {
+		storeErr, ok := err.(*Error)
+		if !ok || storeErr.Code != "plugin_blocked" {
+			t.Fatalf("blocked plan rejection = %v", err)
+		}
+		if reasons, _ := storeErr.Details["blockingReasons"].([]string); len(reasons) != 1 || reasons[0] != "plugin_signature_invalid" {
+			t.Fatalf("blocked plan details = %#v", storeErr.Details)
+		}
+	}
+	for name, malformed := range map[string]any{
+		"string":     "ignored",
+		"numbers":    []any{1, 2},
+		"empty-item": []any{"ok", ""},
+		"null":       nil,
+	} {
+		if _, err := service.CommitInstall(ctx, withRealDumpFields(t, basePlan, map[string]any{"blockingReasons": malformed}), baseRevision); err == nil {
+			t.Fatalf("%s blockingReasons accepted", name)
+		} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != "plugin.request_invalid" {
+			t.Fatalf("%s blockingReasons rejection = %v", name, err)
+		}
+	}
+	// A plan that drops the required sourceLocation stays invalid; the
+	// closed-set widening never loosened the original required texts.
+	withoutSourceLocation := withRealDumpFields(t, basePlan, nil)
+	var trimmed map[string]any
+	trimmedDecoder := json.NewDecoder(strings.NewReader(string(withoutSourceLocation)))
+	trimmedDecoder.UseNumber()
+	if err := trimmedDecoder.Decode(&trimmed); err != nil {
+		t.Fatal(err)
+	}
+	delete(trimmed, "sourceLocation")
+	trimmedRaw, err := json.Marshal(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CommitInstall(ctx, trimmedRaw, baseRevision); err == nil {
+		t.Fatal("plan without sourceLocation accepted")
+	} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != "plugin.request_invalid" {
+		t.Fatalf("plan without sourceLocation rejection = %v", err)
+	}
+	// Clearing the diagnostic list can never bypass the independent
+	// legacy Worker rejection: the frozen v1 plan with blockingReasons [] is
+	// still refused by the native-manifest boundary.
+	legacyPlan, legacyRevision := frozenInstallRequest(t)
+	if _, err := service.CommitInstall(ctx, withRealDumpFields(t, legacyPlan, nil), legacyRevision); err == nil {
+		t.Fatal("cleared legacy plan committed")
+	} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != WorkerRetiredReason {
+		t.Fatalf("cleared legacy plan rejection = %v", err)
+	}
+	count, err := service.app.CountRecords(recordsCollection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// install + upgrade + rollback of one plugin (same package hash) leave
+	// exactly its own records: one installation, one package revision and
+	// three lifecycle audits.
+	if count != 5 {
+		t.Fatalf("persisted %d records after real-dump commits", count)
+	}
+}
+
+// TestCommitAcceptsAuthoritativeHostPlanFixture feeds the generator's
+// authoritative host-plan fixture (contracts/v2/fixtures/plugin-install-
+// host-plans.json) straight into the Go commit boundary so the two sides
+// cannot drift: the real native v2 plan — verbatim manifest, schemas and
+// the always-present blockingReasons list — must commit. Only the
+// workspace identity and the install-flavor target nulls are adapted, the
+// same way a real Host binds a plan to the opened workspace; the package
+// revision is assembled with the existing oracle helper.
+func TestCommitAcceptsAuthoritativeHostPlanFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../contracts/v2/fixtures/plugin-install-host-plans.json")
+	if err != nil {
+		t.Fatalf("read authoritative host-plan fixture: %v", err)
+	}
+	var cases []struct {
+		Name   string `json:"name"`
+		Params struct {
+			Plan json.RawMessage `json:"plan"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	var planRaw json.RawMessage
+	for _, item := range cases {
+		if item.Name == "native" {
+			planRaw = item.Params.Plan
+		}
+	}
+	if len(planRaw) == 0 {
+		t.Fatal("authoritative native host plan is missing")
+	}
+	var plan map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(planRaw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := plan["blockingReasons"]; !present {
+		t.Fatal("authoritative plan dropped the blockingReasons field")
+	}
+	manifest, _ := plan["manifest"].(map[string]any)
+	if manifest["$schema"] != "vibetable.plugin-manifest.v2" {
+		t.Fatalf("authoritative native manifest = %#v", manifest["$schema"])
+	}
+	service := newTestService(t)
+	ctx := context.Background()
+	plan["projectKey"] = service.ProjectKey()
+	plan["targetInstallationId"] = nil
+	plan["targetRevision"] = nil
+	planRaw, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := replaceJSON(t, loadFrozenOracleCase(t, "package-revision-persisted"), map[string]any{
+		"projectKey":  service.ProjectKey(),
+		"pluginId":    manifest["pluginId"],
+		"version":     manifest["version"],
+		"packageHash": plan["packageHash"],
+		"manifest":    manifest,
+		"state":       "current",
+	})
+	installed, err := service.CommitInstall(ctx, planRaw, revision)
+	if err != nil {
+		t.Fatalf("authoritative native host plan rejected: %v", err)
+	}
+	if jsonText(installed, "pluginId") != textValue(manifest["pluginId"]) || jsonInt(installed, "revision") != 1 {
+		t.Fatalf("authoritative install snapshot = %s", installed)
+	}
+}
+
+func TestCommitPackageRejectsLegacyWorkerContract(t *testing.T) {
+	// The frozen v1 oracle plan is exactly the legacy Worker shape #486
+	// retires: every commit flavor must reject it fail-closed without
+	// persisting anything, while the same plan in native form still commits.
+	plan, revision := frozenInstallRequest(t)
+	service := newTestService(t)
+	ctx := context.Background()
+	bound := replaceJSON(t, plan, map[string]any{"targetInstallationId": "retired0record0001", "targetRevision": 1})
+	for name, commit := range map[string]func(context.Context, json.RawMessage, json.RawMessage) (json.RawMessage, error){
+		"install":  service.CommitInstall,
+		"upgrade":  service.CommitUpgrade,
+		"rollback": service.CommitRollback,
+	} {
+		if name == "install" {
+			if _, err := commit(ctx, plan, revision); err == nil {
+				t.Fatalf("%s committed a legacy Worker package", name)
+			} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != WorkerRetiredReason {
+				t.Fatalf("%s rejection = %v, want %s", name, err, WorkerRetiredReason)
+			}
+		} else {
+			if _, err := commit(ctx, bound, revision); err == nil {
+				t.Fatalf("%s committed a legacy Worker package", name)
+			} else if storeErr, ok := err.(*Error); !ok || storeErr.Code != WorkerRetiredReason {
+				t.Fatalf("%s rejection = %v, want %s", name, err, WorkerRetiredReason)
+			}
+		}
+		count, err := service.app.CountRecords(recordsCollection)
+		if err != nil || count != 0 {
+			t.Fatalf("%s persisted %d records", name, count)
+		}
+	}
+	public, ok := PublicError(workerRetiredRejection())
+	if !ok || public.Code != PublicCodeBlocked {
+		t.Fatalf("retired rejection public mapping = %+v ok=%v", public, ok)
+	}
+	if reasons, _ := public.Details["blockingReasons"].([]string); len(reasons) != 1 || reasons[0] != WorkerRetiredReason {
+		t.Fatalf("retired rejection details = %#v", public.Details)
+	}
+	nativePlan, nativeRevision := frozenNativeInstallRequest(t)
+	if _, err := service.CommitInstall(ctx, nativePlan, nativeRevision); err != nil {
+		t.Fatalf("native install rejected: %v", err)
+	}
+}
+
 func TestUpgradeAndLatePrivateWriteAreBoundToOriginalInstallation(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	first, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +392,7 @@ func sameJSON(t *testing.T, got, want json.RawMessage) {
 func TestUpgradeTransactionFailurePreservesInstallationAndPackageLedger(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	first, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +422,7 @@ func TestUpgradeTransactionFailurePreservesInstallationAndPackageLedger(t *testi
 func TestAtomicUpgradeSwitchesCompletePackageAndRollbackPreservesIdentity(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	first, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +466,7 @@ func TestAtomicUpgradeSwitchesCompletePackageAndRollbackPreservesIdentity(t *tes
 func TestDeleteInstallationAuditFailureRollsBackWholeUninstall(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	original, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -208,18 +503,28 @@ func TestDeleteInstallationAuditFailureRollsBackWholeUninstall(t *testing.T) {
 func TestCommitInstallMatchesFrozenOracleAndIsAtomic(t *testing.T) {
 	service := newTestService(t)
 	service.workspaceID = "0f8f4a3b-2c1d-4e5f-8091-a2b3c4d5e6f7"
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	snapshot, err := service.CommitInstall(context.Background(), plan, revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The frozen legacy payload remains identical; the only extension is
-	// the existing authority record Id, independently checked below.
+	// The frozen legacy payload stays authoritative except for the two
+	// deliberate post-#484/#486 changes: the authority record Id and the
+	// native manifest contract, both independently checked below.
 	stored, err := findRecord(service.app, KindInstallation, jsonText(snapshot, "projectKey"), jsonText(snapshot, "pluginId"), "current")
 	if err != nil || stored == nil || jsonText(snapshot, "installationId") != stored.Id {
 		t.Fatal("missing PB identity projection")
 	}
-	sameJSON(t, snapshot, replaceJSON(t, frozenInstallation(t), map[string]any{"installationId": stored.Id}))
+	var frozenObject map[string]any
+	if err := json.Unmarshal(frozenInstallation(t), &frozenObject); err != nil {
+		t.Fatal(err)
+	}
+	nativeizeFrozenManifest(t, frozenObject["manifest"])
+	frozenNative, err := json.Marshal(frozenObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameJSON(t, snapshot, replaceJSON(t, frozenNative, map[string]any{"installationId": stored.Id}))
 	if service.ProjectKey() != "local:"+oracleWorkspaceID {
 		t.Fatal(service.ProjectKey())
 	}
@@ -323,7 +628,7 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	first, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +673,7 @@ func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
 func TestUninstallCASRejectsUpgradeAndReinstallWithoutCleanup(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	first, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +739,7 @@ func TestUninstallCASRejectsUpgradeAndReinstallWithoutCleanup(t *testing.T) {
 func TestBoundSetEnabledRejectsRevisionAndInstallationABA(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	plan, revision := frozenInstallRequest(t)
+	plan, revision := frozenNativeInstallRequest(t)
 	original, err := service.CommitInstall(ctx, plan, revision)
 	if err != nil {
 		t.Fatal(err)

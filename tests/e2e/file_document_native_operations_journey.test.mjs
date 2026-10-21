@@ -1,7 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fileDocumentNativeFixture, requireNativeDragEvidence, requireNativeDocumentUnchanged }
-  from "./file_document_native_operations_journey.mjs";
+import fs from "node:fs/promises";
+import { fileDocumentNativeFixture, requireNativeDragEvidence, requireNativeDocumentUnchanged,
+  PREVIEW_ACK_TIMEOUT_MS } from "./file_document_native_operations_journey.mjs";
+
+test("preview ack wait must outlast the runner's declared correlated budget", async () => {
+  // Read the runner's real declaration instead of mirroring its number, so
+  // Python/JS budget drift breaks this contract: the observer bounds the
+  // DoPreview result AND helper visibility with one budget, and the preview
+  // ack must exceed that whole budget with only a bounded margin.
+  const runnerSource = await fs.readFile(
+    new URL("./product_e2e_runner.py", import.meta.url), "utf8");
+  const declared = runnerSource.match(
+    /^DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS = ([0-9.]+)$/m);
+  assert.ok(declared, "runner must declare its single preview observation budget");
+  const observerBudgetMs = Number(declared[1]) * 1000;
+  assert.ok(PREVIEW_ACK_TIMEOUT_MS > observerBudgetMs,
+    "preview ack wait must outlast the observer's whole correlated budget");
+  assert.ok(PREVIEW_ACK_TIMEOUT_MS <= observerBudgetMs + 10_000,
+    "preview ack wait keeps only a bounded communication margin");
+});
 
 test("native Copy requires received FileDrop and exact bytes; cancel cannot qualify Copy", () => {
   const fixture = fileDocumentNativeFixture("11111111-1111-4111-8111-111111111111");

@@ -37,6 +37,18 @@ const (
 	// ConflictItemID projects the whole plugin shared catalog as one
 	// synchronized workspace settings item, mirroring metadata namespaces.
 	ConflictItemID = "plugin:shared-state"
+
+	// WorkerRetiredReason is the stable #486 blocking reason marking
+	// installed legacy Worker packages (manifest schema v1, pluginApi 1.x or
+	// 2.x, including the pre-contract empty compatibility form) that can no
+	// longer execute. Read projections surface it, enable/commit boundaries
+	// derive it; stored payloads keep their original blockingReasons.
+	WorkerRetiredReason = "plugin_worker_retired"
+
+	// The post-#484 install contract: only schema v2 manifests declaring
+	// pluginApi 3.x may commit, upgrade or roll back.
+	nativeManifestSchema = "vibetable.plugin-manifest.v2"
+	nativePluginAPI      = "3.x"
 )
 
 // NamespaceForCollection resolves the conflict-projection allowlist entry
@@ -63,6 +75,82 @@ type Error struct {
 }
 
 func (err *Error) Error() string { return err.Code + ": " + err.Message }
+
+// workerRetiredRejection is the stable #486 commit-boundary rejection for
+// legacy Worker packages: install, upgrade and rollback plans carrying a
+// schema v1 manifest never execute or persist anything.
+func workerRetiredRejection() *Error {
+	return &Error{
+		Code:    WorkerRetiredReason,
+		Message: "legacy Worker plugin packages cannot be installed, upgraded or restored; migrate to " + nativeManifestSchema + " (pluginApi " + nativePluginAPI + ")",
+		Details: map[string]any{"blockingReasons": []string{WorkerRetiredReason}},
+	}
+}
+
+// manifestIsNative reports whether a decoded manifest is the post-#484
+// install contract. Every other stored shape is legacy Worker state.
+func manifestIsNative(value any) bool {
+	manifest, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if manifest["$schema"] != nativeManifestSchema {
+		return false
+	}
+	compatibility, ok := manifest["compatibility"].(map[string]any)
+	return ok && compatibility["pluginApi"] == nativePluginAPI
+}
+
+func payloadManifestIsNative(raw json.RawMessage) bool {
+	object, err := decodePayload(raw)
+	if err != nil {
+		return false
+	}
+	return manifestIsNative(object["manifest"])
+}
+
+// projectWorkerRetirement returns the catalog read projection of one
+// installation snapshot: legacy Worker installs gain the #486 retirement
+// blocking reason so list/read views stay explicit about
+// non-executability. The stored document itself is never rewritten;
+// preservation streams keep the raw payload verbatim.
+func projectWorkerRetirement(raw json.RawMessage) json.RawMessage {
+	object, err := decodePayload(raw)
+	if err != nil || manifestIsNative(object["manifest"]) {
+		return raw
+	}
+	reasons, ok := object["blockingReasons"].([]any)
+	if !ok {
+		return raw
+	}
+	for _, reason := range reasons {
+		if textValue(reason) == WorkerRetiredReason {
+			return raw
+		}
+	}
+	object["blockingReasons"] = append(reasons, any(WorkerRetiredReason))
+	projected, err := json.Marshal(object)
+	if err != nil {
+		return raw
+	}
+	return projected
+}
+
+// effectiveBlockingReasons returns the stored blocking reasons plus the
+// derived #486 retirement reason for legacy manifest snapshots. It guards
+// enables without persisting anything.
+func effectiveBlockingReasons(raw json.RawMessage) []string {
+	blocking := jsonStrings(raw, "blockingReasons")
+	if payloadManifestIsNative(raw) {
+		return blocking
+	}
+	for _, reason := range blocking {
+		if reason == WorkerRetiredReason {
+			return blocking
+		}
+	}
+	return append(blocking, WorkerRetiredReason)
+}
 
 func storageError() *Error {
 	return &Error{Code: "plugin.storage_failed", Message: "plugin storage operation failed"}
@@ -104,10 +192,13 @@ const (
 
 // PublicErrorView is the public wire shape of one plugin shared-state
 // error. Code is the frozen rpcErrorData.code; a store CAS conflict keeps
-// Code empty and carries only the frozen conflict message.
+// Code empty and carries only the frozen conflict message. Details is an
+// additive diagnostic channel (blockingReasons) and stays nil unless the
+// frozen code has a structured payload.
 type PublicErrorView struct {
 	Code    string
 	Message string
+	Details map[string]any
 }
 
 // PublicError maps internal store errors to the frozen public contract.
@@ -123,8 +214,12 @@ func PublicError(err error) (PublicErrorView, bool) {
 		return PublicErrorView{Code: PublicCodeAlreadyInstalled, Message: "plugin is already installed"}, true
 	case "plugin.not_found":
 		return PublicErrorView{Code: PublicCodeNotFound, Message: "plugin is not installed"}, true
-	case "plugin_blocked":
-		return PublicErrorView{Code: PublicCodeBlocked, Message: "plugin has blocking reasons"}, true
+	case "plugin_blocked", WorkerRetiredReason:
+		view := PublicErrorView{Code: PublicCodeBlocked, Message: "plugin has blocking reasons"}
+		if reasons, ok := storeErr.Details["blockingReasons"]; ok {
+			view.Details = map[string]any{"blockingReasons": reasons}
+		}
+		return view, true
 	case "plugin.revision_conflict":
 		// PluginStoreConflictError carries only the frozen message.
 		return PublicErrorView{Code: "", Message: storeErr.Message}, true
@@ -223,7 +318,7 @@ func (service *Service) ListInstallations(
 	}
 	result := make([]json.RawMessage, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, row.Payload)
+		result = append(result, projectWorkerRetirement(row.Payload))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return snapshotID(result[i]) < snapshotID(result[j])
@@ -243,7 +338,7 @@ func (service *Service) GetInstallation(
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	return rows[0].Payload, nil
+	return projectWorkerRetirement(rows[0].Payload), nil
 }
 
 func (service *Service) ListPackageRevisions(
@@ -744,7 +839,7 @@ func (service *Service) setEnabled(ctx context.Context, projectKey, pluginID str
 		if installationID != "" && (jsonText(current.Payload, "installationId") != installationID || jsonInt(current.Payload, "revision") != expectedRevision) {
 			return revisionConflict(KindInstallation, expectedRevision, "installation changed")
 		}
-		blocking := jsonStrings(current.Payload, "blockingReasons")
+		blocking := effectiveBlockingReasons(current.Payload)
 		if enabled && len(blocking) > 0 {
 			return &Error{
 				Code:    "plugin_blocked",

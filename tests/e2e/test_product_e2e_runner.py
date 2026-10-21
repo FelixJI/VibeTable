@@ -675,12 +675,17 @@ def test_native_preview_requires_real_success_from_a_verified_owned_visible_help
         assert result["helperIdentityVerified"] is True
 
 
-@pytest.mark.parametrize("outcome", ["late-success", "failed", "missing", "too-late"])
+@pytest.mark.parametrize("outcome", ["late-success", "cold-start", "failed", "missing", "too-late"])
 def test_preview_observation_uses_its_existing_correlated_budget_without_an_early_file_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     request, data, controls, source = _native_document_fixture(tmp_path)
     request["action"] = "preview-observe"
+    budget = runner.DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS
+    # A real cold helper can exceed the former 10s budget before DoPreview
+    # even starts (CI 39247421333: 11.07s pre-DoPreview chain); success inside
+    # the single correlated budget must pass.
+    result_after = {"late-success": 6.0, "cold-start": 11.5}.get(outcome, float("inf"))
     clock = [0.0]
     original_read = runner._read_json
     evidence = {
@@ -696,9 +701,9 @@ def test_preview_observation_uses_its_existing_correlated_budget_without_an_earl
         if outcome == "failed":
             return {**evidence, "outcome": "failed"}
         if outcome == "too-late":
-            clock[0] = 11
+            clock[0] = budget + 1
             return evidence
-        return evidence if outcome == "late-success" and clock[0] >= 6 else None
+        return evidence if clock[0] >= result_after else None
 
     monkeypatch.setattr(runner, "_read_json", read)
     monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
@@ -723,29 +728,37 @@ def test_preview_observation_uses_its_existing_correlated_budget_without_an_earl
         request, host_scope=scope, local_data=data, controls=controls
     )
     assert result["requestId"] == request["requestId"]
-    if outcome == "late-success":
+    if outcome in {"late-success", "cold-start"}:
         assert result["status"] == "observed"
-        assert 6 <= clock[0] < 10
         assert result["preview"] == evidence
         assert result["helperIdentityVerified"] is True
+        if outcome == "cold-start":
+            assert budget > 11.5
+            assert 11.5 <= clock[0] < 12
+        else:
+            assert 6 <= clock[0] < budget
     else:
         assert result["status"] == "unverified"
         if outcome == "failed":
             assert clock[0] == 0
         elif outcome == "too-late":
-            assert clock[0] == 11
+            # A record arriving after the single deadline cannot be rescued by
+            # the visibility wait: the shared budget is already exhausted.
+            assert clock[0] == budget + 1
+            assert "did not become visible" in result["error"]
         else:
-            assert 10 <= clock[0] < 10.1
+            assert budget <= clock[0] < budget + 0.1
 
 
 @pytest.mark.parametrize(
-    "outcome", ["visible", "hidden", "owner-changed", "helper-retired", "late"]
+    "outcome", ["visible", "cold-visible", "hidden", "owner-changed", "helper-retired", "late"]
 )
 def test_preview_visibility_wait_preserves_identity_and_original_observation_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     request, data, controls, source = _native_document_fixture(tmp_path)
     request["action"] = "preview-observe"
+    budget = runner.DOCUMENT_NATIVE_PREVIEW_OBSERVATION_SECONDS
     clock = [0.0]
     original_read = runner._read_json
     evidence = {
@@ -759,7 +772,11 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         if path.name != "document-native-preview-result.json":
             return original_read(path)
         if outcome == "late":
-            clock[0] = 9.95
+            clock[0] = budget - 0.05
+        elif outcome == "cold-visible":
+            # A cold helper returning after the former 10s budget must still
+            # be observed when visibility follows inside the same budget.
+            clock[0] = 11.5
         return evidence
 
     monkeypatch.setattr(runner, "_read_json", read)
@@ -771,7 +788,15 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         owner=lambda _hwnd: 99 if outcome == "owner-changed" and clock[0] >= 0.05 else 43,
         user32=SimpleNamespace(
             IsWindowVisible=lambda _hwnd: (
-                outcome != "hidden" and clock[0] >= (10.05 if outcome == "late" else 0.1)
+                outcome != "hidden"
+                and clock[0]
+                >= (
+                    budget + 0.05
+                    if outcome == "late"
+                    else 11.7
+                    if outcome == "cold-visible"
+                    else 0.1
+                )
             )
         ),
         close=lambda: None,
@@ -792,10 +817,14 @@ def test_preview_visibility_wait_preserves_identity_and_original_observation_dea
         assert result["status"] == "observed"
         assert result["preview"] == evidence
         assert 0.1 <= clock[0] < 0.2
+    elif outcome == "cold-visible":
+        assert result["status"] == "observed"
+        assert result["preview"] == evidence
+        assert 11.7 <= clock[0] < 12
     else:
         assert result["status"] == "unverified"
         if outcome in {"hidden", "late"}:
-            assert 10 <= clock[0] < 10.1
+            assert budget <= clock[0] < budget + 0.1
         else:
             assert 0.05 <= clock[0] < 0.1
 
@@ -4148,8 +4177,12 @@ def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> No
     first_toggle = scenario.index("await toggle.click();")
     stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
     assert stable_enabled < first_toggle
-    assert scenario.count("!lifecycleToggle.disabled") == 3
-    assert scenario.count("runButton.disabled") >= 3
+    assert scenario.count("!lifecycleToggle.disabled") == 1
+    assert (
+        "await settledToggle(true); await toggle.click(); await settledToggle(false);" in scenario
+    )
+    assert "await toggle.click(); await settledToggle(true);" in scenario
+    assert "runButton.disabled === !enabled" in scenario
 
 
 def test_snapshot_corruption_uses_a_stable_selector_and_exact_bridge_failure() -> None:
@@ -5090,6 +5123,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_surface_api.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
@@ -5121,6 +5155,8 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("collection_formula_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_document_native_operations_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("source_import_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("isolated_native_clipboard_guard.test.mjs"),
     ]
     _run_node_contract_files(
@@ -5346,9 +5382,9 @@ def test_plugin_confirmation_assertion_is_not_constant_true() -> None:
         'recorder.check("authorized mutation plan required explicit confirmation", true'
     )
     assert constant_true_assertion not in source
-    assert "/FINAL WRITE CONFIRMATION/i.test(confirmationText)" in source
-    assert 'confirmationTargetCount.trim() === "1"' in source
-    assert "await confirmationApprove.isEnabled()" in source
+    assert "/FINAL WRITE CONFIRMATION/u.test(await confirmation.innerText())" in source
+    assert "pending.pendingConfirmation.preview.affectedCount === 1" in source
+    assert 'getByTestId("plugin-surface-confirm-approve").click()' in source
     assert 'getByTestId("plugin-toggle")' in source
     assert 'getByTestId("plugin-upgrade")' in source
     assert 'path.join(runtime.controlsDir, "invalid-plugin-upgrade")' in source
@@ -5836,8 +5872,9 @@ def _plugin_restart_workspace(persistent: runner._PersistentScenarioRun) -> None
     )
 
 
+@pytest.mark.parametrize("migrated", [False, True])
 def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, migrated: bool
 ) -> None:
     scenario = runner.Scenario("11-plugin-mutation", "plugin", "restart")
     workspace_id = "11111111-2222-4111-8111-111111111111"
@@ -5850,7 +5887,11 @@ def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
         calls.append(persistent)
         _plugin_restart_workspace(persistent)
         if persistent.phase != "seed":
-            return {"status": "passed", "lifecycle": {"status": "passed"}}
+            return {
+                "status": "passed",
+                "lifecycle": {"status": "passed"},
+                **({"legacyMigration": {"installationId": "legacy000000001"}} if migrated else {}),
+            }
         return {
             "status": "passed",
             "lifecycle": {"status": "passed"},
@@ -5859,14 +5900,27 @@ def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
             "pluginId": "com.vibetable.e2e.mutation-boundary",
             "tableId": "table-plugin",
             "packageHash": package_hash,
+            "legacyPackage": str(tmp_path / "evidence/11-plugin-mutation/seed/legacy.vtplugin"),
         }
 
     monkeypatch.setattr(runner, "run_scenario", two_phases)
+
+    def seed_legacy(workspace: Path, approved: Path, seed: Mapping[str, Any]) -> dict[str, Any]:
+        assert seed["lifecycle"]["status"] == "passed"
+        assert workspace.is_relative_to(approved)
+        return {"pluginId": "com.vibetable.e2e.legacy-worker", "installationId": "legacy000000001"}
+
+    monkeypatch.setattr(runner, "_seed_retired_plugin", seed_legacy)
+    monkeypatch.setattr(
+        runner, "_verify_retired_plugin_preservation", lambda *_: {"rawUnchanged": True}
+    )
     result = runner._run_host_presentation_restart_acceptance(
         scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
     )
 
-    assert result["status"] == "passed"
+    assert result["status"] == ("passed" if migrated else "failed")
+    if not migrated:
+        assert result["error"]["code"] == "PLUGIN_HISTORICAL_PRESERVATION_CHANGED"
     assert [run.phase for run in calls] == ["seed", "resume"]
     assert calls[0].readiness_dir == calls[1].readiness_dir
     assert calls[1].workspace_root == calls[0].workspace_root
@@ -5875,6 +5929,7 @@ def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
     assert state["projectKey"] == f"local:{workspace_id}"
     assert state["pluginId"] == "com.vibetable.e2e.mutation-boundary"
     assert state["packageHash"] == package_hash
+    assert state["legacyPlugin"]["installationId"] == "legacy000000001"
     assert state["workspaceRoot"] == str(calls[1].workspace_root)
     assert set(result["phases"]) == {"seed", "resume"}
 
@@ -7421,3 +7476,412 @@ def test_native_foreground_settling_requires_accepted_activation_and_live_budget
     ):
         native.foreground(10, 100, settle_deadline=10.0 if expired else 25.0)
     assert calls == []
+
+
+def _plugin_records_schema_from_migration() -> tuple[tuple[str, str], ...]:
+    """The real Go-owned columns, parsed live from the PocketBase migration."""
+    source = (
+        runner.ROOT / "sidecar" / "migrations" / "2026092601_plugin_shared_state.go"
+    ).read_text(encoding="utf-8")
+    fields = source.split('name: "vibetable_plugin_records"', 1)[1].split("uniqueGroups", 1)[0]
+    columns: list[tuple[str, str]] = [("id", "TEXT PRIMARY KEY")]
+    for part in fields.split('{name: "')[1:]:
+        name = part.split('"', 1)[0]
+        kind = part.split('kind: "', 1)[1].split('"', 1)[0]
+        columns.append((name, "INTEGER" if kind == "number" else "TEXT"))
+    return tuple(columns)
+
+
+def test_legacy_plugin_fixture_schema_matches_the_pocketbase_migration() -> None:
+    # The synthetic-fixture table below is derived from this real declaration,
+    # so a helper writing columns the Go collection does not have (CI 4da:
+    # created/updated) fails in these tests instead of only on CI, and any
+    # future migration drift breaks here loudly.
+    assert _plugin_records_schema_from_migration() == (
+        ("id", "TEXT PRIMARY KEY"),
+        ("kind", "TEXT"),
+        ("project_key", "TEXT"),
+        ("plugin_id", "TEXT"),
+        ("item_key", "TEXT"),
+        ("payload_json", "TEXT"),
+        ("seq", "INTEGER"),
+    )
+
+
+def _closed_legacy_plugin_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
+    approved = tmp_path / "persistent"
+    workspace = approved / "workspace"
+    data = workspace / ".vibetable/data"
+    data.mkdir(parents=True)
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    (workspace / ".vibetable/workspace.json").write_text(
+        json.dumps({"workspaceId": workspace_id}), encoding="utf-8"
+    )
+    with closing(sqlite3.connect(data / "data.db")) as connection, connection:
+        columns = ",".join(
+            f"{name} {kind}" for name, kind in _plugin_records_schema_from_migration()
+        )
+        connection.execute(f"CREATE TABLE vibetable_plugin_records ({columns})")
+    controls = tmp_path / "seed/controls"
+    controls.mkdir(parents=True)
+    runner._prepare_retired_plugin_packages(controls, active=False)
+    seed: dict[str, Any] = {
+        "workspaceId": workspace_id,
+        "lifecycle": {"status": "passed"},
+        "legacyPackage": str(controls / "legacy-worker.vtplugin"),
+    }
+    return workspace, approved, seed
+
+
+def test_retired_plugin_fixture_preserves_four_original_kinds_and_large_unknown_setting(
+    tmp_path: Path,
+) -> None:
+    from backend.infrastructure.plugin_package import inspect_plugin_package
+
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    metadata = runner._seed_retired_plugin(workspace, approved, seed)
+    proof = json.loads((approved / "legacy-plugin-preservation.json").read_text(encoding="utf-8"))
+    assert metadata["installationId"] == "legacy000000001"
+    assert len(metadata["installationId"]) == 15
+    assert {row["kind"] for row in proof["records"]} == {
+        "installation",
+        "revision",
+        "setting",
+        "audit",
+    }
+    installed = json.loads(proof["records"][0]["rawPayload"])
+    assert installed["projectKey"] == "local:11111111222241118111111111111111"
+    assert "installationId" not in installed
+    settings = json.loads(proof["records"][2]["rawPayload"])
+    assert settings["value"]["future"]["nested"] == [None, False, "保留"]
+    assert len(proof["records"][2]["rawPayload"].encode()) > 256 * 1024
+    original = Path(seed["legacyPackage"])
+    assert inspect_plugin_package(original).manifest["$schema"] == "vibetable.plugin-manifest.v1"
+    assert runner._verify_retired_plugin_preservation(workspace, approved) == {
+        "recordCount": 4,
+        "rawUnchanged": True,
+        "originalPackageUnchanged": True,
+    }
+
+
+@pytest.mark.parametrize("change", ["setting", "audit", "package"])
+def test_retired_plugin_preservation_proof_detects_reopen_side_effects(
+    tmp_path: Path, change: str
+) -> None:
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    metadata = runner._seed_retired_plugin(workspace, approved, seed)
+    if change == "package":
+        (workspace / ".vibetable/data/state/plugin-packages" / metadata["packageName"]).write_bytes(
+            b"changed"
+        )
+    else:
+        with (
+            closing(sqlite3.connect(workspace / ".vibetable/data/data.db")) as connection,
+            connection,
+        ):
+            connection.execute(
+                "UPDATE vibetable_plugin_records SET payload_json='{}' WHERE kind=?", (change,)
+            )
+    with pytest.raises(ValueError, match="changed while reopening or exporting"):
+        runner._verify_retired_plugin_preservation(workspace, approved)
+
+
+def test_retired_plugin_seed_requires_successful_owned_host_close(tmp_path: Path) -> None:
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    seed["lifecycle"] = {"status": "failed"}
+    with pytest.raises(ValueError, match="Host must close"):
+        runner._seed_retired_plugin(workspace, approved, seed)
+    with closing(sqlite3.connect(workspace / ".vibetable/data/data.db")) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM vibetable_plugin_records").fetchone()[0] == 0
+        )
+    assert not (workspace / ".vibetable/data/state/plugin-packages").exists()
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows Node-free Host acceptance environment")
+def test_plugin_host_path_is_node_free_while_sdk_build_and_driver_keep_parent_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    node = ensure_node(runner.ROOT)
+    parent_path = str(node.parent) + runner.os.pathsep + runner.os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", parent_path)
+    assert runner.shutil.which("node") is not None
+    scenario = runner.Scenario("47-plugin-surface-api", "surface", "Node-free Host")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"synthetic unlaunched Host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    captured: dict[str, object] = {}
+
+    def launch(*_args: object, **kwargs: Any) -> _FakeScope:
+        captured["hostPath"] = kwargs["env"]["PATH"]
+        assert str(node.parent) not in kwargs["env"]["PATH"]
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_: None)
+    _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_: {"ready": True})
+    monkeypatch.setattr(runner, "_prepare_retired_plugin_packages", lambda *_args, **_kwargs: None)
+    actual_run = subprocess.run
+    builds = []
+
+    def run(command: Any, **kwargs: Any) -> Any:
+        if len(command) > 1 and str(command[1]).endswith("vibetable_plugin.py"):
+            assert kwargs.get("env", runner.os.environ)["PATH"] == parent_path
+            builds.append(command[2])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+
+    def driver(command: list[str], *, scenario_dir: Path, **_kwargs: Any) -> tuple[int, str, str]:
+        assert command[0] == str(node)
+        assert runner.os.environ["PATH"] == parent_path
+        assert runner.shutil.which("node") is not None
+        # Execute the real locked Node as the parent-side driver, without a browser.
+        actual_run([command[0], "--version"], check=True, capture_output=True)
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}), encoding="utf-8"
+        )
+        captured["launch"] = json.loads((scenario_dir / "launch.json").read_text(encoding="utf-8"))
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", driver)
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node=str(node)
+    )
+    assert result["status"] == "passed"
+    assert builds == ["build", "pack"]
+    assert runner.os.environ["PATH"] == parent_path
+    evidence = captured["launch"]
+    assert isinstance(evidence, dict)
+    assert evidence["hostNodeRuntimeAvailable"] is False
+    assert evidence["hostPath"] == captured["hostPath"]
+    assert all(
+        Path(entry).is_relative_to(Path(runner.os.environ["SYSTEMROOT"]))
+        for entry in evidence["hostPath"].split(runner.os.pathsep)
+    )
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows current-directory executable search")
+def test_plugin_host_node_probe_rejects_node_in_package_current_directory(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "node.exe").write_bytes(b"synthetic lookup fixture, never executed")
+    with pytest.raises(ValueError, match="still resolves a Node runtime"):
+        runner._scenario_host_environment("11-plugin-mutation", package)
+
+
+def test_other_scenarios_keep_existing_host_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", "existing-parent-tools")
+    environment, evidence = runner._scenario_host_environment("02-schema-edit", tmp_path)
+    assert environment["PATH"] == "existing-parent-tools"
+    assert evidence == {}
+    assert runner.os.environ["PATH"] == "existing-parent-tools"
+
+
+@pytest.mark.parametrize("include_other_workspace", [True, False])
+def test_application_restart_requires_and_preserves_second_workspace_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, include_other_workspace: bool
+) -> None:
+    scenario = runner.Scenario("48-plugin-applications", "applications", "workspace isolation")
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    other = {
+        "workspaceId": "22222222-2222-4222-8222-222222222222",
+        "projectKey": "local:22222222222242228222222222222222",
+        "tableId": "other-table",
+        "installationId": "other-installation",
+        "revision": 2,
+        "version": "1.0.0",
+        "packageHash": "sha256:" + "ab" * 32,
+        "rows": [{"id": "other-row", "text": "other workspace private row"}],
+    }
+    calls: list[str] = []
+
+    def phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent.phase)
+        if persistent.phase == "resume":
+            state = json.loads(persistent.state_path.read_text(encoding="utf-8"))
+            assert state["workspaceId"] == workspace_id
+            assert state["crossWorkspace"] == other
+            return {"status": "passed", "lifecycle": {"status": "passed"}}
+        _plugin_restart_workspace(persistent)
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "projectKey": "local:11111111222241118111111111111111",
+            "tableId": "original-table",
+            "pluginId": "com.vibetable.e2e.application-a",
+            "packageHash": "sha256:" + "ab" * 32,
+            "sessionEpoch": 5,
+            **({"crossWorkspace": other} if include_other_workspace else {}),
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+    if include_other_workspace:
+        assert result["status"] == "passed"
+        assert calls == ["seed", "resume"]
+    else:
+        assert result["status"] == "failed"
+        assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+        assert calls == ["seed"]
+
+
+def test_retired_plugin_migration_fixture_builds_a_separate_native_application(
+    tmp_path: Path,
+) -> None:
+    from backend.infrastructure.plugin_package import inspect_plugin_package
+
+    runner._prepare_retired_plugin_packages(tmp_path, active=True)
+    old = inspect_plugin_package(tmp_path / "legacy-worker.vtplugin").manifest
+    native = inspect_plugin_package(tmp_path / "legacy-worker-api3.vtplugin").manifest
+    assert old["$schema"] == "vibetable.plugin-manifest.v1"
+    assert old["compatibility"]["pluginApi"] == "2.x"
+    assert old["actions"][0]["workerEntry"]
+    assert native["pluginId"] == old["pluginId"]
+    assert native["$schema"] == "vibetable.plugin-manifest.v2"
+    assert native["compatibility"]["pluginApi"] == "3.x"
+    assert native["version"] == "2.0.0"
+    assert native["actions"][0]["presentation"] == "application"
+    assert native["actions"][0]["entry"] == "ui/index.html"
+    assert native["permissions"]["privateStorage"] is True
+    assert (tmp_path / "legacy-worker-api3/dist/boundary.js").is_file()
+
+
+def _migrated_plugin_records(proof: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    actual = json.loads(json.dumps(proof["records"]))
+    installation = next(row for row in actual if row["kind"] == "installation")
+    payload = json.loads(installation["rawPayload"])
+    manifest = json.loads(
+        (runner.ROOT / "tests/fixtures/plugins/mutation-boundary/manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest.update(pluginId=proof["pluginId"], version="2.0.0")
+    payload.update(
+        version="2.0.0",
+        packageHash="sha256:" + "f" * 64,
+        manifest=manifest,
+        revision=2,
+        blockingReasons=[],
+    )
+    installation["rawPayload"] = json.dumps(payload)
+    prior = next(row for row in actual if row["kind"] == "revision")
+    prior["rawPayload"] = json.dumps(json.loads(prior["rawPayload"]) | {"state": "rollback"})
+    actual.extend(
+        [
+            {
+                "recordId": "native000000001",
+                "kind": "revision",
+                "itemKey": payload["packageHash"],
+                "rawPayload": json.dumps(
+                    {"packageHash": payload["packageHash"], "state": "current"}
+                ),
+                "seq": 10,
+            },
+            {
+                "recordId": "native000000002",
+                "kind": "audit",
+                "itemKey": "upgraded",
+                "rawPayload": json.dumps(
+                    {"eventType": "upgrade", "packageHash": payload["packageHash"]}
+                ),
+                "seq": 11,
+            },
+        ]
+    )
+    return actual, {
+        key: payload[key] for key in ("pluginId", "version", "packageHash", "revision")
+    } | {"installationId": proof["installationId"]}
+
+
+@pytest.mark.parametrize("change", [None, "setting", "audit", "reinstall", "not-upgraded"])
+def test_migration_proof_only_allows_in_place_upgrade_and_preserves_originals(
+    tmp_path: Path, change: str | None
+) -> None:
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    runner._seed_retired_plugin(workspace, approved, seed)
+    proof = json.loads((approved / "legacy-plugin-preservation.json").read_text(encoding="utf-8"))
+    actual, migration = _migrated_plugin_records(proof)
+    if change in {"setting", "audit"}:
+        next(row for row in actual if row["kind"] == change)["rawPayload"] += " "
+    elif change == "reinstall":
+        next(row for row in actual if row["kind"] == "installation")["recordId"] = "other0000000001"
+    elif change == "not-upgraded":
+        actual = proof["records"]
+    if change:
+        with pytest.raises(ValueError, match=r"historical|migration"):
+            runner._verify_legacy_migration_records(actual, proof, migration)
+    else:
+        runner._verify_legacy_migration_records(actual, proof, migration)
+        with (
+            closing(sqlite3.connect(workspace / ".vibetable/data/data.db")) as connection,
+            connection,
+        ):
+            connection.execute("DELETE FROM vibetable_plugin_records")
+            connection.executemany(
+                "INSERT INTO vibetable_plugin_records (id,kind,project_key,plugin_id,item_key,payload_json,seq) VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        row["recordId"],
+                        row["kind"],
+                        "local:test",
+                        proof["pluginId"],
+                        row["itemKey"],
+                        row["rawPayload"],
+                        row["seq"],
+                    )
+                    for row in actual
+                ],
+            )
+        assert (
+            runner._verify_retired_plugin_preservation(workspace, approved, migration)[
+                "migrationValidated"
+            ]
+            is True
+        )
+
+
+def test_historical_archive_accepts_wire_sequence_strings_but_preserves_raw_bytes(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    workspace, approved, seed = _closed_legacy_plugin_fixture(tmp_path)
+    runner._seed_retired_plugin(workspace, approved, seed)
+    proof_path = approved / "legacy-plugin-preservation.json"
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    records = [row | {"seq": str(row["seq"])} for row in proof["records"]]
+    archive_path = approved / "preserved.zip"
+
+    def write_archive() -> None:
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("records.json", json.dumps(records))
+            archive.writestr(
+                "preservation.json", json.dumps({"missingPackages": 0, "diagnostics": []})
+            )
+            archive.writestr(
+                "packages/" + proof["packageHash"][7:] + ".vtplugin",
+                Path(seed["legacyPackage"]).read_bytes(),
+            )
+
+    write_archive()
+    assert runner._verify_legacy_plugin_archive(archive_path, proof_path)["rawPreserved"] is True
+    records[2]["rawPayload"] += " "
+    write_archive()
+    with pytest.raises(ValueError, match="historical raw records changed"):
+        runner._verify_legacy_plugin_archive(archive_path, proof_path)

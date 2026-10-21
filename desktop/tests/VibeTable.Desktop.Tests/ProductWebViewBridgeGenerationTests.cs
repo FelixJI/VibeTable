@@ -123,7 +123,7 @@ public sealed class ProductWebViewBridgeGenerationTests
             var pending = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
             int gateCalls = 0;
             using var dispatcher = new PluginRequestDispatcher(harness.Bridge, surfaces, new UnusedPackagePicker(), resources,
-                filePicker: null, githubSource: null, projectContext: () => current,
+                githubSource: null, projectContext: () => current,
                 sharedRpc: (_, _, _) => pending.Task,
                 sharedReadEmitGate: captured =>
                 {

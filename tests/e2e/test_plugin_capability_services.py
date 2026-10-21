@@ -88,7 +88,6 @@ def test_capability_services_is_an_independent_file_lane_and_uses_owned_native_p
     source = (root / "tests/e2e/product_e2e_runner.py").read_text(encoding="utf-8")
     assert "file_result = handle_file_dialog(" in source
     assert "host_scope=host_scope" in source
-    assert 'environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"' in source
 
 
 def test_picker_rechecks_job_identity_before_any_native_input(monkeypatch, tmp_path: Path) -> None:

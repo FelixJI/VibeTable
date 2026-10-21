@@ -86,6 +86,7 @@ func pluginPublicError(err error) error {
 	return &productrpc.PublicError{
 		Code:    view.Code,
 		Message: view.Message,
+		Details: view.Details,
 	}
 }
 

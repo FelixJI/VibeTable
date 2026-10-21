@@ -9,18 +9,15 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Any
-from uuid import UUID
+from typing import Any, NoReturn
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
-from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.plugin_store import PocketBasePluginStore
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.host_files import HostFiles
-from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
-from backend.application.plugin_registry import PluginRegistry
+from backend.application.plugin_registry import PluginRegistry, PluginRegistryError
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
@@ -29,17 +26,12 @@ from backend.contracts.data_io import (
     GenerateTemplateParams,
     PreviewImportParams,
 )
-from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
     CommitInstallExecutionParams,
-    DescribePluginActionParams,
     InspectInstallExecutionParams,
-    PluginTaskParams,
-    ResolvePluginFileParams,
-    ResolvePluginInteractionParams,
+    RetiredPluginExecutionParams,
     RollbackPluginParams,
     SetPluginEnabledExecutionParams,
-    StartPluginActionParams,
     UninstallPluginParams,
     UpgradePluginExecutionParams,
 )
@@ -51,10 +43,7 @@ from backend.contracts.task import (
     TaskStatus,
 )
 from backend.infrastructure.diagnostic_logging import configure_diagnostic_logging
-from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
-from backend.infrastructure.plugin_interaction import HostConfirmationAdapter
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
-from backend.infrastructure.plugin_worker import NodePluginWorkerAdapter
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.error_registry import ErrorDomain, register_application_errors
 from backend.rpc.framing import MAX_FRAME_BYTES, FrameTooLargeError
@@ -140,7 +129,7 @@ def _register_plugin_methods(
     register_application_errors(ErrorDomain.PLUGIN)
     # plugin.listCatalog/listAudit/setEnabled and the pending-cleanup
     # projection are answered by the Go plugin catalog through the Host;
-    # Python only keeps the closed install/execution surface. The install
+    # Python only keeps the closed package lifecycle surface. The install
     # handlers take the private host-gateway execution payloads: the full
     # plan arrives from a consumed WPF lease while the frozen public DTOs
     # stay in the renderer contract catalog.
@@ -159,22 +148,26 @@ def _register_plugin_methods(
     dispatcher.register(
         "plugin.setEnabledExecution", service.set_enabled_execution, SetPluginEnabledExecutionParams
     )
-    dispatcher.register(
+    _register_retired_plugin_methods(dispatcher)
+
+
+def _reject_retired_plugin_execution(_params: RetiredPluginExecutionParams) -> NoReturn:
+    raise PluginRegistryError(
+        "旧插件 Worker 执行入口已退役；请迁移到 API 3.x 隔离插件运行环境。",
+        code="plugin_worker_retired",
+    )
+
+
+def _register_retired_plugin_methods(dispatcher: RpcDispatcher) -> None:
+    register_application_errors(ErrorDomain.PLUGIN)
+    for method in (
         "plugin.describeAction",
-        service.describe_action,
-        DescribePluginActionParams,
-    )
-    dispatcher.register("plugin.startAction", service.start_action, StartPluginActionParams)
-    dispatcher.register(
+        "plugin.startAction",
         "plugin.resolveInteraction",
-        service.resolve_interaction,
-        ResolvePluginInteractionParams,
-    )
-    dispatcher.register("plugin.resolveFile", service.resolve_file, ResolvePluginFileParams)
-    # plugin.cancelTask stays the closed host-only execution-cancel entry: the
-    # public task snapshot/query authority lives in the WPF host registry and
-    # Python is never asked for public task state.
-    dispatcher.register("plugin.cancelTask", service.cancel_task, PluginTaskParams)
+        "plugin.resolveFile",
+        "plugin.cancelTask",
+    ):
+        dispatcher.register(method, _reject_retired_plugin_execution, RetiredPluginExecutionParams)
 
 
 _TERMINAL_TASK_STATES = frozenset(("succeeded", "failed", "cancelled", "aborted"))
@@ -274,58 +267,17 @@ async def _build_server() -> tuple[
         )
         package_lifecycle = LocalPluginPackageLifecycle(store.package_cache)
         registry = PluginRegistry(store=store)
-        confirmation = HostConfirmationAdapter()
-        file_capability = HostFileCapabilityAdapter(files=task_service.files)
-        worker = NodePluginWorkerAdapter(
-            store=store,
-            profiles={},
-            client=client,
-            package_lifecycle=package_lifecycle,
-            file_adapter=file_capability,
-            expected_project_key=(
-                "local:" + UUID(os.environ["VIBETABLE_WORKSPACE_ID"]).hex
-                if os.environ.get("VIBETABLE_WORKSPACE_ID")
-                else None
-            ),
-            session_epoch=int(os.environ.get("VIBETABLE_WORKSPACE_SESSION_EPOCH", "0")),
-        )
-        mutation = PocketBasePluginMutationAdapter(
-            client=client,
-            schema_revisions={},
-            writable_fields={},
-            session_epoch=int(os.environ.get("VIBETABLE_WORKSPACE_SESSION_EPOCH", "0")),
-        )
-        runtime = PluginExecutionRuntime(
-            registry=registry,
-            worker_adapter=worker,
-            confirmation_adapter=confirmation,
-            mutation_adapter=mutation,
-        )
         plugin_service = PluginPlatformService(
             registry=registry,
-            runtime=runtime,
             store=store,
             package_lifecycle=package_lifecycle,
-            confirmation_adapter=confirmation,
-            file_adapter=file_capability,
         )
         _register_plugin_methods(dispatcher, plugin_service)
 
     server = RpcServer(reader, StdoutAsyncWriter(sys.stdout.buffer), dispatcher)
     server_ref = server
-    if plugin_service is not None:
-
-        async def notify_plugin(event: PluginEventEnvelope) -> None:
-            method = {
-                "plugin.catalog.changed": "plugin.catalogChanged",
-                "plugin.task.changed": "plugin.taskChanged",
-                "plugin.interaction.requested": "plugin.interactionRequested",
-                "plugin.file.requested": "plugin.fileRequested",
-            }.get(event.event_type)
-            if method is not None:
-                await server.notify(method, event)
-
-        plugin_service.set_notification_sink(notify_plugin)
+    if plugin_service is None:
+        _register_retired_plugin_methods(dispatcher)
     return server, plugin_service
 
 
@@ -340,5 +292,15 @@ async def _main() -> None:
             await plugin_service.close()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    if sys.argv[1:] == ["--verify-retained-plugin-package"]:
+        from backend.infrastructure.plugin_package_verifier import run
+
+        raise SystemExit(run(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))
+    if sys.argv[1:]:
+        raise SystemExit("unsupported backend mode")
     asyncio.run(_main())
+
+
+if __name__ == "__main__":
+    main()

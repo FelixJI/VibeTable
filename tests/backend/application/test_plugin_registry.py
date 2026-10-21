@@ -1,4 +1,4 @@
-"""Local-worker plugin registry tests without provider coupling."""
+"""Code-plugin registry tests without provider coupling."""
 
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ from backend.infrastructure.plugin_store import InMemoryPluginStore
 def _manifest(*, version: str = "1.0.0") -> PluginManifest:
     return PluginManifest.model_validate(
         {
-            "$schema": "vibetable.plugin-manifest.v1",
+            "$schema": "vibetable.plugin-manifest.v2",
             "pluginId": "com.example.summary",
             "version": version,
             "displayName": {"en": "Summary"},
             "compatibility": {
                 "minHostVersion": "0.5.1",
-                "pluginApi": "1.x",
+                "pluginApi": "3.x",
             },
             "permissions": {
                 "data": [],
@@ -40,7 +40,8 @@ def _manifest(*, version: str = "1.0.0") -> PluginManifest:
                     "displayName": {"en": "Summarize"},
                     "mode": "local",
                     "risk": "read",
-                    "workerEntry": "dist/worker.js",
+                    "presentation": "headless",
+                    "entry": "dist/action.js",
                 }
             ],
         }

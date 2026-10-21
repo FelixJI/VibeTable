@@ -1,4 +1,4 @@
-"""Versioned contracts for local-worker plugins."""
+"""Versioned plugin contracts and read-only legacy package metadata."""
 
 from __future__ import annotations
 
@@ -109,8 +109,8 @@ class PluginManifest(PluginContract):
         native = self.schema_id == "vibetable.plugin-manifest.v2"
         if native != (self.compatibility.get("pluginApi") == "3.x"):
             raise ValueError("manifest/API version mismatch")
-        if any((action.worker_entry is not None) == native for action in self.actions):
-            raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
+        if native and any(action.worker_entry is not None for action in self.actions):
+            raise ValueError("v2 forbids workerEntry")
         views = self.ui.get("customViews", [])
         if isinstance(views, list) and any(
             isinstance(view, dict)
@@ -179,6 +179,7 @@ class InstallPlan(PluginContract):
     package_hash: str = Field(min_length=1, max_length=128)
     manifest: PluginManifest
     schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    blocking_reasons: list[str] = Field(default_factory=list)
 
 
 class PluginSnapshot(PluginContract):
@@ -379,7 +380,6 @@ class PluginEventEnvelope(PluginContract):
         "plugin.catalog.changed",
         "plugin.task.changed",
         "plugin.interaction.requested",
-        "plugin.file.requested",
         "plugin.surface.message",
     ]
     project_key: str

@@ -26,9 +26,9 @@
 - 结果：45/45 passed、0 failed、0 skipped。
 - 当前 manifest gap：7（`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`、`52-plugin-capability-services`、`53-record-manager`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：3（`16-dashboard-lifecycle`、`17-interface-lifecycle`、`46-dashboard-native-output`）。
+- 当前 manifest changed：5（`01-offline-first-start`、`11-plugin-mutation`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`46-dashboard-native-output`）。
 
-这些同 ID 场景现已改为布局退役、保全与插件替代验证；本节历史样本不证明当前语义通过。
+这些同 ID 场景现已覆盖无业务 Worker 启动、原生插件执行、旧插件与布局退役保全及插件替代验证；本节历史样本不证明当前语义通过。
 
 同一 main 候选的 data-io 13 场与 resilience 32 场精确、不重复覆盖该 source SHA 对应 manifest 的全部场景；新增无 Worker 页面、应用、能力服务与记录管理场景47–53尚未包含在这份历史运行证据中。两份原始产品报告均通过，六 lane 报告的 commit/source/candidate/资产绑定一致、所有 stage 返回码为零，聚合 required 成功。报告内部路径分别为 `lane-evidence/data-io/20261013T030351Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261013T030528Z/product-e2e-report.json`。
 

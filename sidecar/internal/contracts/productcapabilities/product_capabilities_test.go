@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 117 {
-		t.Fatalf("RPCDescriptors length = %d, want 117", len(descriptors))
+	if len(descriptors) != 118 {
+		t.Fatalf("RPCDescriptors length = %d, want 118", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 75 {
+	if len(allGo) != 76 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -96,6 +96,12 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	versionMethods := map[string]Effect{"version.compare": ReadEffect, "version.create": WriteEffect, "version.delete": WriteEffect, "version.list": ReadEffect, "version.promote": WriteEffect, "version.save": WriteEffect}
 	otherGo := []RPCDescriptor{}
 	for _, descriptor := range allGo {
+		if descriptor.Method == "pluginPreservation.snapshot" {
+			if descriptor != (RPCDescriptor{Method: "pluginPreservation.snapshot", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.preservation", Owner: GoSidecar, Effect: ReadEffect}) {
+				t.Fatalf("preservation descriptor = %#v", descriptor)
+			}
+			continue
+		}
 		if effect, found := versionMethods[descriptor.Method]; found {
 			if descriptor != (RPCDescriptor{Method: descriptor.Method, Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: effect}) {
 				t.Fatalf("version descriptor = %#v", descriptor)

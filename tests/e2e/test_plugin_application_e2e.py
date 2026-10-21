@@ -31,6 +31,10 @@ def test_application_packages_have_real_worker_free_entry_members(tmp_path: Path
             assert manifest["actions"][0]["presentation"] == "application"
             assert all("workerEntry" not in action for action in manifest["actions"])
             assert all(action["entry"] in archive.namelist() for action in manifest["actions"])
+            if manifest["pluginId"] == "com.vibetable.e2e.application-a":
+                assert manifest["permissions"]["files"] == ["pickRead"]
+            else:
+                assert manifest["permissions"]["files"] == []
             identities.add((manifest["pluginId"], manifest["version"]))
         assert inspected.manifest is not None
     assert ("com.vibetable.e2e.application-b", "1.0.0") in identities
@@ -560,3 +564,17 @@ def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
         assert result["foreground"]["nullForegroundSamples"] == 1
     assert [name for name, _ in calls].count("activate") == 1
     assert calls[1] == ("synchronize", 2000)
+
+
+def test_application_workspace_isolation_acceptance_checks_real_scope_receipts() -> None:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [str(ensure_node(root)), "--test", "tests/e2e/plugin_workspace_isolation.test.mjs"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr

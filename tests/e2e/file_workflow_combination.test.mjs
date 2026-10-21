@@ -189,3 +189,49 @@ test("S14/S39 close rejects an uncorrelated close and propagates a missing page 
     delete globalThis.window;
   }
 });
+
+test("S14 arms the cancel control before compare action bookkeeping can outlive the Worker", async () => {
+  const { startAndCancelDocumentDiffThroughUi } = await import("./webview_product_scenarios.mjs");
+  const bridge = documentDiffBridge();
+  const sent = [];
+  bridge.webview.postMessage = message => { sent.push(message); };
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  let publishBusy;
+  const busy = new Promise(resolve => { publishBusy = resolve; });
+  let completed = false;
+  const cancelled = { outcome: "failure", failure: "cancelled", session: null };
+  bridge.page.getByTestId = testId => {
+    if (testId === "compare-revision") return { first() { return { async click() {
+      bridge.webview.postMessage({ type: "document.diffRequested", requestId: "compare-current",
+        payload: { entryHandle: "entry-current", operationId: "op-current" } });
+      publishBusy();
+      // Finishing this action may include trace snapshots after the Worker completes.
+      await Promise.resolve();
+      if (!completed) {
+        completed = true;
+        bridge.dispatch({ type: "document.diffCompleted", requestId: "compare-current",
+          payload: { outcome: "ready", session: { sessionId: "too-late" } } });
+      }
+    } }; } };
+    assert.equal(testId, "diff-cancel");
+    return { async click(options) {
+      assert.equal(options.timeout, 10_000);
+      await busy;
+      if (completed) throw new Error("cancel button detached after Worker completed");
+      bridge.webview.postMessage({ type: "document.diffCancelRequested", requestId: "cancel-current",
+        payload: { entryHandle: "entry-current", operationId: "op-current" } });
+      completed = true;
+      bridge.dispatch({ type: "document.diffCancelCompleted", requestId: "cancel-current", payload: {} });
+      bridge.dispatch({ type: "document.diffCompleted", requestId: "compare-current", payload: cancelled });
+    } };
+  };
+  try {
+    const result = await startAndCancelDocumentDiffThroughUi(bridge.page);
+    assert.deepEqual(result.payload, cancelled);
+    assert.equal(result.requestId, "compare-current");
+    assert.deepEqual(sent.map(message => message.type), ["document.diffRequested", "document.diffCancelRequested"]);
+    assert.deepEqual(sent[1].payload, sent[0].payload);
+  } finally {
+    delete globalThis.window;
+  }
+});

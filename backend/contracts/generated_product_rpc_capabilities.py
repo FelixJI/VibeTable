@@ -57,6 +57,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",
+        "pluginPreservation.snapshot",
         "preset.delete",
         "preset.list",
         "preset.save",
@@ -141,7 +142,6 @@ PRODUCT_EVENT_TOPICS_BY_CURRENT_OWNER = {
         "realtime.recovered",
     ),
     "wpfHost": (
-        "plugin.file.requested",
         "plugin.interaction.requested",
         "plugin.task.changed",
         "task.changed",

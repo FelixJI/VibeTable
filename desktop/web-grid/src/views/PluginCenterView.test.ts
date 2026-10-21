@@ -101,6 +101,70 @@ describe("PluginCenterView", () => {
   });
   afterEach(() => setHostBridgeForTesting(null));
 
+  it("shows a legacy package migration reason and refuses its commit before transport", async () => {
+    const { posted } = replyingBridge(() => null);
+    const plan = { planId: "legacy-plan", projectKey: "local:default", projectRevision: "r2",
+      sourceType: "package" as const, sourceLocation: "old.vtplugin", packageHash: blockedPlugin.packageHash,
+      manifest: blockedPlugin.manifest, schemas: {}, blockingReasons: ["plugin_worker_retired"] };
+    usePluginStore().projectInstallPlan(plan);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    expect(wrapper.get('[data-testid="plugin-install-blocked"]').text()).toContain("旧 Worker 插件已停止支持");
+    expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("BLOCKED");
+    expect(wrapper.get('[data-testid="plugin-install-commit"]').attributes("disabled")).toBeDefined();
+    await expect(usePluginService().commitInstall(plan)).rejects.toThrow("插件需要迁移");
+    expect(posted.some(request => request.type === "plugin.install.commit")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("preserves enabled historical installations without allowing their blocked actions to start", async () => {
+    const legacy: PluginSnapshot = { ...blockedPlugin, status: "enabled", disabledReason: null,
+      blockingReasons: ["plugin_worker_retired"], revision: 8 };
+    usePluginStore().applyPlugin(legacy);
+    const { posted } = replyingBridge(type => type === "pluginPreservation.exportRequested"
+      ? { cancelled: false, outputDisplayName: "historical.zip", missingPackages: 0 }
+      : { available: true, reasons: [] });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      expect(usePluginStore().selectedPlugin).toMatchObject({ status: "enabled", blockingReasons: ["plugin_worker_retired"] });
+      // A synthetic event exercises the handler too, even on a disabled button.
+      wrapper.get(".run-button").element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushPromises();
+      expect(posted.some(request => request.type === "plugin.action.describe" || request.type === "plugin.action.start")).toBe(false);
+      expect(wrapper.get(".run-button").attributes("disabled")).toBeDefined();
+      expect(wrapper.get(".blockers").text()).toContain("迁移到新版插件");
+      expect(usePluginStore().selectedPlugin?.status).toBe("enabled");
+      expect(wrapper.get('[data-testid="plugin-preservation-export"]').attributes("disabled")).toBeUndefined();
+      await wrapper.get('[data-testid="plugin-preservation-export"]').trigger("click");
+      await flushPromises();
+      expect(posted.find(request => request.type === "pluginPreservation.exportRequested")?.payload).toEqual({
+        pluginId: legacy.pluginId, installationId: legacy.installationId, installationRevision: legacy.revision,
+      });
+    } finally { wrapper.unmount(); }
+  });
+
+  it("exports the selected installation through the Host and cancels the exact request on unmount", async () => {
+    const posted: { type: string; requestId?: string; payload: unknown }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({ generateRequestId: () => `preserve-${++sequence}`, webview: {
+      postMessage: message => posted.push(message as (typeof posted)[number]),
+      addEventListener: (_type, handler) => { listener = handler; },
+      removeEventListener: () => undefined,
+    } });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-preservation-export"]').trigger("click");
+    const request = posted.find(item => item.type === "pluginPreservation.exportRequested")!;
+    expect(request.payload).toEqual({ pluginId: blockedPlugin.pluginId,
+      installationId: blockedPlugin.installationId, installationRevision: blockedPlugin.revision });
+    wrapper.unmount();
+    expect(posted.at(-1)).toMatchObject({ type: "pluginPreservation.cancelRequested", payload: { targetRequestId: request.requestId } });
+    listener?.({ data: { type: "operation.failed", requestId: request.requestId, payload: { code: "CANCELLED", message: "cancelled" } } });
+    await flushPromises();
+    bridge.stop();
+  });
+
   it("clears export busy state on same-project epoch rotation and ignores stale completion", async () => {
     const session = useWorkspaceSessionStore();
     session.sessionEpoch = 7;
@@ -295,7 +359,7 @@ describe("PluginCenterView", () => {
       return { available: true, reasons: [] };
     });
     setHostBridgeForTesting({ ...bridge, request } as HostBridge);
-    usePluginStore().applyPlugin({ ...blockedPlugin, status: "enabled", revision: 8 });
+    usePluginStore().applyPlugin({ ...blockedPlugin, status: "enabled", disabledReason: null, blockingReasons: [], revision: 8 });
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
     try {
       await wrapper.get(".run-button").trigger("click");
@@ -905,7 +969,7 @@ describe("PluginCenterView", () => {
   });
 
   it("routes the plugin center Run button for an application to the full viewport", async () => {
-    const application: PluginSnapshot = { ...blockedPlugin, status: "enabled", blockingReasons: [],
+    const application: PluginSnapshot = { ...blockedPlugin, status: "enabled", disabledReason: null, blockingReasons: [],
       manifest: { ...blockedPlugin.manifest, $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
         actions: blockedPlugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
           presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "owned" })) } };

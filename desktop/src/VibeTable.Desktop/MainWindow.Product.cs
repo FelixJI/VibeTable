@@ -58,6 +58,7 @@ public partial class MainWindow : Window
     private readonly DocumentRequestController _documentRequests;
     private readonly NativeProductFileRequestController _nativeProductFiles;
     private readonly LegacyLayoutRequestController _legacyLayouts;
+    private readonly PluginPreservationRequestController _pluginPreservation;
     private readonly PluginSurfaceSessionManager _pluginSurfaces;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly PluginRequestDispatcher _pluginDispatcher;
@@ -356,9 +357,6 @@ public partial class MainWindow : Window
             _pluginSurfaces,
             pluginPackagePicker,
             _pluginResources,
-            _e2eControlsDir is null
-                ? new WindowsPluginFilePicker()
-                : new TestModePluginFilePicker(_e2eControlsDir),
             new GitHubPluginPackageSource(
                 Path.Combine(_productDataRoot, "plugin-downloads"),
                 () => _appPreferencesService.Read()),
@@ -455,6 +453,10 @@ public partial class MainWindow : Window
         _legacyLayouts = new LegacyLayoutRequestController(_webBridge, _workspaceSessionFilter,
             () => _productGateway, ResolveLegacyLayoutBroker,
             () => Dispatcher.Invoke(() => LegacyLayoutSaveDialog.Select(this, _e2eControlsDir)));
+        _pluginPreservation = new PluginPreservationRequestController(_webBridge, _workspaceSessionFilter,
+            () => _productGateway, ResolveLegacyLayoutBroker,
+            () => PluginProjectContext.FromSession(_workspaceSessions.Current), ResolvePluginPackageCacheRoot,
+            () => Dispatcher.Invoke(() => PluginPreservationSaveDialog.Select(this, _e2eControlsDir)));
         _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
             () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
             subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
@@ -513,7 +515,7 @@ public partial class MainWindow : Window
             new HostSourceImportRequestController(_webBridge, _workspaceSessionFilter,
                 new HostSourceImportActions(OpenSourceImportAsync)),
             new ClipboardRequestController(_webBridge, _workspaceSessionFilter, new WindowsTextClipboard()),
-            TraceHostRequest);
+            TraceHostRequest, pluginPreservation: _pluginPreservation);
 
         _runtime.ClientReady += OnRuntimeClientReady;
         _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
@@ -727,6 +729,14 @@ public partial class MainWindow : Window
     /// Go-sidecar binding owns the broker; a Python client is never required
     /// and never started for native dashboard output.
     /// </summary>
+    private string? ResolvePluginPackageCacheRoot(string projectKey)
+    {
+        WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
+        return workspace is not null && projectKey == $"local:{workspace.WorkspaceId:N}"
+            ? Path.Combine(WorkspaceLayout.Paths(ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace)).Data,
+                "state", "plugin-packages") : null;
+    }
+
     private HostSessionFileBroker? ResolveLegacyLayoutBroker()
     {
         try
@@ -830,11 +840,8 @@ public partial class MainWindow : Window
                 || !binding.TryUsePython(client, () => true))
                 throw new BackendUnavailableException("Plugin runtime was retired during startup.");
             if (ReferenceEquals(_pluginClient, client) && _pluginGateway is not null) return;
-            HostSessionFileBroker files = _productGateway!.EnableHostFiles();
             IPluginRpcGateway? previous = _pluginGateway;
-            _pluginGateway = new JsonRpcPluginGateway(client, (request, path, cancellation) =>
-                files.IssueAsync(path, request.Direction == "write", request.RunId, cancellation, request.MediaType),
-                files.RevokeRunAsync);
+            _pluginGateway = new JsonRpcPluginGateway(client);
             _pluginClient = client;
             _pluginDispatcher.SetGatewayAfterAuthorityTransition(
                 _pluginGateway, PluginProjectContext.FromSession(_workspaceSessions.Current));
@@ -1011,7 +1018,6 @@ public partial class MainWindow : Window
             // 1. Seal inbound host routing and retire realtime delivery so no
             // late emission reaches the new page.
             _webBridge.SealForRendererRecovery();
-            _ = _pluginDispatcher.SealLegacyConfirmationsForRendererRecovery();
             // 2. Close every plugin surface token synchronously (covers tokens
             // that never issued a request), then drain in-flight writes.
             _pluginResources.CloseAllSurfaces();

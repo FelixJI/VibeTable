@@ -24,4 +24,8 @@ internal static class PluginRetainedPackage
         if (bits != 0) encoded[count++] = alphabet[(buffer << (5 - bits)) & 31];
         return Path.Combine(Path.GetFullPath(cacheRoot), new string(encoded[..count]) + ".vtplugin");
     }
+
+    // Verify bytes from this same retained read handle before the caller rewinds and copies.
+    internal static Task VerifyAsync(FileStream source, string packageHash, CancellationToken token) =>
+        PluginPackageVerificationProcess.VerifyAsync(source, packageHash, token);
 }

@@ -60,6 +60,7 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
+			unrelatedPluginPreservationRegistration(t),
 			presetRegistration("preset.list", metadata.NewPreset(pb), gates...),
 			presetRegistration("preset.save", metadata.NewPreset(pb), gates...),
 			presetRegistration("preset.delete", metadata.NewPreset(pb), gates...),

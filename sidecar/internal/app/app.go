@@ -40,6 +40,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/startup"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -458,7 +459,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			registerPluginStoreRoutes(event.Router, plugins, businessGate)
 			registerPluginDataRoutes(event.Router, pb, querySource, capabilities.WorkspaceID, capabilities.SessionEpoch)
 			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate, &pluginSurfaceIO{plans: importPlans, attachments: attachmentManager})
-			registerPluginWorkerMutationRoutes(event.Router, pb, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate)
+			registerPluginWorkerRetiredRoutes(event.Router)
 			schemaCatalog := schemaapi.New(pb)
 			contentMetadata := metadata.NewContentService(pb, querySource)
 			presets := metadata.NewPreset(pb)
@@ -521,6 +522,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				productRegistrations = append(productRegistrations, contentVersionRegistration(method, versions, businessGate))
 			}
 			productRegistrations = append(productRegistrations, PluginSharedStateRegistrations(plugins, businessGate)...)
+			productRegistrations = append(
+				productRegistrations,
+				pluginPreservationSnapshotRegistration(plugins),
+			)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
@@ -620,9 +625,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		"--origins=http://127.0.0.1",
 	})
 	if err := pb.Bootstrap(); err != nil {
+		options.Logger.Error("sidecar.bootstrap_failed", "errorCode", startup.FailureDiagnosticCode(err))
 		return nil, fmt.Errorf("bootstrap PocketBase before startup migrations: %w", err)
 	}
 	if err := pb.RunAllMigrations(); err != nil {
+		options.Logger.Error("sidecar.migrations_failed", "errorCode", startup.FailureDiagnosticCode(err))
 		resetErr := pb.ResetBootstrapState()
 		return nil, errors.Join(fmt.Errorf("run startup migrations: %w", err), resetErr)
 	}

@@ -70,6 +70,12 @@ func TestPluginPrivateHTTPMatchesWorkerShapeAndPublicOwnerUsesDurableGate(t *tes
 		}
 	}
 	snapshot["projectKey"] = service.ProjectKey()
+	// The frozen oracle snapshot is a schema v1 Worker payload; #486 keeps
+	// those readable but permanently blocked. This test exercises the live
+	// durable-gate mutation path, so it installs the post-#484 native form
+	// (manifest v2 / pluginApi 3.x with per-action views) like a current
+	// Host admission would.
+	nativeizeOracleManifest(t, snapshot)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sub, err := hub.SubscribeRecoverable(ctx, "")
@@ -132,4 +138,35 @@ func TestPluginPrivateHTTPMatchesWorkerShapeAndPublicOwnerUsesDurableGate(t *tes
 	if stale.Error == nil {
 		t.Fatal("stale workspace write accepted")
 	}
+}
+
+// nativeizeOracleManifest converts the frozen v1 oracle manifest into the
+// post-#484 native install contract (schema v2, pluginApi 3.x, Worker entry
+// removed, one custom view per action).
+func nativeizeOracleManifest(t *testing.T, snapshot map[string]any) {
+	t.Helper()
+	manifest, ok := snapshot["manifest"].(map[string]any)
+	if !ok {
+		t.Fatal("oracle snapshot has no manifest")
+	}
+	manifest["$schema"] = "vibetable.plugin-manifest.v2"
+	compatibility, ok := manifest["compatibility"].(map[string]any)
+	if !ok {
+		t.Fatal("oracle manifest has no compatibility")
+	}
+	compatibility["pluginApi"] = "3.x"
+	views := []any{}
+	if actions, ok := manifest["actions"].([]any); ok {
+		for _, value := range actions {
+			action, ok := value.(map[string]any)
+			if !ok {
+				t.Fatal("oracle manifest action is malformed")
+			}
+			delete(action, "workerEntry")
+			views = append(views, map[string]any{
+				"viewId": action["actionId"], "actionId": action["actionId"], "entry": "ui/index.html",
+			})
+		}
+	}
+	manifest["ui"] = map[string]any{"customViews": views}
 }

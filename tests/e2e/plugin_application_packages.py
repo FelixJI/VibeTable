@@ -24,6 +24,10 @@ def prepare_application_packages(controls: Path) -> None:
         shutil.copytree(source, target)
         manifest = copy.deepcopy(original)
         manifest["pluginId"], manifest["version"] = plugin_id, version
+        if plugin_id == "com.vibetable.e2e.application-a":
+            # S48 retains an unread real grant across a workspace transition.
+            # This permission is admitted through ordinary inspect/install UI.
+            manifest["permissions"]["files"] = ["pickRead"]
         writer = copy.deepcopy(manifest["actions"][0])
         writer.update(actionId="headless-write", presentation="headless", entry="ui/write.js")
         writer["displayName"] = {"zh-CN": "无界面写任务取消"}

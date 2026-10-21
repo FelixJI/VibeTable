@@ -1,52 +1,38 @@
-"""Closed local-worker plugin platform tests."""
+"""Code-plugin package lifecycle tests."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import shutil
-import uuid
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_package_lifecycle import PluginPackageInspection
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry, PluginRegistryError
 from backend.contracts.plugin import (
-    CommandContext,
     InstallPlan,
-    InteractionDecision,
-    InteractionResolveResult,
-    PluginEventEnvelope,
     PluginManifest,
     PluginPackageRevision,
     PluginSnapshot,
 )
-from backend.contracts.task import SessionPathGrant
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_store import InMemoryPluginStore, PluginStoreConflictError
-from backend.infrastructure.plugin_worker import (
-    InMemoryPluginWorkerAdapter,
-    NodePluginWorkerAdapter,
-)
 
 
 def _write_plugin(root: Path, *, version: str = "1.0.0") -> None:
-    (root / "dist" / "workers").mkdir(parents=True)
+    (root / "ui").mkdir(parents=True)
     (root / "schemas").mkdir()
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "$schema": "vibetable.plugin-manifest.v1",
+                "$schema": "vibetable.plugin-manifest.v2",
                 "pluginId": "com.example.reader",
                 "version": version,
                 "displayName": {"en": "Reader"},
                 "compatibility": {
                     "minHostVersion": "0.5.1",
-                    "pluginApi": "1.x",
+                    "pluginApi": "3.x",
                 },
                 "permissions": {
                     "data": [],
@@ -59,29 +45,20 @@ def _write_plugin(root: Path, *, version: str = "1.0.0") -> None:
                         "displayName": {"en": "Read"},
                         "mode": "local",
                         "risk": "read",
-                        "workerEntry": "dist/workers/read.js",
                         "inputSchema": "schemas/input.json",
                         "outputSchema": "schemas/output.json",
                     }
                 ],
-                "ui": {"customViews": []},
+                "ui": {
+                    "customViews": [
+                        {"viewId": "reader", "actionId": "read", "entry": "ui/index.html"}
+                    ]
+                },
             }
         ),
         encoding="utf-8",
     )
-    (root / "dist" / "workers" / "read.js").write_text(
-        """
-        export async function run() {
-          return {
-            contract: "vibetable.plugin-result.v1",
-            status: "success",
-            summary: "installed package executed",
-            warnings: [],
-          };
-        }
-        """,
-        encoding="utf-8",
-    )
+    (root / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
     (root / "schemas" / "input.json").write_text(
         '{"type":"object"}',
         encoding="utf-8",
@@ -98,44 +75,11 @@ def _service(
     package_cache: Path,
 ) -> PluginPlatformService:
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     return PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=LocalPluginPackageLifecycle(package_cache),
     )
-
-
-class _Confirmation:
-    def __init__(self) -> None:
-        self.sink: Any = None
-        self.calls: list[tuple[str, str, str]] = []
-
-    def set_notification_sink(self, sink: Any) -> None:
-        self.sink = sink
-
-    async def try_resolve(
-        self, run_id: str, interaction_id: str, decision: InteractionDecision
-    ) -> InteractionResolveResult:
-        self.calls.append((run_id, interaction_id, decision))
-        return InteractionResolveResult(status="resolved", decision=decision)
-
-
-class _Files:
-    def __init__(self) -> None:
-        self.sink: Any = None
-        self.calls: list[tuple[str, SessionPathGrant | None]] = []
-
-    def set_notification_sink(self, sink: Any) -> None:
-        self.sink = sink
-
-    async def resolve(self, request_id: str, grant: SessionPathGrant | None) -> bool:
-        self.calls.append((request_id, grant))
-        return True
 
 
 class InMemoryPluginPackageLifecycle:
@@ -188,69 +132,19 @@ class InMemoryPluginPackageLifecycle:
 
 
 @pytest.mark.asyncio
-async def test_host_interaction_and_file_resolutions_reach_live_adapters(
-    tmp_path: Path,
-) -> None:
-    store = InMemoryPluginStore()
-    registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
-    confirmation = _Confirmation()
-    files = _Files()
-    service = PluginPlatformService(
-        store=store,
-        registry=registry,
-        runtime=runtime,
-        package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
-        confirmation_adapter=confirmation,
-        file_adapter=files,
-    )
-
-    async def sink(_event: Any) -> None:
-        return None
-
-    service.set_notification_sink(sink)
-    interaction = await service.resolve_interaction(
-        run_id="run-1",
-        interaction_id="interaction-1",
-        decision="approved",
-    )
-    grant = SessionPathGrant(
-        grant_id="native-grant",
-        purpose="import_source",
-        direction="read",
-        display_name="selected.csv",
-        expires_at=9999999999,
-    )
-    await service.resolve_file(request_id="file-1", grant=grant)
-
-    assert interaction.status == "resolved"
-    assert confirmation.calls == [("run-1", "interaction-1", "approved")]
-    assert files.calls == [("file-1", grant)]
-    assert confirmation.sink is not None
-    assert files.sink is not None
-
-
-@pytest.mark.asyncio
 async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
     store = InMemoryPluginStore()
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     packages = InMemoryPluginPackageLifecycle()
     source_location = "memory://reader-source"
     package_hash = f"sha256:{'1' * 64}"
     manifest = PluginManifest.model_validate(
         {
-            "$schema": "vibetable.plugin-manifest.v1",
+            "$schema": "vibetable.plugin-manifest.v2",
             "pluginId": "com.example.reader",
             "version": "1.0.0",
             "displayName": {"en": "Reader"},
-            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "3.x"},
             "permissions": {"data": [], "files": [], "privateStorage": False},
             "actions": [
                 {
@@ -258,17 +152,17 @@ async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
                     "displayName": {"en": "Read"},
                     "mode": "local",
                     "risk": "read",
-                    "workerEntry": "dist/workers/read.js",
                 }
             ],
-            "ui": {"customViews": []},
+            "ui": {
+                "customViews": [{"viewId": "reader", "actionId": "read", "entry": "ui/index.html"}]
+            },
         }
     )
     packages.add(source_location, manifest, package_hash)
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=packages,
     )
 
@@ -434,79 +328,7 @@ async def test_duplicate_commit_fails_closed_without_local_compensation(
 
 
 @pytest.mark.asyncio
-async def test_committed_installation_executes_from_retained_current_revision(
-    tmp_path: Path,
-) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("Node.js is not installed")
-    source = tmp_path / "reader"
-    _write_plugin(source)
-    store = InMemoryPluginStore()
-    registry = PluginRegistry(store=store)
-    package_lifecycle = LocalPluginPackageLifecycle(tmp_path / "cache")
-    worker = NodePluginWorkerAdapter(
-        store=store,
-        profiles={},
-        client=object(),
-        package_lifecycle=package_lifecycle,
-        timeout_seconds=3,
-    )
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=worker,
-    )
-    service = PluginPlatformService(
-        store=store,
-        registry=registry,
-        runtime=runtime,
-        package_lifecycle=package_lifecycle,
-    )
-    plan = await service.inspect_install(
-        project_key="local:default",
-        project_revision="project-r1",
-        source_location=str(source),
-        plan_id="plan-host-node-execution",
-    )
-    await service.commit_install(
-        project_key="local:default",
-        plan=plan,
-        project_revision="project-r1",
-    )
-    await registry.set_enabled(
-        "local:default",
-        "com.example.reader",
-        True,
-    )
-
-    task_states: list[str] = []
-
-    async def record(event: PluginEventEnvelope) -> None:
-        if event.event_type == "plugin.task.changed":
-            task_states.append(str(event.snapshot["state"]))
-
-    service.set_notification_sink(record)
-    started = await service.start_action(
-        project_key="local:default",
-        plugin_id="com.example.reader",
-        action_id="read",
-        context=CommandContext(project_key="local:default"),
-        input_payload={},
-        task_id=f"plugin-task-{uuid.uuid4().hex[:12]}",
-        run_id=f"plugin-run-{uuid.uuid4().hex[:12]}",
-    )
-    for _ in range(100):
-        if task_states and task_states[-1] in {"succeeded", "failed", "cancelled"}:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("installed plugin did not finish")
-
-    assert task_states[-1] == "succeeded"
-    assert started.task_id.startswith("plugin-task-")
-
-
-@pytest.mark.asyncio
-async def test_install_commit_does_not_emit_a_second_catalog_event(
+async def test_install_lifecycle_records_one_authority_audit_per_transition(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "reader"
@@ -514,12 +336,6 @@ async def test_install_commit_does_not_emit_a_second_catalog_event(
     store = InMemoryPluginStore()
     registry = PluginRegistry(store=store)
     service = _service(store, package_cache=tmp_path / "cache")
-    events: list[PluginEventEnvelope] = []
-
-    async def record(event: PluginEventEnvelope) -> None:
-        events.append(event)
-
-    service.set_notification_sink(record)
     plan = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r1",
@@ -546,9 +362,9 @@ async def test_install_commit_does_not_emit_a_second_catalog_event(
 
     assert enabled.status == "enabled"
     assert result.uninstalled
-    # The durable catalog change for install/enable is emitted by the Go
-    # catalog; Python must not send a second event for the same commit.
-    assert events == []
+    assert [
+        event.event_type for event in await store.list_audit("local:default", "com.example.reader")
+    ] == ["install", "enable", "uninstall"]
     assert await registry.list("local:default") == []
 
 
@@ -603,7 +419,7 @@ async def test_upgrade_retains_previous_package_and_rollback_restores_it(
 
 
 @pytest.mark.asyncio
-async def test_hidden_upgrade_does_not_duplicate_the_go_catalog_event(
+async def test_upgrade_records_one_authority_audit_per_transition(
     tmp_path: Path,
 ) -> None:
     source_v1 = tmp_path / "reader-v1"
@@ -612,12 +428,6 @@ async def test_hidden_upgrade_does_not_duplicate_the_go_catalog_event(
     _write_plugin(source_v2, version="2.0.0")
     store = InMemoryPluginStore()
     service = _service(store, package_cache=tmp_path / "cache")
-    events: list[PluginEventEnvelope] = []
-
-    async def record(event: PluginEventEnvelope) -> None:
-        events.append(event)
-
-    service.set_notification_sink(record)
     first = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r1",
@@ -642,7 +452,9 @@ async def test_hidden_upgrade_does_not_duplicate_the_go_catalog_event(
         project_revision="project-r2",
     )
 
-    assert events == []
+    assert [
+        event.event_type for event in await store.list_audit("local:default", "com.example.reader")
+    ] == ["install", "upgrade"]
 
 
 @pytest.mark.parametrize("cleanup_failure", [False, True])
@@ -662,9 +474,6 @@ async def test_atomic_upgrade_prunes_only_unreferenced_prior_cache_after_success
     service = PluginPlatformService(
         store=store,
         registry=PluginRegistry(store=store),
-        runtime=PluginExecutionRuntime(
-            registry=PluginRegistry(store=store), worker_adapter=InMemoryPluginWorkerAdapter()
-        ),
         package_lifecycle=packages,
     )
     first_path = ""
@@ -824,14 +633,9 @@ async def test_commit_failure_keeps_original_error_and_retained_package(
     _write_plugin(source)
     store = _CommitCleanupProbeStore()
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
     )
     plan = await service.inspect_install(
@@ -865,14 +669,9 @@ async def test_upgrade_identity_failure_never_reaches_the_source(
     packages.add(str(source), _reader_manifest(), f"sha256:{'5' * 64}")
     store = InMemoryPluginStore()
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=packages,
     )
     plan = await service.inspect_install(
@@ -906,14 +705,9 @@ async def test_commit_executes_from_the_host_full_plan_without_a_local_ledger(
     packages = InMemoryPluginPackageLifecycle()
     packages.add(str(source), _reader_manifest(), f"sha256:{'2' * 64}")
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=packages,
     )
 
@@ -950,14 +744,9 @@ async def test_commit_rejects_source_manifest_or_type_drift_beyond_hash(
     package_hash = f"sha256:{'3' * 64}"
     packages.add(str(source), _reader_manifest(), package_hash)
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=packages,
     )
     plan = await service.inspect_install(
@@ -1000,14 +789,9 @@ async def test_commit_rejects_top_level_identity_drift(tmp_path: Path) -> None:
     packages = InMemoryPluginPackageLifecycle()
     packages.add(str(source), _reader_manifest(), f"sha256:{'4' * 64}")
     registry = PluginRegistry(store=store)
-    runtime = PluginExecutionRuntime(
-        registry=registry,
-        worker_adapter=InMemoryPluginWorkerAdapter(),
-    )
     service = PluginPlatformService(
         store=store,
         registry=registry,
-        runtime=runtime,
         package_lifecycle=packages,
     )
     plan = await service.inspect_install(
@@ -1081,11 +865,11 @@ async def test_upgrade_rejects_foreign_plan_identity_at_execution(tmp_path: Path
 def _reader_manifest() -> PluginManifest:
     return PluginManifest.model_validate(
         {
-            "$schema": "vibetable.plugin-manifest.v1",
+            "$schema": "vibetable.plugin-manifest.v2",
             "pluginId": "com.example.reader",
             "version": "1.0.0",
             "displayName": {"en": "Reader"},
-            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "3.x"},
             "permissions": {"data": [], "files": [], "privateStorage": False},
             "actions": [
                 {
@@ -1093,10 +877,11 @@ def _reader_manifest() -> PluginManifest:
                     "displayName": {"en": "Read"},
                     "mode": "local",
                     "risk": "read",
-                    "workerEntry": "dist/workers/read.js",
                 }
             ],
-            "ui": {"customViews": []},
+            "ui": {
+                "customViews": [{"viewId": "reader", "actionId": "read", "entry": "ui/index.html"}]
+            },
         }
     )
 

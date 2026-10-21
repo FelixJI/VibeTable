@@ -6,12 +6,35 @@ const ID = "com.vibetable.examples.record-manager";
 const ACTION = "open-manager";
 const ENTRY = `nav-plugin-app-${ID}/${ACTION}`;
 
+// Navigation can be projected by SSE before the lifecycle request commits.
+// Wait for the existing UI command to settle, then verify its authority receipt.
+export async function setRecordManagerEnabled(page, recorder, rawBridgeRequest, projectKey, enabled) {
+  const read = async () => (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey }))
+    .payload.find(plugin => plugin.pluginId === ID);
+  const before = await read();
+  if (!before?.installationId || before.status !== (enabled ? "disabled" : "enabled"))
+    throw new Error("record-manager lifecycle source is not the expected installation state");
+  await page.getByTestId("plugin-toggle").click();
+  await page.waitForFunction(expected => {
+    const toggle = document.querySelector('[data-testid="plugin-toggle"]');
+    return toggle instanceof HTMLButtonElement && !toggle.disabled
+      && toggle.classList.contains("enabled") === expected;
+  }, enabled, { timeout: 30000 });
+  const after = await read();
+  recorder.check(`record-manager ${enabled ? "enable" : "disable"} completes its exact lifecycle revision before navigation`,
+    after?.installationId === before.installationId && after.revision === before.revision + 1
+      && after.packageHash === before.packageHash && after.status === (enabled ? "enabled" : "disabled"),
+    { before, after });
+  return after;
+}
+
 /** Independent same-package WPF scenario; the original scenario 52 keeps its budget. */
 export async function runRecordManagerProduct(page, recorder, runtime, helpers) {
   const evidence = { authority: [], native: [] };
   const save = () => fs.writeFile(path.join(runtime.evidenceDir, "53-record-manager.json"), JSON.stringify(evidence, null, 2));
   try {
-    await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
+    const opened = await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
+    const projectKey = opened.payload.projectKey;
     await page.getByTestId("nav-tables").click();
     const table = await helpers.createSimpleTable(page, "Record Manager", "Title");
     const { tableId, field } = table;
@@ -73,10 +96,12 @@ export async function runRecordManagerProduct(page, recorder, runtime, helpers) 
     await frame.getByRole("button", { name: "删除（宿主确认）", exact: true }).click(); await confirm("delete-approved");
     rows = await authority();
     recorder.check("record-manager destructive approval deletes exactly the selected identity", rows.length === 2 && !rows.some(row => row.id === created.id));
-    await page.getByTestId("plugin-app-manage").click(); await selectPlugin(page, ID); await page.getByTestId("plugin-toggle").click();
+    await page.getByTestId("plugin-app-manage").click(); await selectPlugin(page, ID);
+    await setRecordManagerEnabled(page, recorder, helpers.rawBridgeRequest, projectKey, false);
     await page.getByTestId(ENTRY).waitFor({ state: "hidden", timeout: 30000 });
     recorder.check("record-manager disable retires viewport and navigation", await page.getByTestId("plugin-app-viewport").count() === 0 || !await page.getByTestId("plugin-app-viewport").isVisible());
-    await page.getByTestId("plugin-toggle").click(); await page.getByTestId(ENTRY).waitFor({ timeout: 30000 });
+    await setRecordManagerEnabled(page, recorder, helpers.rawBridgeRequest, projectKey, true);
+    await page.getByTestId(ENTRY).waitFor({ timeout: 30000 });
     frame = await openApplication(page, ID, ACTION); await frame.locator("#overview-body").filter({ hasText: "权威记录数：2 条" }).waitFor({ timeout: 30000 });
     recorder.check("record-manager re-enabled application reads persisted authority", (await authority()).length === 2);
     await page.screenshot({ path: path.join(runtime.evidenceDir, "53-record-manager-reopened.png"), fullPage: true });

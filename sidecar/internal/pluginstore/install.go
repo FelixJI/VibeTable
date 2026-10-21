@@ -28,12 +28,44 @@ func (service *Service) commitPackage(ctx context.Context, planRaw, revisionRaw 
 	if err != nil {
 		return nil, err
 	}
-	if err := validateObject(plan, "planId projectKey projectRevision sourceType sourceLocation packageHash manifest schemas targetInstallationId targetRevision", "planId projectKey projectRevision sourceType sourceLocation packageHash"); err != nil {
+	// The real Host adapter dumps the full InstallPlan, which always carries
+	// the new inspection diagnostic field blockingReasons; when present it
+	// must be a closed typed list and only an empty list may commit. The
+	// native-manifest rejection below stays independent of this list.
+	if err := validateObject(plan, "planId projectKey projectRevision sourceType sourceLocation packageHash manifest schemas blockingReasons targetInstallationId targetRevision", "planId projectKey projectRevision sourceType sourceLocation packageHash"); err != nil {
 		return nil, err
+	}
+	if rawReasons, present := plan["blockingReasons"]; present {
+		list, isList := rawReasons.([]any)
+		if !isList {
+			return nil, invalidPayload()
+		}
+		reasons := make([]string, 0, len(list))
+		for _, reason := range list {
+			if textValue(reason) == "" {
+				return nil, invalidPayload()
+			}
+			reasons = append(reasons, textValue(reason))
+		}
+		if len(reasons) > 0 {
+			return nil, &Error{
+				Code:    "plugin_blocked",
+				Message: "plugin has blocking reasons",
+				Details: map[string]any{"blockingReasons": reasons},
+			}
+		}
 	}
 	manifest, ok := plan["manifest"].(map[string]any)
 	if !ok {
 		return nil, invalidPayload()
+	}
+	// #486: the frozen compatibility matrix retires schema v1 / pluginApi
+	// 1.x-2.x Worker packages at the commit boundary itself. Structural
+	// manifest validation above stays lenient so legacy raw rows import and
+	// stream verbatim through preservation; only new installs, upgrades and
+	// rollbacks of legacy Worker contracts are rejected fail-closed.
+	if !manifestIsNative(manifest) {
+		return nil, workerRetiredRejection()
 	}
 	pluginID, version := textValue(manifest["pluginId"]), textValue(manifest["version"])
 	developmentSource := any(nil)

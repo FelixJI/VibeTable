@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { JSDOM } from "../../desktop/web-grid/node_modules/jsdom/lib/api.js";
 
 // The packaged runner has a CLI entry point. Exercise its small async seam
@@ -230,7 +232,7 @@ const countProcessMembers = eval(`(${extract(
   "function countProcessMembers", "async function waitForPackagedMemberExit",
 )})`);
 const waitForPackagedMemberExitSource = extract(
-  "async function waitForPackagedMemberExit", "async function waitForBusyPluginMarker",
+  "async function waitForPackagedMemberExit", "async function listRetainedPluginPackages",
 );
 
 function memberSnapshot(pids, processName = "node.exe") {
@@ -292,3 +294,148 @@ test("waiting for a packaged member exit rejects a snapshot without verified ide
     );
   }
 });
+
+
+const mutationBoundaryFilesSource = extract("async function mutationBoundaryFiles", "async function waitForPluginTerminal");
+const pickerTestRoot = fileURLToPath(new URL("../../build/task480", import.meta.url));
+function createPickerControls() {
+  fs.mkdirSync(pickerTestRoot, { recursive: true });
+  return fs.mkdtempSync(path.join(pickerTestRoot, "s11-picker-"));
+}
+function removePickerControls(directory) {
+  assert.equal(path.dirname(path.resolve(directory)), path.resolve(pickerTestRoot));
+  for (const name of ["attachment-replacement-source.txt", "attachment-target.txt", "52-input.csv", "52-output.bin"]) {
+    const target = path.join(directory, name);
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+  }
+  fs.rmdirSync(directory);
+}
+
+for (const existingTarget of [true, false]) {
+  test(`S11 file grants restore scoped Host controls after success (target exists: ${existingTarget})`, async () => {
+    const directory = createPickerControls();
+    const fsPromises = fs.promises;
+    try {
+      const runtime = { controlsDir: directory };
+      const readControl = path.join(directory, "attachment-replacement-source.txt");
+      const writeControl = path.join(directory, "attachment-target.txt");
+      fs.writeFileSync(readControl, "previous source\n"); if (existingTarget) fs.writeFileSync(writeControl, "previous target\n");
+      const bytes = Buffer.from("scoped synthetic bytes\n");
+      fs.writeFileSync(path.join(directory, "52-input.csv"), bytes);
+      let result;
+      const frame = { locator(selector) {
+        if (selector === "#files") return { async click() {
+          const source = fs.readFileSync(readControl, "utf8").trim();
+          const target = fs.readFileSync(writeControl, "utf8").trim();
+          assert.equal(source, path.join(directory, "52-input.csv"));
+          assert.equal(target, path.join(directory, "52-output.bin"));
+          fs.copyFileSync(source, target);
+          result = JSON.stringify({ kind: "files", status: "succeeded", bytes: bytes.length });
+        } };
+        assert.equal(selector, "#result");
+        return { filter() { return { async waitFor() {} }; }, async innerText() { return result; } };
+      } };
+      const recorded = [];
+      const recorder = { check(name, passed, evidence) { assert.ok(passed, name); recorded.push(evidence); } };
+      const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fsPromises, path);
+      await run({}, recorder, runtime, frame);
+      assert.equal(recorded[0].picker, "Host test-mode controls");
+      assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
+      if (existingTarget) assert.equal(fs.readFileSync(writeControl, "utf8"), "previous target\n");
+      else assert.equal(fs.existsSync(writeControl), false);
+    } finally { removePickerControls(directory); }
+  });
+}
+
+test("S11 restores its scoped picker controls when a real file grant fails", async () => {
+  const directory = createPickerControls();
+  try {
+    const readControl = path.join(directory, "attachment-replacement-source.txt");
+    const writeControl = path.join(directory, "attachment-target.txt");
+    const previousRead = Buffer.from([0xff, 0, 0x61, 13, 10]);
+    const previousWrite = Buffer.from([0xfe, 0x62, 13, 10]);
+    fs.writeFileSync(readControl, previousRead); fs.writeFileSync(writeControl, previousWrite);
+    const frame = { locator() { return { async click() { throw new Error("file grant rejected"); } }; } };
+    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fs.promises, path);
+    await assert.rejects(run({}, {}, { controlsDir: directory }, frame), /file grant rejected/);
+    assert.deepEqual(fs.readFileSync(readControl), previousRead);
+    assert.deepEqual(fs.readFileSync(writeControl), previousWrite);
+  } finally { removePickerControls(directory); }
+});
+
+test("S11 propagates an unreadable target control without invoking the file grant", async () => {
+  const directory = createPickerControls();
+  try {
+    const readControl = path.join(directory, "attachment-replacement-source.txt");
+    const writeControl = path.join(directory, "attachment-target.txt");
+    fs.writeFileSync(readControl, "previous source\n");
+    const failure = Object.assign(new Error("target control denied"), { code: "EACCES" });
+    const fileSystem = { ...fs.promises, async readFile(file, ...args) {
+      if (file === writeControl) throw failure;
+      return fs.promises.readFile(file, ...args);
+    } };
+    const frame = { locator() { assert.fail("must not invoke a grant before control state is saved"); } };
+    const run = new Function("fs", "path", `return (${mutationBoundaryFilesSource});`)(fileSystem, path);
+    await assert.rejects(run({}, {}, { controlsDir: directory }, frame), error => error === failure);
+    assert.equal(fs.readFileSync(readControl, "utf8"), "previous source\n");
+    assert.equal(fs.existsSync(writeControl), false);
+  } finally { removePickerControls(directory); }
+});
+
+
+const migrateHistoricalPluginSource = extract("async function migrateHistoricalPlugin", "async function resumePluginHostRestart").replaceAll("import.meta.url", "importMetaUrl");
+for (const invalid of [null, "plan-target", "reinstall"]) {
+  test(`S11 historical upgrade uses the inspected Host lease and preserves controls (${invalid})`, async () => {
+    const directory = createPickerControls();
+    const sourceControl = path.join(directory, "plugin-source.txt");
+    const targetControl = path.join(directory, "plugin-preservation-target.txt");
+    fs.writeFileSync(sourceControl, "original source\n"); fs.writeFileSync(targetControl, "original export\n");
+    const legacy = { pluginId: "com.vibetable.e2e.legacy-worker", installationId: "legacy000000001",
+      projectKey: "local:workspace", revision: 1, packageHash: "old", blockingReasons: ["plugin_worker_retired"] };
+    const upgraded = { ...legacy, installationId: invalid === "reinstall" ? "replacement" : legacy.installationId,
+      version: "2.0.0", revision: 2, packageHash: "new", status: "enabled", blockingReasons: [],
+      manifest: { $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" } } };
+    const plan = { projectKey: legacy.projectKey, targetInstallationId: invalid === "plan-target" ? "replacement" : legacy.installationId,
+      targetRevision: 1, packageHash: "new", manifest: { ...upgraded.manifest, pluginId: legacy.pluginId, version: "2.0.0" } };
+    const events = []; let committed = false, capture = 0, fileRoundtrip = 0, archiveRead = 0;
+    const frame = { locator(selector) { return {
+      filter() { return { async waitFor() { assert.equal(selector, "#status"); } }; },
+      async innerText() { assert.equal(selector, "#result"); return '{"status":"succeeded"}'; },
+    }; } };
+    const page = { getByTestId(id) { return {
+      async click() {
+        assert.ok(["nav-plugins", "plugin-upgrade", "nav-tables", "plugin-app-return", "plugin-preservation-export",
+          `nav-plugin-app-${legacy.pluginId}/open-boundary`].includes(id), `unexpected lifecycle command ${id}`);
+        events.push(id);
+        if (id === "plugin-upgrade") assert.equal(fs.readFileSync(sourceControl, "utf8").trim(), path.join(directory, "legacy-worker-api3.vtplugin"));
+        if (id === "plugin-preservation-export") assert.ok(committed && fileRoundtrip === 1);
+      },
+      async innerText() { assert.equal(id, "plugin-upgrade-permission-delta"); return "added query permission"; },
+    }; }, locator(selector) {
+      assert.equal(selector, "button.plugin-row"); return { filter({ hasText }) { assert.equal(hasText, legacy.pluginId); return { async click() {} }; } };
+    }, frameLocator(selector) { assert.equal(selector, ".surface-shell iframe"); assert.ok(committed); return frame; } };
+    const run = new Function("fs", "path", "fileURLToPath", "importMetaUrl", "execFileSync", "findCatalogEntry", "rawBridgeRequest",
+      "beginBridgeMessageCapture", "waitForCapturedBridgeMessage", "commitInspectedApplicationUpgrade", "selectTable", "mutationBoundaryFiles",
+      `return (${migrateHistoricalPluginSource});`)(fs.promises, path, () => directory, import.meta.url,
+      (_python, args) => { archiveRead++; assert.equal(JSON.parse(args.at(-1)).installationId, legacy.installationId);
+        return JSON.stringify({ migrationValidated: true, originalPackagePreserved: true }); },
+      (catalog, id) => catalog.find(item => item.pluginId === id),
+      async (_page, method) => { assert.equal(method, "plugin.catalog.list"); return { payload: [committed ? upgraded : legacy] }; },
+      async () => { capture++; },
+      async () => capture === 1 ? { type: "plugin.install.inspect", payload: plan }
+        : { type: "pluginPreservation.exportCompleted", payload: { missingPackages: 0, cancelled: false } },
+      async (_page, inspected) => { assert.equal(inspected, plan); events.push("approved-upgrade"); committed = true; return upgraded; },
+      async (_page, name) => { assert.equal(name, "E2E Plugin Target"); },
+      async (_page, _recorder, _runtime, selected) => { assert.equal(selected, frame); fileRoundtrip++; });
+    const recorder = { check(name, passed) { assert.ok(passed, name); } };
+    const execute = () => run(page, recorder, { controlsDir: directory, pythonExecutable: "locked-python", pluginStatePath: path.join(directory, "state.json") },
+      { projectKey: legacy.projectKey }, legacy);
+    try {
+      if (invalid) await assert.rejects(execute(), /exact existing installation|without reinstalling/u);
+      else { assert.equal((await execute()).installationId, legacy.installationId); assert.equal(fileRoundtrip, 1); assert.equal(archiveRead, 1);
+        assert.ok(events.indexOf("approved-upgrade") > events.indexOf("plugin-upgrade")); }
+      assert.equal(fs.readFileSync(sourceControl, "utf8"), "original source\n");
+      assert.equal(fs.readFileSync(targetControl, "utf8"), "original export\n");
+    } finally { fs.unlinkSync(sourceControl); fs.unlinkSync(targetControl); fs.rmdirSync(directory); }
+  });
+}

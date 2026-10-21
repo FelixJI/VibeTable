@@ -841,3 +841,76 @@ test("target readiness waits for its actual rows and every table-switch read bef
     globalThis.document = oldDocument;
   }
 });
+
+test("source reopen settles only its retired lookup after durable authority checks", async () => {
+  const source = await readFile(new URL("./source_import_journey.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("// ---- Workspace close/reopen:");
+  const end = source.indexOf("\n  await openManagement();", start);
+  assert.ok(start >= 0 && end > start);
+  const { acknowledgeRetiredLookupFailuresInPage } = await import("./bridge_failure_policy.mjs");
+  const previousWindow = globalThis.window;
+  const session = { workspaceId: "source-workspace", sessionEpoch: 3 };
+  const stale = { requestId: "lookup-old", requestType: "lookup.query", cursor: 22,
+    responseType: "operation.failed", code: "workspace.session_stale" };
+  const current = { ...stale, requestId: "lookup-current", cursor: 24 };
+  const unrelated = { ...stale, requestId: "query-unrelated", requestType: "query.page" };
+  const locator = { click: async () => {}, getByRole() { return this; } };
+  try {
+    for (const validAuthority of [true, false]) {
+      const diagnostics = {
+        workspaceSession: session,
+        retiredRequests: [
+          { ...session, requestId: stale.requestId, requestType: "lookup.query", cursor: 21,
+            outcome: "workspace-retired" },
+          { ...session, sessionEpoch: 4, requestId: current.requestId,
+            requestType: "lookup.query", cursor: 23, outcome: "workspace-retired" },
+        ],
+        failures: [stale, current, unrelated], acknowledgedFailures: [], pending: {},
+      };
+      globalThis.window = { __vibetableE2EBridgeDiagnostics: diagnostics };
+      const checks = [];
+      const context = {
+        page: { evaluate: async (fn, argument) => fn(argument), getByTestId: () => locator },
+        recorder: { check(name, passed) {
+          assert.deepEqual(diagnostics.acknowledgedFailures, [], "authority must pass before settlement");
+          assert.ok(passed, name);
+          checks.push(name);
+        } },
+        openWorkspaceCenterFromSwitcher: async () => {},
+        replicaUiMethod: async (_page, _recorder, method, trigger) => {
+          assert.equal(method, "workspace.close");
+          await trigger();
+          return { result: { state: "closed" } };
+        },
+        beginWritableWorkspaceBootstrapCapture: async (_page, epoch, method) => {
+          assert.equal(epoch, session.sessionEpoch);
+          assert.equal(method, "workspace.open");
+        },
+        waitForCapturedBridgeMessage: async () => ({
+          payload: { session: { ...session, sessionEpoch: 4 } },
+        }),
+        history: async () => ({ migrations: [journalEntry()] }),
+        completed: { taskId: "task-success" }, successSession: session,
+        EXPECTED_SYNTHETIC_SOURCE, verifyMigrationReceipt,
+        verifyLocalAuthority: async () => verifiedTables(validAuthority ? null : tables => {
+          tables.get("a").rows[0].col_a_ab = [];
+        }),
+        verifyRecordIdentityByCode, verifyRelationGraph, acknowledgeRetiredLookupFailuresInPage,
+      };
+      const run = new Function(...Object.keys(context), `return (async () => { ${source.slice(start, end)} })();`);
+      if (validAuthority) {
+        await run(...Object.values(context));
+        assert.equal(checks.length, 4);
+        assert.deepEqual(diagnostics.acknowledgedFailures, [stale]);
+        assert.deepEqual(diagnostics.failures, [current, unrelated]);
+      } else {
+        await assert.rejects(run(...Object.values(context)), /after reopen rows and relations/);
+        assert.deepEqual(diagnostics.acknowledgedFailures, []);
+        assert.deepEqual(diagnostics.failures, [stale, current, unrelated]);
+      }
+      assert.deepEqual(diagnostics.pending, {});
+    }
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});

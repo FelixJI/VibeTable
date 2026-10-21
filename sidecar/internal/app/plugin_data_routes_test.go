@@ -1,30 +1,24 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pocketbase/pocketbase/tools/router"
-	"github.com/vibetable/vibetable/sidecar/internal/auth"
-	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
-	"github.com/vibetable/vibetable/sidecar/internal/jobs"
-	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestPluginDataRealAuthorityPaginationAndGrants(t *testing.T) {
@@ -304,42 +298,13 @@ func TestPluginDataRealAuthorityPaginationAndGrants(t *testing.T) {
 		}
 	}
 
-	if os.Getenv("VIBETABLE_PLUGIN_HOST_CONTRACT") == "1" {
-		const testSecret = "1111111111111111111111111111111111111111111111111111111111111111"
-		secret, err := auth.Parse(testSecret)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := router.NewRouter(func(w http.ResponseWriter, req *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
-			return &core.RequestEvent{App: pb, Event: router.Event{Response: w, Request: req}}, nil
-		})
-		bindVibetableSessionAuth(r, secret)
-		registerPluginDataRoutes(r, pb, source, workspaceID, 7)
-		registerPluginStoreRoutes(r, store, nil)
-		mux, err := r.BuildMux()
-		if err != nil {
-			t.Fatal(err)
-		}
-		server := httptest.NewServer(mux)
-		defer server.Close()
-		response, err := http.Post(server.URL+pluginDataPath, "application/json", bytes.NewBufferString(`{}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		response.Body.Close()
-		if response.StatusCode != http.StatusUnauthorized {
-			t.Fatal("unauthenticated data admitted")
-		}
-		settings, _ := json.Marshal(map[string]any{"url": server.URL, "secret": testSecret, "projectKey": store.ProjectKey(), "pluginId": input.PluginID, "collection": table.TableID, "number": number.Identity.FieldID, "date": date.Identity.FieldID, "hidden": hidden.Identity.FieldID})
-		command := exec.Command("uv", "run", "--frozen", "--no-sync", "python", "-m", "tests.contract.plugin_query_host_driver")
-		command.Dir = "../../.."
-		command.Stdin = bytes.NewReader(settings)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("real Node/BFF/Go driver: %v\n%s", err, output)
-		}
-		t.Log(string(output))
-	}
+	// The legacy Node/BFF cross-process bridge (VIBETABLE_PLUGIN_HOST_CONTRACT)
+	// retired with the Worker execution chain (#486). The Go-native 550
+	// read/grant/cursor guarantees above stay authoritative here; the live
+	// cross-process guarantees migrated to
+	// TestPluginSurfaceReal550ReadWriteAndLiveAuthority in
+	// plugin_surface_api_test.go, the Host PluginSurfaceApiTests and the real
+	// plugin_surface_api.mjs driver.
 
 	selected, err := pb.FindRecordsByFilter(collection.Name, "", "+id", 2, 0)
 	if err != nil {

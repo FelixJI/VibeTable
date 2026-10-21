@@ -3,7 +3,7 @@ import path from "node:path";
 
 export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
   const { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
-    beginBridgeMessageCapture, waitForCapturedBridgeMessage } = helpers;
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure } = helpers;
   const opened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = opened.payload.projectKey;
   await page.getByTestId("nav-tables").click();
@@ -26,20 +26,39 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     await page.getByTestId("nav-plugins").click();
     await page.getByTestId("plugin-install-package").click();
     await page.getByTestId("plugin-install-plan").waitFor({ timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["plugin.install.commit", "operation.failed"]);
     await page.getByTestId("plugin-install-commit").click();
+    const committed = await waitForCapturedBridgeMessage(page, 30_000);
+    recorder.check("native API3 package commit succeeds before catalog enable", committed.type === "plugin.install.commit", { committed });
     const row = page.locator("button.plugin-row").filter({ hasText: id });
     await row.waitFor({ timeout: 60_000 });
     await row.click();
     await page.waitForFunction(() => document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
     return row;
   }
-  await install("worker-disabled-probe.vtplugin", "com.vibetable.e2e.mutation-boundary");
-  const legacy = await rawBridgeRequest(page, "plugin.action.describe", {
-    projectKey, pluginId: "com.vibetable.e2e.mutation-boundary", actionId: "allowed-plan",
-    context: { contract: "vibetable.command-context.v1", projectKey, collection: table.tableId, selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light", density: "comfortable", user: {}, hostVersion: "unknown" },
-  });
-  recorder.check("old Node executor is explicitly unavailable in this Host process",
-    legacy.payload?.available === false && legacy.payload.reasons.includes("plugin_worker_unavailable"), { legacy });
+  const retiredId = "com.vibetable.e2e.legacy-worker";
+  await fs.writeFile(sourceControl, `${path.join(runtime.controlsDir, "legacy-worker.vtplugin")}\n`);
+  await page.getByTestId("nav-plugins").click();
+  await beginBridgeMessageCapture(page, ["plugin.install.inspect", "operation.failed"]);
+  await page.getByTestId("plugin-install-package").click();
+  await page.getByTestId("plugin-install-plan").waitFor({ timeout: 30_000 });
+  const inspected = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("historical package inspection preserves metadata and returns a stable retirement diagnosis",
+    inspected.payload?.manifest?.pluginId === retiredId
+      && inspected.payload.blockingReasons?.includes("plugin_worker_retired")
+      && await page.getByTestId("plugin-install-commit").isDisabled()
+      && (await page.getByTestId("plugin-install-blocked").innerText()).includes("迁移"), { inspected });
+  await page.getByTestId("plugin-install-cancel").click();
+  const context = { contract: "vibetable.command-context.v1", projectKey, collection: table.tableId,
+    selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light", density: "comfortable", user: {}, hostVersion: "unknown" };
+  for (const method of ["plugin.action.describe", "plugin.action.start"]) {
+    const rejected = await rawBridgeRequest(page, method, { projectKey, pluginId: retiredId, actionId: "allowed-plan", context, ...(method.endsWith("start") ? { input: {} } : {}) });
+    recorder.check(`${method} explicitly rejects the retired executor`,
+      rejected.type === "operation.failed" && rejected.payload?.code === "plugin_worker_retired", { rejected });
+    await acknowledgeExpectedBridgeFailure(page, rejected);
+  }
+  const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload;
+  recorder.check("blocked legacy inspection never installs the old package", !catalog.some(entry => entry.pluginId === retiredId), { catalog });
   await install("surface-data-editor.vtplugin", "com.vibetable.examples.surface-data-editor");
   await page.locator(".action-row").filter({ hasText: "open-editor" }).locator("button.run-button").click();
   const frame = page.frameLocator(".surface-shell iframe");
@@ -162,5 +181,5 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     { firstToken, secondToken, reopenedStatus });
   await probeWebRtc();
   await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
-  return { tableId: table.tableId, firstId, nodeWorkerDisabled: true, pluginId: "com.vibetable.examples.surface-data-editor" };
+  return { tableId: table.tableId, firstId, workerRetired: true, pluginId: "com.vibetable.examples.surface-data-editor" };
 }

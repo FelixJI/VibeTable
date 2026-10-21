@@ -1,4 +1,4 @@
-"""Project-local registry for installed local-worker plugins."""
+"""Project-local registry for installed code plugins."""
 
 from __future__ import annotations
 
@@ -66,17 +66,24 @@ class PluginRegistryError(Exception):
 def validate_install_plan(plan: InstallPlan) -> None:
     """Reject plans whose manifest leaves the closed execution contract."""
 
-    # workerEntry is the v1 local-worker contract; v2 (pluginApi 3.x)
-    # workerless custom-view actions are pinned by the manifest contract.
-    worker_entry_required = plan.manifest.schema_id == "vibetable.plugin-manifest.v1"
+    if (
+        plan.manifest.schema_id != "vibetable.plugin-manifest.v2"
+        or plan.manifest.compatibility.get("pluginApi") != "3.x"
+    ):
+        raise PluginRegistryError(
+            "旧 Worker 插件需要迁移到 API 3.x；原包与私有设置保持保全。",
+            code="plugin_worker_retired",
+        )
     if any(
-        action.mode != "local" or (worker_entry_required and not action.worker_entry)
+        action.mode != "local" or action.worker_entry is not None
         for action in plan.manifest.actions
     ):
         raise PluginRegistryError(
-            "only local-worker actions are supported",
+            "plugin actions must use the isolated surface API",
             code="plugin_manifest_legacy",
         )
+    if plan.blocking_reasons:
+        raise PluginRegistryError("plugin plan has blocking reasons", code="plugin_blocked")
 
 
 def build_installation_snapshot(plan: InstallPlan) -> PluginSnapshot:
@@ -125,11 +132,11 @@ def lifecycle_audit_event(
 
 
 class PluginRegistry:
-    """Owns one immutable local-worker installation per project/plugin id.
+    """Owns one immutable code-plugin installation per project/plugin id.
 
     Install commits are atomic store operations; this registry keeps the
     remaining lifecycle transitions (enable/disable, upgrade, rollback,
-    uninstall) and the Worker's internal read state.
+    uninstall).
     """
 
     def __init__(self, *, store: PluginStore) -> None:
@@ -170,6 +177,13 @@ class PluginRegistry:
         the closed Python tests and hidden lifecycle flows.
         """
         current = await self._required(project_key, plugin_id)
+        if enabled and (
+            current.manifest.schema_id != "vibetable.plugin-manifest.v2"
+            or current.manifest.compatibility.get("pluginApi") != "3.x"
+        ):
+            raise PluginRegistryError(
+                "旧 Worker 插件需要迁移到 API 3.x。", code="plugin_worker_retired"
+            )
         if enabled and current.blocking_reasons:
             raise PluginRegistryError(
                 "plugin has blocking reasons",

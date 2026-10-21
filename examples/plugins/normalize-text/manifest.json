@@ -1,5 +1,5 @@
 {
-  "$schema": "vibetable.plugin-manifest.v1",
+  "$schema": "vibetable.plugin-manifest.v2",
   "pluginId": "com.vibetable.examples.normalize-text",
   "version": "1.0.0",
   "displayName": {
@@ -7,11 +7,11 @@
     "en": "Normalize text"
   },
   "description": {
-    "zh-CN": "预览并规范化选中记录中的文本"
+    "zh-CN": "无界面动作：对选中记录的可写文本字段做空白规范化，经宿主原生确认后一次提交"
   },
   "compatibility": {
-    "minHostVersion": "0.5.1",
-    "pluginApi": "1.x"
+    "minHostVersion": "0.5.3",
+    "pluginApi": "3.x"
   },
   "permissions": {
     "data": [
@@ -19,15 +19,20 @@
         "collection": "$active",
         "operations": [
           "read",
+          "query",
           "update"
         ],
         "fields": [
-          "$configured"
+          "*"
         ]
       }
     ],
     "files": [],
-    "privateStorage": false
+    "privateStorage": false,
+    "network": {
+      "domains": [],
+      "methods": []
+    }
   },
   "actions": [
     {
@@ -45,10 +50,8 @@
       "requires": {
         "selection": "one-or-more"
       },
-      "workerEntry": "dist/workers/normalize.js",
-      "formSchema": "schemas/action-form.v1.json",
-      "inputSchema": "schemas/action-input.v1.json",
-      "outputSchema": "schemas/action-output.v1.json"
+      "presentation": "headless",
+      "entry": "ui/normalize.js"
     }
   ],
   "ui": {
