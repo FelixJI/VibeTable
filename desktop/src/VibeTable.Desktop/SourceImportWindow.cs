@@ -107,11 +107,13 @@ internal sealed class SourceImportWindow : Window
         var content = new StackPanel();
         // Content first, footer second: the declaration order is the Tab
         // order, so keyboard users reach the inputs before the buttons.
-        root.Children.Add(new ScrollViewer
+        var scroll = new ScrollViewer
         {
             Content = content,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        });
+        };
+        AutomationProperties.SetAutomationId(scroll, "source-import-scroll");
+        root.Children.Add(scroll);
         var footer = new StackPanel { Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
         var cancel = new Button { Content = "取消", MinWidth = 80, Padding = new Thickness(12, 6, 12, 6) };
@@ -355,7 +357,9 @@ internal sealed class SourceImportWindow : Window
             };
             snapshotKind.SelectionChanged += (_, _) => InvalidatePreview();
         }
-        panel.Children.Add(new Expander { Header = "字段与保真策略（选择快照将失去动态计算）", Content = fields });
+        var policies = new Expander { Header = "字段与保真策略（选择快照将失去动态计算）", Content = fields };
+        AutomationProperties.SetAutomationId(policies, $"table-policy-{table.Id}");
+        panel.Children.Add(policies);
         _tables.Children.Add(panel);
         _choices.Add(new(table, selected, target, choices));
         selected.Checked += (_, _) => InvalidatePreview();

@@ -137,7 +137,10 @@ def observation(controls, pid=7, **overrides):
         "y": 0.0,
         "width": 840.0,
         "height": 760.0,
-        "controls": controls,
+        "controls": [
+            control("source-import-scroll", kind="Pane", y=0, height=700) | {"x": 0, "width": 840},
+            *controls,
+        ],
     } | overrides
 
 
@@ -290,14 +293,21 @@ def test_wizard_closing_clicks_stop_at_the_pre_click_observation(monkeypatch, tm
     assert result["status"] == "completed"
     assert len(observer_calls) == 1, "the settled state is captured exactly once"
     assert inputs == [{"x": 25, "y": 40}]
-    assert result["observation"]["controls"][0]["id"] == target
+    assert any(item["id"] == target for item in result["observation"]["controls"])
 
 
 def test_wizard_expand_clicks_every_collapsed_field_policy_header(monkeypatch, tmp_path):
     native = make_native()
 
     def expander(state):
-        return control("", kind="ControlType.Group", value=state, y=60, height=24, klass="Expander")
+        return control(
+            "table-policy-tbl",
+            kind="ControlType.Group",
+            value=state,
+            y=60,
+            height=24,
+            klass="Expander",
+        )
 
     def combobox(state):
         return control(
@@ -346,7 +356,7 @@ def test_wizard_select_scrolls_offscreen_policy_comboboxes_into_view(monkeypatch
         evidence=tmp_path,
     )
     assert result["status"] == "completed"
-    assert inputs[0] == {"x": 420.0, "y": 380.0, "wheel": -120}
+    assert inputs[0] == {"x": 8, "y": 350.0, "wheel": -120}
     assert inputs[1] == {"x": 25, "y": 313}
     assert inputs[2] == {"vkeys": [0x28, 0x0D]}
 
@@ -384,7 +394,7 @@ def test_wizard_select_commits_the_expected_closed_policy_label(monkeypatch, tmp
     assert result["status"] == "completed"
     assert inputs[0] == {"x": 25, "y": 40}
     assert inputs[1] == {"vkeys": [0x28, 0x28, 0x0D]}
-    assert result["observation"]["controls"][0]["value"] == "跳过字段"
+    assert any(item["value"] == "跳过字段" for item in result["observation"]["controls"])
 
 
 def test_wizard_select_fails_when_the_label_never_commits(monkeypatch, tmp_path):
@@ -456,3 +466,96 @@ def test_wizard_gone_rejects_a_window_that_never_closes(monkeypatch, tmp_path):
     )
     assert result["status"] == "failed"
     assert "did not close" in result["error"]
+
+
+@pytest.mark.parametrize(("initial_y", "wheel"), [(-100, 120), (720, -120)])
+def test_wizard_scrolls_to_viewport_in_both_directions(monkeypatch, tmp_path, initial_y, wheel):
+    native = make_native()
+    state = {"y": initial_y}
+
+    def current():
+        return observation([control("notice-acknowledge-checkbox", y=state["y"])])
+
+    wizard = patch_environment(monkeypatch, native, [current])
+    inputs = []
+
+    def send(native_arg, **kwargs):
+        inputs.append(kwargs)
+        if "wheel" in kwargs:
+            assert kwargs["wheel"] == wheel
+            state["y"] = 300
+
+    monkeypatch.setattr(wizard, "_send_input", send)
+    result = wizard.handle_source_import_request(
+        base_request(action="click", target="notice-acknowledge-checkbox"),
+        host_scope=make_scope(),
+        evidence=tmp_path,
+    )
+    assert result["status"] == "completed"
+    assert inputs[0]["wheel"] == wheel
+    assert inputs[-1] == {"x": 25, "y": 320}
+
+
+def test_wizard_expands_an_offscreen_header_after_scrolling(monkeypatch, tmp_path):
+    native = make_native()
+    state = {"y": 1800, "value": "Collapsed"}
+
+    def current():
+        return observation(
+            [
+                control(
+                    "table-policy-tbl",
+                    kind="Group",
+                    klass="Expander",
+                    value=state["value"],
+                    y=state["y"],
+                    height=24,
+                )
+            ]
+        )
+
+    wizard = patch_environment(monkeypatch, native, [current])
+    inputs = []
+
+    def send(native_arg, **kwargs):
+        inputs.append(kwargs)
+        if "wheel" in kwargs:
+            state["y"] = 300
+        else:
+            assert kwargs["y"] == 312
+            state["value"] = "Expanded"
+
+    monkeypatch.setattr(wizard, "_send_input", send)
+    result = wizard.handle_source_import_request(
+        base_request(action="expand"), host_scope=make_scope(), evidence=tmp_path
+    )
+    assert result["status"] == "completed"
+    assert inputs[0]["wheel"] == -120
+
+
+def test_native_wheel_moves_pointer_before_scrolling():
+    from tests.e2e.plugin_application_native import _send_input
+
+    class Send:
+        def __call__(self, count, events, size):
+            self.events = [
+                (
+                    events[i].payload.mouse.dx,
+                    events[i].payload.mouse.dy,
+                    events[i].payload.mouse.flags,
+                )
+                for i in range(count)
+            ]
+            return count
+
+    send = Send()
+    native = SimpleNamespace(
+        user32=SimpleNamespace(
+            GetSystemMetrics=lambda key: {76: 0, 77: 0, 78: 1920, 79: 1080}[key], SendInput=send
+        )
+    )
+    _send_input(native, x=420, y=350, wheel=-120)
+    assert send.events == [
+        (round(420 * 65535 / 1919), round(350 * 65535 / 1079), 0xC001),
+        (0, 0, 0x800),
+    ]

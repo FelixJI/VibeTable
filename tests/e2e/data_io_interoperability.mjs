@@ -96,9 +96,10 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     if (managedTarget) {
       await page.getByTestId("import-management-open").click();
       await page.getByTestId("import-management").waitFor({ state: "visible" });
-      recorder.check("cloud source choices are available for explicit activation",
-        await page.getByTestId("import-source-feishu").isEnabled()
-          && await page.getByTestId("import-source-wps").isEnabled());
+      recorder.check("local base import is available and online sources are retired",
+        await page.getByTestId("import-source-feishuBase").isEnabled()
+          && await page.getByTestId("import-source-feishu").count() === 0
+          && await page.getByTestId("import-source-wps").count() === 0);
       await page.getByTestId("import-source-xlsx").click();
       await page.getByTestId("import-target-option")
         .filter({ hasText: managedTarget }).click();

@@ -45,6 +45,8 @@ public sealed class SourceImportWindowTests
         await fixture.SettleAsync();
 
         StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "2 张表");
+        Assert.IsNotNull(await fixture.ReadAsync(w => Require<ScrollViewer>(w, "source-import-scroll")));
+        Assert.IsNotNull(await fixture.ReadAsync(w => Require<Expander>(w, "table-policy-tbl-1")));
         // A relation-free local file keeps the reciprocal-field gate hidden.
         Assert.AreEqual(Visibility.Collapsed,
             await fixture.ReadAsync(w => Require<CheckBox>(w, "reverse-checkbox").Visibility));

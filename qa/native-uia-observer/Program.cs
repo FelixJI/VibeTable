@@ -111,12 +111,12 @@ internal static class Program
     // screenshot. No UIA InvokePattern, product messages or mutation.
     private static readonly string[] SourceImportExactIds =
     [
-        "source-file-button", "notice-acknowledge-checkbox", "preview-button",
+        "source-import-scroll", "source-file-button", "notice-acknowledge-checkbox", "preview-button",
         "start-button", "cancel-button", "status-text", "report-text", "reverse-checkbox",
     ];
     private static readonly string[] SourceImportPrefixes =
     [
-        "table-select-", "table-target-", "field-policy-", "field-snapshot-kind-",
+        "table-select-", "table-target-", "table-policy-", "field-policy-", "field-snapshot-kind-",
         "field-reverse-name-", "notice-",
     ];
 
@@ -156,7 +156,9 @@ internal static class Program
                 type = element.Current.ControlType.ProgrammaticName,
                 className, value = state, pid = element.Current.ProcessId,
                 enabled = element.Current.IsEnabled, focused = element.Current.HasKeyboardFocus,
-                x = box.X, y = box.Y, width = box.Width, height = box.Height });
+                offscreen = element.Current.IsOffscreen,
+                x = box.IsEmpty ? 0 : box.X, y = box.IsEmpty ? 0 : box.Y,
+                width = box.IsEmpty ? 0 : box.Width, height = box.IsEmpty ? 0 : box.Height });
         }
         var bounds = root.Current.BoundingRectangle;
         if (args.Length == 3)

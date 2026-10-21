@@ -64,7 +64,8 @@ KEY_DOWN = 0x28
 KEY_RETURN = 0x0D
 # These buttons dismiss the wizard: their click never re-observes the hwnd.
 CLOSING_TARGETS = frozenset({"cancel-button", "start-button"})
-WHEEL_NOTCH = -120
+WHEEL_NOTCH = 120
+FOOTER_TARGETS = frozenset({"preview-button", "start-button", "cancel-button"})
 # Bounded action budgets; tests shrink these instead of faking clocks.
 POLL_DEADLINE_SECONDS = 30.0
 SELECT_DEADLINE_SECONDS = 5.0
@@ -266,45 +267,47 @@ def handle_source_import_request(
                 raise ValueError("source import input identity/foreground changed")
             job_owned()
 
+        def clip(observation: dict[str, Any], box: dict[str, Any]) -> dict[str, Any]:
+            if box["id"] in FOOTER_TARGETS:
+                return observation
+            return _select_control(observation, "source-import-scroll", pid)
+
+        def onscreen(observation: dict[str, Any], box: dict[str, Any]) -> bool:
+            viewport = clip(observation, box)
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            return (
+                not box.get("offscreen", False)
+                and viewport["x"] < x < viewport["x"] + viewport["width"]
+                and viewport["y"] < y < viewport["y"] + viewport["height"]
+            )
+
         def click_box(observation: dict[str, Any], box: dict[str, Any]) -> None:
             x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-            if native._root_at(x, y) != hwnd:
-                raise ValueError("source import wizard is obscured")
+            if not onscreen(observation, box) or native._root_at(x, y) != hwnd:
+                raise ValueError("source import wizard control is clipped or obscured")
             input_owned()
             _send_input(native, x=x, y=y)
 
         def click(observation: dict[str, Any], control_id: str) -> None:
             click_box(observation, _select_control(observation, control_id, pid))
 
-        def onscreen(observation: dict[str, Any], box: dict[str, Any]) -> bool:
-            # A control is reachable only with real bounds inside the wizard's
-            # own client rect; collapsed or scrolled-away content is not.
-            if box["width"] <= 0 or box["height"] <= 0:
-                return False
-            top = max(observation["y"], box["y"])
-            bottom = min(observation["y"] + observation["height"], box["y"] + box["height"])
-            return bottom - top > 4
-
         def scroll_until_visible(control_id: str) -> dict[str, Any]:
-            # Real wheel notches at the wizard's centre bring expanded content
-            # into view; the window itself is never resized or maximized.
             while True:
                 observation = observe()
-                try:
-                    box = _select_control(observation, control_id, pid)
-                except ValueError:
-                    raise
+                box = _select_control(observation, control_id, pid)
                 if onscreen(observation, box):
                     return observation
                 if time.monotonic() >= deadline:
                     raise ValueError(f"source import control {control_id} never became visible")
+                viewport = clip(observation, box)
+                # The left edge avoids changing a ComboBox selection under the pointer.
+                x = viewport["x"] + min(8, viewport["width"] / 2)
+                y = viewport["y"] + viewport["height"] / 2
+                if native._root_at(x, y) != hwnd:
+                    raise ValueError("source import scroll viewport is obscured")
+                wheel = WHEEL_NOTCH if box["y"] < viewport["y"] else -WHEEL_NOTCH
                 input_owned()
-                _send_input(
-                    native,
-                    x=observation["x"] + observation["width"] / 2,
-                    y=observation["y"] + observation["height"] / 2,
-                    wheel=WHEEL_NOTCH,
-                )
+                _send_input(native, x=x, y=y, wheel=wheel)
                 time.sleep(0.05)
 
         if request["action"] == "expand":
@@ -318,12 +321,22 @@ def handle_source_import_request(
                 ]
                 if not headers:
                     raise ValueError("source import wizard exposes no field policy expanders")
-                collapsed = [item for item in headers if item.get("value") != "Expanded"]
+                collapsed = [item for item in headers if item.get("value") == "Collapsed"]
+                if any(item.get("value") not in {"Collapsed", "Expanded"} for item in headers):
+                    raise ValueError("source import expander state is unknown")
                 if not collapsed:
                     break
                 if time.monotonic() >= deadline:
                     raise ValueError("source import expanders stayed collapsed")
-                click_box(observe(), collapsed[0])
+                target = min(collapsed, key=lambda item: item["y"])["id"]
+                if not target.startswith("table-policy-"):
+                    raise ValueError("source import expander identity is invalid")
+                observation = scroll_until_visible(target)
+                header = _select_control(observation, target, pid)
+                # A collapsed Expander contains only its header; never click the
+                # centre of an expanded group, which includes all field rows.
+                if header.get("value") == "Collapsed":
+                    click_box(observation, header)
                 time.sleep(0.05)
             return {
                 "requestId": request["requestId"],
