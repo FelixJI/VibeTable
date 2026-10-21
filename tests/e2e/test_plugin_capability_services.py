@@ -38,6 +38,46 @@ def test_base_file_picker_uses_the_fixed_controls_root_file(monkeypatch, tmp_pat
         validate_file_request({"requestId": "id", "action": "select", "kind": "base"}, tmp_path)
 
 
+def test_scenario35_import_kinds_select_fixed_unicode_controls_files(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """S35's main CSV/XLSX imports pick exactly two fixed Unicode sources."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    csv_source = tmp_path / "导入-源-Cafe\u0301-👩🏽‍💻.csv"
+    xlsx_source = tmp_path / "数据-源-👩🏽‍💻.xlsx"
+    csv_source.write_text("\ufeffLabel\r\n", encoding="utf-8")
+    # The XLSX fixture is produced by the journey's locked Python helper; the
+    # contract here only needs the fixed name to resolve inside the root.
+    xlsx_source.write_bytes(b"synthetic-workbook")
+    assert (
+        validate_file_request(
+            {"requestId": "id", "action": "select", "kind": "import-unicode-csv"}, tmp_path
+        )
+        == csv_source
+    )
+    assert (
+        validate_file_request(
+            {"requestId": "id", "action": "select", "kind": "import-unicode-xlsx"}, tmp_path
+        )
+        == xlsx_source
+    )
+    # A missing synthetic source must fail closed before any picker input.
+    csv_source.unlink()
+    with pytest.raises(ValueError, match="picker source is missing"):
+        validate_file_request(
+            {"requestId": "id", "action": "select", "kind": "import-unicode-csv"}, tmp_path
+        )
+
+
+def test_scenario35_import_kinds_use_the_host_import_dialog_title() -> None:
+    """The new kinds must hit the real SelectImportSource dialog, not a stub."""
+    from tests.e2e.plugin_file_dialog import TITLES
+
+    assert TITLES["import-unicode-csv"] == "Import table data"
+    assert TITLES["import-unicode-xlsx"] == TITLES["import"]
+
+
 @pytest.mark.parametrize(
     "change", [{"path": "C:/outside"}, {"kind": "other"}, {"action": "approve"}, {"requestId": ""}]
 )

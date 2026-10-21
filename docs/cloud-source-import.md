@@ -36,6 +36,8 @@
 
 ## 验证边界
 
+`.xlsm` 兼容由无宏的 macroEnabled OpenXML 工作簿（`[Content_Types].xml` 主部件为 macroEnabled 类型，不含 VBA project）经实际导入读取路径的合成回归覆盖：值与同名 `.xlsx` 完全一致，该样本仅验证值读取，不覆盖真实 VBA project 兼容性；这是读取层回归，不代表已验证真实桌面 `.xlsm` 全流程，也不新增宏能力。
+
 本地 `.base` 解析、窗口确认边界、Go 持久链与 Web 历史投影均有合成回归覆盖；它们不能替代真实平台导出矩阵验证。多选、复选、关联等字段映射仍待仓库内出现真实导出形状证据后再扩展。
 
 ![飞书 .base 文件导入的保真告知（合成样本，由 SourceImportWindow 组合测试截图生成）](assets/screenshots/feishu-base-file-import.png)

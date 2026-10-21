@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { runSourceImportJourney } from "./source_import_journey.mjs";
 import { runFeishuBaseFileJourney } from "./feishu_base_file_journey.mjs";
+import { picker } from "./plugin_capability_services.mjs";
 
 const executeFile = promisify(execFile);
 const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
@@ -13,9 +14,19 @@ const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.met
 // Scenario 35 drives the remaining interoperability representatives through the
 // visible product UI: a UTF-8 BOM CSV with Unicode/date text, an XLSX workbook
 // with native date cells, a real cancel-then-reselect import, exports to
-// Unicode file names, and one extended-length path granted by the real Host
-// picker. Frozen values come from the declarative corpus; no value is inferred
-// from product output.
+// Unicode file names, and one extended-length path granted by the Host
+// test-mode selection control (the control seam, not the native dialog; the
+// native-dialog path is exercised by the main CSV/XLSX imports below). Frozen
+// values come from the declarative corpus; no value is inferred from product
+// output.
+//
+// The main CSV and XLSX import passes select their fixed synthetic Unicode
+// sources through the REAL native import dialog: import-source.txt carries
+// the exact "native-dialog" marker, so WindowsNativeProductFileHost falls
+// through to the real OpenFileDialog titled "Import table data", and the
+// CI-only SendInput helper types the fixed file name and accepts. Receipts in
+// 35-native-import-picker.json prove the native selection per format; no
+// bridge call or control path may choose these sources.
 export async function runDataIoInteroperability(page, recorder, runtime, helpers) {
   const {
     waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
@@ -64,6 +75,17 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   const selectImportSource = (sourcePath) => controls(
     "import-source.txt", `${sourcePath}\r\n`,
   );
+  // Test-mode marker from WindowsNativeProductFileHost.IsNativeDialogControl:
+  // on the controlled CI runner the Host skips the control path and shows the
+  // real OpenFileDialog instead. Outside CI the Host fails closed, so this
+  // marker is only ever written together with the picker helper below.
+  const selectImportSourceThroughNativeDialog = () => controls(
+    "import-source.txt", "native-dialog\r\n",
+  );
+  const nativeImportPickerReceipts = {};
+  const savePickerReceipts = () => fs.writeFile(
+    path.join(runtime.evidenceDir, "35-native-import-picker.json"),
+    JSON.stringify(nativeImportPickerReceipts, null, 2), "utf8");
   const waitForExportFile = async (targetPath) => {
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
@@ -87,6 +109,12 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     await page.getByTestId("export-lookup-confirm").click();
     return waitForExportFile(targetPath);
   };
+  const confirmImportPreviewThroughUi = async () => {
+    await page.getByTestId("import-preview-panel").waitFor({ state: "visible", timeout: 60_000 });
+    const acknowledgement = page.getByTestId("import-ack");
+    if (await acknowledgement.count()) await acknowledgement.click();
+    await page.getByTestId("import-confirm").click();
+  };
   const importThroughUi = async (sourcePath, managedTarget = null) => {
     await selectImportSource(sourcePath);
     // Same realtime-lag guard as the #349 UI phase: refresh the grid (a real
@@ -106,10 +134,45 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     } else {
       await chooseToolbarMore(page, "import");
     }
-    await page.getByTestId("import-preview-panel").waitFor({ state: "visible", timeout: 60_000 });
-    const acknowledgement = page.getByTestId("import-ack");
-    if (await acknowledgement.count()) await acknowledgement.click();
-    await page.getByTestId("import-confirm").click();
+    await confirmImportPreviewThroughUi();
+  };
+  // The main CSV (toolbar) and XLSX (managed import-management) passes select
+  // their fixed synthetic source through the real native dialog. The picker
+  // helper is armed before the triggering click, and the receipt is verified
+  // against the exact fixed file name — a control-path selection or a mocked
+  // dialog cannot produce a completed SendInput receipt.
+  const importThroughNativePicker = async (kind, expectedTargetName, managedTarget = null) => {
+    await chooseToolbarMore(page, "refresh");
+    await page.waitForTimeout(500);
+    await selectImportSourceThroughNativeDialog();
+    const pendingPicker = picker(runtime, kind);
+    if (managedTarget) {
+      await page.getByTestId("import-management-open").click();
+      await page.getByTestId("import-management").waitFor({ state: "visible" });
+      recorder.check("local base import is available and online sources are retired",
+        await page.getByTestId("import-source-feishuBase").isEnabled()
+          && await page.getByTestId("import-source-feishu").count() === 0
+          && await page.getByTestId("import-source-wps").count() === 0);
+      await page.getByTestId("import-source-xlsx").click();
+    } else {
+      await chooseToolbarMore(page, "import");
+    }
+    const receipt = await pendingPicker;
+    nativeImportPickerReceipts[kind] = receipt;
+    await savePickerReceipts();
+    const receiptProblems = verifyNativeImportPickerReceipt(receipt, expectedTargetName);
+    recorder.check(
+      `the ${managedTarget ? "managed XLSX" : "main CSV"} import selects its fixed Unicode source through the real native picker`,
+      receiptProblems.length === 0, { receipt, receiptProblems });
+    if (managedTarget) {
+      // The managed flow only renders the target chooser after the grant
+      // returns, so wait for the real option instead of assuming it exists.
+      const targetOption = page.getByTestId("import-target-option")
+        .filter({ hasText: managedTarget });
+      await targetOption.waitFor({ state: "visible", timeout: 60_000 });
+      await targetOption.click();
+    }
+    await confirmImportPreviewThroughUi();
   };
   const waitForAuthorityRows = async (tableId, expectedRows) => {
     const deadline = Date.now() + 60_000;
@@ -237,7 +300,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
       && canonicalJsonText(await authority(table.tableId)) === canonicalJsonText(baseline),
     { baseline });
 
-  await importThroughUi(unicodeSource);
+  await importThroughNativePicker("import-unicode-csv", `导入-源-${nfdAccent}-${emoji}.csv`);
   const imported = await waitForAuthorityRows(table.tableId, csvRows.length);
   recorder.check("UI import commits Unicode code points and frozen date wires verbatim",
     imported.rows.length === csvRows.length
@@ -281,7 +344,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     JSON.stringify(producer, null, 2), "utf8");
   const xlsxExpectedRows = [corpus.formulaLikeText.value, "普通文本"].map((note) =>
     [nativeDate.queryWire, nativeDatetime.queryWire, note]);
-  await importThroughUi(xlsxSource, "A5 Interop Xlsx");
+  await importThroughNativePicker("import-unicode-xlsx", `数据-源-${emoji}.xlsx`, "A5 Interop Xlsx");
   const xlsxImported = await waitForAuthorityRows(xlsxTable.tableId, xlsxExpectedRows.length);
   recorder.check("UI import turns native XLSX dates into the frozen UTC wire text",
     sameRows(xlsxImported.rows.map((row) =>
@@ -301,7 +364,10 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   recorder.check("native-date exports leave the authority rows and revisions unchanged",
     canonicalJsonText(await authority(xlsxTable.tableId)) === canonicalJsonText(xlsxAfterImport));
 
-  // ---- Extended-length path granted through the real Host picker ----
+  // ---- Extended-length path granted through the Host test-mode selection
+  // control (import-source.txt), not the native dialog: the long directory
+  // chain exercises the Host path grant/read side only. The seam stays
+  // accurately labeled and never masquerades as a native picker pass.
   const longTable = await createSimpleTable(page, "A5 Long Path", "Value");
   let directory = runtime.controlsDir;
   while (directory.length < 280) {
@@ -317,7 +383,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   );
   await importThroughUi(longSource);
   const longImported = await waitForAuthorityRows(longTable.tableId, 1);
-  recorder.check("an extended-length Unicode path imports through the real Host grant",
+  recorder.check("an extended-length Unicode path imports through the Host test-mode selection control",
     longSource.length > 260
       && longImported.rows.length === 1
       && codePoints(longImported.rows[0][longTable.field.physicalName]).join(",")
@@ -399,6 +465,30 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
 
 function expectedRepresentative(corpus, key) {
   return corpus.unicodeRepresentatives.find((item) => item.key === key);
+}
+
+// Contract for the per-format native import selection receipt produced by the
+// CI-only SendInput helper: only a completed real dialog pass typed the exact
+// fixed file name into the owned "Import table data" dialog. A control-path
+// selection, a cancelled dialog or a mocked result cannot satisfy it.
+export function verifyNativeImportPickerReceipt(receipt, expectedTargetName) {
+  const problems = [];
+  if (receipt?.status !== "completed") {
+    problems.push(`status is ${JSON.stringify(receipt?.status)}`);
+  }
+  if (receipt?.action !== "select") {
+    problems.push(`action is ${JSON.stringify(receipt?.action)}`);
+  }
+  if (receipt?.target !== expectedTargetName) {
+    problems.push(`target is ${JSON.stringify(receipt?.target)}, expected ${JSON.stringify(expectedTargetName)}`);
+  }
+  if (receipt?.input !== "SendInput") {
+    problems.push(`input is ${JSON.stringify(receipt?.input)}`);
+  }
+  if (receipt?.observation?.title !== "Import table data") {
+    problems.push(`dialog title is ${JSON.stringify(receipt?.observation?.title)}`);
+  }
+  return problems;
 }
 
 export function sameRows(actual, expected) {

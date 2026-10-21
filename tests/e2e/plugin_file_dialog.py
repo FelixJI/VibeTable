@@ -18,6 +18,10 @@ TITLES = {
     "import": "Import table data",
     "export": "Export table data",
     "base": "导入飞书 .base 文件",
+    # Both S35 main-path import entries hit the same Host
+    # NativeProductFileRequestController.SelectImportSource dialog.
+    "import-unicode-csv": "Import table data",
+    "import-unicode-xlsx": "Import table data",
 }
 FILES = {
     "read": "52-input.csv",
@@ -27,7 +31,16 @@ FILES = {
     # Fixed synthetic .base envelope written by the scenario 35 journey into
     # the same Job-owned controls root; the picker never accepts a path.
     "base": "35-feishu-base-import.base",
+    # Fixed synthetic Unicode sources written by the scenario 35 journey into
+    # the controls root for the main CSV/XLSX table imports. The names must
+    # stay byte-identical to the journey's fixture paths (NFD accent, ZWJ
+    # emoji); the picker still never accepts a path from the request.
+    "import-unicode-csv": "导入-源-Cafe\u0301-👩🏽‍💻.csv",
+    "import-unicode-xlsx": "数据-源-👩🏽‍💻.xlsx",
 }
+# Scenario 35's own import pickers keep the scenario evidence prefix; the
+# shared capability-service kinds keep their historical 52- evidence names.
+EVIDENCE_PREFIXES = {"import-unicode-csv": "35", "import-unicode-xlsx": "35"}
 
 
 def validate_file_request(request: dict[str, Any], controls: Path) -> Path:
@@ -51,7 +64,17 @@ def validate_file_request(request: dict[str, Any], controls: Path) -> Path:
     for part in (target, *target.parents):
         if part.exists() and getattr(part.lstat(), "st_file_attributes", 0) & 0x400:
             raise ValueError("picker target contains reparse point")
-    if request["kind"] in {"read", "import", "base"} and not target.is_file():
+    if (
+        request["kind"]
+        in {
+            "read",
+            "import",
+            "base",
+            "import-unicode-csv",
+            "import-unicode-xlsx",
+        }
+        and not target.is_file()
+    ):
         raise ValueError("picker source is missing")
     return target
 
@@ -106,7 +129,10 @@ def handle_file_dialog(
             raise ValueError("expected one owned picker")
         hwnd = matches[0]["hwnd"]
         native.foreground(hwnd, pid)
-        screenshot = evidence / f"52-picker-{request['kind']}-{request['action']}.png"
+        evidence_prefix = EVIDENCE_PREFIXES.get(request["kind"], "52")
+        screenshot = (
+            evidence / f"{evidence_prefix}-picker-{request['kind']}-{request['action']}.png"
+        )
 
         def observe() -> dict[str, Any]:
             job_owned()
@@ -195,9 +221,9 @@ def handle_file_dialog(
             "target": target.name,
             "input": "SendInput",
         }
-        (evidence / f"52-picker-{request['kind']}-{request['action']}.json").write_text(
-            json.dumps(result), encoding="utf-8"
-        )
+        (
+            evidence / f"{evidence_prefix}-picker-{request['kind']}-{request['action']}.json"
+        ).write_text(json.dumps(result), encoding="utf-8")
         return result
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         result = {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
