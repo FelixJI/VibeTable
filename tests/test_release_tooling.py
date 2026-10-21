@@ -105,7 +105,7 @@ def _release_modules(
 def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
     versions = collect_release_versions(REPO_ROOT)
-    assert versions.pocketbase == "0.40.4"
+    assert versions.pocketbase == "0.40.5"
     assert versions.cel == "0.32.0"
     assert versions.contract == "v1"
     assert versions.schema == "18"
@@ -367,7 +367,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["components"]["web"] == {"version": version}
     assert manifest["components"]["sidecar"] == {
         "version": version,
-        "pocketBaseVersion": "0.40.4",
+        "pocketBaseVersion": "0.40.5",
         "celVersion": "0.32.0",
         "contractVersion": "2.0",
         "schemaVersion": "18",
@@ -2101,7 +2101,7 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
         build_info=build_info,
         modules=_release_modules(
             license_dir,
-            ("github.com/pocketbase/pocketbase", "v0.40.4"),
+            ("github.com/pocketbase/pocketbase", "v0.40.5"),
         ),
     )
 
@@ -2205,7 +2205,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
             "dir": str(license_dir),
         }
         for name, version in (
-            ("github.com/pocketbase/pocketbase", "v0.40.4"),
+            ("github.com/pocketbase/pocketbase", "v0.40.5"),
             ("cel.dev/cel-go", "v0.32.0"),
             ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
             ("filippo.io/age", build_next.AGE_VERSION),

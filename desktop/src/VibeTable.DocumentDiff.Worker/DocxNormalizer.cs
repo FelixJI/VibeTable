@@ -67,7 +67,7 @@ internal static class DocxNormalizer
             requireFinalContent ? RejectRemainingRevisions : ObserveExistingRevisions);
     }
 
-    // Clippit does not accept revisions in every Word part (for example comments).
+    // Clippit may leave revisions in parts outside its supported stories.
     // Check all XML during the existing bounded postflight, not only selected stories.
     private static void RejectRemainingRevisions(string namespaceUri, string localName)
     {

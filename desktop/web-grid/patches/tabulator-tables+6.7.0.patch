@@ -1,8 +1,8 @@
 diff --git a/node_modules/tabulator-tables/dist/js/tabulator.js b/node_modules/tabulator-tables/dist/js/tabulator.js
-index 21f85ed..439cf11 100644
+index cb7566a..df784fb 100644
 --- a/node_modules/tabulator-tables/dist/js/tabulator.js
 +++ b/node_modules/tabulator-tables/dist/js/tabulator.js
-@@ -16357,7 +16357,13 @@
+@@ -16382,7 +16382,13 @@
  
  		generateHeaderFilterElement(column, initialValue, reinitialize){
  			var self = this,
@@ -17,7 +17,7 @@ index 21f85ed..439cf11 100644
  			field = column.getField(),
  			filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
  
-@@ -27661,7 +27667,7 @@
+@@ -27694,7 +27700,7 @@
  			if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
  				frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
  
@@ -26,7 +26,7 @@ index 21f85ed..439cf11 100644
  					console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
  				}
  			}
-@@ -28027,7 +28033,8 @@
+@@ -28120,7 +28126,8 @@
  					}
  				}
  
@@ -36,7 +36,7 @@ index 21f85ed..439cf11 100644
  					if(row.getElement().parentNode && column.getElement().parentNode){
  						// Use faster autoScroll when the elements are on the DOM
  						this.autoScroll(range, row.getElement(), column.getElement());
-@@ -28204,7 +28211,9 @@
+@@ -28297,7 +28304,9 @@
  		
  		autoScroll(range, row, column) {
  			var tableHolder = this.table.rowManager.element,
@@ -47,7 +47,7 @@ index 21f85ed..439cf11 100644
  			
  			if (typeof row === 'undefined') {
  				row = this.getRowByRangePos(range.end.row).getElement();
-@@ -28222,21 +28231,21 @@
+@@ -28315,21 +28324,21 @@
  			};
  			
  			view = {
@@ -75,7 +75,7 @@ index 21f85ed..439cf11 100644
  				}
  			}
  			
-@@ -28469,6 +28478,18 @@
+@@ -28563,6 +28572,18 @@
  			return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
  		}
  
@@ -90,15 +90,15 @@ index 21f85ed..439cf11 100644
 +			}
 +			return insets;
 +		}
-+		
++
  		getRowHeaderWidth(){
  			if(!this.rowHeader){
  				return 0;
 diff --git a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
-index d3a1734..33acb25 100644
+index 118d55b..3a656d1 100644
 --- a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
 +++ b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
-@@ -10011,7 +10011,13 @@ class Filter extends Module{
+@@ -10036,7 +10036,13 @@ class Filter extends Module{
  
  	generateHeaderFilterElement(column, initialValue, reinitialize){
  		var self = this,
@@ -113,7 +113,7 @@ index d3a1734..33acb25 100644
  		field = column.getField(),
  		filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
  
-@@ -21315,7 +21321,7 @@ class SelectRange extends Module {
+@@ -21348,7 +21354,7 @@ class SelectRange extends Module {
  		if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
  			frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
  
@@ -122,7 +122,7 @@ index d3a1734..33acb25 100644
  				console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
  			}
  		}
-@@ -21681,7 +21687,8 @@ class SelectRange extends Module {
+@@ -21774,7 +21780,8 @@ class SelectRange extends Module {
  				}
  			}
  
@@ -132,7 +132,7 @@ index d3a1734..33acb25 100644
  				if(row.getElement().parentNode && column.getElement().parentNode){
  					// Use faster autoScroll when the elements are on the DOM
  					this.autoScroll(range, row.getElement(), column.getElement());
-@@ -21858,7 +21865,9 @@ class SelectRange extends Module {
+@@ -21951,7 +21958,9 @@ class SelectRange extends Module {
  	
  	autoScroll(range, row, column) {
  		var tableHolder = this.table.rowManager.element,
@@ -143,7 +143,7 @@ index d3a1734..33acb25 100644
  		
  		if (typeof row === 'undefined') {
  			row = this.getRowByRangePos(range.end.row).getElement();
-@@ -21876,21 +21885,21 @@ class SelectRange extends Module {
+@@ -21969,21 +21978,21 @@ class SelectRange extends Module {
  		};
  		
  		view = {
@@ -171,7 +171,7 @@ index d3a1734..33acb25 100644
  			}
  		}
  		
-@@ -22123,6 +22132,18 @@ class SelectRange extends Module {
+@@ -22217,6 +22226,18 @@ class SelectRange extends Module {
  		return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
  	}
  
@@ -186,7 +186,7 @@ index d3a1734..33acb25 100644
 +		}
 +		return insets;
 +	}
-+	
++
  	getRowHeaderWidth(){
  		if(!this.rowHeader){
  			return 0;
@@ -210,10 +210,10 @@ index d07576b..681b73a 100644
  		filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
  
 diff --git a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js b/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
-index 93c5107..845e1f4 100644
+index f368853..c0b5c66 100644
 --- a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
 +++ b/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
-@@ -181,7 +181,7 @@ export default class SelectRange extends Module {
+@@ -189,7 +189,7 @@ export default class SelectRange extends Module {
  		if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
  			frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
  
@@ -222,7 +222,7 @@ index 93c5107..845e1f4 100644
  				console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
  			}
  		}
-@@ -547,7 +547,8 @@ export default class SelectRange extends Module {
+@@ -615,7 +615,8 @@ export default class SelectRange extends Module {
  				}
  			}
  
@@ -232,7 +232,7 @@ index 93c5107..845e1f4 100644
  				if(row.getElement().parentNode && column.getElement().parentNode){
  					// Use faster autoScroll when the elements are on the DOM
  					this.autoScroll(range, row.getElement(), column.getElement());
-@@ -724,7 +725,9 @@ export default class SelectRange extends Module {
+@@ -792,7 +793,9 @@ export default class SelectRange extends Module {
  	
  	autoScroll(range, row, column) {
  		var tableHolder = this.table.rowManager.element,
@@ -243,7 +243,7 @@ index 93c5107..845e1f4 100644
  		
  		if (typeof row === 'undefined') {
  			row = this.getRowByRangePos(range.end.row).getElement();
-@@ -742,21 +745,21 @@ export default class SelectRange extends Module {
+@@ -810,21 +813,21 @@ export default class SelectRange extends Module {
  		};
  		
  		view = {
@@ -271,7 +271,7 @@ index 93c5107..845e1f4 100644
  			}
  		}
  		
-@@ -989,6 +992,18 @@ export default class SelectRange extends Module {
+@@ -1058,6 +1061,18 @@ export default class SelectRange extends Module {
  		return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
  	}
  
@@ -286,7 +286,7 @@ index 93c5107..845e1f4 100644
 +		}
 +		return insets;
 +	}
-+	
++
  	getRowHeaderWidth(){
  		if(!this.rowHeader){
  			return 0;
