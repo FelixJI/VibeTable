@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { runSourceImportJourney } from "./source_import_journey.mjs";
+import { runSourceImportJourney, withRendererOffline } from "./source_import_journey.mjs";
 import { runFeishuBaseFileJourney } from "./feishu_base_file_journey.mjs";
 import { picker } from "./plugin_capability_services.mjs";
 
@@ -440,6 +440,16 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
       })
       && reopenedHistory.items.every(entry => !["queued", "running"].includes(entry.state)),
     { reopenedHistory });
+  await withRendererOffline(page, async () => {
+    for (const [format, tableId, expected] of [
+      ["CSV", table.tableId, afterImport],
+      ["XLSX", xlsxTable.tableId, xlsxAfterImport],
+    ]) {
+      const actual = await authority(tableId);
+      recorder.check(`the ${format} rows, IDs and revisions survive reopening offline`,
+        canonicalJsonText(actual) === canonicalJsonText(expected), { expected, actual });
+    }
+  });
   await page.getByTestId("import-management-open").click();
   await page.getByTestId("import-history-row").first().waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-reopened.png"), fullPage: true });
