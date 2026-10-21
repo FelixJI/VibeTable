@@ -1178,8 +1178,11 @@ def test_native_uia_preparation_builds_current_sources_once_and_rejects_stale_ou
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_acceptance_prepares_uia_before_s42_and_fails_closed_on_build_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed: bool
+@pytest.mark.parametrize(
+    "scenario_id", ["35-data-io-interoperability", "42-file-document-native-operations"]
+)
+def test_acceptance_prepares_uia_before_native_scenario_and_fails_closed_on_build_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed: bool, scenario_id: str
 ) -> None:
     events = []
 
@@ -1197,7 +1200,7 @@ def test_acceptance_prepares_uia_before_s42_and_fails_closed_on_build_error(
     code, report = runner.run_product_acceptance(
         package_root=tmp_path / "package",
         evidence_root=tmp_path / "evidence",
-        selected=["42-file-document-native-operations"],
+        selected=[scenario_id],
     )
     assert code == (1 if failed else 0)
     assert events == (["prepare"] if failed else ["prepare", "scenario"])
