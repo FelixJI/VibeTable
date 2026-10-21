@@ -256,6 +256,26 @@ describe("importManagementService", () => {
     expect(projected.diagnostics).toEqual([{ code: "source_import.relation_edges", blocking: true }]);
     // The committed physical identity passes through for target navigation.
     expect(projected.targets[0]?.collection).toBe("t_orders9f2a");
+    // Legacy receipts without notices stay readable as an empty list.
+    expect(projected.notices).toEqual([]);
+  });
+
+  it("projects durable source notices and keeps the legacy shape valid", async () => {
+    const notices = [
+      "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+      "表「订单」的字段「计算」是公式：计算值未随文件导出，迁移后该列将为空",
+    ];
+    const request = vi.fn(async () => ({ items: [], migrations: [
+      migrationReceipt({ jobId: "job-notices", notices }),
+    ] }));
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useImportManagementService();
+    service.bindScope(() => ({ workspaceId: "ws-1", sessionEpoch: 1 }));
+
+    await service.refresh();
+
+    expect(service.error.value).toBeNull();
+    expect(service.sourceEntries.value?.[0]?.notices).toEqual(notices);
   });
 
   it.each([
@@ -279,6 +299,9 @@ describe("importManagementService", () => {
       overrides: { targets: [{ sourceTableId: "src_orders", tableId: "tbl_orders", name: "Orders", collection: "" }] },
     },
     { name: "migrations not an array", raw: { migrations: "nope" } },
+    { name: "notices not an array", overrides: { notices: "文件包含 1 个仪表盘" } },
+    { name: "notices with non-string entry", overrides: { notices: ["有效告知", 7] } },
+    { name: "notices with empty entry", overrides: { notices: [""] } },
     { name: "unknown field policy", overrides: { fields: [{ source: {}, kind: "text", policy: "native-copy", definition: "" }] } },
     { name: "negative count", overrides: { created: -1, notSubmitted: 404 } },
   ])("reports a load failure for bad migrations: %s", async ({ overrides, raw }) => {

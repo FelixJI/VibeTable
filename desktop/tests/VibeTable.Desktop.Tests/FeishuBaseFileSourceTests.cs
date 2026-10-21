@@ -282,6 +282,15 @@ public sealed class FeishuBaseFileSourceTests
         Assert.IsTrue(document.Notices.Any(notice => notice.Contains("合成表A")
             && notice.Contains("引用") && notice.Contains("将为空")));
         Assert.IsTrue(document.Notices.Any(notice => notice.Contains("附件")));
+        // The attachment notice states the observed container scope and the
+        // separately exported attachment ZIP boundary — it never claims every
+        // .base export lacks attachment bytes.
+        string attachmentNotice = document.Notices.Single(notice => notice.Contains("附件"));
+        StringAssert.Contains(attachmentNotice, "该 .base 文件不包含附件字节");
+        StringAssert.Contains(attachmentNotice, "附件 ZIP");
+        StringAssert.Contains(attachmentNotice, "本期暂不支持导入 ZIP");
+        Assert.IsFalse(attachmentNotice.Contains(".base 导出不包含文件字节"),
+            "不得泛称所有 .base 导出不含附件");
     }
     [TestMethod]
     public async Task ReadFileAsync_OptionalMembersAbsent_StillSucceeds()
@@ -335,6 +344,24 @@ public sealed class FeishuBaseFileSourceTests
         FeishuSourceImportException notFound = Assert.ThrowsExactly<FeishuSourceImportException>(
             () => document.CreateProvider(["tblNoSuchTable00000"]));
         Assert.AreEqual(FeishuSourceImportErrorKind.NotFound, notFound.Kind);
+    }
+
+    [TestMethod]
+    public async Task SnapshotCarriesTheCompleteDisclosureSetForTheProviderHandOff()
+    {
+        FeishuBaseFileDocument document = await ReadEnvelopeAsync(WriteEnvelope(HappySnapshot(),
+            dashboardJson: "[{\"dashboardID\":\"dashSynthetic00001\"}]",
+            automationJson: "[{\"id\":\"wfSynthetic01\"},{\"id\":\"wfSynthetic02\"}]"));
+        // Only table A is selected, yet the frozen snapshot keeps the complete
+        // file disclosure set — including table B's notices — because the
+        // acknowledgement gate confirms the whole file, and the durable Go
+        // receipt persists exactly that acknowledged set.
+        HostSourceImportSnapshot snapshot = await document.CreateProvider([TableA])
+            .ReadAsync(CancellationToken.None);
+        CollectionAssert.AreEqual(document.Notices, snapshot.Notices);
+        Assert.IsTrue(snapshot.Notices!.Any(notice => notice.Contains("1 个仪表盘")));
+        Assert.IsTrue(snapshot.Notices!.Any(notice => notice.Contains("合成表B")));
+        Assert.IsTrue(snapshot.Notices!.Any(notice => notice.Contains("附件")));
     }
 
     [TestMethod]

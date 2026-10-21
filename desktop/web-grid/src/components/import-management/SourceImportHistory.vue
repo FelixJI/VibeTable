@@ -163,6 +163,18 @@ function toggleExpanded(jobId: string): void {
           </ul>
           <template v-if="isExpanded(entry.jobId)">
             <dl class="source-import-detail">
+              <div v-if="entry.notices.length > 0">
+                <dt>{{ t("importManagement.migration.notices.title", { count: entry.notices.length }) }}</dt>
+                <dd data-testid="source-notices">
+                  <ul class="source-import-notices">
+                    <li
+                      v-for="(notice, noticeIndex) in entry.notices"
+                      :key="noticeIndex"
+                      data-testid="source-notice"
+                    >{{ notice }}</li>
+                  </ul>
+                </dd>
+              </div>
               <div>
                 <dt>{{ t("importManagement.migration.targets.title") }}</dt>
                 <dd>
@@ -329,6 +341,8 @@ function toggleExpanded(jobId: string): void {
 .source-import-detail > div { display: grid; gap: 4px; }
 .source-import-detail dt { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .source-import-detail dd { margin: 0; color: var(--vt-fg); font-size: var(--vt-font-caption); }
+.source-import-notices { display: grid; gap: 4px; margin: 0; padding: 0 0 0 12px; list-style: disc; }
+.source-import-notices li { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .source-import-target { margin-right: 6px; }
 .source-import-target-button {
   display: inline-flex;

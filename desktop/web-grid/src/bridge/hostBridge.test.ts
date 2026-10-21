@@ -1394,7 +1394,7 @@ describe("HostBridge", () => {
     vi.useFakeTimers();
     const bridge = createHostBridge({ webview, timeoutMs: 1000, generateRequestId: () => "source-open" });
     bridge.start();
-    const pending = bridge.request("sourceImport.open", { provider: "feishu" });
+    const pending = bridge.request("sourceImport.open", { provider: "feishuBase" });
     let settled = false;
     void pending.then(() => { settled = true; }, () => { settled = true; });
     await vi.advanceTimersByTimeAsync(10 * 60_000);

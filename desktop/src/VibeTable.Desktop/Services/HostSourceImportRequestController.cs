@@ -18,6 +18,14 @@ internal sealed class HostSourceImportRequestController(
     IWebReplySink reply, WorkspaceSessionEnvelopeFilter sessions,
     IHostSourceImportActions actions)
 {
+    /// <summary>Wire identity of the only formal source wizard: the local
+    /// Feishu .base file picker. Deliberately distinct from the retired
+    /// online "feishu"/"wps" providers so a stale renderer's cloud request
+    /// can never be misrouted to a file dialog.</summary>
+    internal const string BaseFileProvider = "feishuBase";
+
+    private static readonly string[] RetiredCloudProviders = ["feishu", "wps"];
+
     private int _opening;
 
     internal static bool Handles(string type) => type == "sourceImport.open";
@@ -27,8 +35,23 @@ internal sealed class HostSourceImportRequestController(
         if (!Handles(request.Type) || request.Payload.ValueKind != JsonValueKind.Object
             || request.Payload.EnumerateObject().Count() != 1
             || !request.Payload.TryGetProperty("provider", out JsonElement value)
-            || value.ValueKind != JsonValueKind.String
-            || value.GetString() is not ("feishu" or "wps"))
+            || value.ValueKind != JsonValueKind.String)
+        {
+            reply.PostOperationFailed(request.RequestId,
+                "Invalid source import request.", "SOURCE_IMPORT_BAD_PAYLOAD");
+            return;
+        }
+        string provider = value.GetString()!;
+        if (RetiredCloudProviders.Contains(provider))
+        {
+            // Online Feishu/WPS reads are retired; only the local .base file
+            // wizard exists. Reject explicitly instead of routing a cloud
+            // request into a file dialog or vice versa.
+            reply.PostOperationFailed(request.RequestId,
+                "云服务来源导入已停用，请改用 .base 本地文件导入。", "SOURCE_IMPORT_PROVIDER_RETIRED");
+            return;
+        }
+        if (provider != BaseFileProvider)
         {
             reply.PostOperationFailed(request.RequestId,
                 "Invalid source import request.", "SOURCE_IMPORT_BAD_PAYLOAD");
@@ -57,7 +80,7 @@ internal sealed class HostSourceImportRequestController(
             {
                 EnsureCurrent();
                 HostSourceImportOpenResult result = await actions.OpenAsync(
-                    value.GetString()!, EnsureCurrent, lease!.CancellationToken);
+                    provider, EnsureCurrent, lease!.CancellationToken);
                 EnsureCurrent();
                 if (result.Cancelled != (result.TaskId is null)
                     || result.TaskId is { Length: 0 })

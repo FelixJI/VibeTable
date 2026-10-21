@@ -40,6 +40,8 @@ def test_partial_result_preserves_committed_targets_and_unknown_subset() -> None
     receipt = SourceImportResult.model_validate(result())
     assert (receipt.created, receipt.unknown_records, receipt.not_submitted) == (400, 400, 3)
     assert receipt.targets[0].collection == "t_a"
+    # Legacy receipts without disclosures stay readable with an empty list.
+    assert receipt.notices == []
 
 
 @pytest.mark.parametrize(
@@ -48,6 +50,31 @@ def test_partial_result_preserves_committed_targets_and_unknown_subset() -> None
 def test_result_rejects_false_certainty(change: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         SourceImportResult.model_validate({**result(), **change})
+
+
+def test_result_carries_acknowledged_source_notices() -> None:
+    notices = [
+        "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+        "表「订单」的字段「计算」是公式：计算值未随文件导出，迁移后该列将为空",
+    ]
+    receipt = SourceImportResult.model_validate({**result(), "notices": notices})
+    assert receipt.notices == notices
+
+
+@pytest.mark.parametrize(
+    "notices",
+    [
+        [""],
+        [" " * 600],
+        ["告知" * 257],
+        ["有效告知"] * 257,
+        [123],
+        "文件包含 1 个仪表盘",
+    ],
+)
+def test_result_rejects_malformed_source_notices(notices: object) -> None:
+    with pytest.raises(ValidationError):
+        SourceImportResult.model_validate({**result(), "notices": notices})
 
 
 @pytest.mark.parametrize("stage", ["relations", "attachments", "constraints"])

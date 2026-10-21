@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NAlert, NButton, NEmpty, NIcon, NTag, NTooltip } from "naive-ui";
-import { ArrowDownToLine, ChevronDown, Cloud, FileSpreadsheet, FileText, RefreshCw, Table2 } from "@lucide/vue";
+import { ArrowDownToLine, ChevronDown, Database, FileSpreadsheet, FileText, RefreshCw, Table2 } from "@lucide/vue";
 import type { ImportHistoryEntry, SourceImportEntry } from "@/contracts/importManagement";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
@@ -26,15 +26,15 @@ const props = withDefaults(defineProps<{
   cancellingTaskId: string | null;
   pendingSourceName: string | null;
   canStart: boolean;
-  canStartCloud?: boolean;
+  canStartBaseImport?: boolean;
 }>(), {
   sourceEntries: () => [],
-  canStartCloud: false,
+  canStartBaseImport: false,
 });
 
 const emit = defineEmits<{
   newImport: [];
-  newCloudImport: [provider: "feishu" | "wps"];
+  newBaseImport: [provider: "feishuBase"];
   cancelSource: [];
   chooseTarget: [collection: string];
   refresh: [];
@@ -48,8 +48,7 @@ const workspace = useWorkspaceStore();
 const sourceIcons: Record<ImportSourceId, typeof FileText> = {
   csv: FileText,
   xlsx: FileSpreadsheet,
-  feishu: Cloud,
-  wps: Cloud,
+  feishuBase: Database,
 };
 
 const catalogSources = IMPORT_SOURCES.map((source) => ({
@@ -176,9 +175,9 @@ function toggleExpanded(taskId: string): void {
               v-if="source.available"
               type="button"
               class="import-source-card"
-              :disabled="source.accept ? !props.canStart : !props.canStartCloud"
+              :disabled="source.accept ? !props.canStart : !props.canStartBaseImport"
               :data-testid="`import-source-${source.id}`"
-              @click="source.id === 'feishu' || source.id === 'wps' ? emit('newCloudImport', source.id) : emit('newImport')"
+              @click="source.id === 'feishuBase' ? emit('newBaseImport', source.id) : emit('newImport')"
             >
               <span class="import-source-icon"><NIcon :size="19"><component :is="source.icon" /></NIcon></span>
               <span class="import-source-copy">

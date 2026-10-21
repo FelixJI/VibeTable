@@ -22,6 +22,22 @@ def test_real_picker_is_denied_outside_controlled_ci(monkeypatch, tmp_path: Path
         validate_file_request({"requestId": "id", "action": "cancel", "kind": "read"}, tmp_path)
 
 
+def test_base_file_picker_uses_the_fixed_controls_root_file(monkeypatch, tmp_path: Path) -> None:
+    """The .base wizard picker accepts exactly one fixed synthetic file name."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    source = tmp_path / "35-feishu-base-import.base"
+    source.write_bytes(b"synthetic-envelope")
+    assert (
+        validate_file_request({"requestId": "id", "action": "select", "kind": "base"}, tmp_path)
+        == source
+    )
+    # A missing source file must fail closed before any picker input.
+    source.unlink()
+    with pytest.raises(ValueError, match="picker source is missing"):
+        validate_file_request({"requestId": "id", "action": "select", "kind": "base"}, tmp_path)
+
+
 @pytest.mark.parametrize(
     "change", [{"path": "C:/outside"}, {"kind": "other"}, {"action": "approve"}, {"requestId": ""}]
 )

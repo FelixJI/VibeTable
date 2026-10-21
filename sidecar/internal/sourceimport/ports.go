@@ -56,26 +56,30 @@ type Target struct {
 }
 
 type Result struct {
-	Contract       string         `json:"contract"`
-	JobID          string         `json:"jobId"`
-	Provider       string         `json:"provider"`
-	ContainerID    string         `json:"containerId"`
-	SourceName     string         `json:"sourceName"`
-	State          string         `json:"state"`
-	Stage          string         `json:"stage"`
-	Created        int            `json:"created"`
-	Total          int            `json:"total"`
-	NotSubmitted   int            `json:"notSubmitted"`
-	UnknownRecords int            `json:"unknownRecords"`
-	UnknownBatch   string         `json:"unknownBatch,omitempty"`
-	Targets        []Target       `json:"targets"`
-	Batches        []Batch        `json:"batches"`
-	Diagnostics    []Diagnostic   `json:"diagnostics"`
-	StartedAt      string         `json:"startedAt"`
-	FinishedAt     string         `json:"finishedAt,omitempty"`
-	SessionEpoch   uint64         `json:"sessionEpoch"`
-	ReadWindow     ReadWindow     `json:"readWindow"`
-	Fields         []FieldSummary `json:"fields"`
+	Contract       string       `json:"contract"`
+	JobID          string       `json:"jobId"`
+	Provider       string       `json:"provider"`
+	ContainerID    string       `json:"containerId"`
+	SourceName     string       `json:"sourceName"`
+	State          string       `json:"state"`
+	Stage          string       `json:"stage"`
+	Created        int          `json:"created"`
+	Total          int          `json:"total"`
+	NotSubmitted   int          `json:"notSubmitted"`
+	UnknownRecords int          `json:"unknownRecords"`
+	UnknownBatch   string       `json:"unknownBatch,omitempty"`
+	Targets        []Target     `json:"targets"`
+	Batches        []Batch      `json:"batches"`
+	Diagnostics    []Diagnostic `json:"diagnostics"`
+	// Notices carries the acknowledged source fidelity disclosures from the
+	// frozen plan into the durable receipt. Optional on the wire: legacy
+	// receipts predate it and stay readable without the field.
+	Notices      []string       `json:"notices,omitempty"`
+	StartedAt    string         `json:"startedAt"`
+	FinishedAt   string         `json:"finishedAt,omitempty"`
+	SessionEpoch uint64         `json:"sessionEpoch"`
+	ReadWindow   ReadWindow     `json:"readWindow"`
+	Fields       []FieldSummary `json:"fields"`
 }
 
 type FieldSummary struct {

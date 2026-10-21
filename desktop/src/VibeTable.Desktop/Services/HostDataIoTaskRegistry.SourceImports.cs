@@ -120,7 +120,21 @@ internal sealed partial class HostDataIoTaskRegistry
             startedAt = DateTimeOffset.UtcNow.ToString("O"),
             sessionEpoch = epoch,
             readWindow = preview.Plan.GetProperty("readWindow"),
+            notices = PlanNotices(preview.Plan),
         });
+    }
+
+    /// <summary>Optional plan disclosures copied into the queued history
+    /// entry so preparing rows disclose the same source facts the Go receipt
+    /// will persist. Missing/null stays absent for plans without notices.</summary>
+    private static JsonElement? PlanNotices(JsonElement plan)
+    {
+        if (!plan.TryGetProperty("notices", out JsonElement notices)
+            || notices.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return null;
+        if (notices.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Source plan notices are invalid.");
+        return notices.Clone();
     }
 
     internal string RegisterSourceImportProvider(ProductSidecarGenerationSnapshot snapshot,

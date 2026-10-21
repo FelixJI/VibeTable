@@ -15,7 +15,7 @@ internal interface IHostSourceImportProvider : IDisposable
 internal sealed record HostSourceImportSnapshot(
     string Provider, string ContainerId, string DisplayName, string Version,
     HostSourceImportReadWindow ReadWindow, HostSourceImportTable[] Tables,
-    HostSourceImportAttachment[] Attachments)
+    HostSourceImportAttachment[] Attachments, string[]? Notices = null)
 {
     public string Contract => HostSourceImportResult.ContractName;
 }
@@ -74,8 +74,25 @@ internal sealed record HostSourceImportResult(JsonElement Wire, string JobId, st
                 || !string.IsNullOrEmpty(unresolved) || !settled))
             || wire.GetProperty("targets").ValueKind is not (JsonValueKind.Array or JsonValueKind.Null)
             || wire.GetProperty("batches").ValueKind is not (JsonValueKind.Array or JsonValueKind.Null)
-            || wire.GetProperty("diagnostics").ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
+            || wire.GetProperty("diagnostics").ValueKind is not (JsonValueKind.Array or JsonValueKind.Null)
+            || !ValidNoticesShape(wire))
             throw new JsonException("Invalid source import result facts.");
         return new(wire.Clone(), job, state, created, total, pending, unknown, epoch);
+    }
+
+    /// <summary>Optional durable source disclosures. Absent on legacy
+    /// receipts; when present the member must be an array (or null) of
+    /// strings — malformed disclosure payloads fail closed instead of
+    /// reaching the renderer. Count/length bounds are enforced by the Go
+    /// preflight before the receipt is persisted.</summary>
+    private static bool ValidNoticesShape(JsonElement wire)
+    {
+        if (!wire.TryGetProperty("notices", out JsonElement notices)
+            || notices.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return true;
+        if (notices.ValueKind != JsonValueKind.Array) return false;
+        foreach (JsonElement notice in notices.EnumerateArray())
+            if (notice.ValueKind != JsonValueKind.String) return false;
+        return true;
     }
 }

@@ -202,7 +202,13 @@ def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
 
 
 def _send_input(
-    native: Any, *, x: float | None = None, y: float | None = None, text: str | None = None
+    native: Any,
+    *,
+    x: float | None = None,
+    y: float | None = None,
+    text: str | None = None,
+    vkeys: list[int] | None = None,
+    wheel: int | None = None,
 ) -> None:
     from ctypes import wintypes
 
@@ -231,7 +237,28 @@ def _send_input(
     class Input(ctypes.Structure):
         _fields_ = [("kind", wintypes.DWORD), ("payload", Payload)]
 
-    if text is not None:
+    if wheel is not None:
+        # One bounded real wheel notch (negative scrolls down); used only to
+        # bring already-expanded wizard content into view.
+        if not isinstance(wheel, int) or wheel == 0 or not -1200 <= wheel <= 1200:
+            raise ValueError("native wheel delta is invalid")
+        events = [Input(0, Payload(mouse=Mouse(0, 0, wheel, 0x0800, 0, 0)))]
+    elif vkeys is not None:
+        # Bounded ordered key sequence (press+release per key) for the closed
+        # native wizard controls; anything outside small virtual-key codes is
+        # rejected before a single event is synthesized.
+        if (
+            not vkeys
+            or len(vkeys) > 8
+            or any(not isinstance(vk, int) or not 1 <= vk <= 254 for vk in vkeys)
+        ):
+            raise ValueError("native key sequence is invalid")
+        events = [
+            Input(1, Payload(keyboard=Keyboard(vk, 0, flag, 0, 0)))
+            for vk in vkeys
+            for flag in (0, 2)
+        ]
+    elif text is not None:
         if not text or len(text) > 1024 or any(ord(char) < 32 for char in text):
             raise ValueError("synthetic picker path is invalid")
         events = [
