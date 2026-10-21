@@ -383,36 +383,36 @@ export async function runFeishuBaseFileJourney(page, recorder, runtime, helpers)
     (await targetButtons.count()) === EXPECTED_BASE_FILE_IMPORT.tables.length, {});
 
   // ---- Close/reopen: receipt, rows and disclosures persist offline ----
-  const originalSession = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  await openWorkspaceCenterFromSwitcher(page);
-  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
-    page.getByTestId("workspace-center").getByRole("button", {
-      name: /关闭当前工作区|Close current workspace/,
-    }).click());
-  recorder.check("the .base acceptance closes the actual workspace",
-    closed.result?.state === "closed", { closed });
-  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
-  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
-  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
-  const reopenedSession = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  const afterReopen = await history();
-  const reopenedEntry = (afterReopen.migrations ?? []).find((item) => item.jobId === entry.jobId);
-  const reopenProblems = reopenedEntry == null ? ["the .base receipt vanished after reopen"]
-    : assertPreSubmissionTerminal(
-        { migrations: [entry] }, { migrations: [reopenedEntry] }, []);
-  recorder.check("the .base receipt with its disclosures survives the workspace reopen unchanged",
-    reopenedEntry != null
-      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
-      && reopenProblems.length === 0
-      && isDeepStrictEqual(reopenedEntry?.notices ?? [], entry.notices ?? []),
-    { problems: reopenProblems, entryEpoch: entry.sessionEpoch });
-  const reopenedAuthorityProblems = await verifyLocalAuthority();
-  recorder.check("after reopen every committed table keeps its rows and exact values",
-    reopenedAuthorityProblems.length === 0, { problems: reopenedAuthorityProblems });
-
   await withRendererOffline(page, async () => {
+    const originalSession = await page.evaluate(
+      () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    await openWorkspaceCenterFromSwitcher(page);
+    const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+      page.getByTestId("workspace-center").getByRole("button", {
+        name: /关闭当前工作区|Close current workspace/,
+      }).click());
+    recorder.check("the .base acceptance closes the actual workspace",
+      closed.result?.state === "closed", { closed });
+    await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+    await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+    const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+    const reopenedSession = await page.evaluate(
+      () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    const afterReopen = await history();
+    const reopenedEntry = (afterReopen.migrations ?? []).find((item) => item.jobId === entry.jobId);
+    const reopenProblems = reopenedEntry == null ? ["the .base receipt vanished after reopen"]
+      : assertPreSubmissionTerminal(
+          { migrations: [entry] }, { migrations: [reopenedEntry] }, []);
+    recorder.check("the .base receipt with its disclosures survives the workspace reopen unchanged",
+      reopenedEntry != null
+        && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
+        && reopenProblems.length === 0
+        && isDeepStrictEqual(reopenedEntry?.notices ?? [], entry.notices ?? []),
+      { problems: reopenProblems, entryEpoch: entry.sessionEpoch });
+    const reopenedAuthorityProblems = await verifyLocalAuthority();
+    recorder.check("after reopen every committed table keeps its rows and exact values",
+      reopenedAuthorityProblems.length === 0, { problems: reopenedAuthorityProblems });
+
     const offlineHistory = await history();
     const offlineEntry = (offlineHistory.migrations ?? []).find((item) => item.jobId === entry.jobId);
     recorder.check("the persisted source disclosures stay readable with the renderer offline",

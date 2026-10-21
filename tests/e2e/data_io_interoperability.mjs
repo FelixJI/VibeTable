@@ -419,28 +419,28 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   recorder.check("the history target action returns to the original import table",
     (await page.getByTestId("toolbar-table-title").textContent()).includes("A5 Interop CSV"));
 
-  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  await openWorkspaceCenterFromSwitcher(page);
-  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
-    page.getByTestId("workspace-center").getByRole("button", {
-      name: /关闭当前工作区|Close current workspace/,
-    }).click());
-  recorder.check("import history acceptance closes the actual workspace", closed.result?.state === "closed", { closed });
-  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
-  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
-  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
-  const reopenedHistory = await request("data.importHistory", {});
-  recorder.check("reopening retains terminal receipts without resurrecting old tasks or tokens",
-    reopened.payload.session.workspaceId === originalSession.workspaceId
-      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
-      && committed.every((before) => {
-        const after = reopenedHistory.items.find(entry => entry.taskId === before.taskId);
-        return after?.state === "succeeded" && after.commitState === "committed"
-          && after.createdCount === before.createdCount && after.updatedCount === before.updatedCount;
-      })
-      && reopenedHistory.items.every(entry => !["queued", "running"].includes(entry.state)),
-    { reopenedHistory });
   await withRendererOffline(page, async () => {
+    const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    await openWorkspaceCenterFromSwitcher(page);
+    const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+      page.getByTestId("workspace-center").getByRole("button", {
+        name: /关闭当前工作区|Close current workspace/,
+      }).click());
+    recorder.check("import history acceptance closes the actual workspace", closed.result?.state === "closed", { closed });
+    await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+    await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+    const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+    const reopenedHistory = await request("data.importHistory", {});
+    recorder.check("reopening retains terminal receipts without resurrecting old tasks or tokens",
+      reopened.payload.session.workspaceId === originalSession.workspaceId
+        && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
+        && committed.every((before) => {
+          const after = reopenedHistory.items.find(entry => entry.taskId === before.taskId);
+          return after?.state === "succeeded" && after.commitState === "committed"
+            && after.createdCount === before.createdCount && after.updatedCount === before.updatedCount;
+        })
+        && reopenedHistory.items.every(entry => !["queued", "running"].includes(entry.state)),
+      { reopenedHistory });
     for (const [format, tableId, expected] of [
       ["CSV", table.tableId, afterImport],
       ["XLSX", xlsxTable.tableId, xlsxAfterImport],
