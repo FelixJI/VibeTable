@@ -2234,6 +2234,56 @@ def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
     assert "op-illegal" not in serialized
 
 
+S35_AUDIT_DRAIN_CHAIN = ("workspaces", "ws", ".vibetable", "temp", "logs")
+
+
+@pytest.mark.parametrize("junctioned", S35_AUDIT_DRAIN_CHAIN)
+def test_product_e2e_evidence_skips_s35_audit_drain_logs_behind_junctions(
+    tmp_path: Path,
+    junctioned: str,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    outside = tmp_path / "outside-evidence"
+    index = S35_AUDIT_DRAIN_CHAIN.index(junctioned)
+    outside_logs = outside.joinpath(*S35_AUDIT_DRAIN_CHAIN[index + 1 :])
+    outside_logs.mkdir(parents=True)
+    (outside_logs / "pocketbase.log").write_text(
+        json.dumps(
+            {
+                "event": "snapshot.freeze.audit.drain.returned",
+                "timestamp": "2026-10-21T13:12:44Z",
+                "operationId": "op-outside",
+                "auditDrain": {"source": "business", "phase": "ack"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    local_data = run / "_runtime" / "35" / "host" / "local-data"
+    junction_parent = local_data.joinpath(*S35_AUDIT_DRAIN_CHAIN[:index])
+    junction_parent.mkdir(parents=True, exist_ok=True)
+    junction = junction_parent / junctioned
+    _create_junction(junction, outside)
+    try:
+        destination = next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+    finally:
+        with suppress(OSError):
+            os.rmdir(junction)
+
+    assert destination is not None
+    evidence = destination / "35-data-io-interoperability" / "35-audit-drain.json"
+    serialized = evidence.read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["status"] == "empty"
+    assert payload["logsRead"] == 0
+    assert payload["entries"] == []
+    assert "op-outside" not in serialized
+    assert (outside_logs / "pocketbase.log").read_text(encoding="utf-8").count("op-outside") == 1
+
+
 def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
     tmp_path: Path,
 ) -> None:

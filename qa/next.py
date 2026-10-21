@@ -1365,16 +1365,34 @@ def _project_audit_drain_entry(line: str) -> dict[str, object] | None:
     return entry
 
 
-def _persist_s35_audit_drain_measurements(workspace_root: Path, destination: Path) -> None:
+def _is_confined_to_run_root(path: Path, run_source: Path) -> bool:
+    """Reject any linked ancestor between path and the run root."""
+    ancestor = path.parent
+    while ancestor != run_source:
+        if ancestor.is_symlink() or ancestor.is_junction() or ancestor == ancestor.parent:
+            return False
+        ancestor = ancestor.parent
+    return not (run_source.is_symlink() or run_source.is_junction())
+
+
+def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -> None:
     """Archive bounded S35 audit-drain measurements from the log whitelist.
 
-    A missing capture stays an explicit empty status, never a measurement pass.
+    A missing capture stays an explicit empty status, never a measurement
+    pass, and only logs whose ancestors up to the run root are real
+    directories are read.
     """
+    workspace_root = run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces"
     entries: list[dict[str, object]] = []
     matched = 0
     logs_read = 0
     for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase.log")):
-        if log_path.is_symlink() or log_path.is_junction() or not log_path.is_file():
+        if (
+            log_path.is_symlink()
+            or log_path.is_junction()
+            or not log_path.is_file()
+            or not _is_confined_to_run_root(log_path, run_source)
+        ):
             continue
         logs_read += 1
         for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -1661,7 +1679,7 @@ def persist_product_e2e_evidence(
             # Bounded measurements for every outcome; the full runtime tree
             # stays failure-only.
             _persist_s35_audit_drain_measurements(
-                run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces",
+                run_source,
                 run_destination / scenario_id / "35-audit-drain.json",
             )
         if scenario_id == "42-file-document-native-operations":
