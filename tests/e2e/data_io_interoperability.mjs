@@ -190,7 +190,8 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
 
   // ---- Table 1: UTF-8 BOM CSV with Unicode and frozen date text ----
   const table = await createSimpleTable(page, "A5 Interop CSV", "Label");
-  // Exercise cancellation before a large, within-limit XLSX finishes parsing.
+  // Parse progress can reach the final row before the UI cancel arrives.
+  // Deterministic early-stop coverage lives in test_file_execution.py.
   const slowSource = path.join(runtime.controlsDir, "slow-preview.xlsx");
   const slowFixture = await workbook("slow-preview", slowSource, { field: table.field.physicalName });
   const beforeSlowPreview = await authority(table.tableId);
@@ -243,13 +244,10 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     };
     await fs.writeFile(path.join(runtime.evidenceDir, "35-file-preview-cancel.json"),
       JSON.stringify(evidence, null, 2), "utf8");
-    recorder.check("slow XLSX preview has a visible measured phase and cancels within the existing drain budget",
-      phase.length > 0 && observed.acceptedAt !== null
-        && evidence.acceptanceMs >= 0 && evidence.acceptanceMs < 10_000
-        && evidence.drainMs >= 0 && evidence.drainMs < 10_000
-        && observed.terminal.state === "cancelled"
-        && observed.terminal.progress.done < 1000,
-      evidence);
+    const cancelProblems = slowPreviewCancelEvidenceProblems(evidence);
+    recorder.check("slow XLSX preview reports a real measured phase and cancels cooperatively within the existing drain budget",
+      cancelProblems.length === 0,
+      { ...evidence, cancelProblems });
     recorder.check("cancelled slow preview does not refill a plan or change authoritative rows/revisions",
       !await page.getByTestId("import-preview-panel").isVisible()
         && canonicalJsonText(await authority(table.tableId)) === canonicalJsonText(beforeSlowPreview));
@@ -504,4 +502,41 @@ export function verifyNativeImportPickerReceipt(receipt, expectedTargetName) {
 export function sameRows(actual, expected) {
   const ordered = (rows) => rows.map((row) => JSON.stringify(row)).sort();
   return isDeepStrictEqual(ordered(actual), ordered(expected));
+}
+
+// A cancelled preview may have read every row but must not return a plan or commit.
+export function slowPreviewCancelEvidenceProblems(evidence) {
+  const problems = [];
+  const { phase, acceptedAt, terminal, fixture, acceptanceMs, drainMs } = evidence;
+  if (typeof phase !== "string" || phase.length === 0) {
+    problems.push(`phase is ${JSON.stringify(phase)}`);
+  }
+  if (typeof acceptedAt !== "number") {
+    problems.push(`acceptedAt is ${JSON.stringify(acceptedAt)}`);
+  }
+  if (!(acceptanceMs >= 0 && acceptanceMs < 10_000)) {
+    problems.push(`acceptanceMs is ${JSON.stringify(acceptanceMs)}`);
+  }
+  if (!(drainMs >= 0 && drainMs < 10_000)) {
+    problems.push(`drainMs is ${JSON.stringify(drainMs)}`);
+  }
+  if (terminal?.state !== "cancelled") {
+    problems.push(`terminal state is ${JSON.stringify(terminal?.state)}`);
+  }
+  const done = terminal?.progress?.done;
+  if (!Number.isInteger(done) || done < 0 || done > fixture.rows) {
+    problems.push(
+      `terminal progress done is ${JSON.stringify(done)}, fixture rows ${fixture.rows}`,
+    );
+  }
+  if (terminal?.result !== null) {
+    problems.push(`terminal result is ${JSON.stringify(terminal?.result)}`);
+  }
+  if (terminal?.error !== null) {
+    problems.push(`terminal error is ${JSON.stringify(terminal?.error)}`);
+  }
+  if (terminal?.commitReceipt !== null) {
+    problems.push(`terminal commitReceipt is ${JSON.stringify(terminal?.commitReceipt)}`);
+  }
+  return problems;
 }

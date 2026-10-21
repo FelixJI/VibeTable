@@ -78,6 +78,70 @@ async def test_slow_preview_accepts_cancel_before_source_finishes_and_closes(tmp
     assert all(total == 0 for _, total, _ in reports)
 
 
+@pytest.mark.parametrize("cancel_at_rows", [100, 1000])
+async def test_xlsx_preview_cancel_stops_work_at_next_cooperative_checkpoint(
+    tmp_path: Path, cancel_at_rows: int
+):
+    """Backpressured reports make cancellation at either parse boundary deterministic."""
+    from openpyxl import Workbook
+
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet()
+    sheet.append(["title"])
+    for row in range(1000):
+        sheet.append([f"row-{row}"])
+    path = tmp_path / "slow-preview.xlsx"
+    workbook.save(path)
+    workbook.close()
+
+    token = CancellationToken()
+    source = io.BytesIO(path.read_bytes())
+
+    class Files:
+        @asynccontextmanager
+        async def read(self, *_args, **_kwargs):
+            with source:
+                yield FileBuffer(source, "slow-preview.xlsx")
+
+    service, mutation = _service(path)
+    service._files = Files()
+    reports: list[tuple[int, int, str]] = []
+    accepted = None
+
+    async def progress(done: int, total: int, message: str) -> None:
+        nonlocal accepted
+        reports.append((done, total, message))
+        if message.startswith("解析来源文件") and done >= cancel_at_rows:
+            accepted = time.monotonic()
+            token.cancel()
+
+    task = asyncio.create_task(
+        service.preview(
+            PreviewImportParams(
+                collection="vibetable_demo",
+                grant_id="g",
+                schema_revision=service._profile("vibetable_demo").capability_hash,
+            ),
+            cancelled=lambda: token.cancelled,
+            progress=progress,
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 30)
+    drained = time.monotonic()
+    assert accepted is not None
+    print(f"xlsx preview cancel rows={cancel_at_rows} drain={drained - accepted:.3f}s")
+    assert drained - accepted < 1
+    assert source.closed
+    assert reports
+    assert all(total == 0 for _, total, _ in reports)
+    assert reports[-1] == (cancel_at_rows, 0, f"解析来源文件：{cancel_at_rows} 行")
+    assert all("校验导入数据" not in message for _, _, message in reports)
+    assert mutation.calls == []
+    assert mutation.preview_calls == []
+    assert mutation.plan_calls == []
+
+
 @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
 async def test_slow_encoding_cancel_joins_before_releasing_target(tmp_path, monkeypatch, fmt):
     from openpyxl.worksheet._writer import ALL_TEMP_FILES
