@@ -3,6 +3,7 @@ package auditledger
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // OutboxStore is implemented by the source business database. Pending returns
@@ -15,10 +16,18 @@ type OutboxStore interface {
 }
 
 type DrainReport struct {
-	Appended     int
-	Duplicates   int
-	Acknowledged int
-	Anchor       Anchor
+	Appended            int
+	Duplicates          int
+	Acknowledged        int
+	Anchor              Anchor
+	Phase               string // Last attempted operation, or completed after the empty pending read.
+	PendingCalls        int
+	AppendCalls         int
+	AcknowledgeCalls    int
+	PendingDuration     time.Duration
+	AppendDuration      time.Duration
+	AppendMaxDuration   time.Duration
+	AcknowledgeDuration time.Duration
 }
 
 type Drainer struct {
@@ -45,22 +54,34 @@ func (drainer *Drainer) Drain(
 	}
 	report := DrainReport{}
 	for {
+		report.Phase = "pending"
+		report.PendingCalls++
+		started := time.Now()
 		pending, err := outbox.Pending(ctx, drainer.batchSize)
+		report.PendingDuration += time.Since(started)
 		if err != nil {
 			report.Anchor = drainer.ledger.Anchor()
 			return report, err
 		}
 		if len(pending) == 0 {
+			report.Phase = "completed"
 			report.Anchor = drainer.ledger.Anchor()
 			return report, nil
 		}
 		SortEnvelopes(pending)
 		for _, envelope := range pending {
+			report.Phase = "between_records"
 			if err := ctx.Err(); err != nil {
 				report.Anchor = drainer.ledger.Anchor()
 				return report, err
 			}
+			report.Phase = "append"
+			report.AppendCalls++
+			started = time.Now()
 			result, err := drainer.ledger.Append(ctx, envelope)
+			appendElapsed := time.Since(started)
+			report.AppendDuration += appendElapsed
+			report.AppendMaxDuration = max(report.AppendMaxDuration, appendElapsed)
 			if err != nil {
 				report.Anchor = drainer.ledger.Anchor()
 				return report, err
@@ -70,14 +91,18 @@ func (drainer *Drainer) Drain(
 			} else {
 				report.Appended++
 			}
-			// Sync happens inside Append. A source acknowledgement can therefore
-			// be retried safely after a crash or source-side failure.
-			if err := outbox.Acknowledge(
+			// Sync happens inside Append, so failed source acknowledgement remains safely retryable.
+			report.Phase = "ack"
+			report.AcknowledgeCalls++
+			started = time.Now()
+			err = outbox.Acknowledge(
 				ctx,
 				envelope.EventID,
 				envelope.SourceEpoch,
 				envelope.SourceSequence,
-			); err != nil {
+			)
+			report.AcknowledgeDuration += time.Since(started)
+			if err != nil {
 				report.Anchor = drainer.ledger.Anchor()
 				return report, err
 			}

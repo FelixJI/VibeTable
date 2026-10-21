@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,9 @@ func (handler *jsonHandler) Handle(_ context.Context, record slog.Record) error 
 		"jobId":        nullableText(values["jobId"]),
 		"durationMs":   nullableNumber(values["durationMs"]),
 	}
+	if detail, ok := values["auditDrain"]; ok {
+		payload["auditDrain"] = detail
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -84,6 +88,10 @@ func (handler *jsonHandler) WithGroup(string) slog.Handler { return handler }
 
 func collect(values map[string]any, attr slog.Attr) {
 	switch attr.Key {
+	case "auditDrain":
+		if detail := auditDrainValue(attr.Value); detail != nil {
+			values[attr.Key] = detail
+		}
 	case "module", "errorCode", "requestId", "operationId", "workspaceId",
 		"sessionEpoch", "jobId", "durationMs":
 		values[attr.Key] = attr.Value.Any()
@@ -144,4 +152,47 @@ func nullableNumber(value any) any {
 	default:
 		return nil
 	}
+}
+
+// auditDrain accepts only closed source/phase enums and numeric operational measurements.
+func auditDrainValue(value slog.Value) map[string]any {
+	if value.Kind() != slog.KindGroup {
+		return nil
+	}
+	result := map[string]any{}
+	for _, attr := range value.Group() {
+		switch attr.Key {
+		case "source":
+			if attr.Value.Kind() == slog.KindString && (attr.Value.String() == "business" || attr.Value.String() == "file") {
+				result[attr.Key] = attr.Value.String()
+			}
+		case "phase":
+			if attr.Value.Kind() == slog.KindString {
+				switch attr.Value.String() {
+				case "pending", "append", "ack", "between_records", "completed":
+					result[attr.Key] = attr.Value.String()
+				}
+			}
+		case "appended", "duplicates", "acknowledged", "pendingCalls", "appendCalls", "ackCalls",
+			"pbReadWaitCount", "pbWriteWaitCount":
+			if attr.Value.Kind() == slog.KindInt64 && attr.Value.Int64() >= 0 {
+				result[attr.Key] = attr.Value.Int64()
+			}
+		case "pbReadInUseDelta", "pbWriteInUseDelta":
+			if attr.Value.Kind() == slog.KindInt64 {
+				result[attr.Key] = attr.Value.Int64()
+			}
+		case "pendingMs", "appendMs", "appendMaxMs", "ackMs", "pbReadWaitMs", "pbWriteWaitMs":
+			if attr.Value.Kind() == slog.KindFloat64 {
+				number := attr.Value.Float64()
+				if !math.IsNaN(number) && !math.IsInf(number, 0) && number >= 0 {
+					result[attr.Key] = number
+				}
+			}
+		}
+	}
+	if result["source"] == nil || result["phase"] == nil {
+		return nil
+	}
+	return result
 }

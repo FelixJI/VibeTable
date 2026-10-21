@@ -123,6 +123,8 @@ func TestSnapshotRequestPhaseEventsCoverClosedLifecycle(t *testing.T) {
 		"snapshot.capture.gate_waiting",
 		"snapshot.capture.gate_acquired",
 		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.drain.returned",
 		"snapshot.freeze.audit.completed",
 		"snapshot.freeze.sqlite_lock.entered",
 		"snapshot.freeze.sqlite_lock.completed",
@@ -169,7 +171,7 @@ func TestSnapshotRequestPhaseEventsCoverClosedLifecycle(t *testing.T) {
 			switch key {
 			case "timestamp", "level", "module", "event", "errorCode",
 				"requestId", "operationId", "workspaceId", "sessionEpoch",
-				"jobId", "durationMs":
+				"jobId", "durationMs", "auditDrain":
 			default:
 				t.Fatalf("diagnostics envelope gained key %q: %v", key, payload)
 			}
@@ -308,6 +310,7 @@ func TestSnapshotRequestPhaseEventsAttributeCanceledFreezeToAudit(t *testing.T) 
 		"snapshot.capture.mutex_waiting", "snapshot.capture.mutex_acquired",
 		"snapshot.capture.gate_waiting", "snapshot.capture.gate_acquired",
 		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
 		"snapshot.capture.failed", "snapshot.request.failed.protection.foreground",
 	}
 	if got := writer.events(); !equalEventLists(got, want) {
@@ -365,6 +368,8 @@ func TestSnapshotRequestPhaseEventsAttributeAuditPrefixFailure(t *testing.T) {
 		"snapshot.capture.gate_waiting",
 		"snapshot.capture.gate_acquired",
 		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.drain.returned",
 		"snapshot.freeze.audit.completed",
 		"snapshot.freeze.sqlite_lock.entered",
 		"snapshot.freeze.sqlite_lock.completed",
@@ -390,7 +395,7 @@ func TestSnapshotRequestPhaseEventsAttributeAuditPrefixFailure(t *testing.T) {
 			switch key {
 			case "timestamp", "level", "module", "event", "errorCode",
 				"requestId", "operationId", "workspaceId", "sessionEpoch",
-				"jobId", "durationMs":
+				"jobId", "durationMs", "auditDrain":
 			default:
 				t.Fatalf("diagnostics envelope gained key %q: %v", key, payload)
 			}
@@ -455,4 +460,61 @@ type cancelingAttachmentPhaseApp struct {
 func (app cancelingAttachmentPhaseApp) NewFilesystem() (*filesystem.System, error) {
 	app.cancel()
 	return nil, context.Canceled
+}
+
+func auditDrainEvents(t *testing.T, writer *lockedPhaseLogBuffer) []map[string]any {
+	t.Helper()
+	var result []map[string]any
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["event"] == "snapshot.freeze.audit.drain.returned" {
+			result = append(result, payload)
+		}
+	}
+	return result
+}
+
+func TestSnapshotAuditDrainReportsBusinessAndFileCancellation(t *testing.T) {
+	for _, name := range []string{"business", "file"} {
+		t.Run(name, func(t *testing.T) {
+			writer := &lockedPhaseLogBuffer{}
+			fixture := openRuntimeWithPhaseLogger(t, slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)), writer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if name == "business" {
+				fixture.runtime.frozenSource.auditOutbox = cancelingPhaseOutbox{cancel: cancel}
+			} else {
+				fixture.runtime.frozenSource.fileAuditOutbox = cancelingPhaseOutbox{cancel: cancel}
+			}
+			response := fixture.runtime.Dispatcher().DispatchEnvelope(ctx, []byte(
+				`{"jsonrpc":"2.0","id":"drain-cancel","method":"snapshot.request","wire":{"scope":"workspace","workspaceId":"`+testWorkspaceID+`","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-000000000001","sequence":1},"params":{"trigger":"protection","urgency":"foreground"}}`))
+			if response.Error == nil {
+				t.Fatal("source cancellation must fail protection")
+			}
+			events := auditDrainEvents(t, writer)
+			count := 1
+			if name == "file" {
+				count = 2
+			}
+			if len(events) != count {
+				t.Fatalf("source reports: %#v", events)
+			}
+			if name == "file" {
+				detail := events[0]["auditDrain"].(map[string]any)
+				if detail["source"] != "business" || detail["phase"] != "completed" {
+					t.Fatalf("business report: %#v", detail)
+				}
+			}
+			event := events[len(events)-1]
+			detail := event["auditDrain"].(map[string]any)
+			if detail["source"] != name || detail["phase"] != "pending" || detail["pendingCalls"] != float64(1) ||
+				detail["appendCalls"] != float64(0) || detail["ackCalls"] != float64(0) ||
+				event["errorCode"] != "context.canceled" || event["operationId"] != "bbbbbbbb-bbbb-4bbb-8bbb-000000000001" {
+				t.Fatalf("cancellation attribution: %#v", event)
+			}
+		})
+	}
 }
