@@ -195,6 +195,17 @@ function validateSourceEntry(candidate: unknown, index: number): SourceImportEnt
   if (raw.unknownRecords > 0 && unknownBatch === null) {
     throw new Error(`migration ${index} unknown batch`);
   }
+  // Optional durable source disclosures. Absent on legacy receipts; the Go
+  // preflight bounds count/length before persistence, so this only checks
+  // the wire shape (array of non-empty strings).
+  let notices: readonly string[] = [];
+  if (raw.notices !== null && raw.notices !== undefined) {
+    if (!Array.isArray(raw.notices)) throw new Error(`migration ${index} notices`);
+    for (const notice of raw.notices) {
+      if (!isNonEmptyString(notice)) throw new Error(`migration ${index} notices`);
+    }
+    notices = raw.notices as readonly string[];
+  }
   return {
     jobId: raw.jobId as string,
     provider: raw.provider as string,
@@ -216,6 +227,7 @@ function validateSourceEntry(candidate: unknown, index: number): SourceImportEnt
     readWindow,
     snapshotFieldCount,
     skippedFieldCount,
+    notices,
   };
 }
 

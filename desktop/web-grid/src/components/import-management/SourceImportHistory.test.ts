@@ -32,6 +32,7 @@ function migration(overrides: Partial<SourceImportEntry> = {}): SourceImportEntr
     readWindow: { startedAt: "2026-10-01T08:00:00Z", finishedAt: "2026-10-01T08:05:00Z", consistency: "window" },
     snapshotFieldCount: 0,
     skippedFieldCount: 0,
+    notices: [],
     ...overrides,
   };
 }
@@ -57,6 +58,28 @@ describe("SourceImportHistory", () => {
     expect(wrapper.get('[data-testid="source-count-total"]').text()).toContain("共 403 行");
     expect(row.text()).toContain("阶段：记录写入");
     expect(row.text()).not.toContain("已完成");
+  });
+
+  it("discloses durable source notes including unselected tables after expanding", async () => {
+    const notices = [
+      "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+      "表「人员」的字段「头像」属于人员字段：仅保留 userId 与姓名，其余不迁移",
+    ];
+    const wrapper = mountHistory([migration({ notices })]);
+    // The collapsed row stays compact; nothing is disclosed by default.
+    expect(wrapper.find('[data-testid="source-notices"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="source-import-detail-job-1"]').trigger("click");
+    const section = wrapper.get('[data-testid="source-notices"]');
+    // The header marks the notes as source-file scope, including unselected
+    // tables, so nothing looks like it was lost from the selected result.
+    expect(section.element.parentElement?.textContent).toContain("来源文件说明（含未选表，共 2 条）");
+    const lines = wrapper.findAll('[data-testid="source-notice"]');
+    expect(lines.map((line) => line.text())).toEqual(notices);
+    // A legacy receipt without notices renders no notes section at all.
+    const legacy = mountHistory([migration()]);
+    await legacy.get('[data-testid="source-import-detail-job-1"]').trigger("click");
+    expect(legacy.find('[data-testid="source-notices"]').exists()).toBe(false);
   });
 
   it("marks completion only for terminal succeeded receipts with full counts", () => {

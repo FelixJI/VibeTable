@@ -99,6 +99,9 @@ export interface SourceImportEntry {
   /** Confirmed snapshot/skip policy counts; raw definitions never reach UI. */
   readonly snapshotFieldCount: number;
   readonly skippedFieldCount: number;
+  /** Acknowledged source-file disclosures (including unselected tables)
+   * persisted by the Go receipt; empty on legacy receipts. Bounded upstream. */
+  readonly notices: readonly string[];
 }
 
 export interface ImportHistoryResult {

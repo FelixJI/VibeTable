@@ -1259,6 +1259,15 @@
                   "$ref": "#/$defs/SourceImportFieldSummary"
                 },
                 "type": "array"
+              },
+              "notices": {
+                "items": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 256,
+                "type": "array"
               }
             },
             "required": [

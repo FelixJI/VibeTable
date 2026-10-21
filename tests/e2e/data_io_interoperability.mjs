@@ -5,6 +5,7 @@ import { promisify, isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { runSourceImportJourney } from "./source_import_journey.mjs";
+import { runFeishuBaseFileJourney } from "./feishu_base_file_journey.mjs";
 
 const executeFile = promisify(execFile);
 const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
@@ -95,9 +96,10 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     if (managedTarget) {
       await page.getByTestId("import-management-open").click();
       await page.getByTestId("import-management").waitFor({ state: "visible" });
-      recorder.check("cloud source choices are available for explicit activation",
-        await page.getByTestId("import-source-feishu").isEnabled()
-          && await page.getByTestId("import-source-wps").isEnabled());
+      recorder.check("local base import is available and online sources are retired",
+        await page.getByTestId("import-source-feishuBase").isEnabled()
+          && await page.getByTestId("import-source-feishu").count() === 0
+          && await page.getByTestId("import-source-wps").count() === 0);
       await page.getByTestId("import-source-xlsx").click();
       await page.getByTestId("import-target-option")
         .filter({ hasText: managedTarget }).click();
@@ -382,6 +384,15 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   // the same real WPF management page.
   await runSourceImportJourney(page, recorder, runtime, {
     waitForShell, rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
+  });
+
+  // ---- #436/#437 formal .base local-file import through the real wizard ----
+  // The TestMode seam above stays untouched: it remains the synthetic
+  // snapshot contract and is never presented as a file path. The formal
+  // pass appends after it on the same workspace, real picker included.
+  await runFeishuBaseFileJourney(page, recorder, runtime, {
+    rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
     beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
   });
 }

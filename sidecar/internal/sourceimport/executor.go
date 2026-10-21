@@ -122,7 +122,7 @@ func (executor *Executor) Execute(ctx context.Context, plan Plan, jobID string, 
 // reports are durable before Host downloads; no renderer supplies row counts.
 func InitialResult(plan Plan, jobID string, epoch uint64, stage string) Result {
 	result := Result{Contract: Contract, JobID: jobID, Provider: plan.Provider, ContainerID: plan.ContainerID, SourceName: plan.DisplayName, State: "interrupted", Stage: stage,
-		Targets: []Target{}, Batches: []Batch{}, Diagnostics: append([]Diagnostic{}, plan.Diagnostics...), Fields: []FieldSummary{}, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), SessionEpoch: epoch, ReadWindow: plan.ReadWindow}
+		Targets: []Target{}, Batches: []Batch{}, Diagnostics: append([]Diagnostic{}, plan.Diagnostics...), Notices: append([]string{}, plan.Notices...), Fields: []FieldSummary{}, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), SessionEpoch: epoch, ReadWindow: plan.ReadWindow}
 	for _, table := range plan.Tables {
 		result.Total += len(table.Records)
 		for _, field := range table.Fields {

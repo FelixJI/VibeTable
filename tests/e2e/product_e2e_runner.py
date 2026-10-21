@@ -2185,6 +2185,7 @@ def _run_node_runner_guarded(
     handled_storage_proof_ids: set[str] = set()
     handled_document_native_ids: set[str] = set()
     handled_plugin_native_ids: set[str] = set()
+    handled_source_import_ids: set[str] = set()
     controls = (
         Path(command[command.index("--controls-dir") + 1]) if "--controls-dir" in command else None
     )
@@ -2196,12 +2197,16 @@ def _run_node_runner_guarded(
         "errors": [],
     }
     next_network_sample = 0.0
-    deadline = time.monotonic() + 180
+    scenario = command[command.index("--scenario") + 1] if "--scenario" in command else ""
+    # Existing interoperability: 180s; .base terminal receipt: 180s; native
+    # controls and reopen: 120s. Other scenarios keep their original budget.
+    timeout_seconds = 480 if scenario == "35-data-io-interoperability" else 180
+    deadline = time.monotonic() + timeout_seconds
     while node_process.poll() is None:
         if time.monotonic() >= deadline:
             node_process.kill()
             stdout, stderr = node_process.communicate(timeout=10)
-            raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+            raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
         request = _read_json(fault_request)
         if request is not None:
             fault_request_id = request.get("requestId")
@@ -2230,7 +2235,7 @@ def _run_node_runner_guarded(
                     if time.monotonic() >= deadline:
                         node_process.kill()
                         stdout, stderr = node_process.communicate(timeout=10)
-                        raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+                        raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
                     _write_json_atomic(
                         fault_result,
                         {
@@ -2287,7 +2292,7 @@ def _run_node_runner_guarded(
                 if time.monotonic() >= deadline:
                     node_process.kill()
                     stdout, stderr = node_process.communicate(timeout=10)
-                    raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+                    raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
         file_dialog_path = scenario_dir / "plugin-file-dialog-request.json"
         file_dialog_request = _read_json(file_dialog_path)
@@ -2295,6 +2300,7 @@ def _run_node_runner_guarded(
             file_dialog_path.unlink()
             if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
                 "17-interface-lifecycle",
+                "35-data-io-interoperability",
                 "52-plugin-capability-services",
                 "53-record-manager",
             }:
@@ -2313,6 +2319,38 @@ def _run_node_runner_guarded(
                     evidence=scenario_dir,
                 )
             _write_json_atomic(scenario_dir / "plugin-file-dialog-result.json", file_result)
+        source_import_path = scenario_dir / "source-import-native-request.json"
+        source_import_request = _read_json(source_import_path)
+        if source_import_request is not None:
+            source_import_id = source_import_request.get("requestId")
+            if (
+                isinstance(source_import_id, str)
+                and source_import_id not in handled_source_import_ids
+            ):
+                # Consume the request slot before handling, exactly like the
+                # picker/document slots: a stale file must never be rehandled.
+                source_import_path.unlink()
+                handled_source_import_ids.add(source_import_id)
+                if (
+                    "--scenario" not in command
+                    or command[command.index("--scenario") + 1] != "35-data-io-interoperability"
+                ):
+                    source_import_result = {
+                        "requestId": source_import_id,
+                        "status": "failed",
+                        "error": "source import window scenario not authorized",
+                    }
+                else:
+                    from tests.e2e.source_import_native import handle_source_import_request
+
+                    source_import_result = handle_source_import_request(
+                        source_import_request,
+                        host_scope=host_scope,
+                        evidence=scenario_dir,
+                    )
+                _write_json_atomic(
+                    scenario_dir / "source-import-native-result.json", source_import_result
+                )
         plugin_native_path = scenario_dir / "plugin-native-request.json"
         plugin_native_request = _read_json(plugin_native_path)
         if plugin_native_request is not None:
@@ -3668,6 +3706,7 @@ def run_product_acceptance(
             "11-plugin-mutation",
             "16-dashboard-lifecycle",
             "17-interface-lifecycle",
+            "35-data-io-interoperability",
             "46-dashboard-native-output",
             "42-file-document-native-operations",
             "48-plugin-applications",
@@ -3700,6 +3739,7 @@ def run_product_acceptance(
                 "11-plugin-mutation",
                 "16-dashboard-lifecycle",
                 "17-interface-lifecycle",
+                "35-data-io-interoperability",
                 "46-dashboard-native-output",
                 "42-file-document-native-operations",
                 "48-plugin-applications",

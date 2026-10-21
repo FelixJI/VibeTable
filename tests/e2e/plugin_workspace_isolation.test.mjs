@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "../../desktop/web-grid/node_modules/jsdom/lib/api.js";
 
 // Exercise the new acceptance orchestration, never substitute these fakes for
 // the real S48 Host/package/workspace qualification.
@@ -156,4 +157,115 @@ test("new workspace file acceptance rejects an empty nonterminal block and relea
     assert.deepEqual(h.released, [reads[0].grantId]);
     assert.equal(await fs.readFile(h.readControl, "utf8"), "original controls\n");
   } finally { await h.cleanup(); }
+});
+
+// commitInstall renders the row/nav before commitPlan's convenience setEnabled
+// lands. installGateHarness below answers the real selector with a jsdom
+// toggle's actual matches() and explicit state transitions; it models only the
+// foreground install chain, not background catalog refresh ordering.
+const installSource = section("export async function installApplication", "export async function openApplication");
+const navTestid = (id, actionId = "open-app") => `nav-plugin-app-${id}/${actionId}`;
+const toggleSelectorLiteral = `'button[data-testid="plugin-toggle"].enabled:not([disabled])'`;
+
+const installGateHarness = (source = installSource) => {
+  const dom = new JSDOM('<button data-testid="plugin-toggle" class="toggle-button" type="button">整体禁用</button>');
+  const toggle = dom.window.document.querySelector('button[data-testid="plugin-toggle"]');
+  const waiters = new Set(), requested = [];
+  let state = { enabled: false, busy: false }, rowVisible = false, rowClicked = false, navVisible = false;
+  let settled = false, settleState = null, failure = null, disposed = false, written = null;
+  const release = () => { for (const waiter of [...waiters]) if (waiter.ready()) { waiters.delete(waiter); waiter.resolve(); } };
+  const waitFor = ready => ready() ? Promise.resolve() : new Promise(resolve => { waiters.add({ ready, resolve }); });
+  const drain = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  const page = {
+    locator(selector) {
+      if (selector === "button.plugin-row") return { filter({ hasText }) {
+        assert.equal(hasText, A);
+        return { waitFor: () => waitFor(() => rowVisible), async click() { rowClicked = true; } };
+      } };
+      return { waitFor: () => waitFor(() => toggle.matches(selector)) };
+    },
+    getByTestId(id) {
+      requested.push(id);
+      if (id === "nav-plugins" || id === "plugin-install-package") return { async click() {} };
+      if (id === "plugin-install-commit") return { async click() { rowVisible = true; navVisible = true; release(); } };
+      if (id === "plugin-install-plan") return { waitFor: () => waitFor(() => true) };
+      assert.equal(id, navTestid(A), "the navigation oracle must stay");
+      return { waitFor: () => waitFor(() => navVisible) };
+    },
+  };
+  const fsStub = { writeFile: async (file, content) => { written = `${file}\n${content}`; } };
+  const finished = new Function("fs", "path", "APP", "A", `return (${source});`)(fsStub, path, navTestid, A)
+    (page, { controlsDir: "controls" }, "app-a", A, "open-app")
+    .then(() => { settled = true; settleState = state; }, error => { settled = true; failure = error; });
+  return {
+    get settled() { return settled; }, get settleState() { return settleState; }, get written() { return written; },
+    get rowClicked() { return rowClicked; }, get navVisible() { return navVisible; }, get requested() { return requested; },
+    async applyToggle(next) {
+      state = next;
+      toggle.classList.toggle("enabled", next.enabled);
+      toggle.toggleAttribute("disabled", next.busy);
+      release();
+      await drain();
+    },
+    async drain() { await drain(); },
+    async finish() {
+      await drain();
+      assert.ok(settled, "install helper must finish once the toggle is ready");
+      assert.ok(!failure, failure?.stack);
+      await finished;
+    },
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      state = { enabled: true, busy: false };
+      toggle.classList.add("enabled");
+      toggle.removeAttribute("disabled");
+      release();
+      for (const waiter of [...waiters]) { waiters.delete(waiter); waiter.resolve(); }
+      await drain();
+      await finished; // failures are recorded on the harness, never unhandled
+    },
+  };
+};
+const installVariant = replacement => {
+  const mutated = installSource.replace(toggleSelectorLiteral, replacement);
+  assert.notEqual(mutated, installSource, "the gate selector anchor is gone from installApplication");
+  return mutated;
+};
+
+test("installApplication completes only after the toggle is both enabled and not busy", async () => {
+  const h = installGateHarness();
+  try {
+    await h.drain();
+    assert.ok(h.written.includes("app-a.vtplugin"), "the package source must be staged first");
+    assert.equal(h.rowClicked, true, "the helper still selects the installed row");
+    assert.equal(h.navVisible, true, "the nav entry may already render");
+    assert.equal(h.settled, false, "disabled yet not busy: the helper must not finish early");
+    await h.applyToggle({ enabled: true, busy: true });
+    assert.equal(h.settled, false, "enabled but still busy: the helper must not finish early");
+    await h.applyToggle({ enabled: true, busy: false });
+    await h.finish();
+    assert.deepEqual(h.settleState, { enabled: true, busy: false });
+    assert.ok(h.requested.includes(navTestid(A)), "keep the navigation oracle");
+  } finally { await h.dispose(); }
+});
+
+test("the disabled window catches a gate selector that drops the enabled class check", async () => {
+  const h = installGateHarness(installVariant(`'button[data-testid="plugin-toggle"]:not([disabled])'`));
+  try {
+    await h.drain();
+    assert.equal(h.settled, true, "a selector without .enabled matches too early");
+    assert.equal(h.settleState.enabled, false, "the disabled window must be observable");
+  } finally { await h.dispose(); }
+});
+
+test("the enabled-but-busy window catches a gate selector that drops the not-disabled check", async () => {
+  const h = installGateHarness(installVariant(`'button[data-testid="plugin-toggle"].enabled'`));
+  try {
+    await h.drain();
+    assert.equal(h.settled, false, "without the .enabled class the variant still waits");
+    await h.applyToggle({ enabled: true, busy: true });
+    assert.equal(h.settled, true, "a selector without :not([disabled]) matches too early");
+    assert.equal(h.settleState.busy, true, "the enabled-but-busy window must be observable");
+  } finally { await h.dispose(); }
 });

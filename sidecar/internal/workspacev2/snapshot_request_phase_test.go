@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/diagnostics"
 )
@@ -120,6 +122,26 @@ func TestSnapshotRequestPhaseEventsCoverClosedLifecycle(t *testing.T) {
 		"snapshot.capture.mutex_acquired",
 		"snapshot.capture.gate_waiting",
 		"snapshot.capture.gate_acquired",
+		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.completed",
+		"snapshot.freeze.sqlite_lock.entered",
+		"snapshot.freeze.sqlite_lock.completed",
+		"snapshot.freeze.database.entered",
+		"snapshot.freeze.database.completed",
+		"snapshot.freeze.files.entered",
+		"snapshot.freeze.files.completed",
+		"snapshot.freeze.attachments.entered",
+		"snapshot.freeze.attachments.completed",
+		"snapshot.freeze.audit_prefix.entered",
+		"snapshot.freeze.audit_prefix.completed",
+		"snapshot.freeze.workspace_settings.entered",
+		"snapshot.freeze.workspace_settings.completed",
+		"snapshot.freeze.derived_state.entered",
+		"snapshot.freeze.derived_state.completed",
+		"snapshot.freeze.repository.entered",
+		"snapshot.freeze.repository.completed",
 		"snapshot.capture.freeze_returned",
 		"snapshot.capture.completed",
 		"snapshot.request.completed.manual.foreground",
@@ -149,7 +171,7 @@ func TestSnapshotRequestPhaseEventsCoverClosedLifecycle(t *testing.T) {
 			switch key {
 			case "timestamp", "level", "module", "event", "errorCode",
 				"requestId", "operationId", "workspaceId", "sessionEpoch",
-				"jobId", "durationMs":
+				"jobId", "durationMs", "auditDrain":
 			default:
 				t.Fatalf("diagnostics envelope gained key %q: %v", key, payload)
 			}
@@ -269,4 +291,230 @@ func equalEventLists(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// Cancellation inside the first source operation must retain its stage and
+// operation identity without exposing the outbox or underlying error text.
+func TestSnapshotRequestPhaseEventsAttributeCanceledFreezeToAudit(t *testing.T) {
+	writer := &lockedPhaseLogBuffer{}
+	fixture := openRuntimeWithPhaseLogger(t, slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)), writer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.runtime.frozenSource.auditOutbox = cancelingPhaseOutbox{cancel: cancel}
+	response := fixture.runtime.Dispatcher().DispatchEnvelope(ctx, []byte(`{"jsonrpc":"2.0","id":"cancel-audit","method":"snapshot.request","wire":{"scope":"workspace","workspaceId":"`+testWorkspaceID+`","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-000000000001","sequence":1},"params":{"trigger":"protection","urgency":"foreground"}}`))
+	if response.Error == nil {
+		t.Fatal("canceled source freeze must fail")
+	}
+	want := []string{
+		"snapshot.request.entered.protection.foreground",
+		"snapshot.capture.mutex_waiting", "snapshot.capture.mutex_acquired",
+		"snapshot.capture.gate_waiting", "snapshot.capture.gate_acquired",
+		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.capture.failed", "snapshot.request.failed.protection.foreground",
+	}
+	if got := writer.events(); !equalEventLists(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["operationId"] != "bbbbbbbb-bbbb-4bbb-8bbb-000000000001" {
+			t.Fatalf("operation identity missing: %v", payload)
+		}
+	}
+}
+
+type cancelingPhaseOutbox struct{ cancel context.CancelFunc }
+
+func (outbox cancelingPhaseOutbox) Pending(ctx context.Context, _ int) ([]auditledger.Envelope, error) {
+	outbox.cancel()
+	return nil, ctx.Err()
+}
+func (cancelingPhaseOutbox) Acknowledge(context.Context, string, string, uint64) error { return nil }
+
+// An invalid audit anchor must be attributed to audit-prefix export without leaking its error text.
+func TestSnapshotRequestPhaseEventsAttributeAuditPrefixFailure(t *testing.T) {
+	writer := &lockedPhaseLogBuffer{}
+	fixture := openRuntimeWithPhaseLogger(
+		t,
+		slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)),
+		writer,
+	)
+	emptyLedger, err := auditledger.Open(filepath.Join(t.TempDir(), "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = emptyLedger.Close() })
+	fixture.runtime.frozenSource.ledger = emptyLedger
+
+	response := dispatch(
+		t,
+		fixture.runtime,
+		1,
+		"snapshot.request",
+		`{"trigger":"manual","urgency":"foreground"}`,
+	)
+	if response.Error == nil {
+		t.Fatal("snapshot.request with an empty ledger must fail")
+	}
+
+	want := []string{
+		"snapshot.request.entered.manual.foreground",
+		"snapshot.capture.mutex_waiting",
+		"snapshot.capture.mutex_acquired",
+		"snapshot.capture.gate_waiting",
+		"snapshot.capture.gate_acquired",
+		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.drain.returned",
+		"snapshot.freeze.audit.completed",
+		"snapshot.freeze.sqlite_lock.entered",
+		"snapshot.freeze.sqlite_lock.completed",
+		"snapshot.freeze.database.entered",
+		"snapshot.freeze.database.completed",
+		"snapshot.freeze.files.entered",
+		"snapshot.freeze.files.completed",
+		"snapshot.freeze.attachments.entered",
+		"snapshot.freeze.attachments.completed",
+		"snapshot.freeze.audit_prefix.entered",
+		"snapshot.capture.failed",
+		"snapshot.request.failed.manual.foreground",
+	}
+	if got := writer.events(); !equalEventLists(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		for key := range payload {
+			switch key {
+			case "timestamp", "level", "module", "event", "errorCode",
+				"requestId", "operationId", "workspaceId", "sessionEpoch",
+				"jobId", "durationMs", "auditDrain":
+			default:
+				t.Fatalf("diagnostics envelope gained key %q: %v", key, payload)
+			}
+		}
+		if strings.Contains(line, "audit_anchor_missing") ||
+			strings.Contains(line, ".vibetable") || strings.Contains(line, "dataDir") {
+			t.Fatalf("diagnostics leaked content or an underlying error: %s", line)
+		}
+	}
+	var failed map[string]any
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["event"] == "snapshot.capture.failed" {
+			failed = payload
+		}
+	}
+	if _, ok := failed["durationMs"].(float64); !ok {
+		t.Fatalf("snapshot.capture.failed durationMs = %#v", failed["durationMs"])
+	}
+}
+
+// Cancellation during attachment initialization must not be attributed to file-history export.
+func TestSnapshotRequestPhaseEventsAttributeCanceledAttachments(t *testing.T) {
+	writer := &lockedPhaseLogBuffer{}
+	fixture := openRuntimeWithPhaseLogger(t, slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)), writer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.runtime.frozenSource.app = cancelingAttachmentPhaseApp{App: fixture.app, cancel: cancel}
+	response := fixture.runtime.Dispatcher().DispatchEnvelope(ctx, []byte(`{"jsonrpc":"2.0","id":"cancel-attachments","method":"snapshot.request","wire":{"scope":"workspace","workspaceId":"`+testWorkspaceID+`","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-000000000001","sequence":1},"params":{"trigger":"protection","urgency":"foreground"}}`))
+	if response.Error == nil {
+		t.Fatal("canceled attachment export must fail")
+	}
+	wantTail := []string{
+		"snapshot.freeze.files.completed",
+		"snapshot.freeze.attachments.entered",
+		"snapshot.capture.failed",
+		"snapshot.request.failed.protection.foreground",
+	}
+	events := writer.events()
+	if len(events) < len(wantTail) || !equalEventLists(events[len(events)-len(wantTail):], wantTail) {
+		t.Fatalf("events = %v, want tail %v", events, wantTail)
+	}
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["event"] == "snapshot.capture.failed" && payload["errorCode"] != "context.canceled" {
+			t.Fatalf("canceled attachment export lost its cancellation code: %v", payload)
+		}
+	}
+}
+
+type cancelingAttachmentPhaseApp struct {
+	core.App
+	cancel context.CancelFunc
+}
+
+func (app cancelingAttachmentPhaseApp) NewFilesystem() (*filesystem.System, error) {
+	app.cancel()
+	return nil, context.Canceled
+}
+
+func auditDrainEvents(t *testing.T, writer *lockedPhaseLogBuffer) []map[string]any {
+	t.Helper()
+	var result []map[string]any
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["event"] == "snapshot.freeze.audit.drain.returned" {
+			result = append(result, payload)
+		}
+	}
+	return result
+}
+
+func TestSnapshotAuditDrainReportsBusinessAndFileCancellation(t *testing.T) {
+	for _, name := range []string{"business", "file"} {
+		t.Run(name, func(t *testing.T) {
+			writer := &lockedPhaseLogBuffer{}
+			fixture := openRuntimeWithPhaseLogger(t, slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)), writer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if name == "business" {
+				fixture.runtime.frozenSource.auditOutbox = cancelingPhaseOutbox{cancel: cancel}
+			} else {
+				fixture.runtime.frozenSource.fileAuditOutbox = cancelingPhaseOutbox{cancel: cancel}
+			}
+			response := fixture.runtime.Dispatcher().DispatchEnvelope(ctx, []byte(
+				`{"jsonrpc":"2.0","id":"drain-cancel","method":"snapshot.request","wire":{"scope":"workspace","workspaceId":"`+testWorkspaceID+`","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-000000000001","sequence":1},"params":{"trigger":"protection","urgency":"foreground"}}`))
+			if response.Error == nil {
+				t.Fatal("source cancellation must fail protection")
+			}
+			events := auditDrainEvents(t, writer)
+			count := 1
+			if name == "file" {
+				count = 2
+			}
+			if len(events) != count {
+				t.Fatalf("source reports: %#v", events)
+			}
+			if name == "file" {
+				detail := events[0]["auditDrain"].(map[string]any)
+				if detail["source"] != "business" || detail["phase"] != "completed" {
+					t.Fatalf("business report: %#v", detail)
+				}
+			}
+			event := events[len(events)-1]
+			detail := event["auditDrain"].(map[string]any)
+			if detail["source"] != name || detail["phase"] != "pending" || detail["pendingCalls"] != float64(1) ||
+				detail["appendCalls"] != float64(0) || detail["ackCalls"] != float64(0) ||
+				event["errorCode"] != "context.canceled" || event["operationId"] != "bbbbbbbb-bbbb-4bbb-8bbb-000000000001" {
+				t.Fatalf("cancellation attribution: %#v", event)
+			}
+		})
+	}
 }

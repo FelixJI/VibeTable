@@ -202,7 +202,13 @@ def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
 
 
 def _send_input(
-    native: Any, *, x: float | None = None, y: float | None = None, text: str | None = None
+    native: Any,
+    *,
+    x: float | None = None,
+    y: float | None = None,
+    text: str | None = None,
+    vkeys: list[int] | None = None,
+    wheel: int | None = None,
 ) -> None:
     from ctypes import wintypes
 
@@ -231,7 +237,34 @@ def _send_input(
     class Input(ctypes.Structure):
         _fields_ = [("kind", wintypes.DWORD), ("payload", Payload)]
 
-    if text is not None:
+    move = None
+    if x is not None and y is not None:
+        left, top = native.user32.GetSystemMetrics(76), native.user32.GetSystemMetrics(77)
+        width, height = native.user32.GetSystemMetrics(78), native.user32.GetSystemMetrics(79)
+        if width <= 1 or height <= 1 or not (left <= x < left + width and top <= y < top + height):
+            raise ValueError("native button is outside the virtual desktop")
+        mx, my = round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1))
+        move = Input(0, Payload(mouse=Mouse(mx, my, 0, 0xC001, 0, 0)))
+    if wheel is not None:
+        if not isinstance(wheel, int) or wheel == 0 or not -1200 <= wheel <= 1200 or move is None:
+            raise ValueError("native wheel delta or pointer position is invalid")
+        events = [move, Input(0, Payload(mouse=Mouse(0, 0, wheel, 0x0800, 0, 0)))]
+    elif vkeys is not None:
+        # Bounded ordered key sequence (press+release per key) for the closed
+        # native wizard controls; anything outside small virtual-key codes is
+        # rejected before a single event is synthesized.
+        if (
+            not vkeys
+            or len(vkeys) > 8
+            or any(not isinstance(vk, int) or not 1 <= vk <= 254 for vk in vkeys)
+        ):
+            raise ValueError("native key sequence is invalid")
+        events = [
+            Input(1, Payload(keyboard=Keyboard(vk, 0, flag, 0, 0)))
+            for vk in vkeys
+            for flag in (0, 2)
+        ]
+    elif text is not None:
         if not text or len(text) > 1024 or any(ord(char) < 32 for char in text):
             raise ValueError("synthetic picker path is invalid")
         events = [
@@ -247,13 +280,9 @@ def _send_input(
     elif x is None or y is None:
         events = [Input(1, Payload(keyboard=Keyboard(0x1B, 0, flag, 0, 0))) for flag in (0, 2)]
     else:
-        left, top = native.user32.GetSystemMetrics(76), native.user32.GetSystemMetrics(77)
-        width, height = native.user32.GetSystemMetrics(78), native.user32.GetSystemMetrics(79)
-        if not (left <= x < left + width and top <= y < top + height):
-            raise ValueError("native button is outside the virtual desktop")
-        mx, my = round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1))
+        assert move is not None
         events = [
-            Input(0, Payload(mouse=Mouse(mx, my, 0, 0xC001, 0, 0))),
+            move,
             Input(0, Payload(mouse=Mouse(0, 0, 0, 2, 0, 0))),
             Input(0, Payload(mouse=Mouse(0, 0, 0, 4, 0, 0))),
         ]

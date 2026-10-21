@@ -71,6 +71,15 @@ func TestSourceImportOwnerDoesNotCoercePreciseSnapshotNumbers(t *testing.T) {
 }
 
 func TestSourceImportAttachmentBytesPersistOfflineAndCleanupIsJobScoped(t *testing.T) {
+	for _, provider := range []string{"synthetic", "feishu", "wps"} {
+		t.Run(provider, func(t *testing.T) {
+			sourceImportAttachmentPersistence(t, provider)
+		})
+	}
+}
+
+func sourceImportAttachmentPersistence(t *testing.T, provider string) {
+	t.Helper()
 	ctx := context.Background()
 	fixture := newSourceImportAuthorityFixture(t)
 	manager, err := attachments.New()
@@ -79,7 +88,7 @@ func TestSourceImportAttachmentBytesPersistOfflineAndCleanupIsJobScoped(t *testi
 	}
 	fixture.authority.kernel = mutation.New(fixture.app, mutation.MetadataSchemaSource{}, mutation.WithAttachmentManager(manager))
 	content := []byte("offline migration bytes\n")
-	source := sourceimport.Snapshot{Contract: sourceimport.Contract, Provider: "synthetic", ContainerID: "files", DisplayName: "合成附件", Version: "v1",
+	source := sourceimport.Snapshot{Contract: sourceimport.Contract, Provider: provider, ContainerID: "files", DisplayName: "合成附件", Version: "v1",
 		ReadWindow: sourceimport.ReadWindow{StartedAt: "2026-10-04T08:00:00Z", FinishedAt: "2026-10-04T08:00:01Z", Consistency: "window"},
 		Tables: []sourceimport.Table{{ID: "t", Name: "附件迁移", Version: "t1", PrimaryFieldID: "title", Fields: []sourceimport.Field{
 			{ID: "title", Name: "标题", Kind: "text", ValueKind: v2.LogicalText},
@@ -99,7 +108,7 @@ func TestSourceImportAttachmentBytesPersistOfflineAndCleanupIsJobScoped(t *testi
 	if _, err := owner.claimSource(claim, 7); err == nil {
 		t.Fatal("metadata-only files accepted as migrated bytes")
 	}
-	key := sourceimport.Key{Provider: "synthetic", ContainerID: "files", TableID: "t", FieldID: "file", RecordID: "r", ObjectID: "a"}
+	key := sourceimport.Key{Provider: provider, ContainerID: "files", TableID: "t", FieldID: "file", RecordID: "r", ObjectID: "a"}
 	before := sourceExecutionFacts(t, fixture.app)
 	if err := owner.uploadSource(reply.Token, 7, key, []byte("short")); err == nil {
 		t.Fatal("wrong content length accepted")
@@ -142,12 +151,43 @@ func TestSourceImportAttachmentBytesPersistOfflineAndCleanupIsJobScoped(t *testi
 			}
 		}
 	}
+	// Historical online receipts have no notices property. Seed only the
+	// existing durable format; this does not reactivate any online connector.
+	persistedJob, err := fixture.app.FindFirstRecordByData(sourceimport.JobsCollection, "job_id", claim.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyPayload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(persistedJob.GetString("result_json")), &legacyPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := legacyPayload["notices"]; present {
+		t.Fatal("legacy fixture unexpectedly has notices")
+	}
+	priorHistory, err := sourceimport.NewJournal(fixture.app).List(ctx)
+	if err != nil || len(priorHistory) != 1 {
+		t.Fatalf("legacy history seed: %v", err)
+	}
 	if err := fixture.app.ResetBootstrapState(); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
+	journal := sourceimport.NewJournal(fixture.app)
+	receipt, err := journal.Read(ctx, claim.JobID)
+	if err != nil || !reflect.DeepEqual(receipt, result) || receipt.Provider != provider {
+		t.Fatalf("legacy receipt changed after reopen: %#v %v", receipt, err)
+	}
+	history, err := journal.List(ctx)
+	if err != nil || len(history) != 1 || !reflect.DeepEqual(history, priorHistory) {
+		t.Fatalf("legacy history changed after reopen: %#v %v", history, err)
+	}
+	// Reuse the string/identity oracle for the title; file bytes are checked below.
+	titleSource := source
+	titleSource.Tables = []sourceimport.Table{source.Tables[0]}
+	titleSource.Tables[0].Fields = []sourceimport.Field{source.Tables[0].Fields[0]}
+	sourceExecutionAssertRows(t, fixture, titleSource, receipt)
 	// A fresh manager has no staged buffers or network source. Open uses only
 	// the persisted local attachment metadata and PocketBase file capability.
 	reopened, err := attachments.New()

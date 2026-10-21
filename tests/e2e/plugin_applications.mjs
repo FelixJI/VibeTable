@@ -88,6 +88,8 @@ export async function installApplication(page, runtime, archive = "app-a", id = 
   const row = page.locator("button.plugin-row").filter({ hasText: id });
   await row.waitFor({ timeout: 60000 });
   await row.click();
+  // The row/nav can render before commitPlan's follow-up setEnabled lands, so wait for the toggle.
+  await page.locator('button[data-testid="plugin-toggle"].enabled:not([disabled])').waitFor({ timeout: 30000 });
   await page.getByTestId(APP(id, actionId)).waitFor({ timeout: 30000 });
 }
 

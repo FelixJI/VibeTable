@@ -16,19 +16,34 @@ public sealed class HostSourceImportRequestControllerTests
         foreach (string invalid in new[]
         {
             "{}", "null", "{\"provider\":\"other\"}",
-            "{\"provider\":\"feishu\",\"token\":\"secret\"}",
-            "{\"provider\":\"feishu\",\"provider\":\"wps\"}",
+            "{\"provider\":\"feishuBase\",\"token\":\"secret\"}",
+            "{\"provider\":\"feishuBase\",\"provider\":\"feishuBase\"}",
         })
         {
             await fixture.RequestAsync(invalid);
             Assert.AreEqual("SOURCE_IMPORT_BAD_PAYLOAD", fixture.Error);
         }
         Assert.AreEqual(0, fixture.Opens);
-        await fixture.RequestAsync("{\"provider\":\"feishu\"}");
-        Assert.AreEqual("feishu", fixture.Provider);
+        await fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
+        Assert.AreEqual("feishuBase", fixture.Provider);
         Assert.IsFalse(fixture.Result.GetProperty("cancelled").GetBoolean());
         Assert.AreEqual("task-one", fixture.Result.GetProperty("taskId").GetString());
         Assert.AreEqual(2, fixture.Result.EnumerateObject().Count());
+    }
+
+    [TestMethod]
+    public async Task RetiredOnlineProvidersAreRejectedAndNeverMisroutedToFiles()
+    {
+        using var fixture = new Fixture();
+        await fixture.OpenAsync();
+        foreach (string retired in new[] { "feishu", "wps" })
+        {
+            await fixture.RequestAsync($"{{\"provider\":\"{retired}\"}}");
+            // The old online cloud request fails closed: it must never be
+            // routed into the local .base file wizard.
+            Assert.AreEqual("SOURCE_IMPORT_PROVIDER_RETIRED", fixture.Error, retired);
+            Assert.AreEqual(0, fixture.Opens, retired);
+        }
     }
 
     [TestMethod]
@@ -37,10 +52,10 @@ public sealed class HostSourceImportRequestControllerTests
         using var fixture = new Fixture();
         await fixture.OpenAsync();
         fixture.Action = (_, _) => Task.FromResult(new HostSourceImportOpenResult(true, null));
-        await fixture.RequestAsync("{\"provider\":\"wps\"}");
+        await fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         Assert.IsTrue(fixture.Result.GetProperty("cancelled").GetBoolean());
         fixture.Action = (_, _) => throw new HttpRequestException("Bearer secret https://example.test/?token=secret");
-        await fixture.RequestAsync("{\"provider\":\"wps\"}");
+        await fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         Assert.AreEqual("SOURCE_IMPORT_UNAVAILABLE", fixture.Error);
         Assert.IsFalse(fixture.ErrorMessage!.Contains("secret", StringComparison.Ordinal));
         Assert.IsFalse(fixture.ErrorMessage!.Contains("https:", StringComparison.Ordinal));
@@ -58,7 +73,7 @@ public sealed class HostSourceImportRequestControllerTests
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
             return new(false, "unreachable");
         };
-        Task running = fixture.RequestAsync("{\"provider\":\"feishu\"}");
+        Task running = fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await fixture.Manager.CloseAsync("retire cloud wizard").WaitAsync(TimeSpan.FromSeconds(2));
         await running.WaitAsync(TimeSpan.FromSeconds(2));
@@ -74,15 +89,15 @@ public sealed class HostSourceImportRequestControllerTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource<HostSourceImportOpenResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Action = (_, _) => { entered.SetResult(); return finish.Task; };
-        Task first = fixture.RequestAsync("{\"provider\":\"feishu\"}");
+        Task first = fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.RequestAsync("{\"provider\":\"wps\"}");
+        await fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         Assert.AreEqual("SOURCE_IMPORT_BUSY", fixture.Error);
         Assert.AreEqual(1, fixture.Opens);
         finish.SetResult(new(true, null));
         await first;
         fixture.Action = (_, _) => Task.FromResult(new HostSourceImportOpenResult(true, null));
-        await fixture.RequestAsync("{\"provider\":\"wps\"}");
+        await fixture.RequestAsync("{\"provider\":\"feishuBase\"}");
         Assert.AreEqual(2, fixture.Opens);
         Assert.IsNull(fixture.Error);
     }

@@ -338,7 +338,8 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 			defer result.searchMu.Unlock()
 			return result.searchStatus
 		},
-		state: result.state,
+		state:  result.state,
+		logger: options.Logger,
 	}
 	result.frozenSource = source
 	barrier, err := snapshot.NewCoordinatedBarrier(

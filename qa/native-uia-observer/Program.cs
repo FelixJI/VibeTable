@@ -24,6 +24,8 @@ internal static class Program
             if (args.Length == 4 && args[0] == "--file-dialog") return ObserveFileDialog(args);
             if (args.Length is 2 or 3 && args[0] is "--buttons" or "--screenshot")
                 return ObservePluginChrome(args);
+            if (args.Length is 2 or 3 && args[0] == "--source-import")
+                return ObserveSourceImportWindow(args);
             if (args.Length != 1 || !long.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out long hwnd) || hwnd <= 0)
                 return Reject("UIA_ARGUMENT_INVALID");
             Console.OutputEncoding = new UTF8Encoding(false, true);
@@ -104,6 +106,122 @@ internal static class Program
         return 0;
     }
 
+    // Read-only QA for the .base source import wizard: actual native
+    // bounds/state of the fixed WPF control surface and an onscreen
+    // screenshot. No UIA InvokePattern, product messages or mutation.
+    private static readonly string[] SourceImportExactIds =
+    [
+        "source-import-scroll", "source-file-button", "notice-acknowledge-checkbox", "preview-button",
+        "start-button", "cancel-button", "status-text", "report-text", "reverse-checkbox",
+    ];
+    private static readonly string[] SourceImportPrefixes =
+    [
+        "table-select-", "table-target-", "table-policy-", "field-policy-", "field-snapshot-kind-",
+        "field-reverse-name-", "notice-",
+    ];
+
+    private static int ObserveSourceImportWindow(string[] args)
+    {
+        if (!long.TryParse(args[1], out long value) || value <= 0) return Reject("UIA_ARGUMENT_INVALID");
+        if (args.Length == 3 && !Path.IsPathFullyQualified(args[2])) return Reject("UIA_ARGUMENT_INVALID");
+        SetProcessDpiAwarenessContext(new IntPtr(-4));
+        Console.OutputEncoding = new UTF8Encoding(false, true);
+        var hwnd = new IntPtr(value);
+        var root = AutomationElement.FromHandle(hwnd);
+        if (root.Current.AutomationId != "source-import-window") return Reject("UIA_SOURCE_IMPORT_WINDOW_INVALID");
+        var controls = new List<object>();
+        var nativeElements = new Stack<AutomationElement>();
+        nativeElements.Push(root);
+        int visited = 0;
+        while (nativeElements.TryPop(out var element))
+        {
+            if (++visited > 512) return Reject("UIA_NATIVE_TREE_LIMIT");
+            // The wizard is pure WPF; never descend into other accessibility.
+            if (element.Current.FrameworkId != "WPF") continue;
+            var child = TreeWalker.ControlViewWalker.GetFirstChild(element);
+            while (child is not null)
+            {
+                nativeElements.Push(child);
+                child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+            }
+            string id = element.Current.AutomationId;
+            string className = element.Current.ClassName;
+            bool listed = SourceImportExactIds.Contains(id)
+                || SourceImportPrefixes.Any(prefix => id.StartsWith(prefix, StringComparison.Ordinal))
+                || className == "Expander";
+            if (!listed) continue;
+            var box = element.Current.BoundingRectangle;
+            string state = ReadState(element);
+            controls.Add(new { id, name = element.Current.Name,
+                type = element.Current.ControlType.ProgrammaticName,
+                className, value = state, pid = element.Current.ProcessId,
+                enabled = element.Current.IsEnabled, focused = element.Current.HasKeyboardFocus,
+                offscreen = element.Current.IsOffscreen,
+                x = box.IsEmpty ? 0 : box.X, y = box.IsEmpty ? 0 : box.Y,
+                width = box.IsEmpty ? 0 : box.Width, height = box.IsEmpty ? 0 : box.Height });
+        }
+        var bounds = root.Current.BoundingRectangle;
+        if (args.Length == 3)
+        {
+            int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
+            if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
+            IntPtr source = GetDC(IntPtr.Zero), destination = CreateCompatibleDC(source);
+            IntPtr bitmap = CreateCompatibleBitmap(source, width, height);
+            if (source == IntPtr.Zero || destination == IntPtr.Zero || bitmap == IntPtr.Zero)
+                return Reject("UIA_CAPTURE_FAILED");
+            IntPtr prior = SelectObject(destination, bitmap);
+            try
+            {
+                if (!BitBlt(destination, 0, 0, width, height, source, (int)bounds.X, (int)bounds.Y, 0x00CC0020))
+                    return Reject("UIA_CAPTURE_FAILED");
+                var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero,
+                    System.Windows.Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(image));
+                using var output = File.Create(args[2]);
+                encoder.Save(output);
+            }
+            finally
+            {
+                SelectObject(destination, prior); DeleteObject(bitmap); DeleteDC(destination);
+                ReleaseDC(IntPtr.Zero, source);
+            }
+        }
+        Console.Out.Write(JsonSerializer.Serialize(new
+        {
+            hwnd = value, pid = root.Current.ProcessId, title = root.Current.Name,
+            automationId = root.Current.AutomationId,
+            x = bounds.X, y = bounds.Y, width = bounds.Width, height = bounds.Height,
+            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast,
+            controls,
+        }));
+        return 0;
+    }
+
+    // Fixed state projections for the closed wizard surface: toggle state for
+    // checkboxes, the selected entry label for the policy comboboxes, the
+    // expand/collapse state for expanders and the text projection for
+    // status/notices. Read-only patterns only.
+    private static string ReadState(AutomationElement element)
+    {
+        try
+        {
+            if (element.TryGetCurrentPattern(TogglePattern.Pattern, out object toggle))
+                return ((TogglePattern)toggle).Current.ToggleState.ToString();
+            if (element.TryGetCurrentPattern(SelectionPattern.Pattern, out object selection))
+            {
+                var chosen = ((SelectionPattern)selection).Current.GetSelection();
+                return chosen.Length == 0 ? "" : chosen[0].Current.Name ?? "";
+            }
+            if (element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out object expand))
+                return ((ExpandCollapsePattern)expand).Current.ExpandCollapseState.ToString();
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object value))
+                return ((ValuePattern)value).Current.Value ?? "";
+        }
+        catch (InvalidOperationException) { }
+        return element.Current.Name ?? "";
+    }
+
     private static int ObserveFileDialog(string[] args)
     {
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("CI") != "true"
@@ -161,7 +279,8 @@ internal static class Program
         var name = new StringBuilder(128); GetClassName(hwnd, name, name.Capacity);
         var title = new StringBuilder(256); GetWindowText(hwnd, title, title.Capacity);
         if (actual != pid || name.ToString() != "#32770" || title.ToString() is not
-            ("Replace attachment" or "Add attachments" or "保存托管附件" or "Import table data" or "Export table data")) return false;
+            ("Replace attachment" or "Add attachments" or "保存托管附件" or "Import table data" or "Export table data"
+            or "导入飞书 .base 文件")) return false;
         var owner = GetWindow(hwnd, 4);
         for (int depth = 0; owner != IntPtr.Zero && depth < 8; depth++, owner = GetWindow(owner, 4))
         {
