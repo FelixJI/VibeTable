@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { waitForRecordEditForm } from "./record_manager_product.mjs";
 import { JSDOM } from "../../desktop/web-grid/node_modules/jsdom/lib/api.js";
 const require = createRequire(new URL("../../examples/plugins/record-manager/package.json", import.meta.url));
 const { build } = require("esbuild");
@@ -14,7 +15,7 @@ const appSource = await compile("examples/plugins/record-manager/src/app.ts");
 const html = await readFile(new URL("examples/plugins/record-manager/ui/index.html", root), "utf8");
 const wait = async predicate => { const end = Date.now() + 3000; while (!predicate()) { if (Date.now() > end) throw new Error("DOM did not reach the expected state"); await new Promise(resolve => setTimeout(resolve, 1)); } };
 const field = (fieldId, logicalType, readonly = false) => ({ fieldId, displayName: fieldId, logicalType, resultType: logicalType, readonly, nullable: true, display: null, options: [], constraints: null, filterOperators: [], sortable: true });
-async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false, null], owner: "target-id" }], guards = { "record-one": "go-guard" }, submit = async () => ({ status: "succeeded", taskId: "task" }), preview = async () => {} } = {}) {
+async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false, null], owner: "target-id" }], guards = { "record-one": "go-guard" }, submit = async () => ({ status: "succeeded", taskId: "task" }), preview = async () => {}, queryGate = async () => {} } = {}) {
   const dom = new JSDOM(html, { url: "https://synthetic.plugins.vibetable.local/ui/index.html", runScripts: "outside-only" });
   const window = dom.window; window.name = "surface-test"; window.TextEncoder = TextEncoder; window.structuredClone = structuredClone;
   window.eval(`${testingSource}; globalThis.testing = module;`);
@@ -22,6 +23,7 @@ async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false,
   const plans = [], calls = [], subscribers = new Set(); let revision = 1;
   const host = window.testing.createOfflineSurfaceHost({ pluginId: "test-plugin", workspaceId: "test-workspace", surfaceToken: window.name, risk: "destructive", context: { collection: "articles" }, descriptions: { articles: table }, rowGuards: { articles: guards }, revision: () => String(revision), permissions: { data: [{ collection: "$active", operations: ["read", "query", "create", "update", "delete"], fields: ["*"] }] },
     queryAdapter: async query => {
+      await queryGate(query);
       const matching = query.ids ? rows.filter(row => query.ids.includes(row.id)) : rows;
       const offset = query.cursor ? Number(query.cursor) : 0, size = query.pageSize ?? 100;
       return { contract: "vibetable.plugin-query-page.v2", items: matching.slice(offset, offset + size).map(row => Object.fromEntries(query.fields.map(id => [id, row[id] ?? null]))), totalRows: rows.length, filteredRows: matching.length, nextCursor: offset + size < matching.length ? String(offset + size) : null, complete: true, schemaRevision: "schema-one", dataRevision: revision };
@@ -122,4 +124,56 @@ test("真实应用DOM：preview期间禁止取消，九次保存均进入submit�
     assert.equal(submits, 9); assert.equal(app.plans.length, 9);
     assert.equal(app.calls.filter(call => call.method === "mutation.submit").length, 9);
   } finally { releasePreview?.(); app.close(); }
+});
+
+test("真实应用DOM：详情按权威重建丢弃旧表单输入，E2E就绪条件先于fill生效", async () => {
+  const gate = () => { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release: () => release() }; };
+  const frameOf = window => ({ async waitForFunction(predicate, arg, options) {
+    const savedDocument = globalThis.document, savedButton = globalThis.HTMLButtonElement, savedInput = globalThis.HTMLInputElement;
+    globalThis.document = window.document; globalThis.HTMLButtonElement = window.HTMLButtonElement; globalThis.HTMLInputElement = window.HTMLInputElement;
+    try {
+      const end = Date.now() + Math.min(options?.timeout ?? 30000, 3000);
+      while (!predicate(arg)) { if (Date.now() > end) throw new Error("E2E就绪条件未在限定时间内成立"); await new Promise(resolve => setTimeout(resolve, 1)); }
+    } finally { globalThis.document = savedDocument; globalThis.HTMLButtonElement = savedButton; globalThis.HTMLInputElement = savedInput; }
+  } });
+  // E2E 前置状态：创建表单带着键入值留在 #detail-body，随后从列表点击该记录行进入详情。
+  const openCreatedRecord = async app => {
+    await app.route("#detail");
+    app.input("title", "record-manager-created");
+    await app.route("#list");
+    let row = null;
+    await wait(() => (row = [...app.window.document.querySelectorAll("#list-body tr")].find(tr => tr.textContent.includes("record-manager-created"))) ?? false);
+    row.click();
+    await new Promise(resolve => setTimeout(resolve, 0)); // hashchange 已派发，权威查询仍在途
+  };
+  // 旧时序（CI 39549857591 失败形态）：fill 命中被权威重建丢弃的旧表单，保存变成零字段空提交且永不弹宿主确认。
+  const held = gate();
+  const stale = await fixture({ rows: [{ id: "record-one", title: "record-manager-created" }], queryGate: async query => { if (query.ids?.length) await held.promise; } });
+  try {
+    await openCreatedRecord(stale);
+    stale.input("title", "record-manager-updated");
+    held.release();
+    await wait(() => stale.$("#record-save").textContent === "预览并保存");
+    assert.equal(stale.$('[data-field-id="title"]').value, "record-manager-created");
+    stale.save();
+    await wait(() => stale.$("#status").textContent === "没有修改的字段。");
+    assert.equal(stale.plans.length, 0);
+  } finally { held.release(); stale.close(); }
+  // 新时序：就绪条件用“预览并保存”编辑态区分同值的旧创建表单；fill 落在权威表单上并真实提交更新计划。
+  const gated = gate();
+  const ready = await fixture({ rows: [{ id: "record-one", title: "record-manager-created" }], queryGate: async query => { if (query.ids?.length) await gated.promise; } });
+  try {
+    await openCreatedRecord(ready);
+    let settled = false;
+    const done = waitForRecordEditForm(frameOf(ready.window), "title", "record-manager-created").then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(settled, false);
+    gated.release();
+    await done;
+    assert.equal(ready.$("#record-save").textContent, "预览并保存");
+    ready.input("title", "record-manager-updated");
+    ready.save();
+    await wait(() => ready.$("#status").textContent === "保存：已提交。");
+    assert.deepEqual(JSON.parse(JSON.stringify(ready.plans[0].operations)), [{ kind: "update", primaryKey: "record-one", expectedDigest: "go-guard", values: { title: "record-manager-updated" } }]);
+  } finally { gated.release(); ready.close(); }
 });
