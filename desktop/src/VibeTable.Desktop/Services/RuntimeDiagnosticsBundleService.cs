@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VibeTable.Infrastructure.Diagnostics;
 
 namespace VibeTable.Desktop.Services;
 
@@ -50,7 +51,10 @@ public sealed record RuntimeDiagnosticLogEntry(
     [property: JsonPropertyName("workspaceId")] string? WorkspaceId,
     [property: JsonPropertyName("sessionEpoch")] long? SessionEpoch,
     [property: JsonPropertyName("jobId")] string? JobId,
-    [property: JsonPropertyName("durationMs")] double? DurationMs);
+    [property: JsonPropertyName("durationMs")] double? DurationMs,
+    [property: JsonPropertyName("auditDrain")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? AuditDrain = null);
 
 public sealed record RuntimeDiagnosticsBundle(
     [property: JsonPropertyName("bundleVersion")] string BundleVersion,
@@ -69,16 +73,12 @@ public sealed record RuntimeDiagnosticsBundle(
 
 /// <summary>
 /// Builds one content-free support bundle from process health and already
-/// redacted fixed-schema log lines. Non-JSON or open-schema lines are dropped.
+/// redacted fixed-schema log lines. Non-JSON or open-schema lines are dropped;
+/// the optional auditDrain detail is only kept when it already passed the
+/// shared DiagnosticLogLine closed-schema validator.
 /// </summary>
 public static class RuntimeDiagnosticsBundleService
 {
-    private static readonly HashSet<string> LogFields = new(StringComparer.Ordinal)
-    {
-        "timestamp", "level", "module", "event", "errorCode", "requestId",
-        "operationId", "workspaceId", "sessionEpoch", "jobId", "durationMs",
-    };
-
     public static RuntimeDiagnosticsBundle Build(RuntimeDiagnosticsInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -131,14 +131,16 @@ public static class RuntimeDiagnosticsBundleService
             {
                 JsonElement root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Object ||
-                    root.EnumerateObject().Select(property => property.Name)
-                        .ToHashSet(StringComparer.Ordinal)
-                        .SetEquals(LogFields) == false ||
+                    !DiagnosticLogLine.IsSafe(root) ||
                     !TryBoundedString(root, "timestamp", out string? timestamp) ||
                     !TryBoundedString(root, "level", out string? level) ||
                     !TryBoundedString(root, "module", out string? module) ||
                     !TryBoundedString(root, "event", out string? eventName))
                     continue;
+                JsonElement? auditDrain =
+                    root.TryGetProperty("auditDrain", out JsonElement detail)
+                        ? detail.Clone()
+                        : null;
                 yield return new RuntimeDiagnosticLogEntry(
                     timestamp!, level!, module!, eventName!,
                     NullableString(root, "errorCode"),
@@ -147,7 +149,8 @@ public static class RuntimeDiagnosticsBundleService
                     NullableString(root, "workspaceId"),
                     NullableInt64(root, "sessionEpoch"),
                     NullableString(root, "jobId"),
-                    NullableDouble(root, "durationMs"));
+                    NullableDouble(root, "durationMs"),
+                    auditDrain);
             }
         }
     }
