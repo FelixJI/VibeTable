@@ -120,6 +120,16 @@ func TestSnapshotRequestPhaseEventsCoverClosedLifecycle(t *testing.T) {
 		"snapshot.capture.mutex_acquired",
 		"snapshot.capture.gate_waiting",
 		"snapshot.capture.gate_acquired",
+		"snapshot.freeze.audit.entered",
+		"snapshot.freeze.audit.completed",
+		"snapshot.freeze.sqlite_lock.entered",
+		"snapshot.freeze.sqlite_lock.completed",
+		"snapshot.freeze.database.entered",
+		"snapshot.freeze.database.completed",
+		"snapshot.freeze.derived_state.entered",
+		"snapshot.freeze.derived_state.completed",
+		"snapshot.freeze.repository.entered",
+		"snapshot.freeze.repository.completed",
 		"snapshot.capture.freeze_returned",
 		"snapshot.capture.completed",
 		"snapshot.request.completed.manual.foreground",
@@ -270,3 +280,44 @@ func equalEventLists(left, right []string) bool {
 	}
 	return true
 }
+
+// Cancellation inside the first source operation must retain its stage and
+// operation identity without exposing the outbox or underlying error text.
+func TestSnapshotRequestPhaseEventsAttributeCanceledFreezeToAudit(t *testing.T) {
+	writer := &lockedPhaseLogBuffer{}
+	fixture := openRuntimeWithPhaseLogger(t, slog.New(diagnostics.NewJSONHandler(writer, slog.LevelInfo)), writer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.runtime.frozenSource.auditOutbox = cancelingPhaseOutbox{cancel: cancel}
+	response := fixture.runtime.Dispatcher().DispatchEnvelope(ctx, []byte(`{"jsonrpc":"2.0","id":"cancel-audit","method":"snapshot.request","wire":{"scope":"workspace","workspaceId":"`+testWorkspaceID+`","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-000000000001","sequence":1},"params":{"trigger":"protection","urgency":"foreground"}}`))
+	if response.Error == nil {
+		t.Fatal("canceled source freeze must fail")
+	}
+	want := []string{
+		"snapshot.request.entered.protection.foreground",
+		"snapshot.capture.mutex_waiting", "snapshot.capture.mutex_acquired",
+		"snapshot.capture.gate_waiting", "snapshot.capture.gate_acquired",
+		"snapshot.freeze.audit.entered",
+		"snapshot.capture.failed", "snapshot.request.failed.protection.foreground",
+	}
+	if got := writer.events(); !equalEventLists(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for _, line := range writer.lines {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["operationId"] != "bbbbbbbb-bbbb-4bbb-8bbb-000000000001" {
+			t.Fatalf("operation identity missing: %v", payload)
+		}
+	}
+}
+
+type cancelingPhaseOutbox struct{ cancel context.CancelFunc }
+
+func (outbox cancelingPhaseOutbox) Pending(ctx context.Context, _ int) ([]auditledger.Envelope, error) {
+	outbox.cancel()
+	return nil, ctx.Err()
+}
+func (cancelingPhaseOutbox) Acknowledge(context.Context, string, string, uint64) error { return nil }

@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
@@ -19,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
@@ -43,6 +46,7 @@ type frozenSource struct {
 	search          *workspacesearch.Engine
 	searchStatus    func() contracts.SearchStatus
 	state           *stateStore
+	logger          *slog.Logger
 }
 
 func (source *frozenSource) Freeze(
@@ -54,18 +58,24 @@ func (source *frozenSource) Freeze(
 	// acknowledge before taking SQLite's BEGIN IMMEDIATE lock; acknowledging
 	// through a second PocketBase connection while that lock is held would
 	// deadlock.
+	completePhase := source.beginFreezePhase(ctx, "audit")
 	if err := source.appendPendingAudit(ctx); err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "sqlite_lock")
 	releaseWriteLock, err := source.lockBusinessWrites(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
 	defer releaseWriteLock()
+	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "database")
 	database, err := source.snapshotDatabase(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
 	historyRoot, fileHeadRevision := source.history.Head()
 	fileRevision := fileHeadRevision
 	if historyRoot == "" {
@@ -93,11 +103,13 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase = source.beginFreezePhase(ctx, "derived_state")
 	dataRevision, computationWatermark, pendingWork, searchGeneration, err :=
 		source.snapshotDerivedState(ctx, fileHeadRevision)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
 	databaseHash := digestBytes(database)
 	topologyPayload, err := json.Marshal(map[string]any{
 		"formatVersion":         1,
@@ -118,6 +130,7 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase = source.beginFreezePhase(ctx, "repository")
 	receipt, err := source.repository.Commit(ctx, objectrepo.CommitRequest{
 		Authority: intent.Token.Authority(),
 		Manifests: []objectrepo.ManifestInput{
@@ -142,6 +155,7 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
 	topologyRoot := receipt.Manifests["topology-head"]
 	fileRoot := receipt.Manifests["file-state-head"]
 	if !receipt.Durable || topologyRoot == "" || fileRoot == "" {
@@ -475,4 +489,27 @@ func readFileBounded(path string, limit int64) ([]byte, error) {
 func digestBytes(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// Completion is logged only after success, so a canceled capture retains the
+// last entered stage without logging business data or storage error text.
+func (source *frozenSource) beginFreezePhase(ctx context.Context, phase string) func() {
+	if source.logger == nil {
+		return func() {}
+	}
+	operationID := ""
+	if operation, ok := protocolv2.OperationFromContext(ctx); ok {
+		operationID = operation.OperationID
+	}
+	attributes := []any{
+		slog.String("module", "snapshot"),
+		slog.String("workspaceId", source.manifest.WorkspaceID),
+		slog.String("operationId", operationID),
+	}
+	source.logger.Info("snapshot.freeze."+phase+".entered", attributes...)
+	started := time.Now()
+	return func() {
+		elapsed := time.Since(started)
+		source.logger.Info("snapshot.freeze."+phase+".completed", append(attributes, slog.Float64("durationMs", snapshot.PhaseDurationMs(elapsed)))...)
+	}
 }
