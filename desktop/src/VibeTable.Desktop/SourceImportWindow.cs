@@ -26,7 +26,7 @@ internal sealed record NativeSourceConnection(string Name, NativeSourceTable[] T
 /// entry is the Host-injected system file picker.</summary>
 internal sealed class SourceImportWindow : Window
 {
-    private readonly Func<CancellationToken, Task<NativeSourceConnection?>> _openLocalFile;
+    private readonly Func<Window, CancellationToken, Task<NativeSourceConnection?>> _openLocalFile;
     private readonly IHostSourceImportWizardSession _session;
     private readonly Func<Exception, string> _describeError;
     private readonly CancellationTokenSource _lifetime;
@@ -64,7 +64,7 @@ internal sealed class SourceImportWindow : Window
     internal HostSourceImportOpenResult Result { get; private set; } = new(true, null);
 
     internal SourceImportWindow(
-        Func<CancellationToken, Task<NativeSourceConnection?>> openLocalFile,
+        Func<Window, CancellationToken, Task<NativeSourceConnection?>> openLocalFile,
         IHostSourceImportWizardSession session, Func<Exception, string> describeError,
         CancellationToken cancellation, HostAppearanceService? appearance = null)
     {
@@ -180,8 +180,10 @@ internal sealed class SourceImportWindow : Window
         }
         // The web click opens this window for exactly one purpose: choosing
         // a local .base file. The system picker therefore opens directly on
-        // first load; cancelling it cancels the whole import with zero
-        // writes, exactly like dismissing the window.
+        // first load. Dismissing the picker writes nothing and keeps this
+        // window open for another attempt; retiring the window (close, ESC or
+        // workspace retirement) cancels the token, which dismisses the owned
+        // picker and then completes the deferred close.
         if (!_closing && !_closed && _connection is null)
         {
             args.Handled = true;
@@ -223,8 +225,9 @@ internal sealed class SourceImportWindow : Window
         }
     }
 
-    /// <summary>Loads a local .base file via the injected opener; null is
-    /// plain user cancellation — no error, no write and no precheck.</summary>
+    /// <summary>Loads a local .base file via the injected opener (this
+    /// window is the picker's explicit owner); null is plain user
+    /// cancellation — no error, no write and no precheck.</summary>
     private async Task OpenLocalFileAsync()
     {
         if (_busy || _closing) return;
@@ -232,7 +235,7 @@ internal sealed class SourceImportWindow : Window
         _status.Text = "正在读取本地 .base 文件…";
         try
         {
-            NativeSourceConnection? connection = await _openLocalFile(_lifetime.Token);
+            NativeSourceConnection? connection = await _openLocalFile(this, _lifetime.Token);
             ReleaseLateConnection(connection);
             if (connection is null)
             {

@@ -7885,3 +7885,52 @@ def test_historical_archive_accepts_wire_sequence_strings_but_preserves_raw_byte
     write_archive()
     with pytest.raises(ValueError, match="historical raw records changed"):
         runner._verify_legacy_plugin_archive(archive_path, proof_path)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "elapsed", "budget"),
+    [
+        ("35-data-io-interoperability", 181, None),
+        ("35-data-io-interoperability", 481, 480),
+        ("34-relation-lookup-data-io", 181, 180),
+    ],
+)
+def test_guarded_runner_budgets_the_combined_file_import_journey(
+    tmp_path, monkeypatch, scenario, elapsed, budget
+):
+    class Node:
+        returncode = None
+        polls = 0
+        killed = False
+
+        def poll(self):
+            self.polls += 1
+            if self.polls > 1:
+                self.returncode = 0
+            return self.returncode
+
+        def communicate(self, *, timeout):
+            return "retained stdout", "retained stderr"
+
+        def kill(self):
+            self.killed = True
+
+    node = Node()
+    times = iter([0, elapsed])
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: node)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(runner.time, "sleep", lambda seconds: None)
+    command = ["node", "--scenario", scenario]
+    if budget is None:
+        assert runner._run_node_runner_guarded(
+            command, scenario_dir=tmp_path, local_data=tmp_path, host_scope=SimpleNamespace()
+        ) == (0, "retained stdout", "retained stderr")
+        assert not node.killed
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            runner._run_node_runner_guarded(
+                command, scenario_dir=tmp_path, local_data=tmp_path, host_scope=SimpleNamespace()
+            )
+        assert caught.value.timeout == budget
+        assert caught.value.output == "retained stdout"
+        assert node.killed

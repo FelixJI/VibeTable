@@ -1,5 +1,5 @@
 using System.IO;
-using Microsoft.Win32;
+using System.Windows;
 using VibeTable.Infrastructure.Rpc;
 using VibeTable.Desktop.Services;
 
@@ -19,27 +19,21 @@ public partial class MainWindow
             binding.CreateSourceImportWizardSession(_workspaceSessionFilter, ensureCurrent);
         // The wizard's single entry is the Host-owned .base file picker: no
         // credentials exist on this path and no source text is ever typed.
-        var window = new SourceImportWindow(OpenFeishuBaseFileAsync,
+        // The window itself is the picker's explicit native owner.
+        var window = new SourceImportWindow(
+            (owner, cancellation) => OpenFeishuBaseFileAsync(owner, cancellation),
             session, DescribeSourceImportError, token, _appearance) { Owner = this };
         window.ShowDialog();
         return Task.FromResult(window.Result);
     }
 
-    private static async Task<NativeSourceConnection?> OpenFeishuBaseFileAsync(CancellationToken token)
+    private static async Task<NativeSourceConnection?> OpenFeishuBaseFileAsync(
+        Window owner, CancellationToken token)
     {
+        string? path = await FeishuBaseFileDialog.PickFileAsync(owner, token);
+        if (path is null) return null;
         token.ThrowIfCancellationRequested();
-        var dialog = new OpenFileDialog
-        {
-            Title = "导入飞书 .base 文件",
-            Filter = "飞书多维表格 (*.base)|*.base",
-            CheckFileExists = true,
-            CheckPathExists = true,
-            Multiselect = false,
-            RestoreDirectory = true,
-        };
-        if (dialog.ShowDialog() != true) return null;
-        token.ThrowIfCancellationRequested();
-        FeishuBaseFileDocument document = await FeishuBaseFileSource.ReadFileAsync(dialog.FileName, token);
+        FeishuBaseFileDocument document = await FeishuBaseFileSource.ReadFileAsync(path, token);
         token.ThrowIfCancellationRequested();
         return new(document.Snapshot.DisplayName, document.Snapshot.Tables.Select(table =>
             new NativeSourceTable(table.Id, table.Name, table.Fields.Select(field =>
@@ -56,6 +50,7 @@ public partial class MainWindow
     {
         InvalidDataException => "无法读取 .base 文件：文件损坏、超过读取上限或包含尚未支持的结构，请重新导出并核对格式。",
         IOException or UnauthorizedAccessException => "无法打开所选文件，请检查文件是否存在及读取权限后重试。",
+        FeishuBaseFileDialogException picker => picker.Message,
         FeishuSourceImportException { Kind: FeishuSourceImportErrorKind.NotFound } =>
             "所选表不在本地 .base 文件中；请重新选择文件。",
         ArgumentException => "导入请求无效。",

@@ -235,7 +235,7 @@ export async function runFeishuBaseFileJourney(page, recorder, runtime, helpers)
     { policyStates });
 
   const noticeTexts = (policyObservation.observation.controls)
-    .filter((item) => item.id.startsWith("notice-"))
+    .filter((item) => /^notice-\d+$/.test(item.id))
     .sort((left, right) => left.id.localeCompare(right.id, "en", { numeric: true }))
     .map((item) => item.value);
   const missingNotices = verifyNotices(expectedNotices, noticeTexts);

@@ -36,8 +36,11 @@ public sealed class SourceImportWindowTests
         await fixture.ShowAsync();
 
         // The web click opens this window for one purpose: the system .base
-        // picker opens itself on load; no credential input exists at all.
+        // picker opens itself on load; no credential input exists at all. The
+        // opener receives this window as the picker's explicit owner.
         Assert.AreEqual(1, opener.Calls);
+        CollectionAssert.AreEqual(new[] { fixture.Window }, opener.Owners,
+            "窗口必须作为 picker 的显式 owner 传入");
         Assert.IsNull(await fixture.ReadAsync(w => FindByAutomationId<TextBox>(w, "token-input")));
         Assert.IsNull(await fixture.ReadAsync(w => FindByAutomationId<Button>(w, "connect-button")));
         FakeSourceProvider provider = new(log, "prov-local");
@@ -693,6 +696,62 @@ public sealed class SourceImportWindowTests
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-local-notices.png"), localNotices.Png);
     }
 
+    [TestMethod]
+    public async Task RetiringTheWindowDismissesTheRealOwnedPickerWithZeroWrites()
+    {
+        // A REAL native OpenFileDialog modal, dismissed programmatically via
+        // the window's own retirement path — no synthetic key/mouse input.
+        // Gated to real CI runners only (GITHUB_ACTIONS=true && CI=true);
+        // anything else reports Inconclusive instead of faking the modal.
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
+            || Environment.GetEnvironmentVariable("CI") != "true")
+        {
+            Assert.Inconclusive("真实模态 picker 退役回归仅在受控 CI runner 上执行。");
+        }
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var shown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IntPtr pickerHandle = IntPtr.Zero;
+        async Task<NativeSourceConnection?> RealOpener(Window owner, CancellationToken token)
+        {
+            // Plain await: cancellation/faults propagate into the window's own
+            // OCE/error paths instead of being remapped into a connection.
+            string? path = await FeishuBaseFileDialog.PickFileAsync(owner, token,
+                handle => { pickerHandle = handle; shown.TrySetResult(); });
+            return path is null ? null : LocalBaseConnection(new FakeSourceProvider(log, "prov-real"), () => { });
+        }
+        using var fixture = new NativeWizardStaFixture(RealOpener, session);
+        // Owner handle captured on the window's own STA thread; cleanup uses
+        // primitives only, never cross-thread WPF access.
+        IntPtr ownerHandle = await fixture.ReadAsync(
+            w => new System.Windows.Interop.WindowInteropHelper(w).EnsureHandle());
+        try
+        {
+            // Show/Loaded synchronously enters the real ShowDialog modal, so
+            // ShowAsync cannot be awaited before the cancellation: fire it,
+            // drive shown→Close→Closed, then reclaim it (and any failure).
+            Task showing = fixture.ShowAsync();
+            await shown.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+            await fixture.DoAsync(w => w.Close());
+            await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+            await showing.WaitAsync(NativeWizardStaFixture.WaitBudget);
+
+            HostSourceImportOpenResult result = await fixture.ReadAsync(w => w.Result);
+            Assert.IsTrue(result.Cancelled);
+            Assert.IsNull(result.TaskId);
+            Assert.AreEqual(0, session.SnapshotCalls().Count, "退役必须零预检/写入");
+            Assert.AreEqual(1, session.Disposals);
+            Assert.IsFalse(CbtOwnedDialogCloser.IsWindowAlive(pickerHandle), "picker 句柄必须已销毁");
+        }
+        finally
+        {
+            // Recovery close with full identity re-verification so a failed
+            // cancel cannot leave a live modal blocking the runner.
+            if (pickerHandle != IntPtr.Zero)
+                CbtOwnedDialogCloser.CloseVerifiedDialog(pickerHandle, ownerHandle);
+        }
+    }
+
     private static async Task AssertConfirmationInvalidatedAsync(NativeWizardStaFixture fixture)
     {
         await fixture.SettleAsync();
@@ -901,8 +960,8 @@ public sealed class SourceImportWindowTests
         internal Dispatcher Dispatcher =>
             _dispatcher ?? throw new AssertFailedException("Native wizard dispatcher was not constructed.");
 
-        internal NativeWizardStaFixture(FakeLocalFileOpener openLocalFile, FakeWizardSession session,
-            HostAppearanceService? appearance = null)
+        internal NativeWizardStaFixture(Func<Window, CancellationToken, Task<NativeSourceConnection?>> opener,
+            FakeWizardSession session, HostAppearanceService? appearance = null)
         {
             _thread = new Thread(() =>
             {
@@ -911,7 +970,7 @@ public sealed class SourceImportWindowTests
                 try
                 {
                     _dispatcher = Dispatcher.CurrentDispatcher;
-                    window = new SourceImportWindow(openLocalFile.Invoke, session,
+                    window = new SourceImportWindow(opener, session,
                         DescribeSafe, CancellationToken.None, appearance);
                     // Composition-only presentation: no taskbar entry, no
                     // focus stealing and parked far off-screen.
@@ -945,6 +1004,12 @@ public sealed class SourceImportWindowTests
             if (_constructionFailure is not null)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo
                     .Capture(_constructionFailure).Throw();
+        }
+
+        internal NativeWizardStaFixture(FakeLocalFileOpener openLocalFile, FakeWizardSession session,
+            HostAppearanceService? appearance = null)
+            : this(openLocalFile.Invoke, session, appearance)
+        {
         }
 
         internal async Task ShowAsync()
@@ -1007,18 +1072,20 @@ public sealed class SourceImportWindowTests
 
     /// <summary>Fake .base opener mirroring the MainWindow-injected delegate:
     /// gated at its await boundary, fully offline — no file dialog, no file
-    /// path, no HTTP, so tests never touch the user's real sample.</summary>
+    /// path, no HTTP, so tests never touch the user's real sample. Records
+    /// that the window passed itself as the picker's explicit owner.</summary>
     private sealed class FakeLocalFileOpener(EventLog log)
     {
         private readonly object _gate = new();
         internal TaskCompletionSource<NativeSourceConnection?>? Pending { get; private set; }
         internal int Calls { get; private set; }
+        internal List<Window> Owners { get; } = [];
 
-        internal Task<NativeSourceConnection?> Invoke(CancellationToken token)
+        internal Task<NativeSourceConnection?> Invoke(Window owner, CancellationToken token)
         {
             var completion = new TaskCompletionSource<NativeSourceConnection?>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (_gate) { Calls++; Pending = completion; }
+            lock (_gate) { Calls++; Owners.Add(owner); Pending = completion; }
             log.Add("local-file:enter");
             return completion.Task;
         }

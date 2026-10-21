@@ -2197,12 +2197,16 @@ def _run_node_runner_guarded(
         "errors": [],
     }
     next_network_sample = 0.0
-    deadline = time.monotonic() + 180
+    scenario = command[command.index("--scenario") + 1] if "--scenario" in command else ""
+    # Existing interoperability: 180s; .base terminal receipt: 180s; native
+    # controls and reopen: 120s. Other scenarios keep their original budget.
+    timeout_seconds = 480 if scenario == "35-data-io-interoperability" else 180
+    deadline = time.monotonic() + timeout_seconds
     while node_process.poll() is None:
         if time.monotonic() >= deadline:
             node_process.kill()
             stdout, stderr = node_process.communicate(timeout=10)
-            raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+            raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
         request = _read_json(fault_request)
         if request is not None:
             fault_request_id = request.get("requestId")
@@ -2231,7 +2235,7 @@ def _run_node_runner_guarded(
                     if time.monotonic() >= deadline:
                         node_process.kill()
                         stdout, stderr = node_process.communicate(timeout=10)
-                        raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+                        raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
                     _write_json_atomic(
                         fault_result,
                         {
@@ -2288,7 +2292,7 @@ def _run_node_runner_guarded(
                 if time.monotonic() >= deadline:
                     node_process.kill()
                     stdout, stderr = node_process.communicate(timeout=10)
-                    raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+                    raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
         file_dialog_path = scenario_dir / "plugin-file-dialog-request.json"
         file_dialog_request = _read_json(file_dialog_path)
