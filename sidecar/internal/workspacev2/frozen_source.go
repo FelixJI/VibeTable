@@ -76,6 +76,7 @@ func (source *frozenSource) Freeze(
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
 	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "files")
 	historyRoot, fileHeadRevision := source.history.Head()
 	fileRevision := fileHeadRevision
 	if historyRoot == "" {
@@ -86,10 +87,14 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "attachments")
 	attachments, err := source.snapshotAttachments(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "audit_prefix")
 	anchor := source.ledger.Anchor()
 	if anchor.LedgerSequence == 0 || anchor.Hash == "" {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{},
@@ -99,10 +104,13 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
+	completePhase = source.beginFreezePhase(ctx, "workspace_settings")
 	settings, err := source.workspaceSettings(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
+	completePhase()
 	completePhase = source.beginFreezePhase(ctx, "derived_state")
 	dataRevision, computationWatermark, pendingWork, searchGeneration, err :=
 		source.snapshotDerivedState(ctx, fileHeadRevision)

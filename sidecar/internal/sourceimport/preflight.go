@@ -100,6 +100,12 @@ func Preview(ctx context.Context, source Snapshot, options Options, existingName
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
+	// Truncated disclosures must not consume the whole-source capacity budget.
+	notices, err := freezeNotices(source.Notices)
+	if err != nil {
+		return Plan{}, err
+	}
+	source.Notices = notices
 	raw, err := json.Marshal(source)
 	if err != nil || len(raw) > MaxSnapshotBytes {
 		return Plan{}, &Error{Code: "source_import.source_invalid", Message: "来源数据无法解析或超过本次迁移容量"}
@@ -115,10 +121,6 @@ func Preview(ctx context.Context, source Snapshot, options Options, existingName
 		strings.TrimSpace(source.DisplayName) == "" || utf8.RuneCountInString(source.DisplayName) > 256 ||
 		!validWindow(source.ReadWindow) || len(source.Tables) == 0 || len(source.Tables) > MaxTables {
 		return Plan{}, &Error{Code: "source_import.source_invalid", Message: "来源身份、读取窗口或表数量无效"}
-	}
-	notices, err := freezeNotices(source.Notices)
-	if err != nil {
-		return Plan{}, err
 	}
 	plan := Plan{Contract: Contract, Provider: source.Provider, ContainerID: source.ContainerID,
 		DisplayName: source.DisplayName, Version: source.Version, ReadWindow: source.ReadWindow,

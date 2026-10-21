@@ -211,6 +211,49 @@ func TestPreviewSourceNoticesBudgetUsesEncodedBytesAndKeepsPrefix(t *testing.T) 
 	}
 }
 
+// Disclosure truncation must happen before the whole-source capacity check.
+func TestPreviewNoticesDoNotConsumeSnapshotCapacityBeforeFreezing(t *testing.T) {
+	heavy := strings.Repeat("告", MaxSourceNoticeLength) // 512 runes ≈ 1538 JSON bytes
+	entries := make([]string, MaxSnapshotBytes/1538+2048)
+	for index := range entries {
+		entries[index] = heavy
+	}
+	source := noticesSnapshot(entries)
+	raw, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= MaxSnapshotBytes {
+		t.Fatalf("fixture must exceed the source capacity before freezing: %d bytes", len(raw))
+	}
+	plan, err := Preview(context.Background(), source, noticesOptions(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.CanApply {
+		t.Fatalf("notice-heavy source must stay valid: %#v", plan.Diagnostics)
+	}
+	if len(plan.Notices) >= len(entries) {
+		t.Fatalf("notices were not truncated: kept %d of %d", len(plan.Notices), len(entries))
+	}
+	if !strings.Contains(plan.Notices[len(plan.Notices)-1], "仅保留前 ") {
+		t.Fatalf("truncation marker missing: %#v", plan.Notices)
+	}
+}
+
+// Freezing notices must not exempt oversized business data from the capacity limit.
+func TestPreviewStillRejectsOversizedBusinessAfterNoticeFreeze(t *testing.T) {
+	source := noticesSnapshot([]string{strings.Repeat("告", MaxSourceNoticeLength)})
+	source.Tables[0].Records = []Record{{ID: "r1", Values: map[string]any{
+		"f_title": strings.Repeat("x", MaxSnapshotBytes),
+	}}}
+	_, err := Preview(context.Background(), source, noticesOptions(), nil)
+	sourceError, ok := err.(*Error)
+	if !ok || sourceError.Code != "source_import.source_invalid" {
+		t.Fatalf("oversized business payload must stay rejected, got %v", err)
+	}
+}
+
 func TestNoticeBudgetIncludesArrayAndTruncationMarker(t *testing.T) {
 	entries := make([]string, MaxSourceNotices)
 	for i := range entries {

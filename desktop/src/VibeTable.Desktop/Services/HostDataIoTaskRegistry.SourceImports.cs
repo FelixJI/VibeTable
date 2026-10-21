@@ -120,13 +120,13 @@ internal sealed partial class HostDataIoTaskRegistry
             startedAt = DateTimeOffset.UtcNow.ToString("O"),
             sessionEpoch = epoch,
             readWindow = preview.Plan.GetProperty("readWindow"),
-            notices = PlanNotices(preview.Plan),
+            notices = PlanNotices(preview.Plan) ?? JsonSerializer.SerializeToElement(Array.Empty<string>()),
         });
     }
 
     /// <summary>Optional plan disclosures copied into the queued history
     /// entry so preparing rows disclose the same source facts the Go receipt
-    /// will persist. Missing/null stays absent for plans without notices.</summary>
+    /// will persist. Callers choose the projection for missing/null notices.</summary>
     private static JsonElement? PlanNotices(JsonElement plan)
     {
         if (!plan.TryGetProperty("notices", out JsonElement notices)

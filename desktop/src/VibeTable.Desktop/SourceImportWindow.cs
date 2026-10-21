@@ -248,7 +248,16 @@ internal sealed class SourceImportWindow : Window
             AdoptConnection(connection);
         }
         catch (OperationCanceledException) { _status.Text = "读取本地 .base 文件已取消。"; }
-        catch (Exception error) { _status.Text = SafeError(error); }
+        catch (Exception error)
+        {
+            _status.Text = SafeError(error);
+            // A failed new-file read must revoke confirmation of the previously reviewed file.
+            if (_preview is not null)
+            {
+                InvalidatePreview();
+                _report.Text = "新文件读取失败，之前的预检结果已失效，不能确认导入；请重新选择文件或重新预检。";
+            }
+        }
         finally
         {
             SetBusy(false);

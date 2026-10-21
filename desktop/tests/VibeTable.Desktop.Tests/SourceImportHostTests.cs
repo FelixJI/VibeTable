@@ -540,6 +540,39 @@ public sealed class SourceImportHostTests
             (await drift.ObserveAsync(CancellationToken.None)).Version);
     }
 
+    [TestMethod]
+    public async Task PreparingHistoryUsesEmptyNoticesWhenPlanHasNoneAndKeepsThemWhenPresent()
+    {
+        // Queued history must project an array because the shared contract rejects null.
+        using var bare = new Fixture();
+        bare.Provider.ObserveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        bare.Http.HideHistory = true; // Observe the queued entry before its durable receipt exists.
+        JsonElement initial = await bare.Start(await bare.Prepare());
+        await bare.Provider.Observing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        JsonElement live = (await bare.History()).GetProperty("migrations")[0];
+        Assert.AreEqual(initial.GetProperty("taskId").GetString(), live.GetProperty("jobId").GetString());
+        Assert.AreEqual("preparing", live.GetProperty("stage").GetString());
+        Assert.AreEqual(JsonValueKind.Array, live.GetProperty("notices").ValueKind);
+        Assert.AreEqual(0, live.GetProperty("notices").GetArrayLength());
+        bare.Provider.ObserveGate.TrySetResult();
+        await bare.Terminal(initial);
+
+        // Acknowledged disclosures must survive the queued projection verbatim.
+        using var noticed = new Fixture();
+        noticed.Http.PlanNotices = ["文件包含 1 个工作流：工作流（自动化）不会随导入迁移"];
+        noticed.Provider.ObserveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        noticed.Http.HideHistory = true;
+        JsonElement started = await noticed.Start(await noticed.Prepare());
+        await noticed.Provider.Observing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        JsonElement entry = (await noticed.History()).GetProperty("migrations")[0];
+        Assert.IsTrue(entry.TryGetProperty("notices", out JsonElement notices),
+            "plan notices must be preserved: " + entry.GetRawText());
+        Assert.AreEqual(1, notices.GetArrayLength());
+        Assert.AreEqual("文件包含 1 个工作流：工作流（自动化）不会随导入迁移", notices[0].GetString());
+        noticed.Provider.ObserveGate.TrySetResult();
+        await noticed.Terminal(started);
+    }
+
     private sealed class Fixture : IDisposable
     {
         internal readonly FakeAuthority Authority = new();
@@ -638,6 +671,7 @@ public sealed class SourceImportHostTests
         private int _previews;
         internal int RecordCount = 1;
         internal bool LoseAck, FailUpload, FailResultRead, SessionHeaderSeen, HoldExecute, HoldUpload, HideHistory, RejectClaim;
+        internal string[]? PlanNotices;
         internal readonly TaskCompletionSource Executing = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource Uploading = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly HashSet<string> Staged = ["other-plan"];
@@ -673,7 +707,8 @@ public sealed class SourceImportHostTests
                     fields = new[] { new { source = new { provider = "synthetic", containerId = "container-1", tableId = "table-1", fieldId = "field-1" },
                         kind = "formula", policy = "snapshot", definition = "PRIVATE_SOURCE_EXPRESSION" } },
                     diagnostics = Array.Empty<object>(),
-                    tables = new[] { new { sourceId = "table-1", version = "t1", recordCount = RecordCount } }, attachments = provider.Attachments },
+                    tables = new[] { new { sourceId = "table-1", version = "t1", recordCount = RecordCount } }, attachments = provider.Attachments,
+                    notices = PlanNotices },
             });
             }
             if (path.EndsWith("/start", StringComparison.Ordinal) || path.EndsWith("/finish", StringComparison.Ordinal))

@@ -752,6 +752,67 @@ public sealed class SourceImportWindowTests
         }
     }
 
+    [TestMethod]
+    public async Task FailedReSelectionRevokesOldPreviewUntilNewFilePreflight()
+    {
+        var log = new EventLog();
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture(opener, session);
+        await fixture.ShowAsync();
+        FakeSourceProvider providerA = new(log, "prov-a");
+        int releases = 0;
+        opener.CompleteWith(LocalBaseConnection(providerA, () => releases++));
+        await fixture.SettleAsync();
+        await SelectFirstTableAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        // Cancelling the picker preserves the current file and its reviewed preview.
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWithCancel();
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text),
+            "仍使用当前已读取的内容");
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        // A failed replacement read must require a fresh preflight before the old file can be submitted.
+        await ClickAsync(fixture, "source-file-button");
+        opener.FailWith(new IOException("合成损坏文件"));
+        await fixture.SettleAsync();
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text),
+            "SAFE-IOException");
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text),
+            "不能确认导入");
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+
+        // The revoked preview cannot be submitted even by a raised click.
+        await ClickAsync(fixture, "start-button");
+        await fixture.SettleAsync();
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.IsNull(session.StartedPreview);
+
+        // Re-selecting a readable file recovers the full flow.
+        await ClickAsync(fixture, "source-file-button");
+        FakeSourceProvider providerB = new(log, "prov-b");
+        opener.CompleteWith(LocalBaseConnection(providerB, () => { }));
+        await fixture.SettleAsync();
+        Assert.AreEqual(1, releases); // A's connection is released on adopt.
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await SelectFirstTableAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreSame(providerB, session.SnapshotCalls()[^1].Provider);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await ClickAsync(fixture, "start-button");
+        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        Assert.AreEqual("task-native-1", (await fixture.ReadAsync(w => w.Result)).TaskId);
+    }
+
     private static async Task AssertConfirmationInvalidatedAsync(NativeWizardStaFixture fixture)
     {
         await fixture.SettleAsync();
@@ -1092,6 +1153,7 @@ public sealed class SourceImportWindowTests
 
         internal void CompleteWith(NativeSourceConnection connection) => Pending!.TrySetResult(connection);
         internal void CompleteWithCancel() => Pending!.TrySetResult(null);
+        internal void FailWith(Exception error) => Pending!.TrySetException(error);
     }
 
     internal sealed record PrepareCall(IHostSourceImportProvider Provider, HostSourceImportOptions Options);
