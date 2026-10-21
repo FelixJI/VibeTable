@@ -285,6 +285,9 @@ def _command_init(args: argparse.Namespace) -> int:
         )
         + "\n",
     )
+    # The manifest and the copied lock come from one template, so their pins cannot drift.
+    template = REPO_ROOT / "examples/plugins/record-manager"
+    template_package = json.loads((template / "package.json").read_text(encoding="utf-8"))
     package = {
         "name": args.plugin_id,
         "version": "0.1.0",
@@ -295,17 +298,13 @@ def _command_init(args: argparse.Namespace) -> int:
             "build": "node tests/tools.mjs build",
             "test": "npm run build && node --test tests/*.test.mjs",
         },
-        "devDependencies": {"esbuild": "0.28.1", "typescript": "7.0.2"},
-        "packageManager": "npm@12.2.0",
-        "engines": {"node": ">=26 <27"},
+        "devDependencies": dict(template_package["devDependencies"]),
+        "packageManager": template_package["packageManager"],
+        "engines": dict(template_package["engines"]),
     }
     _write_text(root / "package.json", json.dumps(package, indent=2) + "\n")
     # Reuse the repository-restored lock; init changes root metadata, never resolves packages.
-    lock = json.loads(
-        (REPO_ROOT / "examples/plugins/record-manager/package-lock.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    lock = json.loads((template / "package-lock.json").read_text(encoding="utf-8"))
     lock.update(name=args.plugin_id, version="0.1.0")
     lock["packages"][""].update(name=args.plugin_id, version="0.1.0")
     _write_text(root / "package-lock.json", json.dumps(lock, indent=2) + "\n")
