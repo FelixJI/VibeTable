@@ -46,7 +46,7 @@ func (source *Source) DescribeQueryTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, error) {
-	descriptor, _, err := source.describeSelectionTable(ctx, app, tableID, nil)
+	descriptor, _, err := source.describeSelectionTable(ctx, app, tableID, nil, nil)
 	return descriptor, err
 }
 
@@ -58,14 +58,29 @@ func (source *Source) DescribeSelectionTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
-	return source.describeSelectionTable(ctx, app, tableID, nil)
+	return source.describeSelectionTable(ctx, app, tableID, nil, nil)
 }
 
-// DescribeResolvedSelectionTable uses a complete schema already resolved in
-// the caller's transaction. Descriptor typing, archive policy and computed
-// freshness follow exactly the same path as ordinary QueryPort selection.
-func (source *Source) DescribeResolvedSelectionTable(ctx context.Context, app core.App, table schemaexecution.Table) (query.TableDescriptor, v2.SchemaSnapshot, error) {
-	return source.describeSelectionTable(ctx, app, table.Snapshot.TableID, &table)
+// DescribeResolvedMatchTable describes only predicate and archive fields for
+// a TABLE source scan. Projection freshness stays with the computed reader;
+// unrelated relations must not expand this scan's schema or dependency graph.
+func (source *Source) DescribeResolvedMatchTable(ctx context.Context, app core.App, table schemaexecution.Table, filters []query.FilterExpression) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	selected := map[string]bool{}
+	var selectFilters func([]query.FilterExpression)
+	selectFilters = func(filters []query.FilterExpression) {
+		for _, filter := range filters {
+			name, _, _ := strings.Cut(filter.Field, ".")
+			selected[name] = true
+			selectFilters(filter.Filters)
+		}
+	}
+	selectFilters(filters)
+	if table.ArchivePolicy.FieldID != nil {
+		if field, ok := table.Field(*table.ArchivePolicy.FieldID); ok {
+			selected[field.Identity.PhysicalName] = true
+		}
+	}
+	return source.describeSelectionTable(ctx, app, table.Snapshot.TableID, &table, selected)
 }
 
 func (source *Source) describeSelectionTable(
@@ -73,6 +88,7 @@ func (source *Source) describeSelectionTable(
 	app core.App,
 	tableID string,
 	resolved *schemaexecution.Table,
+	selected map[string]bool,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	ctx = formula.EnsureEvaluationTime(ctx)
 	ctx = relatedcomputation.WithClockCache(ctx)
@@ -95,7 +111,7 @@ func (source *Source) describeSelectionTable(
 			return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
 		}
 	}
-	fields, err := source.describeFields(ctx, app, table)
+	fields, err := source.describeFields(ctx, app, table, selected)
 	if err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
@@ -177,11 +193,15 @@ func (source *Source) describeFields(
 	ctx context.Context,
 	app core.App,
 	table schemaexecution.Table,
+	selected map[string]bool,
 ) (map[string]query.FieldDescriptor, error) {
 	fields := map[string]query.FieldDescriptor{
 		"id": {PhysicalName: "id", Type: query.FieldTypeText},
 	}
 	for _, field := range table.Snapshot.Fields {
+		if selected != nil && !selected[field.Identity.PhysicalName] {
+			continue
+		}
 		descriptor, err := source.describeField(ctx, app, table, field)
 		if err != nil {
 			return nil, err

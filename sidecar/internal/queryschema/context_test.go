@@ -65,14 +65,14 @@ func TestResolvedDescriptorPreservesComputedVersionContextFailures(t *testing.T)
 	}
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		t.Run(cause.Error(), func(t *testing.T) {
-			_, _, err := source.DescribeResolvedSelectionTable(context.Background(), versionFailureApp{App: app, cause: cause}, table)
+			_, _, err := source.DescribeResolvedMatchTable(context.Background(), versionFailureApp{App: app, cause: cause}, table, []query.FilterExpression{{Field: "f_total", Operator: query.OperatorGreater, Value: 0.0}})
 			if !errors.Is(err, cause) {
 				t.Fatalf("computed metadata context error = %v; want %v", err, cause)
 			}
 		})
 	}
 	t.Run("missing version stays a closed metadata failure", func(t *testing.T) {
-		_, _, err := source.DescribeResolvedSelectionTable(context.Background(), app, table)
+		_, _, err := source.DescribeResolvedMatchTable(context.Background(), app, table, []query.FilterExpression{{Field: "f_total", Operator: query.OperatorGreater, Value: 0.0}})
 		var productErr *query.ProductError
 		if !errors.As(err, &productErr) || productErr.Code != "query.computed.version_unavailable" || productErr.Path != "fields.f_total" {
 			t.Fatalf("missing computed version error = %#v", err)
