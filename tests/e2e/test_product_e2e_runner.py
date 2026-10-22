@@ -7033,9 +7033,9 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
         assert "PRIVATE_VALUE_ONLY" not in error.stderr
         assert "VALUE_ONLY_FIXTURE" not in error.stderr
         assert "output end" not in error.stderr
-        # The same real WPF window verifies the plugin-chrome observer's fixed
-        # stage boundaries (root, tree, capture, serialize): each named line
-        # carries only elapsedMs, so a future timeout can locate its stall.
+        # The same real WPF window verifies the plugin-chrome observer's full
+        # ordered stage timeline (entry boundaries, root, tree, capture,
+        # serialize) with monotonic elapsedMs and no private content.
         chrome_png = tmp_path / "plugin-chrome-stages.png"
         chrome = subprocess.run(
             [
@@ -7055,14 +7055,55 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
             "plugin-empty-bounds",
             "plugin-clickable",
         }
-        for stage in (
-            "plugin-root end",
-            "plugin-tree end",
+        names, elapsed = _uia_stage_timeline(chrome.stderr)
+        assert names == [
+            *_PLUGIN_CHROME_ENTRY_STAGES,
+            "plugin-capture begin",
             "plugin-capture end",
+            "plugin-serialize begin",
             "plugin-serialize end",
-        ):
-            assert f"UIA_STAGE {stage} elapsedMs=" in chrome.stderr
+        ]
+        assert len(elapsed) == len(names) - 1
+        assert elapsed == sorted(elapsed)
+        for secret in ("PRIVATE_VALUE_ONLY", "VALUE_ONLY_FIXTURE", "空边界", "可点击"):
+            assert secret not in chrome.stderr
         assert chrome_png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _uia_stage_timeline(stderr: str) -> tuple[list[str], list[int]]:
+    """Observer stage names in emission order, with elapsedMs when present."""
+    names: list[str] = []
+    elapsed: list[int] = []
+    for line in (stderr or "").splitlines():
+        if not line.startswith("UIA_STAGE "):
+            continue
+        content = line[len("UIA_STAGE ") :]
+        if " elapsedMs=" in content:
+            name, rest = content.split(" elapsedMs=", 1)
+            names.append(name)
+            elapsed.append(int(rest.split(maxsplit=1)[0]))
+        else:
+            names.append(content)
+    return names, elapsed
+
+
+# Entry boundaries from Main into the plugin-chrome path: a hung S48
+# --screenshot must be locatable before plugin-root, too.
+_PLUGIN_CHROME_ENTRY_STAGES = [
+    "managed entered",
+    "observer begin",
+    "plugin-dispatch begin",
+    "plugin-method entered",
+    "plugin-hwnd parsed",
+    "plugin-dpi begin",
+    "plugin-dpi end",
+    "plugin-encoding begin",
+    "plugin-encoding end",
+    "plugin-root begin",
+    "plugin-root end",
+    "plugin-tree begin",
+    "plugin-tree end",
+]
 
 
 def test_native_plugin_chrome_observer_projects_empty_button_bounds(
@@ -7083,6 +7124,14 @@ def test_native_plugin_chrome_observer_projects_empty_button_bounds(
         assert chrome.returncode == 0, chrome.stderr
         for secret in ("PRIVATE_VALUE_ONLY", "VALUE_ONLY_FIXTURE", "空边界", "可点击"):
             assert secret not in chrome.stderr
+        names, elapsed = _uia_stage_timeline(chrome.stderr)
+        assert names == [
+            *_PLUGIN_CHROME_ENTRY_STAGES,
+            "plugin-serialize begin",
+            "plugin-serialize end",
+        ]
+        assert len(elapsed) == len(names) - 1
+        assert elapsed == sorted(elapsed)
         observation = json.loads(chrome.stdout)
         assert observation["hwnd"] == hwnd
         assert observation["pid"] == native.owner(hwnd)
