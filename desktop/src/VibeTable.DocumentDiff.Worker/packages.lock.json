@@ -4,13 +4,13 @@
     "net10.0": {
       "Clippit": {
         "type": "Direct",
-        "requested": "[3.9.1, )",
-        "resolved": "3.9.1",
-        "contentHash": "omD9p6GW5EgO/u7BZWV4P6Vvwez5EKKgHwQkdHqCw/+vQVrlshJik8DwclRbS8om1TmccCYjuXW2T3LhmmDuSA==",
+        "requested": "[3.9.2, )",
+        "resolved": "3.9.2",
+        "contentHash": "+kNV7bZ4b5Lp46tK8v8/wRJqSzKvv9KjR6mP6LF9t8OtItLlh1IXJfWgOOs4TSjkPJp9P0P2+balQ6U9eHac3Q==",
         "dependencies": {
           "DocumentFormat.OpenXml": "3.5.1",
-          "SkiaSharp": "4.152.1",
-          "SkiaSharp.NativeAssets.Linux.NoDependencies": "4.152.1"
+          "SkiaSharp": "4.153.1",
+          "SkiaSharp.NativeAssets.Linux.NoDependencies": "4.153.1"
         }
       },
       "DocumentFormat.OpenXml": {
@@ -31,38 +31,38 @@
       },
       "SkiaSharp": {
         "type": "Transitive",
-        "resolved": "4.152.1",
-        "contentHash": "p3rj8SVoa+2Tmx1EITE4jIwCDPcYjwXdZ3c9yM6l9wNn6572hwxzrth6WOBK0iGnAoTGoJBZuZpy8wYjbov6sw==",
+        "resolved": "4.153.1",
+        "contentHash": "TghYLOUaP3q6rTjQw7U9uQaaXh8lEs9rfA1U7/VtmyAptVDtj/SmjtcWzFWmcC/VMWxe3QgbV9uyvqDL7ySFtQ==",
         "dependencies": {
-          "SkiaSharp.NativeAssets.Win32": "4.152.1",
-          "SkiaSharp.NativeAssets.macOS": "4.152.1"
+          "SkiaSharp.NativeAssets.Win32": "4.153.1",
+          "SkiaSharp.NativeAssets.macOS": "4.153.1"
         }
       },
       "SkiaSharp.NativeAssets.Linux.NoDependencies": {
         "type": "Transitive",
-        "resolved": "4.152.1",
-        "contentHash": "I/WMSZeE4QFFJoXGu5SNJVhWOBLZqtaUIN5wug3VaTJzpPEsk0t1GMrv0OG+ZoRrXExoW8RLo/bye+WkjVuEFQ=="
+        "resolved": "4.153.1",
+        "contentHash": "NrnPjcxjcRau4GMOY0BTpUdMey+MnmLU3jC5AuExEFHPS2NkX1tdkXW0n/c5nQMMHBTAMpHnt7qEOpXs2FNfIQ=="
       },
       "SkiaSharp.NativeAssets.macOS": {
         "type": "Transitive",
-        "resolved": "4.152.1",
-        "contentHash": "gKaE2zNHsPLjlA88ZClRNmtZlHNGEa/W4iPy5GpP1TtUELIXzrSr2udCbl1GWYFuCdA36IycBk5YhUuK1xi9UA=="
+        "resolved": "4.153.1",
+        "contentHash": "YTojWeWIhnpF7uC8vpMxB5wRONKkDB2t3r/nNPA3DL2pgj9fqMXRevA/rIanYazWnco4jo1ufgp3HkXuh1Tz8A=="
       },
       "SkiaSharp.NativeAssets.Win32": {
         "type": "Transitive",
-        "resolved": "4.152.1",
-        "contentHash": "MLDP6XT8CHLHF6gZlpW06iswGNBlL/JB2+SKuSLz0Y0k1zzsfofNyUY6J6FC32A4/F67E9S8MwovRBL+ELw0lw=="
+        "resolved": "4.153.1",
+        "contentHash": "Yqg6rChTVh0BUE8QQxtOA3uUBnihfgID4yex/AvDa0+os2bVcBjmI3Qj9tnOB+R1hd/Jry1Gwl8qw5JI9HZG8Q=="
       },
       "System.IO.Packaging": {
         "type": "Transitive",
-        "resolved": "10.0.12",
-        "contentHash": "Bsop0fosps100BOj1s9uIM3XaUpoLok5s0LTuEeKXvKse1XvpYvnzeC/7AZXCs3MkFurRkLe9k9XwKNZz2retw=="
+        "resolved": "10.0.13",
+        "contentHash": "FgYKAXorO7YEaWXaoK0toZ6qz73xtv4Zj+J0ykw/2iHaLJK0Fk4llKRa/YnyQGnOM6zc7PiOErzhPvgy5ehRZQ=="
       },
       "vibetable.documentdiff.openxml": {
         "type": "Project",
         "dependencies": {
-          "System.IO.Packaging": "[10.0.12, )",
-          "VibeTable.Workspace": "[0.5.1, )"
+          "System.IO.Packaging": "[10.0.13, )",
+          "VibeTable.Workspace": "[0.5.3, )"
         }
       },
       "vibetable.workspace": {

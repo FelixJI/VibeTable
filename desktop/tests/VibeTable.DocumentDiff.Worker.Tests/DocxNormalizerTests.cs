@@ -12,13 +12,13 @@ namespace VibeTable.DocumentDiff.Worker.Tests;
 public sealed class DocxNormalizerTests
 {
     [TestMethod]
-    [DataRow("<w:del w:id='1' w:author='VibeTable'><w:r><w:delText>DELETED</w:delText></w:r></w:del>")]
-    [DataRow("<w:ins w:id='2' w:author='VibeTable'><w:r><w:t>FINAL</w:t></w:r></w:ins>")]
-    [DataRow("<w:pPr><w:pPrChange w:id='3' w:author='VibeTable'><w:pPr/></w:pPrChange></w:pPr>")]
-    [DataRow("<w:r><w:rPr><w:rPrChange w:id='4' w:author='VibeTable'><w:rPr/></w:rPrChange></w:rPr><w:t>TEXT</w:t></w:r>")]
-    [DataRow("<w:moveFrom w:id='5' w:author='VibeTable'><w:r><w:t>MOVED</w:t></w:r></w:moveFrom>")]
-    [DataRow("<w:moveTo w:id='6' w:author='VibeTable'><w:r><w:t>MOVED</w:t></w:r></w:moveTo>")]
-    public async Task UnsupportedCommentRevisionsCannotBeReportedAsFinalContent(string revision)
+    [DataRow("<w:del w:id='1' w:author='VibeTable'><w:r><w:delText>DELETED</w:delText></w:r></w:del>", "")]
+    [DataRow("<w:ins w:id='2' w:author='VibeTable'><w:r><w:t>FINAL</w:t></w:r></w:ins>", "FINAL")]
+    [DataRow("<w:pPr><w:pPrChange w:id='3' w:author='VibeTable'><w:pPr/></w:pPrChange></w:pPr>", "")]
+    [DataRow("<w:r><w:rPr><w:rPrChange w:id='4' w:author='VibeTable'><w:rPr/></w:rPrChange></w:rPr><w:t>TEXT</w:t></w:r>", "TEXT")]
+    [DataRow("<w:moveFrom w:id='5' w:author='VibeTable'><w:r><w:t>MOVED</w:t></w:r></w:moveFrom>", "")]
+    [DataRow("<w:moveTo w:id='6' w:author='VibeTable'><w:r><w:t>MOVED</w:t></w:r></w:moveTo>", "MOVED")]
+    public async Task CommentRevisionsAreAcceptedWithoutLosingFinalContent(string revision, string expectedText)
     {
         string path = Path.Combine(AppContext.BaseDirectory, "Qualification", "docx", "content-before.docx");
         byte[] original = File.ReadAllBytes(path);
@@ -44,10 +44,51 @@ public sealed class DocxNormalizerTests
             _ => ValueTask.FromResult<Stream>(new MemoryStream(inputBytes, writable: false)));
         using var derived = new MemoryStream();
 
-        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => DocxNormalizer.NormalizeAsync(input, derived));
+        Assert.IsTrue(await DocxNormalizer.NormalizeAsync(input, derived));
+        using (var normalized = WordprocessingDocument.Open(derived, false))
+        {
+            WordprocessingCommentsPart comments = normalized.MainDocumentPart!.WordprocessingCommentsPart!;
+            Assert.IsNotNull(comments);
+            using Stream xml = comments.GetStream();
+            XDocument document = XDocument.Load(xml);
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            XElement comment = document.Root!.Elements(w + "comment").Single();
+            Assert.AreEqual("0", (string?)comment.Attribute(w + "id"));
+            Assert.AreEqual("VibeTable", (string?)comment.Attribute(w + "author"));
+            Assert.AreEqual(expectedText, string.Concat(comment.Descendants(w + "t").Select(element => element.Value)));
+            Assert.AreEqual(0, new OpenXmlValidator(FileFormatVersions.Microsoft365).Validate(normalized).Count());
+        }
+        CollectionAssert.AreEqual(inputBytes, source.ToArray());
 
         CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
         Assert.AreEqual(modified, File.GetLastWriteTimeUtc(path));
+    }
+
+    [TestMethod]
+    public async Task RevisionsInUnsupportedCustomXmlStillFailClosed()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "Qualification", "docx", "content-before.docx");
+        using var source = new MemoryStream();
+        source.Write(File.ReadAllBytes(path));
+        source.Position = 0;
+        using (var package = WordprocessingDocument.Open(source, true))
+        {
+            CustomXmlPart custom = package.MainDocumentPart!.AddCustomXmlPart(CustomXmlPartType.CustomXml);
+            using var xml = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("""
+                <metadata xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:ins w:id="1" w:author="VibeTable"><w:r><w:t>UNPROCESSED</w:t></w:r></w:ins>
+                </metadata>
+                """));
+            custom.FeedData(xml);
+        }
+        byte[] inputBytes = source.ToArray();
+        var input = new DocumentContentSource("custom.docx", null, inputBytes.Length,
+            _ => ValueTask.FromResult<Stream>(new MemoryStream(inputBytes, writable: false)));
+        using var derived = new MemoryStream();
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => DocxNormalizer.NormalizeAsync(input, derived));
+
+        CollectionAssert.AreEqual(inputBytes, source.ToArray());
     }
 
     [TestMethod]

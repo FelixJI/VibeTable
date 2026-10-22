@@ -2,7 +2,7 @@
 package buildinfo
 
 const (
-	PocketBaseVersion = "0.40.4"
+	PocketBaseVersion = "0.40.5"
 	CELVersion        = "0.32.0"
 	ContractVersion   = "v1"
 	ProtocolV2Version = "2.0"

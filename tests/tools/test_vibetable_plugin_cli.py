@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -302,6 +303,43 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
     assert packed.returncode == 0, packed.stdout + packed.stderr
     assert package.is_file()
     assert _run_cli("validate", str(package), "--json").returncode == 0
+
+
+def test_init_package_manifest_stays_installable_against_the_copied_template_lock(
+    tmp_path: Path,
+) -> None:
+    """生成 package.json 与复制的模板 lock 保持 npm ci 可安装的一致性契约。"""
+    plugin = tmp_path / "lock-contract"
+    initialized = _run_cli(
+        "init",
+        str(plugin),
+        "--plugin-id",
+        "com.example.lock-contract",
+        "--display-name",
+        "锁契约",
+    )
+    assert initialized.returncode == 0, initialized.stdout + initialized.stderr
+
+    template = ROOT / "examples" / "plugins" / "record-manager"
+    template_package = json.loads((template / "package.json").read_text(encoding="utf-8"))
+    generated = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((plugin / "package-lock.json").read_text(encoding="utf-8"))
+    root_lock = lock["packages"][""]
+
+    # 版本相关声明复用同一模板，manifest 与复制的 lock 不会漂移。
+    assert generated["devDependencies"] == template_package["devDependencies"]
+    assert generated["engines"] == template_package["engines"]
+    assert generated["packageManager"] == template_package["packageManager"]
+    # npm ci 的同步检查：lock 根声明与 package.json 一致，精确 pin 在 lock 中按版本落位。
+    assert root_lock["devDependencies"] == generated["devDependencies"]
+    assert root_lock["engines"] == generated["engines"]
+    for name, spec in generated["devDependencies"].items():
+        entry = lock["packages"].get(f"node_modules/{name}")
+        assert entry is not None, name
+        if re.fullmatch(r"\d+(?:\.\d+){2}", spec):
+            assert entry["version"] == spec, name
+    assert root_lock["name"] == generated["name"] == "com.example.lock-contract"
+    assert root_lock["version"] == generated["version"] == "0.1.0"
 
 
 def _surface_manifest(views: Sequence[dict[str, str]]) -> dict[str, object]:

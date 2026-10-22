@@ -12,7 +12,7 @@
     },
     "sidecar": {
       "version": "0.5.3",
-      "pocketBaseVersion": "0.40.4",
+      "pocketBaseVersion": "0.40.5",
       "celVersion": "0.32.0",
       "contractVersion": "2.0",
       "schemaVersion": "18",
@@ -24,7 +24,7 @@
     "sdk": "1.0.4258.31"
   },
   "webGrid": {
-    "tabulator": "6.6.1"
+    "tabulator": "6.7.0"
   },
   "launch": {
     "host": "VibeTable.Next.exe",
