@@ -1388,11 +1388,12 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
     sources: set[str] = set()
     matched = 0
     logs_read = 0
-    for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase.log")):
+    for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase*.log")):
         if (
             log_path.is_symlink()
             or log_path.is_junction()
             or not log_path.is_file()
+            or re.fullmatch(r"pocketbase(?:-[0-9]{8}-[0-9]{9})?\.log", log_path.name) is None
             or not _is_confined_to_run_root(log_path, run_source)
         ):
             continue

@@ -2364,6 +2364,177 @@ def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
     assert "op-illegal" not in serialized
 
 
+def test_product_e2e_evidence_reads_rotated_s35_audit_drain_logs(tmp_path: Path) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+    (logs / "pocketbase.log").write_text(
+        json.dumps({"event": "sidecar.starting", "timestamp": "2026-10-21T13:12:31Z"}) + "\n",
+        encoding="utf-8",
+    )
+    for filename, source, operation_id in (
+        ("pocketbase-20261021-131244123.log", "business", "op-rotated-business"),
+        ("pocketbase-20261022-091500456.log", "file", "op-rotated-file"),
+    ):
+        (logs / filename).write_text(
+            json.dumps(
+                {
+                    "event": "snapshot.freeze.audit.drain.returned",
+                    "timestamp": "2026-10-21T13:12:44Z",
+                    "operationId": operation_id,
+                    "auditDrain": {"source": source, "phase": "ack"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["status"] == "measured"
+    assert payload["logsRead"] == 3
+    assert payload["entriesTotal"] == 2
+    assert {entry["source"] for entry in payload["entries"]} == {"business", "file"}
+
+
+def test_product_e2e_evidence_ignores_s35_logs_with_unrecognized_rotation_names(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+
+    def drain_line(source: str, operation_id: str) -> str:
+        return (
+            json.dumps(
+                {
+                    "event": "snapshot.freeze.audit.drain.returned",
+                    "timestamp": "2026-10-21T13:12:44Z",
+                    "operationId": operation_id,
+                    "auditDrain": {"source": source, "phase": "ack"},
+                }
+            )
+            + "\n"
+        )
+
+    (logs / "pocketbase-20261021-131244123.log").write_text(
+        drain_line("business", "op-valid"), encoding="utf-8"
+    )
+    for filename in (
+        "pocketbase-secret.log",
+        "pocketbase-2026101-131244123.log",
+        "pocketbase-20261021-1312441234.log",
+    ):
+        (logs / filename).write_text(drain_line("file", "op-poison"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+    serialized = (
+        tmp_path / "destination" / run.name / "35-data-io-interoperability" / "35-audit-drain.json"
+    ).read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["status"] == "measured"
+    assert payload["logsRead"] == 1
+    assert payload["entries"][0]["operationId"] == "op-valid"
+    assert "op-poison" not in serialized
+    assert "pocketbase-secret" not in serialized
+
+
+def test_product_e2e_evidence_skips_symlinked_rotated_s35_audit_drain_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True)
+
+    def drain_line(source: str, operation_id: str) -> str:
+        return (
+            json.dumps(
+                {
+                    "event": "snapshot.freeze.audit.drain.returned",
+                    "timestamp": "2026-10-21T13:12:44Z",
+                    "operationId": operation_id,
+                    "auditDrain": {"source": source, "phase": "ack"},
+                }
+            )
+            + "\n"
+        )
+
+    (logs / "pocketbase-20261021-131244123.log").write_text(
+        drain_line("business", "op-real"), encoding="utf-8"
+    )
+    linked = logs / "pocketbase-20261022-091500456.log"
+    linked.write_text(drain_line("file", "op-linked"), encoding="utf-8")
+    real_is_symlink = Path.is_symlink
+
+    def precise_is_symlink(path: Path) -> bool:
+        return True if path == linked else real_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", precise_is_symlink)
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+    serialized = (
+        tmp_path / "destination" / run.name / "35-data-io-interoperability" / "35-audit-drain.json"
+    ).read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["status"] == "measured"
+    assert payload["logsRead"] == 1
+    assert payload["entries"][0]["operationId"] == "op-real"
+    assert "op-linked" not in serialized
+
+
 S35_AUDIT_DRAIN_CHAIN = ("workspaces", "ws", ".vibetable", "temp", "logs")
 
 
