@@ -1994,6 +1994,7 @@ def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Pa
     scenario_root.mkdir()
     for filename in SCENARIO_SCREENSHOTS["35-data-io-interoperability"]:
         (scenario_root / filename).write_bytes(b"synthetic unit-test image payload")
+    _write_s35_audit_drain_log(run_root, ("business", "file"))
 
     destination = next_gate.persist_product_e2e_evidence(
         tmp_path / "source",
@@ -2077,6 +2078,135 @@ def _s35_pocketbase_log_lines() -> list[str]:
     ]
 
 
+def _write_s35_audit_drain_log(run: Path, sources: tuple[str, ...]) -> None:
+    logs = (
+        run
+        / "_runtime"
+        / "35"
+        / "host"
+        / "local-data"
+        / "workspaces"
+        / "ws"
+        / ".vibetable"
+        / "temp"
+        / "logs"
+    )
+    logs.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps(
+            {
+                "event": "snapshot.freeze.audit.drain.returned",
+                "timestamp": f"2026-10-21T13:12:44.{index:03d}Z",
+                "operationId": f"op-{source}",
+                "auditDrain": {"source": source, "phase": "ack", "appended": index},
+            }
+        )
+        for index, source in enumerate(sources)
+    ]
+    (logs / "pocketbase.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "log_sources",
+    [None, ("business",), ("file",), ("invalid",)],
+    ids=("no-log", "business-only", "file-only", "invalid-only"),
+)
+def test_passing_s35_report_rejects_incomplete_audit_drain_sources(
+    tmp_path: Path,
+    log_sources: tuple[str, ...] | None,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    if log_sources is not None:
+        _write_s35_audit_drain_log(run, log_sources)
+
+    # require_passing_report defaults to False; a passed S35 without complete
+    # closed-audit evidence must still not be treated as passing.
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+    # The safe projection is archived before the gate rejects the report.
+    payload = json.loads(
+        (
+            tmp_path
+            / "destination"
+            / run.name
+            / "35-data-io-interoperability"
+            / "35-audit-drain.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert payload["status"] == (
+        "measured" if log_sources in (("business",), ("file",)) else "empty"
+    )
+
+
+def test_passing_s35_report_accepts_both_audit_drain_sources(tmp_path: Path) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_audit_drain_log(run, ("business", "file"))
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["status"] == "measured"
+    assert {entry["source"] for entry in payload["entries"]} == {"business", "file"}
+
+
+@pytest.mark.parametrize("log_sources", [None, ("business",), ("invalid",)])
+def test_failed_s35_report_allows_empty_or_partial_audit_drain_evidence(
+    tmp_path: Path,
+    log_sources: tuple[str, ...] | None,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "failed")
+    if log_sources is not None:
+        _write_s35_audit_drain_log(run, log_sources)
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["status"] == ("measured" if log_sources == ("business",) else "empty")
+
+
+def test_passing_s35_audit_drain_source_gate_uses_the_full_scan_beyond_the_cap(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_audit_drain_log(run, ("business",) * 64 + ("file",))
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    payload = json.loads(
+        (destination / "35-data-io-interoperability" / "35-audit-drain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["truncated"] is True
+    assert payload["entriesTotal"] == 65
+    assert len(payload["entries"]) == 64
+    assert {entry["source"] for entry in payload["entries"]} == {"business"}
+
+
 @pytest.mark.parametrize("status", ["passed", "failed"])
 def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
     tmp_path: Path,
@@ -2154,7 +2284,7 @@ def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
 def test_product_e2e_evidence_marks_missing_s35_audit_drain_logs_as_empty(
     tmp_path: Path,
 ) -> None:
-    _s35_audit_drain_run(tmp_path, "passed")
+    _s35_audit_drain_run(tmp_path, "failed")
 
     destination = next_gate.persist_product_e2e_evidence(
         tmp_path / "source",
@@ -2192,7 +2322,7 @@ def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
     tmp_path: Path,
     audit_drain: dict[str, object],
 ) -> None:
-    run = _s35_audit_drain_run(tmp_path, "passed")
+    run = _s35_audit_drain_run(tmp_path, "failed")
     logs = (
         run
         / "_runtime"
@@ -2265,16 +2395,20 @@ def test_product_e2e_evidence_skips_s35_audit_drain_logs_behind_junctions(
     junction = junction_parent / junctioned
     _create_junction(junction, outside)
     try:
-        destination = next_gate.persist_product_e2e_evidence(
-            tmp_path / "source",
-            tmp_path / "destination",
-        )
+        # A passed S35 cannot satisfy the audit-drain gate through a junction:
+        # the log is skipped, the projection stays empty, and the gate raises.
+        with pytest.raises(ValueError, match="audit-drain"):
+            next_gate.persist_product_e2e_evidence(
+                tmp_path / "source",
+                tmp_path / "destination",
+            )
     finally:
         with suppress(OSError):
             os.rmdir(junction)
 
-    assert destination is not None
-    evidence = destination / "35-data-io-interoperability" / "35-audit-drain.json"
+    evidence = (
+        tmp_path / "destination" / run.name / "35-data-io-interoperability" / "35-audit-drain.json"
+    )
     serialized = evidence.read_text(encoding="utf-8")
     payload = json.loads(serialized)
     assert payload["status"] == "empty"
@@ -2307,7 +2441,10 @@ def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
                 "event": "snapshot.freeze.audit.drain.returned",
                 "timestamp": f"2026-10-21T13:13:{index:02d}Z",
                 "operationId": f"op-{index}",
-                "auditDrain": {"source": "business", "phase": "ack"},
+                "auditDrain": {
+                    "source": "business" if index % 2 == 0 else "file",
+                    "phase": "ack",
+                },
             }
         )
         for index in range(70)
@@ -2473,6 +2610,8 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "35-data-io-interoperability" in selected[stage]:
+            _write_s35_audit_drain_log(run_root, ("business", "file"))
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
                 "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
@@ -3493,6 +3632,8 @@ def test_scenario_screenshots_archive_only_declared_images(
     tmp_path: Path, scenario_id: str
 ) -> None:
     run = _scenario_screenshot_run(tmp_path, scenario_id, "passed")
+    if scenario_id == "35-data-io-interoperability":
+        _write_s35_audit_drain_log(run, ("business", "file"))
     retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
     assert retained is not None
     expected = {"product-e2e-report.json"}

@@ -1375,15 +1375,17 @@ def _is_confined_to_run_root(path: Path, run_source: Path) -> bool:
     return not (run_source.is_symlink() or run_source.is_junction())
 
 
-def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -> None:
+def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -> frozenset[str]:
     """Archive bounded S35 audit-drain measurements from the log whitelist.
 
     A missing capture stays an explicit empty status, never a measurement
     pass, and only logs whose ancestors up to the run root are real
-    directories are read.
+    directories are read. Returns every valid entry's source from the full
+    scan, unaffected by the entry cap.
     """
     workspace_root = run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces"
     entries: list[dict[str, object]] = []
+    sources: set[str] = set()
     matched = 0
     logs_read = 0
     for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase.log")):
@@ -1400,6 +1402,9 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
             if entry is None:
                 continue
             matched += 1
+            entry_source = entry["source"]
+            if isinstance(entry_source, str):
+                sources.add(entry_source)
             if len(entries) < AUDIT_DRAIN_MAXIMUM_ENTRIES:
                 entries.append(entry)
     payload = {
@@ -1413,6 +1418,7 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return frozenset(sources)
 
 
 def persist_product_e2e_evidence(
@@ -1677,11 +1683,17 @@ def persist_product_e2e_evidence(
                 )
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
-            # stays failure-only.
-            _persist_s35_audit_drain_measurements(
+            # stays failure-only. A passed S35 must show both closed-audit
+            # sources; failed reports keep empty/partial forensics.
+            sources = _persist_s35_audit_drain_measurements(
                 run_source,
                 run_destination / scenario_id / "35-audit-drain.json",
             )
+            if item["status"] == "passed" and sources != AUDIT_DRAIN_SOURCES:
+                raise ValueError(
+                    f"passing {scenario_id} report lacks audit-drain evidence: "
+                    f"expected sources business and file, found {sorted(sources)}"
+                )
         if scenario_id == "42-file-document-native-operations":
             if item["status"] == "passed":
                 copy_runtime_diagnostics(
