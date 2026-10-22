@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -140,5 +141,49 @@ func v2Field(name string, logicalType v2.LogicalType) v2.FieldDefinition {
 	return v2.FieldDefinition{
 		Identity:    v2.FieldIdentity{PhysicalName: "f_" + name},
 		LogicalType: logicalType,
+	}
+}
+
+func TestResolvedMatchDescriptorKeepsNestedPredicatesArchiveAndFullSnapshot(t *testing.T) {
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir()})
+	source, err := New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := v2Field("status", v2.LogicalText)
+	archive.Identity.FieldID = "fld_status"
+	unselected := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_unselected", PhysicalName: "f_unselected"},
+		LogicalType: v2.LogicalFormula,
+		Formula:     &v2.FormulaSpec{Language: "cel-v1", Source: "1.0", ResultType: v2.LogicalNumber},
+	}
+	table := schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{TableID: "tbl_source", Fields: []v2.FieldDefinition{
+			v2Field("amount", v2.LogicalNumber), v2Field("payload", v2.LogicalJSON), archive,
+			unselected,
+		}},
+		PhysicalName:  "source_rows",
+		ArchivePolicy: v2.ArchivePolicy{Mode: "status", FieldID: &archive.Identity.FieldID, ArchivedValue: "archived"},
+	}
+	table.FormulaRuntime = map[string]schemaexecution.FormulaRuntime{"fld_unselected": {Status: "ready", Version: 1}}
+	// The previous complete descriptor spent the source budget on this
+	// unrelated formula's metadata; reproduce that exact error without sleeps.
+	failing := versionFailureApp{App: app, cause: context.DeadlineExceeded}
+	if _, _, err := source.describeSelectionTable(t.Context(), failing, table.Snapshot.TableID, &table, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("complete descriptor deadline = %v", err)
+	}
+	filters := []query.FilterExpression{{GroupLogic: query.LogicOr, Filters: []query.FilterExpression{
+		{Field: "f_amount", Operator: query.OperatorGreater, Value: 0.0},
+		{Field: "f_payload.amount", Operator: query.OperatorEqual, Value: 3.0},
+	}}}
+	descriptor, snapshot, err := source.DescribeResolvedMatchTable(t.Context(), failing, table, filters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(descriptor.Fields) != 4 || len(snapshot.Fields) != len(table.Snapshot.Fields) || descriptor.ArchiveField != "f_status" {
+		t.Fatalf("match descriptor = %#v, snapshot = %#v", descriptor, snapshot)
+	}
+	if _, err := query.CompileMatchBatch(descriptor, [][]query.FilterExpression{filters}, "", 256); err != nil {
+		t.Fatal(err)
 	}
 }

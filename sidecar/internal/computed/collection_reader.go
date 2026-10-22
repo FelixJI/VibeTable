@@ -73,7 +73,7 @@ func readCollectionSource(
 	if err != nil {
 		return collectionReadError(request.TableID, "collection source schema is unavailable", err)
 	}
-	descriptor, snapshot, err := source.DescribeResolvedSelectionTable(ctx, app, definition)
+	descriptor, snapshot, err := source.DescribeResolvedMatchTable(ctx, app, definition, request.Filters)
 	if err != nil {
 		return collectionReadError(request.TableID, "collection source schema is unavailable", err)
 	}

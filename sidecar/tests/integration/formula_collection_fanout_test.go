@@ -390,6 +390,13 @@ func TestCollectionReaderReusesTransactionSchema(t *testing.T) {
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
+	// An unrelated reciprocal relation must not expand a scalar TABLE scan
+	// into the target table's schema and computed freshness graph.
+	target := createV2IntegrationTable(t, ctx, app, "无关关联", "schema_unrelated")
+	targetLabel := createV2IntegrationField(t, ctx, app, target.TableID, fieldDraftForIntegration(t, v2.LogicalText, "名称"), "schema_target_label")
+	label := createV2IntegrationField(t, ctx, app, table.TableID, fieldDraftForIntegration(t, v2.LogicalText, "名称"), "schema_label")
+	createV2IntegrationRelation(t, ctx, app, table.TableID, label.FieldID, target.TableID, targetLabel.FieldID,
+		"无关关联", "无关反向关联", "one", "schema_unrelated_relation")
 	definition, err := schemaexecution.Describe(ctx, app, table.TableID)
 	if err != nil {
 		t.Fatal(err)
