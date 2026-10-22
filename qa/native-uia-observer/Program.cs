@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
@@ -23,7 +24,10 @@ internal static class Program
         {
             if (args.Length == 4 && args[0] == "--file-dialog") return ObserveFileDialog(args);
             if (args.Length is 2 or 3 && args[0] is "--buttons" or "--screenshot")
+            {
+                Stage("plugin-dispatch begin");
                 return ObservePluginChrome(args);
+            }
             if (args.Length is 2 or 3 && args[0] == "--source-import")
                 return ObserveSourceImportWindow(args);
             if (args.Length != 1 || !long.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out long hwnd) || hwnd <= 0)
@@ -41,11 +45,19 @@ internal static class Program
 
     // Read-only QA: actual native bounds/focus and an onscreen WPF screenshot.
     // No UIA InvokePattern, product messages or mutation of product state.
+    // NoInlining keeps distinct diagnostic stage boundaries from being folded away; not a perf tweak.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static int ObservePluginChrome(string[] args)
     {
+        Stage("plugin-method entered");
         if (!long.TryParse(args[1], out long value) || value <= 0) return Reject("UIA_ARGUMENT_INVALID");
+        Stage("plugin-hwnd parsed");
+        Stage("plugin-dpi begin");
         SetProcessDpiAwarenessContext(new IntPtr(-4));
+        Stage("plugin-dpi end");
+        Stage("plugin-encoding begin");
         Console.OutputEncoding = new UTF8Encoding(false, true);
+        Stage("plugin-encoding end");
         var hwnd = new IntPtr(value);
         Stage("plugin-root begin");
         var root = AutomationElement.FromHandle(hwnd);
@@ -74,12 +86,15 @@ internal static class Program
             var box = element.Current.BoundingRectangle;
             buttons.Add(new { id, name = element.Current.Name, pid = element.Current.ProcessId,
                 enabled = element.Current.IsEnabled, focused = element.Current.HasKeyboardFocus,
-                x = box.X, y = box.Y, width = box.Width, height = box.Height });
+                x = box.IsEmpty ? 0 : box.X, y = box.IsEmpty ? 0 : box.Y,
+                width = box.IsEmpty ? 0 : box.Width, height = box.IsEmpty ? 0 : box.Height });
         }
         Stage("plugin-tree end", $"count={buttons.Count}");
         if (args[0] == "--screenshot")
         {
             if (args.Length != 3 || !Path.IsPathFullyQualified(args[2])) return Reject("UIA_ARGUMENT_INVALID");
+            // An Empty root rectangle has no capture source: fail closed before the checked cast.
+            if (bounds.IsEmpty) return Reject("UIA_BOUNDS_INVALID");
             int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
             if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
             Stage("plugin-capture begin");
@@ -108,8 +123,9 @@ internal static class Program
         }
         Stage("plugin-serialize begin");
         Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid = root.Current.ProcessId,
-            title = root.Current.Name, x = bounds.X, y = bounds.Y, width = bounds.Width,
-            height = bounds.Height, dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
+            title = root.Current.Name, x = bounds.IsEmpty ? 0 : bounds.X, y = bounds.IsEmpty ? 0 : bounds.Y,
+            width = bounds.IsEmpty ? 0 : bounds.Width, height = bounds.IsEmpty ? 0 : bounds.Height,
+            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
         Stage("plugin-serialize end");
         return 0;
     }
@@ -394,6 +410,7 @@ internal static class Program
         return 1;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Stage(string name, string detail = "")
     {
         Console.Error.WriteLine($"UIA_STAGE {name} elapsedMs={Clock.ElapsedMilliseconds}{(detail.Length == 0 ? "" : " " + detail)}");

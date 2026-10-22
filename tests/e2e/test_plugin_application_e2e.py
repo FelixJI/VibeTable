@@ -577,6 +577,68 @@ def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp
     assert attempts == [(14, 12)]
 
 
+def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    # A click whose only observed button has an Empty (zero-projected) bounds
+    # must fail closed; the real caller sends input only after a ready
+    # observation, so sent staying empty is meaningful for action=click.
+    sent = []
+
+    def observe(*_args, **_kwargs):
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "pid": 12,
+                    "hwnd": 14,
+                    "buttons": [
+                        {
+                            "id": "plugin-manage",
+                            "pid": 12,
+                            "enabled": True,
+                            "focused": False,
+                            "x": 0,
+                            "y": 0,
+                            "width": 0,
+                            "height": 0,
+                        }
+                    ],
+                }
+            )
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native, "_send_input", lambda *_args, **_kwargs: sent.append("input"))
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *_args: None,
+            owner=lambda _hwnd: 12,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "zero-bounds-click",
+            "action": "click",
+            "buttonId": "plugin-manage",
+            "stage": "application",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["requestId"] == "zero-bounds-click"
+    assert "missing, disabled or obscured" in result["error"]
+    assert sent == []
+
+
 @pytest.mark.parametrize("stage", ["contrast", "contrast-restored", "application"])
 def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
     tmp_path, monkeypatch, stage

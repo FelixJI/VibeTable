@@ -1251,6 +1251,58 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
+    public async Task Diagnostics_PersistsValidatedAuditDrainDetailToLogPath()
+    {
+        const string drainLine = """
+            {"timestamp":"2026-08-12T00:00:00Z","level":"info","module":"snapshot","event":"snapshot.freeze.audit.drain.returned","errorCode":null,"requestId":null,"operationId":null,"workspaceId":null,"sessionEpoch":null,"jobId":null,"durationMs":12.5,"auditDrain":{"source":"business","phase":"completed","appended":3,"duplicates":1,"acknowledged":2,"pendingCalls":4,"appendCalls":5,"ackCalls":6,"pbReadWaitCount":7,"pbWriteWaitCount":8,"pbReadInUseDelta":-2,"pbWriteInUseDelta":1,"pendingMs":0.25,"appendMs":1,"appendMaxMs":2.5,"ackMs":0,"pbReadWaitMs":0.5,"pbWriteWaitMs":1.5}}
+            """;
+        string unsafeLine = drainLine.Replace(
+            "\"durationMs\":12.5",
+            "\"durationMs\":12.5,\"query\":\"secret\"",
+            StringComparison.Ordinal);
+        DirectoryInfo logDirectory = Directory.CreateTempSubdirectory("vibetable-supervisor-");
+        string logPath = Path.Combine(logDirectory.FullName, "pocketbase.log");
+        var received = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int lines = 0;
+        var process = FakePocketBaseProcess.Ready(
+            ReadyRecord(),
+            stderr: drainLine + Environment.NewLine + unsafeLine);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(logPath: logPath),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.LogReceived += (_, line) =>
+        {
+            if (Interlocked.Increment(ref lines) == 2)
+                received.TrySetResult();
+        };
+
+        try
+        {
+            await supervisor.StartAsync(CancellationToken.None);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await supervisor.StopAsync(CancellationToken.None);
+
+            string persisted = await File.ReadAllTextAsync(logPath);
+            Assert.IsTrue(persisted.Contains(
+                "snapshot.freeze.audit.drain.returned",
+                StringComparison.Ordinal));
+            Assert.IsTrue(persisted.Contains(
+                "\"auditDrain\":{\"source\":\"business\",\"phase\":\"completed\"",
+                StringComparison.Ordinal));
+            Assert.IsFalse(persisted.Contains(
+                "secret",
+                StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(logPath);
+            logDirectory.Delete();
+        }
+    }
+
+    [TestMethod]
     [DataRow(false, DisplayName = "Stop joins pumps")]
     [DataRow(true, DisplayName = "Dispose joins pumps")]
     public async Task Retirement_CancelsAndJoinsPumpsWithoutPromotingDiagnosticsFailures(
@@ -1367,11 +1419,13 @@ public sealed class PocketBaseSupervisorTests
         TimeSpan? startupTimeout = null,
         int crashRestartLimit = 3,
         bool developmentMode = false,
-        TimeSpan? crashRestartDelay = null) => new()
+        TimeSpan? crashRestartDelay = null,
+        string? logPath = null) => new()
         {
             ExecutablePath = "vibetable-pb.exe",
             DataDirectory = "pb_data",
             DevelopmentMode = developmentMode,
+            LogPath = logPath,
             StartupTimeout = startupTimeout ?? TimeSpan.FromSeconds(1),
             StopTimeout = TimeSpan.FromSeconds(1),
             HealthPollInterval = TimeSpan.FromMilliseconds(1),

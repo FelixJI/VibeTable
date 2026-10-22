@@ -6916,6 +6916,7 @@ def native_value_only_fixture() -> Path:
     )
     (directory / "Program.cs").write_text(
         """using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
@@ -6927,7 +6928,15 @@ internal static class Program
     public static void Main()
     {
         var application = new Application();
-        var window = new Window { Width = 400, Height = 200, Content = new ValueOnlyElement() };
+        var panel = new StackPanel();
+        var emptyBounds = new EmptyBoundsButton { Width = 120, Height = 32, Content = "空边界" };
+        var clickable = new Button { Width = 120, Height = 32, Content = "可点击" };
+        AutomationProperties.SetAutomationId(emptyBounds, "plugin-empty-bounds");
+        AutomationProperties.SetAutomationId(clickable, "plugin-clickable");
+        panel.Children.Add(new ValueOnlyElement());
+        panel.Children.Add(emptyBounds);
+        panel.Children.Add(clickable);
+        var window = new Window { Width = 400, Height = 300, Content = panel };
         window.Loaded += (_, _) => window.Dispatcher.BeginInvoke(new Action(() =>
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {
                 hwnd = new WindowInteropHelper(window).Handle.ToInt64(),
@@ -6952,6 +6961,18 @@ internal sealed class ValueOnlyPeer(FrameworkElement owner) : FrameworkElementAu
     public bool IsReadOnly => true;
     public string Value => "PRIVATE_VALUE_ONLY" + new string('x', 4079);
     public void SetValue(string value) => throw new InvalidOperationException();
+}
+
+// A plugin- prefixed WPF button whose peer reports an Empty bounding rect:
+// a control without usable on-screen geometry, as UIA exposes it.
+internal sealed class EmptyBoundsButton : Button
+{
+    protected override AutomationPeer OnCreateAutomationPeer() => new EmptyBoundsButtonPeer(this);
+}
+
+internal sealed class EmptyBoundsButtonPeer(EmptyBoundsButton owner) : ButtonAutomationPeer(owner)
+{
+    protected override Rect GetBoundingRectangleCore() => Rect.Empty;
 }
 """,
         encoding="utf-8",
@@ -7012,9 +7033,9 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
         assert "PRIVATE_VALUE_ONLY" not in error.stderr
         assert "VALUE_ONLY_FIXTURE" not in error.stderr
         assert "output end" not in error.stderr
-        # The same real WPF window verifies the plugin-chrome observer's fixed
-        # stage boundaries (root, tree, capture, serialize): each named line
-        # carries only elapsedMs, so a future timeout can locate its stall.
+        # The same real WPF window verifies the plugin-chrome observer's full
+        # ordered stage timeline (entry boundaries, root, tree, capture,
+        # serialize) with monotonic elapsedMs and no private content.
         chrome_png = tmp_path / "plugin-chrome-stages.png"
         chrome = subprocess.run(
             [
@@ -7030,15 +7051,104 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
             timeout=5,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        assert json.loads(chrome.stdout)["buttons"] == []
-        for stage in (
-            "plugin-root end",
-            "plugin-tree end",
+        assert {button["id"] for button in json.loads(chrome.stdout)["buttons"]} == {
+            "plugin-empty-bounds",
+            "plugin-clickable",
+        }
+        names, elapsed = _uia_stage_timeline(chrome.stderr)
+        assert names == [
+            *_PLUGIN_CHROME_ENTRY_STAGES,
+            "plugin-capture begin",
             "plugin-capture end",
+            "plugin-serialize begin",
             "plugin-serialize end",
-        ):
-            assert f"UIA_STAGE {stage} elapsedMs=" in chrome.stderr
+        ]
+        assert len(elapsed) == len(names) - 1
+        assert elapsed == sorted(elapsed)
+        for secret in ("PRIVATE_VALUE_ONLY", "VALUE_ONLY_FIXTURE", "空边界", "可点击"):
+            assert secret not in chrome.stderr
         assert chrome_png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _uia_stage_timeline(stderr: str) -> tuple[list[str], list[int]]:
+    """Observer stage names in emission order, with elapsedMs when present."""
+    names: list[str] = []
+    elapsed: list[int] = []
+    for line in (stderr or "").splitlines():
+        if not line.startswith("UIA_STAGE "):
+            continue
+        content = line[len("UIA_STAGE ") :]
+        if " elapsedMs=" in content:
+            name, rest = content.split(" elapsedMs=", 1)
+            names.append(name)
+            elapsed.append(int(rest.split(maxsplit=1)[0]))
+        else:
+            names.append(content)
+    return names, elapsed
+
+
+# Entry boundaries from Main into the plugin-chrome path: a hung S48
+# --screenshot must be locatable before plugin-root, too.
+_PLUGIN_CHROME_ENTRY_STAGES = [
+    "managed entered",
+    "observer begin",
+    "plugin-dispatch begin",
+    "plugin-method entered",
+    "plugin-hwnd parsed",
+    "plugin-dpi begin",
+    "plugin-dpi end",
+    "plugin-encoding begin",
+    "plugin-encoding end",
+    "plugin-root begin",
+    "plugin-root end",
+    "plugin-tree begin",
+    "plugin-tree end",
+]
+
+
+def test_native_plugin_chrome_observer_projects_empty_button_bounds(
+    native_value_only_fixture: Path,
+) -> None:
+    """Empty UIA button bounds must remain serializable without granting input."""
+    runner._prepare_native_uia_observer()
+    with _owned_native_uia_window([str(native_value_only_fixture)]) as (native, hwnd):
+        chrome = subprocess.run(
+            [str(runner.NATIVE_UIA_OBSERVER_EXE), "--buttons", str(hwnd)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert chrome.returncode == 0, chrome.stderr
+        for secret in ("PRIVATE_VALUE_ONLY", "VALUE_ONLY_FIXTURE", "空边界", "可点击"):
+            assert secret not in chrome.stderr
+        names, elapsed = _uia_stage_timeline(chrome.stderr)
+        assert names == [
+            *_PLUGIN_CHROME_ENTRY_STAGES,
+            "plugin-serialize begin",
+            "plugin-serialize end",
+        ]
+        assert len(elapsed) == len(names) - 1
+        assert elapsed == sorted(elapsed)
+        observation = json.loads(chrome.stdout)
+        assert observation["hwnd"] == hwnd
+        assert observation["pid"] == native.owner(hwnd)
+        assert 0 < observation["width"] < 8192
+        assert 0 < observation["height"] < 8192
+        buttons = {button["id"]: button for button in observation["buttons"]}
+        assert set(buttons) == {"plugin-empty-bounds", "plugin-clickable"}
+        empty = buttons["plugin-empty-bounds"]
+        assert (empty["x"], empty["y"], empty["width"], empty["height"]) == (0, 0, 0, 0)
+        clickable = buttons["plugin-clickable"]
+        assert 0 < clickable["width"] < 8192
+        assert 0 < clickable["height"] < 8192
+        assert clickable["enabled"] is True
+        for button in buttons.values():
+            assert button["pid"] == observation["pid"]
+            assert isinstance(button["focused"], bool)
+            assert button["name"]
 
 
 @pytest.mark.parametrize(

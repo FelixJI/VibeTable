@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -151,6 +152,38 @@ PRODUCT_E2E_EVIDENCE_FILES = (
     "runner-stdout.log",
 )
 PRODUCT_E2E_RUNTIME_LOGS = ("backend.log", "pocketbase.log")
+# Closed-set S35 audit-drain projection; anything else fails closed.
+AUDIT_DRAIN_EVENT = "snapshot.freeze.audit.drain.returned"
+AUDIT_DRAIN_SOURCES = frozenset({"business", "file"})
+AUDIT_DRAIN_PHASES = frozenset({"pending", "append", "ack", "between_records", "completed"})
+AUDIT_DRAIN_NON_NEGATIVE_INT_FIELDS = frozenset(
+    {
+        "appended",
+        "duplicates",
+        "acknowledged",
+        "pendingCalls",
+        "appendCalls",
+        "ackCalls",
+        "pbReadWaitCount",
+        "pbWriteWaitCount",
+    }
+)
+AUDIT_DRAIN_SIGNED_INT_FIELDS = frozenset({"pbReadInUseDelta", "pbWriteInUseDelta"})
+AUDIT_DRAIN_NON_NEGATIVE_NUMBER_FIELDS = frozenset(
+    {
+        "pendingMs",
+        "appendMs",
+        "appendMaxMs",
+        "ackMs",
+        "pbReadWaitMs",
+        "pbWriteWaitMs",
+    }
+)
+AUDIT_DRAIN_MAXIMUM_ENTRIES = 64
+AUDIT_DRAIN_MAXIMUM_TEXT_LENGTH = 160
+# Mirror the C# validator's int64 range so archived integers stay in contract.
+AUDIT_DRAIN_INT64_MINIMUM = -(2**63)
+AUDIT_DRAIN_INT64_MAXIMUM = 2**63 - 1
 REPLICA_E2E_PHASES = ("seed", "fork", "resolve", "reopen")
 REPLICA_E2E_HOSTS = ("left", "right")
 REPLICA_E2E_HOST_EVIDENCE_FILES = ("stage-result.json", "lifecycle.json", "readiness.json")
@@ -1249,6 +1282,165 @@ def _copy_if_file(source: Path, destination: Path) -> bool:
     return True
 
 
+def _project_audit_drain_entry(line: str) -> tuple[dict[str, object], bool] | None:
+    """Project one closed-set audit-drain line, or reject it fail closed.
+
+    The returned bool marks a no-error completed drain: phase completed, a
+    non-empty operationId, and an explicitly null/empty errorCode. errorCode
+    text is never kept in the archived projection.
+    """
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict) or record.get("event") != AUDIT_DRAIN_EVENT:
+        return None
+    detail = record.get("auditDrain")
+    if not isinstance(detail, dict) or not set(detail) <= (
+        AUDIT_DRAIN_NON_NEGATIVE_INT_FIELDS
+        | AUDIT_DRAIN_SIGNED_INT_FIELDS
+        | AUDIT_DRAIN_NON_NEGATIVE_NUMBER_FIELDS
+        | {"source", "phase"}
+    ):
+        return None
+    source = detail.get("source")
+    phase = detail.get("phase")
+    if (
+        not isinstance(source, str)
+        or source not in AUDIT_DRAIN_SOURCES
+        or not isinstance(phase, str)
+        or phase not in AUDIT_DRAIN_PHASES
+    ):
+        return None
+    timestamp = record.get("timestamp")
+    operation_id = record.get("operationId")
+    if (
+        not isinstance(timestamp, str)
+        or not 0 < len(timestamp) <= AUDIT_DRAIN_MAXIMUM_TEXT_LENGTH
+        or (
+            operation_id is not None
+            and (
+                not isinstance(operation_id, str)
+                or not 0 < len(operation_id) <= AUDIT_DRAIN_MAXIMUM_TEXT_LENGTH
+            )
+        )
+    ):
+        return None
+    entry: dict[str, object] = {
+        "timestamp": timestamp,
+        "operationId": operation_id,
+        "source": source,
+        "phase": phase,
+    }
+    error_code = record.get("errorCode")
+    completed_without_error = (
+        phase == "completed"
+        and operation_id is not None
+        and "errorCode" in record
+        and (error_code is None or error_code == "")
+    )
+    for name in sorted(AUDIT_DRAIN_NON_NEGATIVE_INT_FIELDS):
+        value = detail.get(name)
+        if value is None:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= AUDIT_DRAIN_INT64_MAXIMUM
+        ):
+            return None
+        entry[name] = value
+    for name in sorted(AUDIT_DRAIN_SIGNED_INT_FIELDS):
+        value = detail.get(name)
+        if value is None:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not AUDIT_DRAIN_INT64_MINIMUM <= value <= AUDIT_DRAIN_INT64_MAXIMUM
+        ):
+            return None
+        entry[name] = value
+    for name in sorted(AUDIT_DRAIN_NON_NEGATIVE_NUMBER_FIELDS):
+        value = detail.get(name)
+        if value is None:
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            if not 0 <= value <= AUDIT_DRAIN_INT64_MAXIMUM:
+                return None
+        elif isinstance(value, float):
+            if not math.isfinite(value) or value < 0:
+                return None
+        else:
+            return None
+        entry[name] = value
+    return entry, completed_without_error
+
+
+def _is_confined_to_run_root(path: Path, run_source: Path) -> bool:
+    """Reject any linked ancestor between path and the run root."""
+    ancestor = path.parent
+    while ancestor != run_source:
+        if ancestor.is_symlink() or ancestor.is_junction() or ancestor == ancestor.parent:
+            return False
+        ancestor = ancestor.parent
+    return not (run_source.is_symlink() or run_source.is_junction())
+
+
+def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -> frozenset[str]:
+    """Archive bounded S35 audit-drain measurements from the log whitelist.
+
+    A missing capture stays an explicit empty status, never a measurement
+    pass, and only logs whose ancestors up to the run root are real
+    directories are read. Returns the operationIds whose business and file
+    drains both completed without error in the full scan, unaffected by the
+    entry cap.
+    """
+    workspace_root = run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces"
+    entries: list[dict[str, object]] = []
+    completed_sources: dict[str, set[str]] = {}
+    matched = 0
+    logs_read = 0
+    for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase*.log")):
+        if (
+            log_path.is_symlink()
+            or log_path.is_junction()
+            or not log_path.is_file()
+            or re.fullmatch(r"pocketbase(?:-[0-9]{8}-[0-9]{9})?\.log", log_path.name) is None
+            or not _is_confined_to_run_root(log_path, run_source)
+        ):
+            continue
+        logs_read += 1
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            projected = _project_audit_drain_entry(line)
+            if projected is None:
+                continue
+            entry, completed = projected
+            matched += 1
+            entry_source = entry["source"]
+            entry_operation = entry["operationId"]
+            if completed and isinstance(entry_source, str) and isinstance(entry_operation, str):
+                completed_sources.setdefault(entry_operation, set()).add(entry_source)
+            if len(entries) < AUDIT_DRAIN_MAXIMUM_ENTRIES:
+                entries.append(entry)
+    payload = {
+        "event": AUDIT_DRAIN_EVENT,
+        "status": "measured" if entries else "empty",
+        "logsRead": logs_read,
+        "entriesTotal": matched,
+        "truncated": matched > len(entries),
+        "maximumEntries": AUDIT_DRAIN_MAXIMUM_ENTRIES,
+        "entries": entries,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return frozenset(
+        operation
+        for operation, operation_sources in completed_sources.items()
+        if operation_sources == AUDIT_DRAIN_SOURCES
+    )
+
+
 def persist_product_e2e_evidence(
     source_root: Path,
     destination_root: Path,
@@ -1478,6 +1670,9 @@ def persist_product_e2e_evidence(
             "35-data-io-interoperability": (
                 "35-file-preview-progress.png",
                 "35-file-preview-cancel.json",
+                "35-picker-import-unicode-csv-select.png",
+                "35-picker-import-unicode-xlsx-select.png",
+                "35-native-import-picker.json",
                 "35-import-management-history.png",
                 "35-import-management-reopened.png",
                 "35-source-import-history.png",
@@ -1505,6 +1700,21 @@ def persist_product_e2e_evidence(
             if not copied and item["status"] == "passed":
                 raise ValueError(
                     f"passing {scenario_id} report lacks screenshot evidence: {filename}"
+                )
+        if scenario_id == "35-data-io-interoperability":
+            # Bounded measurements for every outcome; the full runtime tree
+            # stays failure-only. A passed S35 needs one operationId whose
+            # business and file drains both completed without error; failed
+            # reports keep empty/partial forensics.
+            completed_operations = _persist_s35_audit_drain_measurements(
+                run_source,
+                run_destination / scenario_id / "35-audit-drain.json",
+            )
+            if item["status"] == "passed" and not completed_operations:
+                raise ValueError(
+                    f"passing {scenario_id} report lacks a completed audit-drain pair: "
+                    "expected business and file phase completed without error "
+                    "under one operationId"
                 )
         if scenario_id == "42-file-document-native-operations":
             if item["status"] == "passed":
