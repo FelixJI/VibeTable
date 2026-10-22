@@ -1282,8 +1282,13 @@ def _copy_if_file(source: Path, destination: Path) -> bool:
     return True
 
 
-def _project_audit_drain_entry(line: str) -> dict[str, object] | None:
-    """Project one closed-set audit-drain line, or reject it fail closed."""
+def _project_audit_drain_entry(line: str) -> tuple[dict[str, object], bool] | None:
+    """Project one closed-set audit-drain line, or reject it fail closed.
+
+    The returned bool marks a no-error completed drain: phase completed, a
+    non-empty operationId, and an explicitly null/empty errorCode. errorCode
+    text is never kept in the archived projection.
+    """
     try:
         record = json.loads(line)
     except json.JSONDecodeError:
@@ -1327,6 +1332,13 @@ def _project_audit_drain_entry(line: str) -> dict[str, object] | None:
         "source": source,
         "phase": phase,
     }
+    error_code = record.get("errorCode")
+    completed_without_error = (
+        phase == "completed"
+        and operation_id is not None
+        and "errorCode" in record
+        and (error_code is None or error_code == "")
+    )
     for name in sorted(AUDIT_DRAIN_NON_NEGATIVE_INT_FIELDS):
         value = detail.get(name)
         if value is None:
@@ -1362,7 +1374,7 @@ def _project_audit_drain_entry(line: str) -> dict[str, object] | None:
         else:
             return None
         entry[name] = value
-    return entry
+    return entry, completed_without_error
 
 
 def _is_confined_to_run_root(path: Path, run_source: Path) -> bool:
@@ -1380,12 +1392,13 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
 
     A missing capture stays an explicit empty status, never a measurement
     pass, and only logs whose ancestors up to the run root are real
-    directories are read. Returns every valid entry's source from the full
-    scan, unaffected by the entry cap.
+    directories are read. Returns the operationIds whose business and file
+    drains both completed without error in the full scan, unaffected by the
+    entry cap.
     """
     workspace_root = run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces"
     entries: list[dict[str, object]] = []
-    sources: set[str] = set()
+    completed_sources: dict[str, set[str]] = {}
     matched = 0
     logs_read = 0
     for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase*.log")):
@@ -1399,13 +1412,15 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
             continue
         logs_read += 1
         for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            entry = _project_audit_drain_entry(line)
-            if entry is None:
+            projected = _project_audit_drain_entry(line)
+            if projected is None:
                 continue
+            entry, completed = projected
             matched += 1
             entry_source = entry["source"]
-            if isinstance(entry_source, str):
-                sources.add(entry_source)
+            entry_operation = entry["operationId"]
+            if completed and isinstance(entry_source, str) and isinstance(entry_operation, str):
+                completed_sources.setdefault(entry_operation, set()).add(entry_source)
             if len(entries) < AUDIT_DRAIN_MAXIMUM_ENTRIES:
                 entries.append(entry)
     payload = {
@@ -1419,7 +1434,11 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return frozenset(sources)
+    return frozenset(
+        operation
+        for operation, operation_sources in completed_sources.items()
+        if operation_sources == AUDIT_DRAIN_SOURCES
+    )
 
 
 def persist_product_e2e_evidence(
@@ -1684,16 +1703,18 @@ def persist_product_e2e_evidence(
                 )
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
-            # stays failure-only. A passed S35 must show both closed-audit
-            # sources; failed reports keep empty/partial forensics.
-            sources = _persist_s35_audit_drain_measurements(
+            # stays failure-only. A passed S35 needs one operationId whose
+            # business and file drains both completed without error; failed
+            # reports keep empty/partial forensics.
+            completed_operations = _persist_s35_audit_drain_measurements(
                 run_source,
                 run_destination / scenario_id / "35-audit-drain.json",
             )
-            if item["status"] == "passed" and sources != AUDIT_DRAIN_SOURCES:
+            if item["status"] == "passed" and not completed_operations:
                 raise ValueError(
-                    f"passing {scenario_id} report lacks audit-drain evidence: "
-                    f"expected sources business and file, found {sorted(sources)}"
+                    f"passing {scenario_id} report lacks a completed audit-drain pair: "
+                    "expected business and file phase completed without error "
+                    "under one operationId"
                 )
         if scenario_id == "42-file-document-native-operations":
             if item["status"] == "passed":

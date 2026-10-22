@@ -2074,11 +2074,32 @@ def _s35_pocketbase_log_lines() -> list[str]:
         '"auditDrain":{"source":"business","phase":"ack","appended":-1}}',
         full,
         '{"event":"snapshot.freeze.audit.drain.returned","timestamp":"2026-10-21T13:12:45.0Z",'
-        '"operationId":null,"auditDrain":{"source":"file","phase":"between_records","appended":2}}',
+        '"operationId":"op-full","errorCode":null,'
+        '"auditDrain":{"source":"file","phase":"completed","appended":2}}',
     ]
 
 
-def _write_s35_audit_drain_log(run: Path, sources: tuple[str, ...]) -> None:
+_S35_ERROR_CODE_MISSING = object()
+
+
+def _s35_drain_line(
+    source: str,
+    phase: str,
+    operation_id: str | None,
+    error_code: object = _S35_ERROR_CODE_MISSING,
+) -> str:
+    record: dict[str, object] = {
+        "event": "snapshot.freeze.audit.drain.returned",
+        "timestamp": "2026-10-21T13:12:44Z",
+        "operationId": operation_id,
+        "auditDrain": {"source": source, "phase": phase},
+    }
+    if error_code is not _S35_ERROR_CODE_MISSING:
+        record["errorCode"] = error_code
+    return json.dumps(record)
+
+
+def _write_s35_drain_lines(run: Path, lines: list[str]) -> None:
     logs = (
         run
         / "_runtime"
@@ -2092,18 +2113,129 @@ def _write_s35_audit_drain_log(run: Path, sources: tuple[str, ...]) -> None:
         / "logs"
     )
     logs.mkdir(parents=True, exist_ok=True)
-    lines = [
-        json.dumps(
-            {
-                "event": "snapshot.freeze.audit.drain.returned",
-                "timestamp": f"2026-10-21T13:12:44.{index:03d}Z",
-                "operationId": f"op-{source}",
-                "auditDrain": {"source": source, "phase": "ack", "appended": index},
-            }
-        )
-        for index, source in enumerate(sources)
-    ]
     (logs / "pocketbase.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_s35_audit_drain_log(run: Path, sources: tuple[str, ...]) -> None:
+    _write_s35_drain_lines(
+        run,
+        [_s35_drain_line(source, "completed", "op-close", error_code=None) for source in sources],
+    )
+
+
+@pytest.mark.parametrize(
+    "phases",
+    [("pending", "ack"), ("append", "between_records")],
+    ids=("pending-ack", "append-between-records"),
+)
+def test_passing_s35_report_rejects_uncompleted_audit_drain_phases(
+    tmp_path: Path,
+    phases: tuple[str, str],
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_drain_lines(
+        run,
+        [
+            _s35_drain_line("business", phases[0], "op-close", error_code=None),
+            _s35_drain_line("file", phases[1], "op-close", error_code=None),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["workspace.snapshot.lock_failed", "drain-error"],
+)
+def test_passing_s35_report_rejects_audit_drain_entries_with_errors(
+    tmp_path: Path,
+    error_code: str,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_drain_lines(
+        run,
+        [
+            _s35_drain_line("business", "completed", "op-close", error_code=error_code),
+            _s35_drain_line("file", "completed", "op-close", error_code=error_code),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+    # Failed measurements stay archived and never carry errorCode text.
+    serialized = (
+        tmp_path / "destination" / run.name / "35-data-io-interoperability" / "35-audit-drain.json"
+    ).read_text(encoding="utf-8")
+    payload = json.loads(serialized)
+    assert payload["status"] == "measured"
+    assert payload["entriesTotal"] == 2
+    assert error_code not in serialized
+
+
+def test_passing_s35_report_rejects_cross_operation_audit_drain_pairs(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_drain_lines(
+        run,
+        [
+            _s35_drain_line("business", "completed", "op-a", error_code=None),
+            _s35_drain_line("file", "completed", "op-b", error_code=None),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+
+def test_passing_s35_report_rejects_audit_drain_pairs_without_operation_ids(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_drain_lines(
+        run,
+        [
+            _s35_drain_line("business", "completed", None, error_code=None),
+            _s35_drain_line("file", "completed", None, error_code=None),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+
+def test_passing_s35_report_rejects_audit_drain_entries_missing_error_code(
+    tmp_path: Path,
+) -> None:
+    run = _s35_audit_drain_run(tmp_path, "passed")
+    _write_s35_drain_lines(
+        run,
+        [
+            _s35_drain_line("business", "completed", "op-close"),
+            _s35_drain_line("file", "completed", "op-close"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="audit-drain"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
 
 
 @pytest.mark.parametrize(
@@ -2142,7 +2274,7 @@ def test_passing_s35_report_rejects_incomplete_audit_drain_sources(
     )
 
 
-def test_passing_s35_report_accepts_both_audit_drain_sources(tmp_path: Path) -> None:
+def test_passing_s35_report_accepts_a_completed_audit_drain_pair(tmp_path: Path) -> None:
     run = _s35_audit_drain_run(tmp_path, "passed")
     _write_s35_audit_drain_log(run, ("business", "file"))
 
@@ -2159,6 +2291,8 @@ def test_passing_s35_report_accepts_both_audit_drain_sources(tmp_path: Path) -> 
     )
     assert payload["status"] == "measured"
     assert {entry["source"] for entry in payload["entries"]} == {"business", "file"}
+    assert all(entry["phase"] == "completed" for entry in payload["entries"])
+    assert all(entry["operationId"] == "op-close" for entry in payload["entries"])
 
 
 @pytest.mark.parametrize("log_sources", [None, ("business",), ("invalid",)])
@@ -2247,7 +2381,7 @@ def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
     assert payload["entriesTotal"] == 2
     assert payload["truncated"] is False
     assert payload["maximumEntries"] == 64
-    assert [entry["operationId"] for entry in payload["entries"]] == ["op-full", None]
+    assert [entry["operationId"] for entry in payload["entries"]] == ["op-full", "op-full"]
     first = payload["entries"][0]
     assert first["source"] == "business"
     assert first["phase"] == "completed"
@@ -2257,7 +2391,7 @@ def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
     assert first["pendingMs"] == 0.25
     second = payload["entries"][1]
     assert second["source"] == "file"
-    assert second["phase"] == "between_records"
+    assert second["phase"] == "completed"
     assert set(second) == {"timestamp", "operationId", "source", "phase", "appended"}
     # Dirty bodies, unknown keys, and illegal values never reach the archive.
     for forbidden in ("secret", "正文", "customer@", "query", "backend"):
@@ -2383,17 +2517,18 @@ def test_product_e2e_evidence_reads_rotated_s35_audit_drain_logs(tmp_path: Path)
         json.dumps({"event": "sidecar.starting", "timestamp": "2026-10-21T13:12:31Z"}) + "\n",
         encoding="utf-8",
     )
-    for filename, source, operation_id in (
-        ("pocketbase-20261021-131244123.log", "business", "op-rotated-business"),
-        ("pocketbase-20261022-091500456.log", "file", "op-rotated-file"),
+    for filename, source in (
+        ("pocketbase-20261021-131244123.log", "business"),
+        ("pocketbase-20261022-091500456.log", "file"),
     ):
         (logs / filename).write_text(
             json.dumps(
                 {
                     "event": "snapshot.freeze.audit.drain.returned",
                     "timestamp": "2026-10-21T13:12:44Z",
-                    "operationId": operation_id,
-                    "auditDrain": {"source": source, "phase": "ack"},
+                    "operationId": "op-rotated",
+                    "errorCode": None,
+                    "auditDrain": {"source": source, "phase": "completed"},
                 }
             )
             + "\n",
@@ -2611,10 +2746,11 @@ def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
             {
                 "event": "snapshot.freeze.audit.drain.returned",
                 "timestamp": f"2026-10-21T13:13:{index:02d}Z",
-                "operationId": f"op-{index}",
+                "operationId": "op-close",
+                "errorCode": None,
                 "auditDrain": {
                     "source": "business" if index % 2 == 0 else "file",
-                    "phase": "ack",
+                    "phase": "completed",
                 },
             }
         )
@@ -2637,8 +2773,8 @@ def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
     assert payload["entriesTotal"] == 70
     assert payload["truncated"] is True
     assert len(payload["entries"]) == 64
-    assert payload["entries"][0]["operationId"] == "op-0"
-    assert payload["entries"][-1]["operationId"] == "op-63"
+    assert payload["entries"][0]["operationId"] == "op-close"
+    assert payload["entries"][-1]["operationId"] == "op-close"
 
 
 def test_product_e2e_evidence_persists_interrupted_report_and_required_gate_rejects_it(
