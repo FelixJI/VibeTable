@@ -8,27 +8,27 @@ dependencies = [
     "httpx>=0.28.1",
     "httpx-sse>=0.4.3",
     "openpyxl>=3.1.5",
-    "pydantic>=2.13.5",
+    "pydantic>=2.14.1",
 ]
 
 [dependency-groups]
 # 代码质量 + 测试（开发环境安装）
 dev = [
-    "ruff>=0.16.10",
+    "ruff>=0.17.1",
     "mypy>=2.4.0",
     "pyright>=1.1.414",
-    "pre-commit>=4.6.2",
+    "pre-commit>=4.7.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
-    "pytest-mock>=3.16.0",
+    "pytest-mock>=3.17.0",
     "pytest-asyncio>=1.4.0",
     "coverage[toml]>=7.16.2",
 ]
 # 构建工具（打包时安装）
 build = [
-    "uv>=0.12.22",
+    "uv>=0.13.4",
     "pyinstaller>=6.22.3",
-    "setuptools>=84.0.0",
+    "setuptools>=84.2.1",
     "wheel>=0.48.0",
 ]
 
@@ -39,7 +39,7 @@ include = ["backend*"]
 version = {attr = "backend._version.__version__"}
 
 [build-system]
-requires = ["setuptools>=84.0.0", "wheel>=0.48.0"]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 # ---- 代码质量工具 ----
