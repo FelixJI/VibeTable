@@ -5646,13 +5646,20 @@ async function namedRevisionJourney(page, recorder, runtime) {
 async function scenario08(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
-  const staleTable = await createSimpleTable(page, "E2E Stale Conflict", "Value");
+  const staleTable = await createSingleFieldTable(page, "E2E Stale Conflict", "Value", "json");
   const tableId = staleTable.tableId;
   const valueField = staleTable.field.physicalName;
   await selectTable(page, "E2E Stale Conflict");
   await insertRowFromToolbar(page);
   const cell = page.locator(`.tabulator-cell[tabulator-field="${valueField}"]`).first();
   await cell.waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    field => document.querySelector(
+      `.tabulator-cell[tabulator-field="${field}"]`,
+    )?.getAttribute("aria-haspopup") === "dialog",
+    valueField,
+    { timeout: 30_000 },
+  );
 
   const queried = await rawBridgeRequest(page, "query.page", {
     tableId,
@@ -5663,11 +5670,14 @@ async function scenario08(page, recorder) {
   if (!row?.id || !row.__vibetableDigest || !pageResult?.snapshot?.schemaRevision) {
     throw new Error(`query.page omitted stale-edit guards: ${JSON.stringify(queried)}`);
   }
-  // Commit the competing closed-bridge mutation first, then submit the exact
-  // renderer-facing table mutation envelope based on the old page snapshot.
-  // The UI behavior under test is the localized non-blocking conflict notice; keeping an
-  // unrelated Tabulator editor open while injecting a raw bridge envelope
-  // would test editor teardown rather than stale-write handling.
+  // The real JSON editor captures the original value/digest when opened. Its
+  // modal draft survives a same-table realtime refresh, so Save can exercise
+  // a stale user edit without racing Tabulator's inline-editor teardown.
+  const staleValue = { value: "stale-user-write" };
+  const competitorValue = { value: "competitor-write" };
+  await cell.press("Enter");
+  await page.getByTestId("json-editor-modal").waitFor();
+  await page.getByTestId("json-editor-input").fill(JSON.stringify(staleValue));
   const competitorRequestId = await beginRawBridgeRequest(page, "mutation.apply", {
     contractVersion: "2.0",
     requestId: "e2e-stale-competitor",
@@ -5677,7 +5687,7 @@ async function scenario08(page, recorder) {
     operations: [{
       kind: "update",
       recordId: row.id,
-      values: { [valueField]: "competitor-write" },
+      values: { [valueField]: competitorValue },
       expectedDigest: row.__vibetableDigest,
     }],
     actor: { type: "user", id: "e2e-competitor", displayName: "E2E competitor" },
@@ -5690,7 +5700,7 @@ async function scenario08(page, recorder) {
   // Let the competitor's realtime invalidation finish its authoritative table
   // refresh before starting the deliberately stale request. Otherwise the
   // workspace generation can change while UpdateCellAsync is in flight and
-  // correctly discard the now-stale notification itself, making this conflict
+  // correctly discard an old in-flight request, making this conflict
   // assertion race the refresh rather than exercise the conflict boundary.
   await page.waitForFunction(
     ({ field, value }) => Array.from(
@@ -5699,23 +5709,27 @@ async function scenario08(page, recorder) {
     { field: valueField, value: "competitor-write" },
     { timeout: 30_000 },
   );
+  await page.getByTestId("json-editor-modal").waitFor();
+  recorder.check("the stale user draft survives the competing authoritative refresh",
+    isDeepStrictEqual(
+      JSON.parse(await page.getByTestId("json-editor-input").inputValue()), staleValue,
+    ));
   await beginBridgeMessageCapture(page, ["table.editRejected"]);
-  await postRawBridgeNotification(page, "table.updateCellRequested", {
-    table: tableId,
-    rowKey: row.id,
-    column: valueField,
-    oldValue: row[valueField],
-    newValue: "stale-user-write",
-    expectedDigest: row.__vibetableDigest,
-    schemaRevision: pageResult.snapshot.schemaRevision,
-  });
+  await page.getByTestId("json-editor-save").click();
   const rejected = await waitForCapturedBridgeMessage(page);
+  const owner = await page.evaluate(requestId => (
+    window.__vibetableE2EBridgeDiagnostics?.requests?.find(item => (
+      item.requestId === requestId && item.requestType === "table.updateCellRequested"
+    )) ?? null
+  ), rejected.requestId);
   recorder.check(
     "stale renderer mutation was rejected by the product table boundary",
     rejected.type === "table.editRejected"
-      && rejected.requestId === null
+      && typeof rejected.requestId === "string"
+      && rejected.requestId.length > 0
+      && owner !== null
       && rejected.payload?.kind === "edit_conflict",
-    { rejected },
+    { rejected, owner },
   );
   const conflict = page.getByTestId("edit-rejection-notice");
   await conflict.waitFor({ timeout: 30_000 });
@@ -5724,8 +5738,16 @@ async function scenario08(page, recorder) {
     && await page.getByTestId("edit-rejection-reload").isVisible()
     && !(await page.getByTestId("table-error-overlay").isVisible().catch(() => false));
   recorder.check("stale UI edit produced an explicit, user-visible conflict",
-    localizedConflictVisible ||
-    /changed|conflict|stale|digest|变更|冲突/i.test(conflictText), { conflictText });
+    localizedConflictVisible
+      && /changed|conflict|stale|digest|更新|变更|冲突/i.test(conflictText), { conflictText });
+  const authoritative = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("the authoritative competing value survives the rejected user edit",
+    isDeepStrictEqual(
+      authoritative.payload?.rows?.find(item => item.id === row.id)?.[valueField], competitorValue,
+    ), { authoritative });
 }
 
 async function requestPackagedProcessKill(runtime, action, reason) {
