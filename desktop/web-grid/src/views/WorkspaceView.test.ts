@@ -16,6 +16,7 @@ import AppToolbar from "@/components/layout/AppToolbar.vue";
 import WorkspaceSwitcher from "@/components/workspace/WorkspaceSwitcher.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { derivePresetId } from "@/services/uuidV5";
 import { useUiStore } from "@/stores/uiStore";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -1786,34 +1787,38 @@ describe("WorkspaceView", () => {
       if (!request?.requestId) throw new Error("Expected a new preset.save request");
       expect(request.payload).toMatchObject({ presetId: expectedPresetId });
       answeredSaveRequestIds.add(request.requestId);
-      emit({ type: "preset.save", requestId: request.requestId, payload: saved });
+      // A fresh save is created with the UUIDv5 id derived from the operation.
+      const applied = expectedPresetId === null
+        ? { ...saved, id: await derivePresetId((request.payload as { operationId: string }).operationId) }
+        : saved;
+      emit({ type: "preset.save", requestId: request.requestId, payload: applied });
       await flushPromises();
+      return applied;
     };
 
     bar.vm.$emit("create", {
       name: "日历", kind: "calendar", dateField: "start", endDateField: null,
       titleField: "title", groupField: null, coverField: null,
     });
-    const created = { ...entry("view-3", "日历"), view: { ...entry("view-3", "日历").view, kind: "calendar" as const, layout: "calendar" as const, dateField: "start", titleField: "title" } };
-    await answerSave(created, null);
-    await vi.waitFor(() => expect(presets.activePresetId).toBe("view-3"));
+    const created = await answerSave({
+      ...entry("view-3", "日历"),
+      view: { ...entry("view-3", "日历").view, kind: "calendar" as const, layout: "calendar" as const, dateField: "start", titleField: "title" },
+    }, null);
+    await vi.waitFor(() => expect(presets.activePresetId).toBe(created.id));
 
     bar.vm.$emit("duplicate", created, "日历副本");
-    const duplicated = { ...created, id: "view-4", name: "日历副本", revision: "revision-view-4", view: { ...created.view, isDefault: false } };
-    await answerSave(duplicated, null);
+    const duplicated = await answerSave({ ...created, name: "日历副本", revision: "revision-view-4", view: { ...created.view, isDefault: false } }, null);
     bar.vm.$emit("rename", duplicated, "迭代日历");
-    const renamed = { ...duplicated, name: "迭代日历", revision: "revision-renamed" };
-    await answerSave(renamed, "view-4");
+    const renamed = await answerSave({ ...duplicated, name: "迭代日历", revision: "revision-renamed" }, duplicated.id);
 
     bar.vm.$emit("setDefault", renamed);
-    const promoted = { ...renamed, view: { ...renamed.view, isDefault: true } };
-    await answerSave(promoted, "view-4");
+    const promoted = await answerSave({ ...renamed, view: { ...renamed.view, isDefault: true } }, renamed.id);
     await answerSave({ ...first, view: { ...first.view, isDefault: false } }, "view-1");
-    await vi.waitFor(() => expect(presets.activePresetId).toBe("view-4"));
+    await vi.waitFor(() => expect(presets.activePresetId).toBe(promoted.id));
 
     presets.markDirty();
     bar.vm.$emit("switch", second);
-    await answerSave(promoted, "view-4");
+    await answerSave(promoted, promoted.id);
     await vi.waitFor(() => expect(presets.activePresetId).toBe("view-2"));
     bar.vm.$emit("save", second);
     await answerSave({ ...second, revision: "revision-saved" }, "view-2");

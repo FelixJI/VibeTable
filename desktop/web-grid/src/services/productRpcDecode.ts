@@ -319,15 +319,27 @@ export function decodePresetsResult(
   return value as unknown as PresetsResult;
 }
 
-export function decodeContentVersionEntry(value: unknown, writeReceipt = false): ContentVersionEntry | null {
+export function decodeContentVersionEntry(
+  value: unknown,
+  options: {
+    readonly writeReceipt?: boolean;
+    /** Dispatch-time identity a `version.create` receipt must echo. */
+    readonly expected?: { readonly id: string; readonly key: string; readonly name: string };
+  } = {},
+): ContentVersionEntry | null {
   if (!isPlainObject(value)) return null;
   if (!nonEmptyString(value.id) || !nonEmptyString(value.revision)) return null;
   if (typeof value.key !== "string" || typeof value.name !== "string") return null;
   if (typeof value.mainHash !== "string") return null;
   if (typeof value.outdated !== "boolean") return null;
   if (!optionalStringOrNull(value.changeSetId)) return null;
-  if (writeReceipt && !nonEmptyString(value.changeSetId)) return null;
+  if ((options.writeReceipt || options.expected) && !nonEmptyString(value.changeSetId)) return null;
   if (!stringArray(value.emittedEvents)) return null;
+  if (options.expected) {
+    if (value.id !== options.expected.id) return null;
+    if (value.key !== options.expected.key) return null;
+    if (value.name !== options.expected.name) return null;
+  }
   return value as unknown as ContentVersionEntry;
 }
 

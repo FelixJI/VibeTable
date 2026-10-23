@@ -5,6 +5,7 @@ import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useContentVersionService } from "./contentVersionService";
 import { usePresetVersionService } from "./presetVersionService";
+import { derivePresetId, deriveVersionId } from "./uuidV5";
 
 // Fixtures mirror the Go producers (sidecar/internal/metadata/preset.go,
 // content_version.go) and the cross-stack corpus
@@ -27,13 +28,14 @@ describe("presetVersionService", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     requests.length = 0;
-    respond = (type: string, payload: Record<string, unknown>): unknown => {
+    respond = async (type: string, payload: Record<string, unknown>): Promise<unknown> => {
       if (type === "preset.list") {
         return { collection: String(payload.collection), presets: [] };
       }
       if (type === "preset.save") {
         return {
-          id: payload.presetId ?? "p1", collection: String(payload.collection),
+          id: (payload.presetId as string | null) ?? (await derivePresetId(String(payload.operationId))),
+          collection: String(payload.collection),
           name: String(payload.name), scope: "system",
           // Echo the request view (a canonicalized producer echo is covered by
           // the dedicated view-binding cases below).
@@ -49,8 +51,10 @@ describe("presetVersionService", () => {
         };
       }
       if (type === "version.create") {
+        const id = await deriveVersionId(String(payload.operationId));
+        const key = String(payload.key) || id.slice(0, 8);
         return {
-          id: "v1", key: "draft", name: "Draft", outdated: false,
+          id, key, name: String(payload.name), outdated: false,
           mainHash: "hash-1", revision: "rev-v1", changeSetId: "metadata-change",
           emittedEvents: ["metadata-event"],
         };
@@ -620,8 +624,9 @@ describe("presetVersionService", () => {
       filters: [], sorts: [], search: "", visibleFields: ["title"], layout: "table",
       isDefault: true,
     } as const;
-    const mismatched = (view: unknown) => ({
-      id: "p1", collection: "orders", name: "My view", scope: "system",
+    const mismatched = async (view: unknown, operationId: string) => ({
+      id: await derivePresetId(operationId),
+      collection: "orders", name: "My view", scope: "system",
       view, userId: null, revision: "rev-p1", changeSetId: "change-scripted",
       emittedEvents: ["event-scripted"],
     });
@@ -639,17 +644,17 @@ describe("presetVersionService", () => {
       { ...legitNormalized, visibleFields: ["other"] },
       { ...legitNormalized, search: "changed" },
     ]) {
-      respond = (type) => {
+      respond = (type, payload) => {
         if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-        return mismatched(view);
+        return mismatched(view, String(payload.operationId));
       };
       await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
         .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
     }
     // The Go producer echoes the normalized request view; that stays accepted.
-    respond = (type) => {
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return mismatched(legitNormalized);
+      return mismatched(legitNormalized, String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
   });
@@ -662,8 +667,8 @@ describe("presetVersionService", () => {
       summaries: [{ field: "amount", function: "sum" }],
       search: "", visibleFields: [], layout: "table", kind: "calendar", dateField: "start",
     } as const;
-    const normalizedEcho = {
-      id: "p1", collection: "orders", name: "My view", scope: "system",
+    const normalizedEcho = async (operationId: string) => ({
+      id: await derivePresetId(operationId), collection: "orders", name: "My view", scope: "system",
       view: {
         filters: [{ field: "status", operator: "eq", value: "open", logic: "AND" }],
         sorts: [{ field: "created", direction: "asc", nullsLast: true }],
@@ -675,10 +680,10 @@ describe("presetVersionService", () => {
       },
       userId: null, revision: "rev-p1", changeSetId: "change-scripted",
       emittedEvents: ["event-scripted"],
-    };
-    respond = (type) => {
+    });
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return normalizedEcho;
+      return normalizedEcho(String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
   });
@@ -689,8 +694,8 @@ describe("presetVersionService", () => {
       sorts: [], search: "", visibleFields: [], layout: "table",
       columns: [{ width: 100, name: "title" }],
     } as const;
-    const receipt = (columns: unknown, value: unknown) => ({
-      id: "p1", collection: "orders", name: "My view", scope: "system",
+    const receipt = async (columns: unknown, value: unknown, operationId: string) => ({
+      id: await derivePresetId(operationId), collection: "orders", name: "My view", scope: "system",
       view: {
         filters: [{ field: "meta", operator: "eq", value, logic: "AND" }],
         sorts: [], groups: [], summaries: [], search: "", visibleFields: [],
@@ -702,33 +707,33 @@ describe("presetVersionService", () => {
       emittedEvents: ["event-scripted"],
     });
     // Go map JSON encoding re-orders keys; a legal echo must still pass.
-    respond = (type) => {
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return receipt([{ name: "title", width: 100 }], { a: 2, z: 1 });
+      return receipt([{ name: "title", width: 100 }], { a: 2, z: 1 }, String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
 
     const prototypeKeyView = { ...authored, filters: [{ field: "meta", operator: "eq", value: JSON.parse('{"__proto__":{}}') }] } as const;
-    respond = () => receipt([{ name: "title", width: 100 }], { different: 1 });
+    respond = (_type, payload) => receipt([{ name: "title", width: 100 }], { different: 1 }, String(payload.operationId));
     await expect(usePresetVersionService().savePreset("orders", "My view", prototypeKeyView, null))
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
     // Content drift inside opaque values (including nested objects) is still a
     // protocol failure.
-    respond = (type) => {
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return receipt([{ name: "title", width: 100 }], { z: 1, a: 3 });
+      return receipt([{ name: "title", width: 100 }], { z: 1, a: 3 }, String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
-    respond = (type) => {
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return receipt([{ name: "title", width: 101 }], { a: 2, z: 1 });
+      return receipt([{ name: "title", width: 101 }], { a: 2, z: 1 }, String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
-    respond = (type) => {
+    respond = (type, payload) => {
       if (type !== "preset.save") throw new Error(`unexpected ${type}`);
-      return receipt([{ width: 100, name: "title" }], { z: 1, a: { x: 2 } });
+      return receipt([{ width: 100, name: "title" }], { z: 1, a: { x: 2 } }, String(payload.operationId));
     };
     await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
@@ -740,15 +745,19 @@ describe("presetVersionService", () => {
       filters: [{ field: "meta", operator: "eq", value: nested }],
       sorts: [], search: "init", visibleFields: [], layout: "table",
     };
+    let op = "";
     let finish!: (value: unknown) => void;
-    respond = () => new Promise(resolve => { finish = resolve; });
+    respond = (_type, payload) => {
+      op = String(payload.operationId);
+      return new Promise(resolve => { finish = resolve; });
+    };
     const saving = usePresetVersionService().savePreset("orders", "My view", view, null);
     // Mutate the very object that was submitted (including nested values)
     // while the request is in flight.
     (view as { search: string }).search = "mutated";
     nested.a = 3;
-    const echoOfSubmission = {
-      id: "p1", collection: "orders", name: "My view", scope: "system",
+    const echoOfSubmission = async (id: string) => ({
+      id, collection: "orders", name: "My view", scope: "system",
       view: {
         filters: [{ field: "meta", operator: "eq", value: { a: 2, z: 1 }, logic: "AND" }],
         sorts: [], groups: [], summaries: [], search: "init", visibleFields: [],
@@ -758,23 +767,224 @@ describe("presetVersionService", () => {
       },
       userId: null, revision: "rev-p1", changeSetId: "change-scripted",
       emittedEvents: ["event-scripted"],
-    };
-    finish(echoOfSubmission);
+    });
+    finish(await echoOfSubmission(await derivePresetId(op)));
     await expect(saving).resolves.toBeTruthy();
 
-    let finishSecond!: (value: unknown) => void;
-    respond = () => new Promise(resolve => { finishSecond = resolve; });
-    const second = usePresetVersionService().savePreset("orders", "My view", view, null);
-    finishSecond({ ...echoOfSubmission, view: { ...echoOfSubmission.view, search: "mutated", filters: [{ field: "meta", operator: "eq", value: { a: 3, z: 1 }, logic: "AND" }] } });
     // This call's dispatch snapshot IS the mutated view, so its echo passes.
+    const second = usePresetVersionService().savePreset("orders", "My view", view, null);
+    const secondId = await derivePresetId(op);
+    finish({
+      id: secondId, collection: "orders", name: "My view", scope: "system",
+      view: {
+        filters: [{ field: "meta", operator: "eq", value: { a: 3, z: 1 }, logic: "AND" }],
+        sorts: [], groups: [], summaries: [], search: "mutated", visibleFields: [],
+        layout: "table", kind: "table", dateField: null, endDateField: null,
+        titleField: null, groupField: null, coverField: null, columns: [],
+        density: "comfortable", isDefault: false,
+      },
+      userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    });
     await expect(second).resolves.toBeTruthy();
 
     // A stale echo of the first submission no longer matches this dispatch.
-    let finishThird!: (value: unknown) => void;
-    respond = () => new Promise(resolve => { finishThird = resolve; });
     const third = usePresetVersionService().savePreset("orders", "My view", view, null);
-    finishThird({ ...echoOfSubmission });
+    finish(await echoOfSubmission(await derivePresetId(op)));
     await expect(third)
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("requires a fresh preset save receipt to carry the operation-derived UUIDv5 id", async () => {
+    const spy = vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-0000000000f1");
+    try {
+      const receipt = (id: string) => ({
+        id, collection: "orders", name: "My view", scope: "system",
+        view: authoredView, userId: null, revision: "rev-p1",
+        changeSetId: "change-scripted", emittedEvents: ["event-scripted"],
+      });
+      // Same collection/name/view, but the id derived from a different
+      // operation: a wrong-record echo must not be accepted.
+      respond = (type) => {
+        if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+        return receipt("f944c566-7517-5566-8fd8-6e41cc963088"); // v5("vibetable:preset:…0f3")
+      };
+      await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, null))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+      // Fixed vector independently produced with uv run python (stdlib uuid.uuid5,
+      // NAMESPACE_URL), matching Go uuid.NewSHA1.
+      respond = (type) => {
+        if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+        return receipt("f47df9d9-5d96-570a-bea1-3c7a4d63c89c"); // v5("vibetable:preset:…0f1")
+      };
+      await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, null))
+        .resolves.toMatchObject({ id: "f47df9d9-5d96-570a-bea1-3c7a4d63c89c" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("binds a fresh save to the dispatch-time target even if it mutates in flight", async () => {
+    const target = { id: "p1", revision: "rev-p1" };
+    let finish!: (value: unknown) => void;
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return new Promise(resolve => { finish = resolve; });
+    };
+    const saving = usePresetVersionService().savePreset("orders", "My view", authoredView, target);
+    target.id = "p9";
+    const receipt = (id: string) => ({
+      id, collection: "orders", name: "My view", scope: "system",
+      view: authoredView, userId: null, revision: "rev-p1",
+      changeSetId: "change-scripted", emittedEvents: ["event-scripted"],
+    });
+    finish(receipt("p9"));
+    await expect(saving)
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+    let finishSecond!: (value: unknown) => void;
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return new Promise(resolve => { finishSecond = resolve; });
+    };
+    const second = usePresetVersionService().savePreset("orders", "My view", authoredView, target);
+    finishSecond(receipt("p9"));
+    await expect(second).resolves.toBeTruthy();
+  });
+
+  it("requires version.create receipts to echo the derived id, key and name", async () => {
+    const spy = vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-0000000000f2");
+    try {
+      const derived = "e05e75bb-1134-5d36-afb9-cf76758f3dfb"; // v5("vibetable:version:…0f2")
+      const receipt = (patch: Record<string, unknown> = {}) => ({
+        id: derived, key: "Draft", name: "Draft", outdated: false,
+        mainHash: "hash-1", revision: "rev-v1", changeSetId: "metadata-change",
+        emittedEvents: ["metadata-event"], ...patch,
+      });
+      const versions = useContentVersionService();
+      const scope = { collection: "orders", itemId: "row-1" };
+
+      await expect(versions.create(scope, "Draft")).resolves.toBeTruthy();
+      await expect(versions.create(scope, "")).resolves.toMatchObject({ key: "e05e75bb", name: "" });
+
+      respond = (type) => {
+        if (type !== "version.create") throw new Error(`unexpected ${type}`);
+        return receipt({ id: "d4d408fe-f773-5c7d-a6fe-250bdc202465" }); // v5("vibetable:version:…0f5")
+      };
+      await expect(versions.create(scope, "Draft"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+      respond = (type) => {
+        if (type !== "version.create") throw new Error(`unexpected ${type}`);
+        return receipt({ key: "not-the-key" });
+      };
+      await expect(versions.create(scope, "Draft"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+      respond = (type) => {
+        if (type !== "version.create") throw new Error(`unexpected ${type}`);
+        return receipt({ name: "Renamed" });
+      };
+      await expect(versions.create(scope, "Draft"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+      respond = (type) => {
+        if (type !== "version.create") throw new Error(`unexpected ${type}`);
+        return receipt({ key: "e05e75bb", name: "" });
+      };
+      await expect(versions.create(scope, "Draft"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("sends explicit null target fields for a fresh save (exact-field wire contract)", async () => {
+    await usePresetVersionService().savePreset("orders", "My view", authoredView, null);
+    const payload = requests.find(r => r.type === "preset.save")?.payload;
+    expect(payload).toMatchObject({ presetId: null, expectedRevision: null });
+    expect(Object.keys(payload ?? {})).toEqual(expect.arrayContaining(["presetId", "expectedRevision"]));
+  });
+
+  it("propagates an early bridge rejection without deriving or unhandled promises", async () => {
+    const failure = new Error("bridge transport failed");
+    respond = () => Promise.reject(failure);
+    await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, null))
+      .rejects.toBe(failure);
+    await expect(useContentVersionService().create({ collection: "orders", itemId: "row-1" }, "Draft"))
+      .rejects.toBe(failure);
+  });
+
+  it("keeps dispatch-time identity when callers mutate during crypto derivation", async () => {
+    const opSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-0000000000f1");
+    const gatedId = await derivePresetId("00000000-0000-4000-8000-0000000000f1");
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    let release!: () => void;
+    let deriving = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (...args: Parameters<typeof original>) => {
+      deriving = true;
+      await gate;
+      return original(...args);
+    });
+    try {
+      const view: PresetView = {
+        filters: [], sorts: [], search: "frozen", visibleFields: [], layout: "table",
+      };
+      let finish!: (value: unknown) => void;
+      respond = () => new Promise(resolve => { finish = resolve; });
+      const saving = usePresetVersionService().savePreset("orders", "My view", view, null);
+      finish({
+        id: gatedId,
+        collection: "orders", name: "My view", scope: "system",
+        view: {
+          filters: [], sorts: [], groups: [], summaries: [], search: "frozen", visibleFields: [],
+          layout: "table", kind: "table", dateField: null, endDateField: null,
+          titleField: null, groupField: null, coverField: null, columns: [],
+          density: "comfortable", isDefault: false,
+        },
+        userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+        emittedEvents: ["event-scripted"],
+      });
+      await vi.waitFor(() => expect(deriving).toBe(true));
+      // Mutate the submitted view while SHA-1 derivation is suspended.
+      (view as { search: string }).search = "mutated-under-derivation";
+      release();
+      await expect(saving).resolves.toBeTruthy();
+    } finally {
+      release();
+      spy.mockRestore();
+      opSpy.mockRestore();
+    }
+  });
+
+  it("validates version writes against dispatch-time entry and scope scalars", async () => {
+    const versions = useContentVersionService();
+    const scope = { collection: "orders", itemId: "row-1" };
+    const entry = { ...versionEntry };
+    let finish!: (value: unknown) => void;
+    respond = () => new Promise(resolve => { finish = resolve; });
+    const saving = versions.save(scope, entry);
+    (entry as { id: string }).id = "v9";
+    (scope as { itemId: string }).itemId = "row-9";
+    finish({
+      saved: "v1", revisionId: "revision-current", metadataRevision: "rev-v1",
+      changeSetId: "metadata-change", status: "applied", emittedEvents: ["metadata-event"],
+    });
+    await expect(saving).resolves.toBeUndefined();
+
+    let finishDelete!: (value: unknown) => void;
+    respond = () => new Promise(resolve => { finishDelete = resolve; });
+    const removing = versions.delete({ collection: "orders", itemId: "row-1" }, entry);
+    (entry as { id: string }).id = "v8";
+    // The receipt echoes the dispatch-time id; the in-flight mutation is not
+    // what was sent and must not be accepted.
+    finishDelete({
+      deleted: "v8", status: "applied", changeSetId: "metadata-change",
+      emittedEvents: ["metadata-event"],
+    });
+    await expect(removing)
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
   });
 

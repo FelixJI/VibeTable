@@ -6,6 +6,7 @@ import type {
 import { useHostBridge } from "./bridgeContext";
 import { decodePresetEntry, decodePresetsResult, decodeDeletePresetVersionResult, snapshotPresetView } from "./productRpcDecode";
 import { unwrapProductRpcResult } from "./productRpcResult";
+import { derivePresetId } from "./uuidV5";
 
 export type PresetSaveTarget = Pick<PresetEntry, "id" | "revision">;
 
@@ -30,20 +31,25 @@ export function usePresetVersionService() {
     view: PresetView,
     target: PresetSaveTarget | null,
   ): Promise<PresetEntry> {
-    // Capture the submission semantics before dispatch: the caller may mutate
-    // the view (including nested opaque objects) while the request is in
-    // flight, and the receipt must match what was sent, not the live object.
+    // Freeze every submission scalar before dispatch; the payload is sent
+    // synchronously with the request and the derived id is awaited after the
+    // reply, so caller mutations cannot change what was sent or expected.
+    const operation = operationId();
     const submittedView = snapshotPresetView(view);
+    const targetId = target?.id ?? null;
+    const expectedRevision = target?.revision ?? null;
+    const result = await bridge.request("preset.save", {
+      collection,
+      name,
+      view,
+      presetId: targetId,
+      expectedRevision,
+      operationId: operation,
+    });
+    const expectedId = targetId ?? (await derivePresetId(operation));
     return unwrapProductRpcResult(
-      await bridge.request("preset.save", {
-        collection,
-        name,
-        view,
-        presetId: target?.id ?? null,
-        expectedRevision: target?.revision ?? null,
-        operationId: operationId(),
-      }),
-      value => decodePresetEntry(value, { collection, presetId: target?.id, name, submittedView }, { writeReceipt: true }),
+      result,
+      value => decodePresetEntry(value, { collection, presetId: expectedId, name, submittedView }, { writeReceipt: true }),
       "preset.save",
     );
   }

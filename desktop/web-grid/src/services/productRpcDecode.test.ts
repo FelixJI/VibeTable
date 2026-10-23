@@ -193,9 +193,17 @@ describe("productRpcDecode", () => {
     expect(decodePresetEntry(corpusPreset, { collection: "orders" }, { writeReceipt: true })).toBeNull();
     expect(decodePresetEntry({ ...corpusPreset, changeSetId: "change-scripted" }, { collection: "orders" }, { writeReceipt: true }))
       .toMatchObject({ changeSetId: "change-scripted" });
-    expect(decodeContentVersionEntry(corpusVersion, false)).toBe(corpusVersion);
-    expect(decodeContentVersionEntry(corpusVersion, true)).toBeNull();
-    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, true))
+    expect(decodeContentVersionEntry(corpusVersion)).toBe(corpusVersion);
+    // expected implies a create receipt, which always carries the decoration.
+    expect(decodeContentVersionEntry(corpusVersion, { writeReceipt: true })).toBeNull();
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, { writeReceipt: true }))
       .toMatchObject({ changeSetId: "metadata-change" });
+    const expected = { id: "version-a", key: "alpha", name: "命名 \"修订" };
+    expect(decodeContentVersionEntry(corpusVersion, { expected })).toBeNull();
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, { expected }))
+      .toMatchObject({ id: "version-a" });
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, { expected: { ...expected, id: "other" } })).toBeNull();
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, { expected: { ...expected, key: "beta" } })).toBeNull();
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, { expected: { ...expected, name: "别名" } })).toBeNull();
   });
 });
