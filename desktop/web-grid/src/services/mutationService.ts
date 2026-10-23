@@ -125,7 +125,7 @@ export function useMutationService() {
     const expectedSession = table.revision?.databaseSessionId;
     const markUncertain = history.captureWriteUncertainty();
     let sent: boolean | undefined;
-    let settleAction: ((notSubmitted: boolean, dataRevision?: number) => void) | undefined;
+    let settleAction: ((zeroWrites: boolean, dataRevision?: number) => void) | undefined;
     let result: unknown;
     try {
       let cancel!: () => void;
@@ -139,7 +139,7 @@ export function useMutationService() {
       try {
         const request = bridge.requestWithHandle(type, payload);
         sent = request.sent;
-        // Hide redo as soon as postMessage accepts the envelope; only proven zero submission restores it.
+        // Hide redo as soon as postMessage accepts the envelope; only proven zero business writes preserve it.
         if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) settleAction = history.beginAction();
         result = await Promise.race([request.promise, retired]);
       } finally {
@@ -163,7 +163,10 @@ export function useMutationService() {
     }
     if (typeof result === "object" && result !== null && "kind" in result) {
       const rejection = result as MutationErrorPayload;
-      settleAction?.(rejection.notSubmitted === true);
+      // These typed rejections prove zero business writes even when Apply was invoked.
+      settleAction?.(rejection.notSubmitted === true || rejection.kind === "edit_conflict"
+        || rejection.kind === "mutation_validation" || rejection.kind === "schema_mismatch"
+        || rejection.kind === "not_writable");
       if (rejection.notSubmitted === true) {
         if (isCurrent() && requestHistoryIsCurrent()) {
           onRejected?.(rejection, true);
@@ -468,7 +471,7 @@ export function useMutationService() {
   }
 
   function recordPasteResult(r: ApplyPasteResult): void {
-    if (r.collection !== ws.currentTable) return;
+    if (r.collection !== ws.currentTable || (r.createdRowKeys.length === 0 && r.updatedRowKeys.length === 0)) return;
     const isCurrent = scope.capture();
     const revision = table.revision;
     history.push({

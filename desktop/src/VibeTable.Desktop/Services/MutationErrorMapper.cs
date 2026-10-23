@@ -56,6 +56,13 @@ internal sealed class TableMutationPreflightException : InvalidOperationExceptio
     internal MutationErrorKind Kind { get; } = MutationErrorKind.Unknown;
 }
 
+// Created only at mutation.apply, never for a failure while reading back a committed write.
+internal sealed class TableMutationRejectedException(MutationError error, RpcRemoteException original)
+    : InvalidOperationException(error.Message, original)
+{
+    internal MutationError Error { get; } = error;
+}
+
 /// <summary>
 /// Maps <see cref="RpcRemoteException"/> (and transport exceptions) to typed
 /// <see cref="MutationError"/> values. Keeps the
@@ -103,6 +110,8 @@ public static class MutationErrorMapper
                 MutationErrorKind.BackendUnavailable, backendGone.Message);
         }
 
+        if (exception is TableMutationRejectedException rejected) return rejected.Error;
+
         if (exception is TableMutationPreflightException preflight)
         {
             return preflight.InnerException is Exception original
@@ -124,6 +133,25 @@ public static class MutationErrorMapper
         }
 
         return new MutationError(MutationErrorKind.Unknown, exception.Message);
+    }
+
+    // The mutation kernel returns these guard failures before commit or after transaction rollback.
+    // Other product codes (including storage/internal failures) do not prove a terminal outcome.
+    internal static MutationError? MapApplyRejection(RpcRemoteException remote)
+    {
+        if (remote.Code != -32150) return null;
+        string? code = ReadString(remote.ErrorData, "code");
+        MutationErrorKind kind = code switch
+        {
+            "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.record.not_found"
+                => MutationErrorKind.EditConflict,
+            "mutation.schema_revision_conflict" => MutationErrorKind.SchemaMismatch,
+            _ => MutationErrorKind.Unknown,
+        };
+        return kind == MutationErrorKind.Unknown ? null : new MutationError(kind,
+            kind == MutationErrorKind.EditConflict
+                ? Localize("edit_conflict", "edit_conflict", "This row was changed by another session.")
+                : "The table schema changed.", Code: code);
     }
 
     private static MutationError MapRemote(RpcRemoteException remote)

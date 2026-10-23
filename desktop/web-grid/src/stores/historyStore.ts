@@ -104,13 +104,14 @@ export const useHistoryStore = defineStore("history", () => {
   }
 
   // Keep at most MAX_STACK redo candidates; only in-flight requests retain action IDs.
-  function beginAction(): (notSubmitted: boolean, dataRevision?: number) => void {
+  // Zero business writes include both an unsent request and a confirmed transaction rejection.
+  function beginAction(): (zeroWrites: boolean, dataRevision?: number) => void {
     const action = ++actionSequence;
     const historyGeneration = generation;
     pendingActions.value.add(action);
-    return (notSubmitted, dataRevision) => {
+    return (zeroWrites, dataRevision) => {
       if (historyGeneration !== generation || !pendingActions.value.has(action)) return;
-      if (!notSubmitted) {
+      if (!zeroWrites) {
         lastInvalidatingAction = ++actionSequence;
         // Receipts without a commit revision cannot preserve overlapping redo safely.
         if (dataRevision === undefined) lastUnorderedAction = lastInvalidatingAction;

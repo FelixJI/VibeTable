@@ -167,8 +167,10 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         {
             try
             {
-                string code = exception.GetType().Name;
-                if (exception is RpcRemoteException remote)
+                Exception diagnosticException = exception is TableMutationRejectedException
+                    ? exception.InnerException! : exception;
+                string code = diagnosticException.GetType().Name;
+                if (diagnosticException is RpcRemoteException remote)
                 {
                     code = "RPC:" + remote.Code.ToString(CultureInfo.InvariantCulture);
                     // Only known product codes may cross the persisted diagnostic boundary.
@@ -776,7 +778,14 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         };
         JsonElement payload = JsonSerializer.SerializeToElement(request, JsonOptions);
         onSubmitting();
-        return await AwaitWriteOutcomeAsync(() => _product.ApplyMutationAsync(payload, token)).ConfigureAwait(false);
+        try
+        {
+            return await AwaitWriteOutcomeAsync(() => _product.ApplyMutationAsync(payload, token)).ConfigureAwait(false);
+        }
+        catch (RpcRemoteException remote) when (MutationErrorMapper.MapApplyRejection(remote) is { } rejection)
+        {
+            throw new TableMutationRejectedException(rejection, remote);
+        }
     }
 
     private static async Task<T> AwaitWriteOutcomeAsync<T>(Func<Task<T>> operation)

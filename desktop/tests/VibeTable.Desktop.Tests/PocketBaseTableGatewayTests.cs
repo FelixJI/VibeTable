@@ -13,6 +13,58 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    [DataRow("update", "apply", -32150, "mutation.digest_conflict", MutationErrorKind.EditConflict)]
+    [DataRow("insert", "apply", -32150, "mutation.revision_conflict", MutationErrorKind.EditConflict)]
+    [DataRow("delete", "apply", -32150, "mutation.record.not_found", MutationErrorKind.EditConflict)]
+    [DataRow("update", "apply", -32150, "mutation.schema_revision_conflict", MutationErrorKind.SchemaMismatch)]
+    [DataRow("update", "apply", -32150, "mutation.storage.failed", MutationErrorKind.Unknown)]
+    [DataRow("update", "apply", -32150, "mutation.future_code", MutationErrorKind.Unknown)]
+    [DataRow("update", "apply", -32603, "mutation.digest_conflict", MutationErrorKind.Unknown)]
+    [DataRow("update", "readback", -32150, "mutation.digest_conflict", MutationErrorKind.Unknown)]
+    public async Task Review16ApplyTransactionRejectionReleasesReadsWithoutClaimingNotSubmitted(
+        string operation, string stage, int rpcCode, string productCode, MutationErrorKind expectedKind)
+    {
+        string digest = "sha256:" + new string('a', 64);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ProductTransport(); transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.readRows", JsonSerializer.Serialize(new { rows = new[] { new { id = "copiedrow000001", title = "Before", __vibetableDigest = digest } } }));
+        if (stage == "readback") transport.Respond("mutation.apply", JsonSerializer.Serialize(new {
+            newRevision = "data_2", affectedRows = new[] { new { recordId = "copiedrow000001", operation = "update", digest } },
+        }));
+        transport.RespondError(stage == "apply" ? "mutation.apply" : "query.readRows", rpcCode,
+            "The guarded transaction was rejected.", JsonSerializer.Serialize(new { code = productCode }), release.Task);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var service = new TableWorkspaceService(gateway); var sink = new FakeWebReplySink();
+        var notifications = new List<TableNotification>(); service.Notification += notifications.Add;
+        using var barrier = new TableMutationReadBarrier();
+        var controller = new WorkspaceTableRequestController(service, new FakeDatabasePicker(null), sink, () => null) { MutationReads = barrier };
+        object payload = operation switch {
+            "update" => new { table = "orders", rowKey = "copiedrow000001", column = "title", oldValue = "Before", newValue = "After", schemaRevision = "schema_0001" },
+            "insert" => new { table = "orders", values = new { title = "After" }, schemaRevision = "schema_0001" },
+            _ => (object)new { table = "orders", rows = new[] { new { rowKey = "copiedrow000001", expectedDigest = digest } }, schemaRevision = "schema_0001" },
+        };
+        var request = new RoutedWebRequest("table." + (operation == "update" ? "updateCellRequested" : operation == "insert" ? "insertRowRequested" : "deleteRowsRequested"),
+            "transaction", JsonSerializer.SerializeToElement(payload), "");
+        Task write = controller.DispatchAsync(request);
+        await transport.WaitForMethodCountAsync(stage == "readback" ? 4 : operation == "update" ? 3 : 2);
+        Task recovery = barrier.WaitAsync(request, CancellationToken.None);
+        Assert.IsFalse(recovery.IsCompleted);
+        release.SetResult(); await write.WaitAsync(TimeSpan.FromSeconds(2));
+        if (expectedKind == MutationErrorKind.Unknown)
+            await Assert.ThrowsExactlyAsync<TableMutationUnconfirmedException>(() => recovery);
+        else await recovery.WaitAsync(TimeSpan.FromSeconds(2));
+        MutationError error = notifications.Single().MutationResult!.Error!.Value;
+        Assert.AreEqual(expectedKind, error.Kind); Assert.IsFalse(error.NotSubmitted);
+        Assert.AreEqual(productCode, error.Code);
+        TableNotificationPresenter.Post(sink, notifications.Single());
+        JsonElement wire = JsonSerializer.SerializeToElement(sink.Replies.Single().Payload);
+        Assert.AreEqual(MutationErrorMapper.ToWireKind(expectedKind), wire.GetProperty("kind").GetString());
+        Assert.IsFalse(wire.TryGetProperty("notSubmitted", out var notSubmitted) && notSubmitted.GetBoolean());
+        Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
     [DataRow("[]")]
     [DataRow("null")]
     public async Task Review10NonObjectRpcErrorDataKeepsTheUnsubmittedFact(string data)
@@ -1700,7 +1752,7 @@ public sealed class PocketBaseTableGatewayTests
         Assert.HasCount(1, notifications);
         Assert.AreEqual("table.editRejected", notifications[0].Type);
         Assert.AreEqual(privateText, notifications[0].RequestId);
-        Assert.AreEqual(stage == "guard" ? MutationErrorKind.EditConflict : MutationErrorKind.Unknown,
+        Assert.AreEqual(stage is "guard" or "apply" ? MutationErrorKind.EditConflict : MutationErrorKind.Unknown,
             notifications[0].MutationResult!.Error!.Value.Kind);
         Assert.AreEqual(stage is "preflight" or "guard" ? 0 : 1,
             transport.Methods.Count(method => method == "mutation.apply"));
@@ -1832,7 +1884,7 @@ public sealed class PocketBaseTableGatewayTests
             queue.Enqueue((result, false, gate));
         }
 
-        public void RespondError(string method, int code, string message, string data)
+        public void RespondError(string method, int code, string message, string data, Task? gate = null)
         {
             if (!_responses.TryGetValue(
                     method,
@@ -1849,7 +1901,7 @@ public sealed class PocketBaseTableGatewayTests
                     data = JsonDocument.Parse(data).RootElement.Clone(),
                 }),
                 true,
-                null));
+                gate));
         }
 
         public async Task WaitForMethodCountAsync(int count)

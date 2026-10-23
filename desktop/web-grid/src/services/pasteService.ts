@@ -67,11 +67,14 @@ export function usePasteService() {
     if (request.sent) retireApplying = markUncertain;
     const settleAction = request.sent && isCurrent() && historyIsCurrent() ? history.beginAction() : undefined;
     void request.promise.then((result) => {
-      settleAction?.(false);
+      const applied = result as ApplyPasteResult;
+      // Conflict is an atomic rejection; an empty committed result is the all-skip path.
+      const zeroWrites = applied.outcome === "conflict" || (applied.outcome === "committed"
+        && applied.createdRowKeys.length === 0 && applied.updatedRowKeys.length === 0);
+      settleAction?.(zeroWrites);
       if (!isCurrent()) return;
       applying = false;
       retireApplying = undefined;
-      const applied = result as ApplyPasteResult;
       if (applied.outcome === "pending") {
         markUncertain();
         store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
@@ -80,8 +83,9 @@ export function usePasteService() {
       store.setResult(applied);
       if (applied.outcome === "committed" && historyIsCurrent()) onApplied?.(applied);
     }, (error: Error) => {
-      settleAction?.(false);
-      if (!request.sent || error instanceof BridgeRequestNotSentError) {
+      const notSent = !request.sent || error instanceof BridgeRequestNotSentError;
+      settleAction?.(notSent);
+      if (notSent) {
         if (isCurrent()) {
           applying = false;
           retireApplying = undefined;

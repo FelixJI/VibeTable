@@ -79,6 +79,28 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it.each(["rejection-first", "undo-first"] as const)("review16 transaction rejection preserves unrelated history and executable redo (%s)", async (order) => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "new", "rejected"); const ordinary = s.posted.at(-1)!;
+    const reject = async () => {
+      s.reply(ordinary, "table.editRejected", { kind: "edit_conflict", code: "mutation.digest_conflict", message: "The row changed.", notSubmitted: false }); await flush();
+    };
+    const finishUndo = async () => { s.reply(inverse, "table.editCommitted", edit("two", 2, "name", 4)); await undo; };
+    if (order === "rejection-first") { await reject(); await finishUndo(); }
+    else { await finishUndo(); expect(s.history.canRedo).toBe(false); await reject(); }
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.undoStackSize).toBe(1);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ code: "mutation.digest_conflict", notSubmitted: false }));
+    expect(s.history.canRedo).toBe(true);
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 2, newValue: "changed" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 5)); await redo;
+    expect(s.history.canRedo).toBe(false); expect(s.history.undoStackSize).toBe(2);
+    expect(s.posted.filter((request) => request.payload.newValue === "rejected")).toHaveLength(1);
+  });
+
   it.each([
     ["ordinary-first", 3, 4, true], ["undo-first", 3, 4, true],
     ["ordinary-first", 4, 3, false], ["undo-first", 4, 3, false],
@@ -1058,6 +1080,54 @@ describe("paste request ownership", () => {
     collection: "u", schemaRevision: "sr", selection: { querySnapshot: { snapshotId: "q", digest: "q-digest", databaseId: "s", table: "u", schemaRevision: "sr", dataRevision: 1, normalizedQuery: {} }, dataRevision: 1, rowKeys: [] },
     startCell: { column: "name" }, cells: [],
   };
+
+  it.each(["conflict-first", "undo-first"] as const)("review16 rejected paste preserves the undo that invalidated its preview (%s)", async (order) => {
+    const s = pasteSetup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.paste.preview({ ...previewInput, selection: { ...previewInput.selection,
+      dataRevision: 2, rowKeys: [1], querySnapshot: { ...previewInput.selection.querySnapshot, dataRevision: 2 },
+    } });
+    s.reply(s.posted.at(-1)!, "table.pastePreviewReady", { collection: "u", token: { token: input.token, expiresAt: 100, consumed: false }, overflow: false }); await flush();
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    const conflict = async () => {
+      s.reply(apply, "table.pasteApplied", pasteResult({ outcome: "conflict", createdRowKeys: [], updatedRowKeys: [], conflicts: [{ rowKey: 1, currentValue: { name: "old" } }] })); await flush();
+    };
+    const finishUndo = async () => { s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo; };
+    if (order === "conflict-first") { await conflict(); await finishUndo(); }
+    else { await finishUndo(); expect(s.history.canRedo).toBe(false); await conflict(); }
+    expect(s.store.result?.outcome).toBe("conflict"); expect(s.history.writeUncertain).toBe(false);
+    expect(s.applied).not.toHaveBeenCalled(); expect(s.history.undoStackSize).toBe(0); expect(s.history.canRedo).toBe(true);
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 4)); await redo;
+    expect(s.history.canRedo).toBe(false); expect(s.history.undoStackSize).toBe(1);
+    expect(s.posted.filter((request) => request.type === "table.applyPasteRequested")).toHaveLength(1);
+  });
+
+  it("review16 all-skip committed paste preserves executable redo and creates no empty history", async () => {
+    const s = pasteSetup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.paste.apply(input); expect(s.history.canRedo).toBe(false);
+    s.reply(s.posted.at(-1)!, "table.pasteApplied", pasteResult({ createdRowKeys: [], updatedRowKeys: [], skippedRowKeys: [1] })); await flush();
+    expect(s.store.phase).toBe("applied"); expect(s.history.undoStackSize).toBe(0); expect(s.history.canRedo).toBe(true);
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 4)); await redo;
+    expect(s.history.undoStackSize).toBe(1); expect(s.history.canRedo).toBe(false);
+  });
+
+  it.each(["pending", "error"] as const)("review16 empty paste row arrays cannot prove zero writes for %s", async (outcome) => {
+    const s = pasteSetup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    const emptyRows = { createdRowKeys: [], updatedRowKeys: [] };
+    if (outcome === "pending") s.reply(apply, "table.pasteApplied", pasteResult({ ...emptyRows, outcome }));
+    else s.reply(apply, "operation.failed", { ...emptyRows, message: "The paste outcome is unknown." });
+    await flush();
+    expect(s.history.writeUncertain).toBe(true); expect(s.history.canRedo).toBe(false);
+    expect(s.history.undoStackSize).toBe(0); expect(s.applied).not.toHaveBeenCalled();
+    const requests = s.posted.length; await s.service.performRedo(); expect(s.posted).toHaveLength(requests);
+  });
 
   it("review15 committed paste without a revision retires overlapping redo and keeps other undo entries", async () => {
     const s = pasteSetup(); await seed(s);
