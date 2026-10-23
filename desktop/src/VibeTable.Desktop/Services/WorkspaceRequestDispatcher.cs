@@ -270,7 +270,6 @@ public sealed class WorkspaceRequestDispatcher :
 
     private async Task DispatchAsync(RoutedWebRequest request)
     {
-        if (request.Type == "table.selected") _mutationReads.RetireReads();
         foreach (RequestRoute route in _routes)
         {
             if (!route.Handles(request.Type)) continue;

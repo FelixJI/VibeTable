@@ -125,7 +125,7 @@ export function useMutationService() {
     const expectedSession = table.revision?.databaseSessionId;
     const markUncertain = history.captureWriteUncertainty();
     let sent: boolean | undefined;
-    let settleAction: ((notSubmitted: boolean) => void) | undefined;
+    let settleAction: ((notSubmitted: boolean, dataRevision?: number) => void) | undefined;
     let result: unknown;
     try {
       let cancel!: () => void;
@@ -178,14 +178,17 @@ export function useMutationService() {
       }
       throw new Error(rejection.notSubmitted === true ? mutationRejectionMessage(rejection) : rejection.message);
     }
-    settleAction?.(false);
-    if (!isCurrent()) throw new Error("The mutation context changed after sending.");
+    if (!isCurrent()) {
+      settleAction?.(false);
+      throw new Error("The mutation context changed after sending.");
+    }
     const committed = result as MutationResult;
     if (expectedSession && committed.revision.databaseSessionId !== expectedSession) {
       markUncertain();
       report({ kind: "unknown", message: UNKNOWN_MESSAGE });
       throw new Error(UNKNOWN_MESSAGE);
     }
+    settleAction?.(false, committed.revision.dataRevision);
     return committed;
   }
 
@@ -319,9 +322,10 @@ export function useMutationService() {
       id: crypto.randomUUID(), kind: "insertRow", label: "插入行", timestamp: Date.now(),
       get dataRevision() { return dataRevision; },
       undo: async () => {
-        await replay("table.deleteRowsRequested", {
+        const deleted = await replay("table.deleteRowsRequested", {
           table: tableId, rows: guardedRows([rowKey]),
         }, r.revision, isCurrent);
+        dataRevision = deleted.revision.dataRevision;
       },
       redo: async () => {
         const inserted = await replay("table.insertRowRequested", {
@@ -429,10 +433,13 @@ export function useMutationService() {
       const r = result as DeleteRowsResult;
       let restoredKeys = [...r.deletedRowKeys];
       let dataRevision = r.revision.dataRevision;
+      let redoDataRevision: number | undefined;
       applyResult(r, () => history.push({
         id: crypto.randomUUID(), kind: "deleteRows", label: `删除 ${r.deletedRowKeys.length} 行`, timestamp: Date.now(),
         get dataRevision() { return dataRevision; },
+        get redoDataRevision() { return redoDataRevision; },
         undo: async () => {
+          redoDataRevision = undefined;
           const insertedKeys: (number | string)[] = [];
           try {
             for (const row of snapshot) {
@@ -440,6 +447,8 @@ export function useMutationService() {
                 table: tableId, values: row,
               }, r.revision, isCurrent) as InsertRowResult;
               insertedKeys.push(inserted.rowKey);
+              dataRevision = inserted.revision.dataRevision;
+              redoDataRevision ??= dataRevision;
             }
             restoredKeys = insertedKeys;
           } catch (error) {

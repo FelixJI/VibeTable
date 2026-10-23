@@ -285,6 +285,12 @@ public sealed class WorkspaceTableRequestController
             return;
         }
         using var requestLease = epochLease;
+        if (_sessionEnvelopeFilter is null) MutationReads?.RetireReads();
+        else if (!_sessionEnvelopeFilter.TryUseCurrent(epochLease, () =>
+        {
+            MutationReads?.RetireReads();
+            return true;
+        })) return;
         CancellationToken windowToken = _sessionToken();
         using var linkedCancellation = epochLease is null ? null
             : CancellationTokenSource.CreateLinkedTokenSource(windowToken, epochLease.CancellationToken);

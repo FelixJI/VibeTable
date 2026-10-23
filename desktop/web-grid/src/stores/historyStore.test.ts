@@ -75,10 +75,12 @@ it("new action during pending undo invalidates that future redo", async () => {
 it("late confirmation can preserve redo created after submission", async () => {
   setActivePinia(createPinia());
   const store = useHistoryStore();
-  store.push({ kind: "updateCell", label: "edit", undo: vi.fn(), redo: vi.fn() } as never);
-  store.beginAction();
+  store.push({ kind: "updateCell", label: "edit", dataRevision: 4, undo: vi.fn(), redo: vi.fn() } as never);
+  const settle = store.beginAction();
   await store.undo();
-  store.push({ kind: "updateCell", label: "late", undo: vi.fn(), redo: vi.fn() } as never, true);
+  expect(store.canRedo).toBe(false);
+  settle(false, 3);
+  store.push({ kind: "updateCell", label: "late", dataRevision: 3, undo: vi.fn(), redo: vi.fn() } as never, true);
   expect(store.canRedo).toBe(true);
   expect(store.undoStackSize).toBe(1);
 });
@@ -121,18 +123,31 @@ it("review7 authority retirement invalidates old uncertainty and recovery capabi
   store.markWriteUncertain(); oldRead(); expect(store.writeUncertain).toBe(true);
 });
 
-it.each(["clear", "undo", "redo"])("review12 zero submission preserves redo alongside later %s activity", async activity => {
+it.each(["clear", "undo", "redo"])("review15 zero submission preserves redo alongside later %s activity", async activity => {
   setActivePinia(createPinia()); const store = useHistoryStore();
   const entry = { kind: "updateCell", label: "old", undo: vi.fn(), redo: vi.fn() } as never;
+  const next = { kind: "updateCell", label: "new", undo: vi.fn(), redo: vi.fn() } as never;
   store.push(entry); await store.undo(); const restore = store.beginAction();
   if (activity === "clear") store.clear();
-  else {
-    store.push({ kind: "updateCell", label: "new", undo: vi.fn(), redo: vi.fn() } as never, true);
-    await store.undo(); if (activity === "redo") await store.redo();
-  }
-  const before = [...store.redoStack]; restore(true); expect(store.redoStack).toEqual(activity === "clear" ? before : [entry, ...before]);
+  else { store.push(next, true); await store.undo(); }
+  expect(store.canRedo).toBe(false); restore(true);
+  if (activity === "redo") await store.redo();
+  expect(store.redoStack).toEqual(activity === "clear" ? [] : activity === "redo" ? [entry] : [entry, next]);
+  const before = [...store.redoStack]; restore(true); expect(store.redoStack).toEqual(before);
 });
 
+it.each([false, true])("review15 receipts without revision retire overlapping redo but permit later undo (%s)", async settleBeforeUndo => {
+  setActivePinia(createPinia()); const store = useHistoryStore(); let complete!: () => void;
+  store.push({ kind: "updateCell", label: "kept", dataRevision: 1, undo: vi.fn(), redo: vi.fn() } as never);
+  store.push({ kind: "updateCell", label: "overlap", dataRevision: 2,
+    undo: () => new Promise<void>(resolve => { complete = resolve; }), redo: vi.fn() } as never);
+  const settle = store.beginAction(); const undo = store.undo();
+  if (settleBeforeUndo) settle(false);
+  complete(); await undo;
+  if (!settleBeforeUndo) settle(false);
+  expect(store.canRedo).toBe(false); expect(store.undoStackSize).toBe(1);
+  await store.undo(); expect(store.canRedo).toBe(true); expect(store.redoStack[0]?.label).toBe("kept");
+});
 it("review12 late settlements cannot lower the invalidation watermark for a pending undo", async () => {
   setActivePinia(createPinia()); const store = useHistoryStore();
   let complete!: () => void;
@@ -151,4 +166,16 @@ it("review12 hidden redo candidates retain the same 50 entry bound", async () =>
   expect(store.redoStack).toHaveLength(0);
   settlements.forEach(settle => settle(true));
   expect(store.redoStack).toHaveLength(50); expect(store.redoStack[0]?.label).toBe("e5");
+});
+it("review15 revision invalidation is monotonic and a new history scope starts afresh", async () => {
+  setActivePinia(createPinia()); const store = useHistoryStore(); let complete!: () => void;
+  store.push({ kind: "updateCell", label: "old", dataRevision: 5,
+    undo: () => new Promise<void>(resolve => { complete = resolve; }), redo: vi.fn() } as never);
+  const first = store.beginAction(); const second = store.beginAction(); const undo = store.undo();
+  second(false, 6); first(false, 3); complete(); await undo;
+  expect(store.canRedo).toBe(false);
+  const retired = store.beginAction(); store.clear();
+  store.push({ kind: "updateCell", label: "new scope", dataRevision: 1, undo: vi.fn(), redo: vi.fn() } as never, true);
+  await store.undo(); retired(false, 99);
+  expect(store.canRedo).toBe(true); expect(store.redoStack[0]?.label).toBe("new scope");
 });

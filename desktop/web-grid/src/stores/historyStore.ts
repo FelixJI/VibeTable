@@ -16,6 +16,8 @@ export interface HistoryEntry {
   readonly timestamp: number;
   /** Authority commit order, when the mutation receipt provides one. */
   readonly dataRevision?: number;
+  /** First commit of a multi-write undo; dataRevision still records its latest commit. */
+  readonly redoDataRevision?: number;
   readonly canReplay?: () => boolean;
   readonly undo: () => Promise<void>;
   /**
@@ -30,14 +32,11 @@ const MAX_STACK = 50;
 
 export const useHistoryStore = defineStore("history", () => {
   const undoStack = ref<HistoryEntry[]>([]);
-  // Candidates stay in undo order; action cutoffs only hide a prefix while writes are pending.
-  const redoEntries = ref<{ entry: HistoryEntry; action: number }[]>([]);
+  const redoEntries = ref<{ entry: HistoryEntry; action: number; dataRevision?: number }[]>([]);
   const pendingActions = ref(new Set<number>());
-  const redoStack = computed(() => {
-    let latestPending = 0;
-    for (const action of pendingActions.value) latestPending = Math.max(latestPending, action);
-    return redoEntries.value.filter((item) => item.action >= latestPending).map((item) => item.entry);
-  });
+  // Dispatch order cannot prove whether an in-flight write commits before or after undo.
+  const redoStack = computed(() => pendingActions.value.size > 0
+    ? [] : redoEntries.value.map((item) => item.entry));
   const lastError = ref<string | null>(null);
   const busy = ref(false);
   const workspace = useWorkspaceStore();
@@ -49,6 +48,8 @@ export const useHistoryStore = defineStore("history", () => {
   let generation = 0;
   let actionSequence = 0;
   let lastInvalidatingAction = 0;
+  let lastUnorderedAction = 0;
+  let lastCommittedRevision = -1;
   let uncertaintyGeneration = 0;
 
   const canUndo = computed(() => !busy.value && !writeUncertain.value && undoStack.value.length > 0
@@ -97,24 +98,33 @@ export const useHistoryStore = defineStore("history", () => {
     return () => generation === captured;
   }
 
+  function redoIsCurrent(item: { action: number; dataRevision?: number }): boolean {
+    return item.action >= lastUnorderedAction && (item.dataRevision === undefined
+      ? item.action >= lastInvalidatingAction : item.dataRevision >= lastCommittedRevision);
+  }
+
   // Keep at most MAX_STACK redo candidates; only in-flight requests retain action IDs.
-  function beginAction(): (notSubmitted: boolean) => void {
+  function beginAction(): (notSubmitted: boolean, dataRevision?: number) => void {
     const action = ++actionSequence;
     const historyGeneration = generation;
     pendingActions.value.add(action);
-    return (notSubmitted) => {
+    return (notSubmitted, dataRevision) => {
       if (historyGeneration !== generation || !pendingActions.value.has(action)) return;
       if (!notSubmitted) {
-        lastInvalidatingAction = Math.max(lastInvalidatingAction, action);
-        redoEntries.value = redoEntries.value.filter((item) => item.action >= lastInvalidatingAction);
+        lastInvalidatingAction = ++actionSequence;
+        // Receipts without a commit revision cannot preserve overlapping redo safely.
+        if (dataRevision === undefined) lastUnorderedAction = lastInvalidatingAction;
+        else lastCommittedRevision = Math.max(lastCommittedRevision, dataRevision);
+        redoEntries.value = redoEntries.value.filter(redoIsCurrent);
       }
       pendingActions.value.delete(action);
     };
   }
 
   function retainRedo(entry: HistoryEntry, action: number): void {
-    if (action < lastInvalidatingAction) return;
-    redoEntries.value.push({ entry, action });
+    const item = { entry, action, dataRevision: entry.redoDataRevision ?? entry.dataRevision };
+    if (!redoIsCurrent(item)) return;
+    redoEntries.value.push(item);
     if (redoEntries.value.length > MAX_STACK) redoEntries.value.shift();
   }
 
@@ -138,7 +148,7 @@ export const useHistoryStore = defineStore("history", () => {
     const entry = undoStack.value.pop();
     if (!entry) return;
     const startGeneration = generation;
-    const startAction = actionSequence;
+    const startAction = ++actionSequence;
     busy.value = true;
     try {
       await entry.undo();
@@ -163,7 +173,7 @@ export const useHistoryStore = defineStore("history", () => {
     if (!entry) return;
     if (!entry.redo) return;
     const startGeneration = generation;
-    const startAction = actionSequence;
+    const startAction = ++actionSequence;
     busy.value = true;
     try {
       await entry.redo();
@@ -185,6 +195,10 @@ export const useHistoryStore = defineStore("history", () => {
     undoStack.value = [];
     redoEntries.value = [];
     pendingActions.value.clear();
+    actionSequence = 0;
+    lastInvalidatingAction = 0;
+    lastUnorderedAction = 0;
+    lastCommittedRevision = -1;
     lastError.value = null;
   }
 

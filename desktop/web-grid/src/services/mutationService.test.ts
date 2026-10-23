@@ -79,6 +79,31 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it.each([
+    ["ordinary-first", 3, 4, true], ["undo-first", 3, 4, true],
+    ["ordinary-first", 4, 3, false], ["undo-first", 4, 3, false],
+  ] as const)("review15 redo follows commit revisions with %s replies (ordinary %s / undo %s)", async (order, ordinaryRevision, undoRevision, canRedo) => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed"); const ordinary = s.posted.at(-1)!;
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    const finishOrdinary = async () => { s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", ordinaryRevision)); await flush(); };
+    const finishUndo = async () => { s.reply(inverse, "table.editCommitted", edit("old", 1, "name", undoRevision)); await undo; };
+    if (order === "ordinary-first") { await finishOrdinary(); await finishUndo(); }
+    else { await finishUndo(); expect(s.history.canRedo).toBe(false); await finishOrdinary(); }
+    expect(s.history.undoStackSize).toBe(1); expect(s.history.canRedo).toBe(canRedo);
+    if (canRedo) {
+      const redo = s.service.performRedo(); await flush();
+      expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+      s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 5)); await redo;
+    }
+  });
+  it("review15 an ordinary action dispatched later but committed earlier preserves the actual undo", async () => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "changed"); const ordinary = s.posted.at(-1)!;
+    s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 4)); await undo;
+    expect(s.history.canRedo).toBe(true); expect(s.history.undoStackSize).toBe(1);
+  });
   it("review10 a proven zero-submission action cannot invalidate a pending undo's future redo", async () => {
     const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
     s.service.updateCell(2, "name", "two", "preflight fails"); const failed = s.posted.at(-1)!;
@@ -120,7 +145,9 @@ describe("mutationService correlated writes", () => {
     const olderRedo = s.history.redoStack[0];
     s.service.updateCell(1, "other", "before", "preflight fails"); const failed = s.posted.at(-1)!;
     const secondUndo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 5)); await secondUndo;
-    const newerRedo = s.history.redoStack[0]; expect(newerRedo).not.toBe(olderRedo);
+    expect(s.history.canRedo).toBe(false);
+    s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight" }); await flush();
+    const newerRedo = s.history.redoStack[1]; expect(newerRedo).toBeDefined(); expect(newerRedo).not.toBe(olderRedo);
     if (consumeNewer) {
       const redo = s.service.performRedo(); await flush();
       expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
@@ -651,10 +678,10 @@ describe("mutationService correlated writes", () => {
       expect(s.history.undoStackSize).toBe(1);
       s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 4));
     } else {
-      s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3));
+      s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 4));
       await undo;
-      expect(s.history.canRedo).toBe(true);
-      s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 4));
+      expect(s.history.canRedo).toBe(false);
+      s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 3));
     }
     await undo;
     await flush();
@@ -949,6 +976,7 @@ describe("mutationService correlated writes", () => {
     const undo = s.service.performUndo(); await flush();
     expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 10, expectedDigest: digest }]);
     s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [10], revision: revision(3) }); await undo;
+    expect(s.history.redoStack[0]?.dataRevision).toBe(3);
     const redo = s.service.performRedo(); await flush();
     s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 11, row: { rowKey: 11, name: "added", __vibetableDigest: digest }, revision: revision(4) }); await redo;
     const again = s.service.performUndo(); await flush();
@@ -963,11 +991,31 @@ describe("mutationService correlated writes", () => {
     const undo = s.service.performUndo(); await flush();
     expect(s.posted.at(-1)?.payload.values).toMatchObject({ name: "two" });
     s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 22, row: { rowKey: 22, name: "two", __vibetableDigest: digest }, revision: revision(3) }); await undo;
+    expect(s.history.redoStack[0]?.dataRevision).toBe(3);
     const redo = s.service.performRedo(); await flush();
     expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 22, expectedDigest: digest }]);
     s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [22], revision: revision(4) }); await redo;
   });
 
+  it.each([false, true])("review15 multi-row undo retains redo only without an intervening ordinary commit (%s)", async interleaved => {
+    const s = setup(); s.service.deleteRows([{ rowKey: 1, expectedDigest: digest }, { rowKey: 2, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [1, 2], revision: revision(2) }); await flush();
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 11, row: { rowKey: 11, name: "old", __vibetableDigest: digest }, revision: revision(3) }); await flush();
+    const secondRestore = s.posted.at(-1)!;
+    if (interleaved) {
+      s.service.updateCell(11, "name", "old", "intervening edit");
+      s.reply(s.posted.at(-1)!, "table.editCommitted", edit("intervening edit", 11, "name", 4)); await flush();
+    }
+    s.reply(secondRestore, "table.rowsInserted", { rowKey: 22, row: { rowKey: 22, name: "two", __vibetableDigest: digest }, revision: revision(interleaved ? 5 : 4) }); await undo;
+    expect(s.history.canRedo).toBe(!interleaved); expect(s.history.undoStackSize).toBe(interleaved ? 1 : 0);
+    if (!interleaved) {
+      expect(s.history.redoStack[0]?.dataRevision).toBe(4);
+      const redo = s.service.performRedo(); await flush();
+      expect(s.posted.at(-1)!.payload.rows).toEqual([{ rowKey: 11, expectedDigest: digest }, { rowKey: 22, expectedDigest: digest }]);
+      s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [11, 22], revision: revision(5) }); await redo;
+    }
+  });
   it.each(["edit_conflict", "unknown"] as const)("partial multi-row delete undo never restores a blindly replayable entry after %s", async (kind) => {
     const s = setup(); s.service.deleteRows([{ rowKey: 1, expectedDigest: digest }, { rowKey: 2, expectedDigest: digest }]);
     s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [1, 2], revision: revision(2) }); await flush();
@@ -1011,6 +1059,19 @@ describe("paste request ownership", () => {
     startCell: { column: "name" }, cells: [],
   };
 
+  it("review15 committed paste without a revision retires overlapping redo and keeps other undo entries", async () => {
+    const s = pasteSetup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed"); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("two", 2, "name", 4)); await undo;
+    expect(s.history.canRedo).toBe(false);
+    s.reply(apply, "table.pasteApplied", pasteResult({ createdRowKeys: [], updatedRowKeys: [2] })); await flush();
+    expect(s.history.redoStack).toHaveLength(0); expect(s.history.undoStackSize).toBe(2); expect(s.history.writeUncertain).toBe(false);
+    await s.service.performUndo(); // Paste only updates existing rows, so its established undo adds no redo.
+    const laterUndo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 5)); await laterUndo;
+    expect(s.history.canRedo).toBe(true);
+  });
   it("review10 notSent paste remains definitely unsent even if history clears synchronously", async () => {
     const s = pasteSetup(); s.postMessage.mockImplementationOnce(() => { s.history.clear(); throw new Error("not posted"); });
     s.paste.apply(input); await flush();

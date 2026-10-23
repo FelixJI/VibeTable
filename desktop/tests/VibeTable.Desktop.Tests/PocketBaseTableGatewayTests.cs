@@ -356,7 +356,7 @@ public sealed class PocketBaseTableGatewayTests
         var readback = new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "Normalized authority" };
         if (scenario != "missing-readback") readback["__vibetableDigest"] = readbackDigest;
         var releaseReadback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        transport.RespondAfter("query.readRows", JsonSerializer.Serialize(new { rows = new[] { readback } }), releaseReadback.Task);
+        transport.RespondAfter("query.readRows", JsonSerializer.Serialize(new { rows = new[] { readback }, dataRevision = 99 }), releaseReadback.Task);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
         var service = new TableWorkspaceService(gateway);
@@ -376,6 +376,8 @@ public sealed class PocketBaseTableGatewayTests
         {
             Assert.AreEqual(insert ? "table.rowsInserted" : "table.editCommitted", notifications[0].Type);
             object? result = notifications[0].MutationResult!.Result;
+            Assert.AreEqual(2, insert ? ((InsertRowResult)result!).Revision.DataRevision
+                : ((UpdateCellResult)result!).Revision.DataRevision); // The apply receipt owns commit order, not readback.
             Assert.AreEqual("Normalized authority", insert
                 ? ((InsertRowResult)result!).Row["title"] : ((UpdateCellResult)result!).StoredValue);
         }
