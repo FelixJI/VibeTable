@@ -1560,6 +1560,9 @@ def persist_product_e2e_evidence(
     for item in scenarios:
         scenario_id = item["scenario"]
         scenario_evidence = {
+            "07-attachment-history": ("07-named-comparison.png", "07-named-revisions.png"),
+            "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),
+            "32-shared-work-calendar": ("32-shared-work-calendar.png",),
             "02-all-field-schema": (
                 "02-number-display-fixed.png",
                 "02-number-display-currency.png",
