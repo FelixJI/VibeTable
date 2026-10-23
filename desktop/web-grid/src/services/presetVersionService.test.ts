@@ -328,6 +328,89 @@ describe("presetVersionService", () => {
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
   });
 
+  it("rejects preset views whose filter tree is structurally invalid before the store consumes it", async () => {
+    const entry = (filters: unknown) => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: { ...normalizedView, filters }, userId: null, revision: "rev-p1",
+      changeSetId: null, emittedEvents: [],
+    });
+    for (const filters of [
+      [{ filters: null }],
+      [{ filters: "x" }],
+      [{ filters: [] }],
+      [{ groupLogic: "XOR", filters: [{ field: "status", operator: "eq", value: "open", logic: "AND" }] }],
+      [{ field: "status", operator: "not_a_filter", value: "open", logic: "AND" }],
+      [{ field: "", operator: "eq", value: "open", logic: "AND" }],
+      [{ field: 3, operator: "eq", value: "open", logic: "AND" }],
+      [{ field: "status", operator: "eq", value: "open", logic: "XOR" }],
+      "filters",
+    ]) {
+      respond = (type) => {
+        if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+        return { collection: "orders", presets: [entry(filters)] };
+      };
+      await expect(usePresetVersionService().listPresets("orders"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+  });
+
+  it("rejects sorts/groups/summaries that violate required fields or closed sets", async () => {
+    const entry = (view: Record<string, unknown>) => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: { ...normalizedView, ...view }, userId: null, revision: "rev-p1",
+      changeSetId: null, emittedEvents: [],
+    });
+    for (const view of [
+      { sorts: [{ field: "created", direction: "up" }] },
+      { sorts: [{ direction: "asc" }] },
+      { sorts: [{ field: "created", nullsLast: "yes" }] },
+      { groups: [{ field: "warehouse", bucket: "epoch" }] },
+      { groups: [{ bucket: "month" }] },
+      { groups: [{ field: "created", bucket: "month", numberInterval: 0 }] },
+      { groups: [{ field: "created", bucket: "month", numberInterval: "10" }] },
+      { summaries: [{ field: "amount", function: "median" }] },
+      { summaries: [{ field: "amount" }] },
+      { summaries: [{ function: "sum" }] },
+    ]) {
+      respond = (type) => {
+        if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+        return { collection: "orders", presets: [entry(view)] };
+      };
+      await expect(usePresetVersionService().listPresets("orders"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+  });
+
+  it("accepts corpus-shaped nested filter groups and Go-normalized query parts", async () => {
+    const saved = {
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: {
+        ...normalizedView,
+        filters: [{
+          groupLogic: "OR",
+          filters: [
+            { field: "amount", operator: "gt", value: 3, logic: "AND" },
+            { groupLogic: "AND", filters: [{ field: "status", operator: "eq", value: "open", logic: "AND" }] },
+          ],
+        }],
+        sorts: [{ field: "title", direction: "asc", nullsLast: true }],
+        groups: [{ field: "amount", direction: "asc", bucket: "number", numberInterval: 10 }],
+        summaries: [{ field: "amount", function: "sum" }],
+      },
+      userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    };
+    respond = (type) => {
+      if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+      return { collection: "orders", presets: [saved] };
+    };
+
+    await expect(usePresetVersionService().listPresets("orders")).resolves.toMatchObject({
+      collection: "orders",
+      presets: [{ id: "p1", view: { filters: [{ groupLogic: "OR" }] } }],
+    });
+  });
+
   it("returns fully valid corpus-shaped results untouched", async () => {
     respond = (type, payload) => {
       if (type === "preset.list") {

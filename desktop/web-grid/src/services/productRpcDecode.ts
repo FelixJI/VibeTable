@@ -42,14 +42,71 @@ function oneOf<T extends string>(value: unknown, values: readonly T[]): value is
 const PRESET_SCOPES = ["personal", "system", "role"] as const;
 const PRESET_KINDS = ["table", "calendar", "timeline", "kanban", "gallery"] as const;
 const PRESET_DENSITIES = ["compact", "comfortable", "cozy"] as const;
+const FILTER_LOGIC = ["AND", "OR"] as const;
+const FILTER_OPERATORS = [
+  "contains", "eq", "ne", "starts_with", "ends_with", "gt", "lt",
+  "gte", "lte", "between", "in", "is_null", "is_not_null", "regex",
+] as const;
+const SORT_DIRECTIONS = ["asc", "desc"] as const;
+const GROUP_BUCKETS = ["value", "year", "quarter", "month", "week", "day", "hour", "number"] as const;
+const SUMMARY_FUNCTIONS = ["sum", "avg", "min", "max"] as const;
+
+/**
+ * Recursive mirror of the Go `normalizePresetFilter` output contract: a group
+ * is `{ groupLogic, logic?, filters: [1..50] }` (at most three nesting
+ * levels), a leaf is `{ field, operator, logic? }` with an opaque `value`.
+ * The UI clones this tree recursively (`cloneFilterExpressions`), so a
+ * malformed child must be rejected before it reaches any store.
+ */
+function decodeFilterExpression(value: unknown, depth: number, leaves: { count: number }): boolean {
+  if (!isPlainObject(value)) return false;
+  if ("filters" in value) {
+    if (depth >= 3) return false;
+    if (value.groupLogic !== undefined && !oneOf(value.groupLogic, FILTER_LOGIC)) return false;
+    if (value.logic !== undefined && !oneOf(value.logic, FILTER_LOGIC)) return false;
+    if (!Array.isArray(value.filters) || value.filters.length === 0 || value.filters.length > 50) return false;
+    return value.filters.every(child => decodeFilterExpression(child, depth + 1, leaves));
+  }
+  if (!nonEmptyString(value.field)) return false;
+  if (!oneOf(value.operator, FILTER_OPERATORS)) return false;
+  if (value.logic !== undefined && !oneOf(value.logic, FILTER_LOGIC)) return false;
+  leaves.count += 1;
+  return leaves.count <= 50;
+}
+
+/** Mirror of the Go `normalizePresetQueryPart` output for sorts and groups. */
+function decodeSortOrGroup(value: unknown, isGroup: boolean): boolean {
+  if (!isPlainObject(value)) return false;
+  if (!nonEmptyString(value.field)) return false;
+  if (value.direction !== undefined && !oneOf(value.direction, SORT_DIRECTIONS)) return false;
+  if (!isGroup) {
+    if (value.nullsLast !== undefined && typeof value.nullsLast !== "boolean") return false;
+    return true;
+  }
+  if (value.bucket !== undefined && !oneOf(value.bucket, GROUP_BUCKETS)) return false;
+  if (value.numberInterval !== undefined && value.numberInterval !== null
+    && !(typeof value.numberInterval === "number" && Number.isFinite(value.numberInterval)
+      && value.numberInterval > 0)) return false;
+  return true;
+}
+
+function decodeSummary(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (!nonEmptyString(value.field)) return false;
+  return oneOf(value.function, SUMMARY_FUNCTIONS);
+}
 
 function decodePresetView(value: unknown): PresetView | null {
   if (!isPlainObject(value)) return null;
-  if (!objectArray(value.filters) || !objectArray(value.sorts)) return null;
+  const leaves = { count: 0 };
+  if (!Array.isArray(value.filters) || !value.filters.every(filter => decodeFilterExpression(filter, 0, leaves))) return null;
+  if (!Array.isArray(value.sorts) || !value.sorts.every(sort => decodeSortOrGroup(sort, false))) return null;
   if (!stringArray(value.visibleFields)) return null;
   if (typeof value.search !== "string" || typeof value.layout !== "string") return null;
-  if (value.groups !== undefined && !objectArray(value.groups)) return null;
-  if (value.summaries !== undefined && !objectArray(value.summaries)) return null;
+  if (value.groups !== undefined && !(Array.isArray(value.groups) && value.groups.every(group => decodeSortOrGroup(group, true)))) return null;
+  if (value.summaries !== undefined && !(Array.isArray(value.summaries) && value.summaries.every(decodeSummary))) return null;
+  // Columns stay shape-checked only: the Go producer stores them as opaque
+  // maps and the grid consumes them through the GridState parsers.
   if (value.collapsedGroupKeys !== undefined && !stringArray(value.collapsedGroupKeys)) return null;
   if (value.columns !== undefined && !objectArray(value.columns)) return null;
   if (value.kind !== undefined && !oneOf(value.kind, PRESET_KINDS)) return null;

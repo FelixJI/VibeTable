@@ -1,5 +1,6 @@
 import { computed, nextTick, onScopeDispose, ref, watch, type ComputedRef, type Ref } from "vue";
 
+import { BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
 import type {
   FilterExpression,
   GridState,
@@ -17,6 +18,7 @@ import {
 } from "@/grid/dataSourceViewState";
 import { reconcileState } from "@/grid/gridState";
 import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
+import { ProductRpcProtocolError } from "@/services/productRpcResult";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -30,6 +32,22 @@ type TableStore = ReturnType<typeof useTableStore>;
 type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 type PresetService = ReturnType<typeof usePresetVersionService>;
+
+/**
+ * Failures whose write outcome is unknown: untrusted Product RPC replies,
+ * bridge timeouts, and retirement while a workspace epoch drains. They must
+ * stop follow-up compensation instead of implying a definite no-write.
+ */
+function isUnknownWriteOutcome(error: unknown): boolean {
+  return error instanceof ProductRpcProtocolError
+    || error instanceof BridgeTimeoutError
+    || error instanceof BridgeRequestRetiredError;
+}
+
+interface PersistOutcome {
+  readonly saved: PresetEntry | null;
+  readonly failure?: unknown;
+}
 
 type PresetStorePort = Pick<PresetStore,
   | "presets" | "activePresetId" | "loading" | "dirty"
@@ -329,26 +347,35 @@ export function createPresetViewController(
     }
   }
 
+  async function persistTracked(
+    collection: string,
+    name: string,
+    view: PresetView,
+    target: Pick<PresetEntry, "id" | "revision"> | null = null,
+  ): Promise<PersistOutcome> {
+    if (dependencies.workspace.currentTable !== collection) return { saved: null };
+    const generation = loadGeneration;
+    dependencies.presets.begin();
+    try {
+      const saved = await dependencies.service.savePreset(collection, name, view, target);
+      if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return { saved: null };
+      dependencies.presets.upsertPreset(saved);
+      return { saved };
+    } catch (error) {
+      if (generation === loadGeneration && dependencies.workspace.currentTable === collection) {
+        dependencies.presets.fail(error);
+      }
+      return { saved: null, failure: error };
+    }
+  }
+
   async function persist(
     collection: string,
     name: string,
     view: PresetView,
     target: Pick<PresetEntry, "id" | "revision"> | null = null,
   ): Promise<PresetEntry | null> {
-    if (dependencies.workspace.currentTable !== collection) return null;
-    const generation = loadGeneration;
-    dependencies.presets.begin();
-    try {
-      const saved = await dependencies.service.savePreset(collection, name, view, target);
-      if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return null;
-      dependencies.presets.upsertPreset(saved);
-      return saved;
-    } catch (error) {
-      if (generation === loadGeneration && dependencies.workspace.currentTable === collection) {
-        dependencies.presets.fail(error);
-      }
-      return null;
-    }
+    return (await persistTracked(collection, name, view, target)).saved;
   }
 
   function saveTarget(view: PresetEntry): Pick<PresetEntry, "id" | "revision"> {
@@ -381,29 +408,45 @@ export function createPresetViewController(
     const source = view.id === dependencies.presets.activePresetId
       ? captureCurrent(true)
       : { ...view.view, isDefault: true };
-    const saved = await persist(view.collection, view.name, source, saveTarget(view));
-    if (!saved || !stillCurrent()) return;
+    const saved = await persistTracked(view.collection, view.name, source, saveTarget(view));
+    if (!saved.saved || !stillCurrent()) return;
     if (previous) {
-      const demoted = await persist(previous.collection, previous.name, {
+      const demoted = await persistTracked(previous.collection, previous.name, {
         ...previous.view,
         isDefault: false,
       }, saveTarget(previous));
       if (!stillCurrent()) return;
-      if (!demoted && dependencies.workspace.currentTable === view.collection) {
-        const compensated = await persist(view.collection, view.name, {
-          ...source,
-          isDefault: false,
-        }, saveTarget(saved));
-        if (!stillCurrent()) return;
-        if (!compensated) {
-          dependencies.presets.fail(dependencies.defaultCompensationError());
+      if (!demoted.saved) {
+        if (demoted.failure !== undefined && isUnknownWriteOutcome(demoted.failure)) {
+          // The demotion write has an unknown outcome: never claim it rolled
+          // back and never auto-compensate with a third write. Keep a single
+          // verification hint visible until an explicit reload re-reads the
+          // authoritative state.
+          if (stillCurrent()) {
+            dependencies.presets.fail(new Error(
+              `Default view change outcome is unknown: ${
+                demoted.failure instanceof Error ? demoted.failure.message : String(demoted.failure)
+              }. Re-read the authoritative state by reloading before retrying.`,
+            ));
+          }
           return;
         }
-        await loadCollection(view.collection);
-        return;
+        if (dependencies.workspace.currentTable === view.collection) {
+          const compensated = await persist(view.collection, view.name, {
+            ...source,
+            isDefault: false,
+          }, saveTarget(saved.saved));
+          if (!stillCurrent()) return;
+          if (!compensated) {
+            dependencies.presets.fail(dependencies.defaultCompensationError());
+            return;
+          }
+          await loadCollection(view.collection);
+          return;
+        }
       }
     }
-    dependencies.presets.activatePreset(saved.id);
+    dependencies.presets.activatePreset(saved.saved.id);
   }
 
   watch(

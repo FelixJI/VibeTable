@@ -4,6 +4,8 @@ import { effectScope, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PresetEntry, PresetsResult } from "@/contracts";
+import { BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
+import { ProductRpcProtocolError } from "@/services/productRpcResult";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -237,6 +239,81 @@ describe("presetViewController", () => {
       { id: "current", revision: "revision-current" },
     );
     expect(deps.presets.activePresetId).toBe("target");
+    scope.stop();
+  });
+
+  it.each([
+    ["unverifiable reply", () => new ProductRpcProtocolError(
+      "invalid-success-payload",
+      'Product RPC "preset.save" replied with a success value that violates its DTO contract; the request outcome is unknown. Re-read the authoritative state instead of retrying.')],
+    ["bridge timeout", () => new BridgeTimeoutError("preset.save", "req-1", 10_000)],
+    ["bridge retirement", () => new BridgeRequestRetiredError()],
+  ] as const)("默认切换第二写结果未知（%s）时停止补偿写并保留核实提示", async (_label, makeFailure) => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const listPresets = vi.fn(async () => ({ collection: "orders", presets: [current, target] }));
+    const savePreset = vi.fn(async (_collection: string, _name: string, _view: unknown, target2: { id: string } | null) => {
+      if (target2?.id === "target") {
+        return { ...target, view: { ...target.view, isDefault: true }, revision: "revision-target-default" };
+      }
+      throw makeFailure();
+    });
+    const service: PresetServicePort = {
+      listPresets, savePreset: savePreset as unknown as PresetServicePort["savePreset"],
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    const listCallsAfterLoad = listPresets.mock.calls.length;
+
+    await controller.dispatch({ type: "view.setDefault", view: target });
+
+    // Two writes only: target→default, current→non-default. No blind third
+    // compensating write may follow an unverifiable reply.
+    expect(savePreset).toHaveBeenCalledTimes(2);
+    expect(listPresets.mock.calls.length).toBe(listCallsAfterLoad);
+    expect(deps.presets.error).toContain("Re-read the authoritative state");
+
+    // The verification hint survives until the user explicitly reloads.
+    await controller.dispatch({ type: "view.reload" });
+    expect(listPresets.mock.calls.length).toBeGreaterThan(listCallsAfterLoad);
+    scope.stop();
+  });
+
+  it("默认切换第二写被明确拒绝时保留既有补偿写", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const listPresets = vi.fn(async () => ({ collection: "orders", presets: [current, target] }));
+    const savePreset = vi.fn(async (_collection: string, _name: string, view: unknown, target2: { id: string } | null) => {
+      if (target2?.id === "target") {
+        return { ...target, view: { ...(view as object) }, revision: "revision-target-default" };
+      }
+      if (savePreset.mock.calls.length === 2) {
+        throw new Error("Preset changed elsewhere.");
+      }
+      return { ...target, view: { ...(view as object) }, revision: "revision-target-demoted" };
+    });
+    const service: PresetServicePort = {
+      listPresets, savePreset: savePreset as unknown as PresetServicePort["savePreset"],
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    const listCallsAfterLoad = listPresets.mock.calls.length;
+
+    await controller.dispatch({ type: "view.setDefault", view: target });
+
+    // Definite rejection keeps the compensating third write and authoritative reload.
+    expect(savePreset).toHaveBeenCalledTimes(3);
+    expect(listPresets.mock.calls.length).toBeGreaterThan(listCallsAfterLoad);
     scope.stop();
   });
 
