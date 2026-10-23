@@ -58,13 +58,13 @@ describe("workCalendarStore", () => {
     await flushPromises();
     store.setOverride("2026-07-18", "workday", "调休上班");
     expect(store.day("2026-07-18").kind).toBe("weekend");
-    request.mockResolvedValueOnce({ overrides: store.draft, revision: "revision-a" });
+    request.mockResolvedValueOnce({ status: "applied", changeSetId: "change-1", emittedEvents: [], overrides: store.draft, revision: "revision-a" });
     await store.save();
     expect(store.day("2026-07-18")).toMatchObject({ kind: "workday", name: "调休上班" });
     expect(localStorage.getItem(WORK_CALENDAR_STORAGE_KEY)).toBeNull();
     expect(request).toHaveBeenLastCalledWith("settings.commitWorkCalendar", expect.objectContaining({ expectedRevision: "", overrides: [{ date: "2026-07-18", kind: "workday", name: "调休上班" }] }));
     store.clearOverride("2026-07-18");
-    request.mockResolvedValueOnce({ overrides: [], revision: "revision-clear" });
+    request.mockResolvedValueOnce({ status: "replayed", changeSetId: "change-2", emittedEvents: [], overrides: [], revision: "revision-clear" });
     await store.save();
     expect(store.day("2026-07-18").kind).toBe("weekend");
     expect(store.revision).toBe("revision-clear");
@@ -134,6 +134,53 @@ describe("workCalendarStore", () => {
     expect(store.draft[0]?.name).toBe("未知回执");
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it("keeps the draft and error state when a commit receipt is truncated", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "待确认");
+    const count = request.mock.calls.length;
+    request.mockResolvedValueOnce({ overrides: store.draft, revision: "revision-a" });
+    await store.save();
+    expect(store.status).toBe("error");
+    expect(store.available).toBe(false);
+    expect(store.draft[0]?.name).toBe("待确认");
+    expect(store.overrides).toEqual([]);
+    expect(request).toHaveBeenCalledTimes(count + 1);
+  });
+
+  it("rejects a decorated commit receipt whose revision is empty", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "空回执");
+    const count = request.mock.calls.length;
+    // Reads may legally return "" before the first commit; a commit receipt
+    // echoes the persisted item's revision, which is never empty.
+    request.mockResolvedValueOnce({ status: "applied", changeSetId: "change-1", emittedEvents: [], overrides: store.draft, revision: "" });
+    await store.save();
+    expect(store.status).toBe("error");
+    expect(store.draft[0]?.name).toBe("空回执");
+    expect(request).toHaveBeenCalledTimes(count + 1);
+    expect(store.revision).toBe("");
+  });
+
+  it("accepts a fully decorated commit receipt and keeps reads on the basic result", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "确认");
+    request.mockResolvedValueOnce({
+      status: "applied", changeSetId: "change-1", emittedEvents: ["event-1"],
+      overrides: store.draft, revision: "revision-b",
+    });
+    await store.save();
+    expect(store.status).toBe("ready");
+    expect(store.revision).toBe("revision-b");
+    request.mockClear();
+    request.mockResolvedValueOnce({ overrides: store.overrides, revision: "revision-b" });
+    await store.load();
+    expect(store.status).toBe("ready");
+    expect(request).toHaveBeenCalledExactlyOnceWith("settings.readWorkCalendar", {});
+  });
+
   it("waits for database.opened and reads only the completed workspace epoch", async () => {
     useWorkspaceStore().phase = "opening";
     const session = useWorkspaceSessionStore();

@@ -17,7 +17,6 @@ import {
 } from "@/grid/dataSourceViewState";
 import { reconcileState } from "@/grid/gridState";
 import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
-import { ProductRpcError } from "@/services/productRpcResult";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -31,12 +30,6 @@ type TableStore = ReturnType<typeof useTableStore>;
 type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 type PresetService = ReturnType<typeof usePresetVersionService>;
-
-// Only preset producer conflicts prove that the demotion write did not commit.
-function isDefiniteNoWrite(error: unknown): boolean {
-  return error instanceof ProductRpcError
-    && (error.code === "preset_edit_conflict" || error.code === "preset_idempotency_conflict");
-}
 
 interface PersistOutcome {
   readonly saved: PresetEntry | null;
@@ -136,7 +129,8 @@ export interface PresetViewDependencies {
   readonly executeQuery: (table: string, query: TableQuery) => void;
   readonly refreshLookups: () => void;
   readonly reportError: (error: unknown) => void;
-  readonly defaultCompensationError: () => Error;
+  /** Localized "default change incomplete" notice; `cause` keeps the original failure for diagnostics. */
+  readonly defaultChangeIncompleteError: (cause: unknown) => Error;
 }
 
 export function createPresetViewController(
@@ -411,33 +405,15 @@ export function createPresetViewController(
       }, saveTarget(previous));
       if (!stillCurrent()) return;
       if (!demoted.saved) {
-        if (demoted.failure !== undefined && !isDefiniteNoWrite(demoted.failure)) {
-          // The demotion write has an unknown outcome: never claim it rolled
-          // back and never auto-compensate with a third write. Keep a single
-          // verification hint visible until an explicit reload re-reads the
-          // authoritative state.
-          if (stillCurrent()) {
-            dependencies.presets.fail(new Error(
-              `Default view change outcome is unknown: ${
-                demoted.failure instanceof Error ? demoted.failure.message : String(demoted.failure)
-              }. Re-read the authoritative state by reloading before retrying.`,
-            ));
-          }
-          return;
+        // No automatic compensation: a failed demotion (even a definite CAS
+        // rejection — another process may already have demoted the old
+        // default) never proves the authoritative default state, and a third
+        // write could leave both views non-default. The committed promotion
+        // stays; surface the localized notice until an explicit reload.
+        if (demoted.failure !== undefined) {
+          dependencies.presets.fail(dependencies.defaultChangeIncompleteError(demoted.failure));
         }
-        if (dependencies.workspace.currentTable === view.collection) {
-          const compensated = await persist(view.collection, view.name, {
-            ...source,
-            isDefault: false,
-          }, saveTarget(saved.saved));
-          if (!stillCurrent()) return;
-          if (!compensated) {
-            dependencies.presets.fail(dependencies.defaultCompensationError());
-            return;
-          }
-          await loadCollection(view.collection);
-          return;
-        }
+        return;
       }
     }
     dependencies.presets.activatePreset(saved.saved.id);

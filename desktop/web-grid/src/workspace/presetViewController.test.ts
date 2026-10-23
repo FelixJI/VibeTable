@@ -60,7 +60,7 @@ function dependencies(service: PresetViewDependencies["service"]) {
     executeQuery: vi.fn(),
     refreshLookups: vi.fn(),
     reportError: vi.fn(),
-    defaultCompensationError: () => new Error("default compensation failed"),
+    defaultChangeIncompleteError: (cause: unknown) => new Error("default change incomplete", { cause }),
   };
 }
 
@@ -154,7 +154,7 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
-  it("默认视图降级失败时撤销刚完成的提升并重新加载权威列表", async () => {
+  it("默认视图降级失败时停止补偿并保留核实提示直到显式重载", async () => {
     const first = preset("first", "orders", true);
     const second = preset("second", "orders");
     const saves: Array<{
@@ -203,11 +203,14 @@ describe("presetViewController", () => {
     expect(saves).toEqual([
       { target: { id: "second", revision: "revision-second" }, isDefault: true },
       { target: { id: "first", revision: "revision-first" }, isDefault: false },
-      { target: { id: "second", revision: "second-saved-1" }, isDefault: false },
     ]);
+    expect(listPresets).toHaveBeenCalledTimes(1);
+    expect(deps.presets.error).toContain("default change incomplete");
+    // The promotion of `second` is a definite committed fact and stays; the
+    // hint stays visible until the user explicitly reloads.
+    expect(deps.presets.presets.find(item => item.id === "second")?.view.isDefault).toBe(true);
+    await controller.dispatch({ type: "view.reload" });
     expect(listPresets).toHaveBeenCalledTimes(2);
-    expect(deps.presets.presets.find(item => item.id === "first")?.view.isDefault).toBe(true);
-    expect(deps.presets.activePresetId).toBe("first");
     scope.stop();
   });
 
@@ -281,7 +284,7 @@ describe("presetViewController", () => {
     // compensating write may follow an unverifiable reply.
     expect(savePreset).toHaveBeenCalledTimes(2);
     expect(listPresets.mock.calls.length).toBe(listCallsAfterLoad);
-    expect(deps.presets.error).toContain("Re-read the authoritative state");
+    expect(deps.presets.error).toContain("default change incomplete");
 
     // The verification hint survives until the user explicitly reloads.
     await controller.dispatch({ type: "view.reload" });
@@ -289,7 +292,7 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
-  it("默认切换第二写被明确拒绝时保留既有补偿写", async () => {
+  it("另一进程已降级旧默认（preset_edit_conflict）时也不目动补偿", async () => {
     const current = preset("current", "orders", true);
     const target = preset("target", "orders");
     const listPresets = vi.fn(async () => ({ collection: "orders", presets: [current, target] }));
@@ -297,10 +300,9 @@ describe("presetViewController", () => {
       if (target2?.id === "target") {
         return { ...target, view: { ...(view as object) }, revision: "revision-target-default" };
       }
-      if (savePreset.mock.calls.length === 2) {
-        throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
-      }
-      return { ...target, view: { ...(view as object) }, revision: "revision-target-demoted" };
+      // Another process already demoted the old default: the CAS rejects our
+      // stale demotion, but that does not prove the old default is still set.
+      throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
     });
     const service: PresetServicePort = {
       listPresets, savePreset: savePreset as unknown as PresetServicePort["savePreset"],
@@ -316,9 +318,11 @@ describe("presetViewController", () => {
 
     await controller.dispatch({ type: "view.setDefault", view: target });
 
-    // Definite rejection keeps the compensating third write and authoritative reload.
-    expect(savePreset).toHaveBeenCalledTimes(3);
-    expect(listPresets.mock.calls.length).toBeGreaterThan(listCallsAfterLoad);
+    // No third write: compensating B back to non-default could leave both
+    // views non-default when another process already demoted A.
+    expect(savePreset).toHaveBeenCalledTimes(2);
+    expect(listPresets.mock.calls.length).toBe(listCallsAfterLoad);
+    expect(deps.presets.error).toContain("default change incomplete");
     scope.stop();
   });
 

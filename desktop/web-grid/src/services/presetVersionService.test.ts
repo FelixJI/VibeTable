@@ -71,7 +71,11 @@ describe("presetVersionService", () => {
       if (type === "version.promote") {
         return {
           promoted: String(payload.versionId), restoredToRevision: "revision-saved",
-          result: { itemId: String(payload.itemId) },
+          result: {
+            collection: String(payload.collection), itemId: String(payload.itemId),
+            restoredToRevision: "revision-saved", newRevisionId: "revision-restored",
+            item: { id: String(payload.itemId), title: "命名修订" },
+          },
         };
       }
       return {
@@ -270,7 +274,14 @@ describe("presetVersionService", () => {
         };
       }
       if (type === "version.promote") {
-        return { promoted: "v-other", restoredToRevision: "revision-saved", result: {} };
+        return {
+          promoted: "v-other", restoredToRevision: "revision-saved",
+          result: {
+            collection: "orders", itemId: "row-1",
+            restoredToRevision: "revision-saved", newRevisionId: "revision-restored",
+            item: { id: "row-1" },
+          },
+        };
       }
       if (type === "preset.save") {
         return {
@@ -471,6 +482,112 @@ describe("presetVersionService", () => {
     });
     await expect(versions.save({ collection: "orders", itemId: "row-1" }, versionEntry))
       .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("requires version.save receipts to carry a non-empty metadataRevision", async () => {
+    const full = {
+      saved: "v1", revisionId: "revision-current", metadataRevision: "rev-v1",
+      changeSetId: "metadata-change", status: "applied", emittedEvents: ["metadata-event"],
+    };
+    for (const metadataRevision of [undefined, "", 42]) {
+      respond = () => ({ ...full, metadataRevision });
+      await expect(useContentVersionService().save({ collection: "orders", itemId: "row-1" }, versionEntry))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+  });
+
+  it("requires version.promote results to be a RestoreResult for the requested record", async () => {
+    const promote = () => ({
+      collection: "orders", itemId: "row-1", versionId: "v1",
+      versionRevision: "rev-v1", mainHash: "hash-1", outdated: false, differences: {},
+    });
+    const fullResult = {
+      collection: "orders", itemId: "row-1", restoredToRevision: "revision-saved",
+      newRevisionId: "revision-restored", item: { id: "row-1", title: "命名修订" },
+    };
+    for (const result of [
+      {},
+      { ...fullResult, collection: "other" },
+      { ...fullResult, itemId: "row-2" },
+      { ...fullResult, restoredToRevision: "revision-other" },
+      { ...fullResult, newRevisionId: 7 },
+      { ...fullResult, item: "restored" },
+      { collection: "orders", itemId: "row-1", restoredToRevision: "revision-saved", newRevisionId: null },
+      "restored",
+    ]) {
+      respond = (type) => {
+        if (type !== "version.promote") throw new Error(`unexpected ${type}`);
+        return { promoted: "v1", restoredToRevision: "revision-saved", result };
+      };
+      await expect(useContentVersionService().promote({ collection: "orders", itemId: "row-1" }, promote()))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+  });
+
+  it("enforces the producer's view and entry limits that later queries rely on", async () => {
+    const many = (n: number, make: (i: number) => unknown) => Array.from({ length: n }, (_, i) => make(i));
+    const view = (patch: Record<string, unknown>) => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: { ...normalizedView, ...patch }, userId: null, revision: "rev-p1",
+      changeSetId: null, emittedEvents: [],
+    });
+    const leaf = (field: string) => ({ field, operator: "eq", value: 1, logic: "AND" });
+    const over = [
+      { sorts: many(17, () => ({ field: "f" })) },
+      { groups: many(3, () => ({ field: "f" })) },
+      { summaries: many(4, () => ({ field: "f", function: "sum" })) },
+      { visibleFields: many(129, i => `f${i}`) },
+      { columns: many(129, () => ({ key: "open" })) },
+      { collapsedGroupKeys: many(513, i => `k${i}`) },
+      { filters: many(51, i => leaf(`f${i}`)) },
+      { filters: [{ groupLogic: "AND", filters: many(51, i => leaf(`f${i}`)) }] },
+      { filters: [leaf("f".repeat(129))] },
+      { sorts: [{ field: "f".repeat(129) }] },
+      { search: "搜".repeat(257) },
+      { layout: "l".repeat(33) },
+    ];
+    for (const patch of over) {
+      respond = (type) => {
+        if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+        return { collection: "orders", presets: [view(patch)] };
+      };
+      await expect(usePresetVersionService().listPresets("orders"))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+    const entryOver = { ...view({}), name: "n".repeat(257) };
+    respond = (type) => {
+      if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+      return { collection: "orders", presets: [entryOver] };
+    };
+    await expect(usePresetVersionService().listPresets("orders"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("accepts producer-shaped values exactly at the limits (rune counting)", async () => {
+    const many = (n: number, make: (i: number) => unknown) => Array.from({ length: n }, (_, i) => make(i));
+    const at = {
+      ...normalizedView,
+      sorts: many(16, i => ({ field: `f${i}` })),
+      groups: many(2, i => ({ field: `g${i}` })),
+      summaries: many(3, i => ({ field: `s${i}`, function: "sum" })),
+      visibleFields: many(128, i => `v${i}`),
+      columns: many(128, i => ({ key: `c${i}` })),
+      collapsedGroupKeys: many(512, i => `k${i}`),
+      filters: many(50, i => ({ field: `f${i}`, operator: "eq", value: 1, logic: "AND" })),
+      search: "搜".repeat(256),
+      layout: "l".repeat(32),
+    };
+    respond = (type) => {
+      if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+      return {
+        collection: "orders",
+        presets: [{
+          id: "p1", collection: "orders", name: "名".repeat(256), scope: "system",
+          view: at, userId: null, revision: "rev-p1", changeSetId: null, emittedEvents: [],
+        }],
+      };
+    };
+    await expect(usePresetVersionService().listPresets("orders")).resolves.toBeTruthy();
   });
 
   it("returns fully valid corpus-shaped results untouched", async () => {

@@ -19,6 +19,22 @@ function isCalendarResult(value: unknown): value is CalendarResult {
       === JSON.stringify((value as CalendarResult).overrides);
 }
 
+// The Go producer returns WorkCalendarReceipt for commits: the basic result
+// decorated with status (applied | replayed), a non-empty changeSetId, an
+// emittedEvents array and the persisted item's non-empty revision
+// (work_calendar.go — reads may legally return "" before the first commit,
+// but a commit receipt's revision must drive the next CAS). A truncated or
+// otherwise unverifiable commit reply must not clear the draft or mark the
+// store ready.
+function isWorkCalendarCommitReceipt(value: unknown): value is CalendarResult {
+  if (!isCalendarResult(value)) return false;
+  const receipt = value as CalendarResult & { status?: unknown; changeSetId?: unknown; emittedEvents?: unknown };
+  return (receipt.status === "applied" || receipt.status === "replayed")
+    && receipt.revision.length > 0
+    && typeof receipt.changeSetId === "string" && receipt.changeSetId.length > 0
+    && Array.isArray(receipt.emittedEvents) && receipt.emittedEvents.every(item => typeof item === "string");
+}
+
 export const useWorkCalendarStore = defineStore("work-calendar", () => {
   const session = useWorkspaceSessionStore();
   const workspace = useWorkspaceStore();
@@ -79,7 +95,7 @@ export const useWorkCalendarStore = defineStore("work-calendar", () => {
       const value = unwrapProductRpcResult<CalendarResult>(await useHostBridge().request("settings.commitWorkCalendar", {
         overrides: draft.value.map(item => ({ ...item })), expectedRevision: revision.value,
         idempotencyKey: crypto.randomUUID(),
-      }), candidate => (isCalendarResult(candidate) ? candidate : null), "settings.commitWorkCalendar");
+      }), candidate => (isWorkCalendarCommitReceipt(candidate) ? candidate : null), "settings.commitWorkCalendar");
       if (current === generation) receive(value);
     } catch (value) { if (current === generation) fail(value); }
   }

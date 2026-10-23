@@ -40,7 +40,7 @@ export function useContentVersionService() {
       unwrapProductRpcResult(await bridge.request("version.promote", {
         ...scope, versionId: comparison.versionId, mainHash: comparison.mainHash,
         expectedRevision: comparison.versionRevision, operationId: crypto.randomUUID(),
-      }), value => decodeVersionPromoteResult(value, { versionId: comparison.versionId }), "version.promote");
+      }), value => decodeVersionPromoteResult(value, { ...scope, versionId: comparison.versionId }), "version.promote");
     },
     async delete(scope: NamedRevisionScope, entry: ContentVersionEntry): Promise<void> {
       unwrapProductRpcResult(await bridge.request("version.delete", {

@@ -134,25 +134,45 @@ describe("productRpcDecode", () => {
   });
 
   it("requires write receipts to echo the targeted identity and producer decorations", () => {
-    const save = { saved: "v1", revisionId: "revision-current", changeSetId: "metadata-change", status: "applied", emittedEvents: ["metadata-event"] };
-    expect(decodeVersionSaveResult(save, { versionId: "v1" })).toBe(save);
-    expect(decodeVersionSaveResult({ ...save, saved: "v2" }, { versionId: "v1" })).toBeNull();
+    const save = { saved: "v1", revisionId: "revision-current", metadataRevision: "rev-v1", changeSetId: "metadata-change", status: "applied", emittedEvents: ["metadata-event"] };
+    const saveExpected = { versionId: "v1" };
+    expect(decodeVersionSaveResult(save, saveExpected)).toBe(save);
+    expect(decodeVersionSaveResult({ ...save, saved: "v2" }, saveExpected)).toBeNull();
     expect(decodeVersionSaveResult({ ...save, saved: "" }, { versionId: "" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, revisionId: "" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, revisionId: undefined }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, changeSetId: "" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, status: "pending" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, status: undefined }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, emittedEvents: "metadata-event" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult({ ...save, emittedEvents: [1] }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionSaveResult("applied", { versionId: "v1" })).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, revisionId: "" }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, revisionId: undefined }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, metadataRevision: "" }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, metadataRevision: undefined }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, metadataRevision: 42 }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, changeSetId: "" }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, status: "pending" }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, status: undefined }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, emittedEvents: "metadata-event" }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, emittedEvents: [1] }, saveExpected)).toBeNull();
+    expect(decodeVersionSaveResult("applied", saveExpected)).toBeNull();
 
-    const promote = { promoted: "v1", restoredToRevision: "revision-saved", result: { ok: true } };
-    expect(decodeVersionPromoteResult(promote, { versionId: "v1" })).toBe(promote);
-    expect(decodeVersionPromoteResult({ ...promote, promoted: "v2" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionPromoteResult({ ...promote, restoredToRevision: "" }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionPromoteResult({ ...promote, result: null }, { versionId: "v1" })).toBeNull();
-    expect(decodeVersionPromoteResult(null, { versionId: "v1" })).toBeNull();
+    const promoteExpected = { collection: "orders", itemId: "row-1", versionId: "v1" };
+    const promote = {
+      promoted: "v1", restoredToRevision: "revision-saved",
+      result: {
+        collection: "orders", itemId: "row-1", restoredToRevision: "revision-saved",
+        newRevisionId: "revision-restored", item: { id: "row-1", title: "命名修订" },
+      },
+    };
+    expect(decodeVersionPromoteResult(promote, promoteExpected)).toBe(promote);
+    expect(decodeVersionPromoteResult({ ...promote, promoted: "v2" }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, restoredToRevision: "" }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: null }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult(null, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: {} }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, collection: "other" } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, itemId: "row-2" } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, restoredToRevision: "revision-other" } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, newRevisionId: 7 } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, item: "restored" } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { collection: "orders", itemId: "row-1", restoredToRevision: "revision-saved", newRevisionId: null } }, promoteExpected)).toBeNull();
+    expect(decodeVersionPromoteResult({ ...promote, result: { ...promote.result, newRevisionId: null } }, promoteExpected))
+      .toMatchObject({ result: { newRevisionId: null } });
 
     const deleted = { deleted: "p1", status: "applied", changeSetId: "change-scripted", emittedEvents: ["event-scripted"] };
     expect(decodeDeletePresetVersionResult(deleted, { id: "p1" })).toBe(deleted);

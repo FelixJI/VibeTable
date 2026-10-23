@@ -51,6 +51,21 @@ const SORT_DIRECTIONS = ["asc", "desc"] as const;
 const GROUP_BUCKETS = ["value", "year", "quarter", "month", "week", "day", "hour", "number"] as const;
 const SUMMARY_FUNCTIONS = ["sum", "avg", "min", "max"] as const;
 
+// Limits mirror normalizePresetView (preset_wire.go). Go counts strings with
+// utf8.RuneCountInString, so JavaScript must count Unicode code points, not
+// UTF-16 code units.
+function runeCount(value: string): number {
+  return [...value].length;
+}
+function boundedString(value: unknown, min: number, max: number): value is string {
+  return typeof value === "string" && runeCount(value) >= min && runeCount(value) <= max;
+}
+
+const VIEW_LIMITS = {
+  sorts: 16, groups: 2, summaries: 3, visibleFields: 128,
+  columns: 128, collapsedGroupKeys: 512, filterLeaves: 50,
+} as const;
+
 /**
  * Recursive mirror of the Go `normalizePresetFilter` output contract: a group
  * is `{ groupLogic, logic?, filters: [1..50] }` (at most three nesting
@@ -68,16 +83,17 @@ function decodeFilterExpression(value: unknown, depth: number, leaves: { count: 
     return value.filters.every(child => decodeFilterExpression(child, depth + 1, leaves));
   }
   if (!nonEmptyString(value.field)) return false;
+  if (!boundedString(value.field, 1, 128)) return false;
   if (!oneOf(value.operator, FILTER_OPERATORS)) return false;
   if (value.logic !== undefined && !oneOf(value.logic, FILTER_LOGIC)) return false;
   leaves.count += 1;
-  return leaves.count <= 50;
+  return leaves.count <= VIEW_LIMITS.filterLeaves;
 }
 
 /** Mirror of the Go `normalizePresetQueryPart` output for sorts and groups. */
 function decodeSortOrGroup(value: unknown, isGroup: boolean): boolean {
   if (!isPlainObject(value)) return false;
-  if (!nonEmptyString(value.field)) return false;
+  if (!boundedString(value.field, 1, 128)) return false;
   if (value.direction !== undefined && !oneOf(value.direction, SORT_DIRECTIONS)) return false;
   if (!isGroup) {
     if (value.nullsLast !== undefined && typeof value.nullsLast !== "boolean") return false;
@@ -92,7 +108,7 @@ function decodeSortOrGroup(value: unknown, isGroup: boolean): boolean {
 
 function decodeSummary(value: unknown): boolean {
   if (!isPlainObject(value)) return false;
-  if (!nonEmptyString(value.field)) return false;
+  if (!boundedString(value.field, 1, 128)) return false;
   return oneOf(value.function, SUMMARY_FUNCTIONS);
 }
 
@@ -100,20 +116,21 @@ function decodePresetView(value: unknown): PresetView | null {
   if (!isPlainObject(value)) return null;
   const leaves = { count: 0 };
   if (!Array.isArray(value.filters) || !value.filters.every(filter => decodeFilterExpression(filter, 0, leaves))) return null;
-  if (!Array.isArray(value.sorts) || !value.sorts.every(sort => decodeSortOrGroup(sort, false))) return null;
-  if (!stringArray(value.visibleFields)) return null;
-  if (typeof value.search !== "string" || typeof value.layout !== "string") return null;
-  if (value.groups !== undefined && !(Array.isArray(value.groups) && value.groups.every(group => decodeSortOrGroup(group, true)))) return null;
-  if (value.summaries !== undefined && !(Array.isArray(value.summaries) && value.summaries.every(decodeSummary))) return null;
+  if (!Array.isArray(value.sorts) || value.sorts.length > VIEW_LIMITS.sorts || !value.sorts.every(sort => decodeSortOrGroup(sort, false))) return null;
+  if (!Array.isArray(value.visibleFields) || value.visibleFields.length > VIEW_LIMITS.visibleFields || !stringArray(value.visibleFields)) return null;
+  if (!boundedString(value.search, 0, 256) || !boundedString(value.layout, 0, 32)) return null;
+  if (value.groups !== undefined && !(Array.isArray(value.groups) && value.groups.length <= VIEW_LIMITS.groups && value.groups.every(group => decodeSortOrGroup(group, true)))) return null;
+  if (value.summaries !== undefined && !(Array.isArray(value.summaries) && value.summaries.length <= VIEW_LIMITS.summaries && value.summaries.every(decodeSummary))) return null;
   // Columns stay shape-checked only: the Go producer stores them as opaque
   // maps and the grid consumes them through the GridState parsers.
-  if (value.collapsedGroupKeys !== undefined && !stringArray(value.collapsedGroupKeys)) return null;
-  if (value.columns !== undefined && !objectArray(value.columns)) return null;
+  if (value.collapsedGroupKeys !== undefined && !(Array.isArray(value.collapsedGroupKeys) && value.collapsedGroupKeys.length <= VIEW_LIMITS.collapsedGroupKeys && stringArray(value.collapsedGroupKeys))) return null;
+  if (value.columns !== undefined && !(Array.isArray(value.columns) && value.columns.length <= VIEW_LIMITS.columns && objectArray(value.columns))) return null;
   if (value.kind !== undefined && !oneOf(value.kind, PRESET_KINDS)) return null;
   if (value.density !== undefined && !oneOf(value.density, PRESET_DENSITIES)) return null;
   if (value.isDefault !== undefined && typeof value.isDefault !== "boolean") return null;
   for (const key of ["dateField", "endDateField", "titleField", "groupField", "coverField"] as const) {
-    if (value[key] !== undefined && !optionalStringOrNull(value[key] as unknown)) return null;
+    const field = value[key] as unknown;
+    if (field !== undefined && field !== null && !boundedString(field, 0, 128)) return null;
   }
   return value as unknown as PresetView;
 }
@@ -132,7 +149,7 @@ export function decodePresetEntry(
 ): PresetEntry | null {
   if (!isPlainObject(value)) return null;
   if (!nonEmptyString(value.id) || !nonEmptyString(value.collection)) return null;
-  if (typeof value.name !== "string") return null;
+  if (!boundedString(value.name, 0, 256)) return null;
   if (!nonEmptyString(value.revision)) return null;
   if (!oneOf(value.scope, PRESET_SCOPES)) return null;
   if (decodePresetView(value.view) === null) return null;
@@ -210,20 +227,33 @@ export function decodeVersionSaveResult(
   if (!isPlainObject(value)) return null;
   if (value.saved !== expected.versionId) return null;
   if (!nonEmptyString(value.saved) || !nonEmptyString(value.revisionId)) return null;
+  if (!nonEmptyString(value.metadataRevision)) return null;
   if (!nonEmptyString(value.changeSetId)) return null;
   if (value.status !== "applied") return null;
   if (!stringArray(value.emittedEvents)) return null;
   return value as unknown as VersionSaveResult;
 }
 
+/**
+ * `version.promote` replies with `{ promoted, restoredToRevision, result }`
+ * where `result` is the Go `audit.RestoreResult` for the restored record
+ * (types.go: collection, itemId, restoredToRevision, newRevisionId, item).
+ * The embedded identity must match both the request scope and the outer
+ * receipt; `item` stays an opaque business object.
+ */
 export function decodeVersionPromoteResult(
   value: unknown,
-  expected: { readonly versionId: string },
+  expected: { readonly collection: string; readonly itemId: string; readonly versionId: string },
 ): VersionPromoteResult | null {
   if (!isPlainObject(value)) return null;
   if (value.promoted !== expected.versionId) return null;
   if (!nonEmptyString(value.promoted) || !nonEmptyString(value.restoredToRevision)) return null;
-  if (!isPlainObject(value.result)) return null;
+  const result = value.result;
+  if (!isPlainObject(result)) return null;
+  if (result.collection !== expected.collection || result.itemId !== expected.itemId) return null;
+  if (result.restoredToRevision !== value.restoredToRevision) return null;
+  if (!("newRevisionId" in result) || !(result.newRevisionId === null || typeof result.newRevisionId === "string")) return null;
+  if (!isPlainObject(result.item)) return null;
   return value as unknown as VersionPromoteResult;
 }
 
