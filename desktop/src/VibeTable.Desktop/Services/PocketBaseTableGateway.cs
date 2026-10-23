@@ -113,9 +113,9 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string stage = "preflight";
         try
         {
-            string recordId = RowId(rowKey);
+            string recordId = MutationRowId(rowKey);
             IReadOnlyList<IReadOnlyDictionary<string, object?>> before =
-                await ReadRowsInternalAsync(table, new[] { recordId }, schemaRevision, token)
+                await ReadRowsInternalAsync(table, new[] { recordId }, schemaRevision, token, mutationPreflight: true)
                     .ConfigureAwait(false);
             stage = "guard";
             if (before.Count != 1
@@ -311,20 +311,20 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             schemaRevision,
             StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The table schema changed.");
+            throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
         }
         string operationKind = ArchiveOperationKind(schema);
         object[] operations = rows.Select(row =>
         {
             if (!IsProductDigest(row.ExpectedDigest))
             {
-                throw new InvalidOperationException(
+                throw new TableMutationPreflightException(MutationErrorKind.Validation,
                     "Delete requires the authoritative row digest.");
             }
             return (object)new Dictionary<string, object?>
             {
                 ["kind"] = operationKind,
-                ["recordId"] = RowId(row.RowKey),
+                ["recordId"] = MutationRowId(row.RowKey),
                 ["expectedDigest"] = row.ExpectedDigest,
             };
         }).ToArray();
@@ -701,7 +701,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string table,
         IReadOnlyList<string> rowIds,
         string schemaRevision,
-        CancellationToken token)
+        CancellationToken token,
+        bool mutationPreflight = false)
     {
         JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
         if (!string.Equals(
@@ -709,6 +710,10 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             schemaRevision,
             StringComparison.Ordinal))
         {
+            // Only the initial Update read can prove that no Apply was submitted.
+            // Insert/Update readback and ordinary reads retain their original unknown failure.
+            if (mutationPreflight)
+                throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
             throw new InvalidOperationException("The table schema changed.");
         }
         JsonElement response = await _product.ReadRowsAsync(
@@ -1226,6 +1231,14 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         }
         throw new InvalidOperationException(
             $"PocketBase omitted capability for '{logicalType}'.");
+    }
+
+    private static string MutationRowId(object value)
+    {
+        string id = RowId(value);
+        if (string.IsNullOrEmpty(id))
+            throw new TableMutationPreflightException(MutationErrorKind.Validation, "The row id must be non-empty.");
+        return id;
     }
 
     private static string RowId(object value)
