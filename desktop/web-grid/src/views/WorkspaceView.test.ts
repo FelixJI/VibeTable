@@ -1745,7 +1745,7 @@ describe("WorkspaceView", () => {
     });
     const entry = (id: string, name: string, isDefault = false): PresetEntry => ({
       id, collection: "orders", name, scope: "personal", revision: `revision-${id}`,
-      emittedEvents: [],
+      changeSetId: `change-${id}`, emittedEvents: [],
       view: {
         kind: "table", layout: "table", filters: [], sorts: [], search: "",
         visibleFields: ["title", "status", "start"], isDefault,
@@ -1821,7 +1821,7 @@ describe("WorkspaceView", () => {
     bar.vm.$emit("delete", second);
     await flushPromises();
     const deleteRequest = [...posted].reverse().find((item) => item.type === "preset.delete")!;
-    emit({ type: "preset.delete", requestId: deleteRequest.requestId, payload: { deleted: second.id } });
+    emit({ type: "preset.delete", requestId: deleteRequest.requestId, payload: { deleted: second.id, status: "applied", changeSetId: "change-delete", emittedEvents: [] } });
     await flushPromises();
     await vi.waitFor(() => {
       expect(presets.presets.some((item) => item.id === second.id)).toBe(false);

@@ -118,10 +118,17 @@ function decodePresetView(value: unknown): PresetView | null {
   return value as unknown as PresetView;
 }
 
-/** `expected` binds the entry to the identity of the request that produced it. */
+/**
+ * Producers decorate every write receipt (preset.go `decoratePresetReceipt`,
+ * content_version.go Write output) with a non-empty `changeSetId` and an
+ * `emittedEvents` array; delete/save receipts also carry `status: "applied"`.
+ * `writeReceipt` mode rejects truncated echoes that the producer can never
+ * emit, while list entries keep tolerating `changeSetId: null`.
+ */
 export function decodePresetEntry(
   value: unknown,
   expected: { readonly collection: string; readonly presetId?: string } | null,
+  options: { readonly writeReceipt?: boolean } = {},
 ): PresetEntry | null {
   if (!isPlainObject(value)) return null;
   if (!nonEmptyString(value.id) || !nonEmptyString(value.collection)) return null;
@@ -131,6 +138,7 @@ export function decodePresetEntry(
   if (decodePresetView(value.view) === null) return null;
   if (!optionalStringOrNull(value.userId)) return null;
   if (!optionalStringOrNull(value.changeSetId)) return null;
+  if (options.writeReceipt && !nonEmptyString(value.changeSetId)) return null;
   if (!stringArray(value.emittedEvents)) return null;
   if (expected) {
     if (value.collection !== expected.collection) return null;
@@ -152,13 +160,14 @@ export function decodePresetsResult(
   return value as unknown as PresetsResult;
 }
 
-export function decodeContentVersionEntry(value: unknown): ContentVersionEntry | null {
+export function decodeContentVersionEntry(value: unknown, writeReceipt = false): ContentVersionEntry | null {
   if (!isPlainObject(value)) return null;
   if (!nonEmptyString(value.id) || !nonEmptyString(value.revision)) return null;
   if (typeof value.key !== "string" || typeof value.name !== "string") return null;
   if (typeof value.mainHash !== "string") return null;
   if (typeof value.outdated !== "boolean") return null;
   if (!optionalStringOrNull(value.changeSetId)) return null;
+  if (writeReceipt && !nonEmptyString(value.changeSetId)) return null;
   if (!stringArray(value.emittedEvents)) return null;
   return value as unknown as ContentVersionEntry;
 }
@@ -202,6 +211,8 @@ export function decodeVersionSaveResult(
   if (value.saved !== expected.versionId) return null;
   if (!nonEmptyString(value.saved) || !nonEmptyString(value.revisionId)) return null;
   if (!nonEmptyString(value.changeSetId)) return null;
+  if (value.status !== "applied") return null;
+  if (!stringArray(value.emittedEvents)) return null;
   return value as unknown as VersionSaveResult;
 }
 
@@ -223,5 +234,8 @@ export function decodeDeletePresetVersionResult(
 ): DeletePresetVersionResult | null {
   if (!isPlainObject(value)) return null;
   if (value.deleted !== expected.id || !nonEmptyString(value.deleted)) return null;
+  if (value.status !== "applied") return null;
+  if (!nonEmptyString(value.changeSetId)) return null;
+  if (!stringArray(value.emittedEvents)) return null;
   return value as unknown as DeletePresetVersionResult;
 }

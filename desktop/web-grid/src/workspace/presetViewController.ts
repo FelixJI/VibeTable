@@ -1,6 +1,5 @@
 import { computed, nextTick, onScopeDispose, ref, watch, type ComputedRef, type Ref } from "vue";
 
-import { BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
 import type {
   FilterExpression,
   GridState,
@@ -18,7 +17,7 @@ import {
 } from "@/grid/dataSourceViewState";
 import { reconcileState } from "@/grid/gridState";
 import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
-import { ProductRpcProtocolError } from "@/services/productRpcResult";
+import { ProductRpcError } from "@/services/productRpcResult";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -33,15 +32,10 @@ type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 type PresetService = ReturnType<typeof usePresetVersionService>;
 
-/**
- * Failures whose write outcome is unknown: untrusted Product RPC replies,
- * bridge timeouts, and retirement while a workspace epoch drains. They must
- * stop follow-up compensation instead of implying a definite no-write.
- */
-function isUnknownWriteOutcome(error: unknown): boolean {
-  return error instanceof ProductRpcProtocolError
-    || error instanceof BridgeTimeoutError
-    || error instanceof BridgeRequestRetiredError;
+// Only preset producer conflicts prove that the demotion write did not commit.
+function isDefiniteNoWrite(error: unknown): boolean {
+  return error instanceof ProductRpcError
+    && (error.code === "preset_edit_conflict" || error.code === "preset_idempotency_conflict");
 }
 
 interface PersistOutcome {
@@ -417,7 +411,7 @@ export function createPresetViewController(
       }, saveTarget(previous));
       if (!stillCurrent()) return;
       if (!demoted.saved) {
-        if (demoted.failure !== undefined && isUnknownWriteOutcome(demoted.failure)) {
+        if (demoted.failure !== undefined && !isDefiniteNoWrite(demoted.failure)) {
           // The demotion write has an unknown outcome: never claim it rolled
           // back and never auto-compensate with a third write. Keep a single
           // verification hint visible until an explicit reload re-reads the

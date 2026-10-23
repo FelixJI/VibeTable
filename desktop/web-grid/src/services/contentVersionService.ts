@@ -24,7 +24,7 @@ export function useContentVersionService() {
     async create(scope: NamedRevisionScope, name: string): Promise<ContentVersionEntry> {
       return unwrapProductRpcResult(await bridge.request("version.create", {
         ...scope, key: name, name, operationId: crypto.randomUUID(),
-      }), decodeContentVersionEntry, "version.create");
+      }), value => decodeContentVersionEntry(value, true), "version.create");
     },
     async save(scope: NamedRevisionScope, entry: ContentVersionEntry): Promise<void> {
       unwrapProductRpcResult(await bridge.request("version.save", {

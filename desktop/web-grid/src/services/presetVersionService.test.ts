@@ -411,6 +411,68 @@ describe("presetVersionService", () => {
     });
   });
 
+  it("rejects truncated delete receipts that miss producer-required fields", async () => {
+    const versions = useContentVersionService();
+    const service = usePresetVersionService();
+    const full = { deleted: "p1", status: "applied", changeSetId: "change-1", emittedEvents: ["event-1"] };
+    const cases: Array<[string, unknown]> = [
+      ["preset.delete", { deleted: "p1" }],
+      ["preset.delete", { ...full, status: "pending" }],
+      ["preset.delete", { ...full, changeSetId: "" }],
+      ["preset.delete", { ...full, changeSetId: null }],
+      ["preset.delete", { ...full, emittedEvents: "event-1" }],
+      ["preset.delete", { ...full, emittedEvents: [1] }],
+      ["version.delete", { deleted: "v1" }],
+      ["version.delete", { deleted: "v1", status: "applied" }],
+    ];
+    for (const [type, payload] of cases) {
+      respond = (requested) => {
+        if (requested !== type) throw new Error(`unexpected ${requested}`);
+        return payload;
+      };
+      if (type === "preset.delete") {
+        await expect(service.deletePreset("p1", "rev-p1"))
+          .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+      } else {
+        await expect(versions.delete({ collection: "orders", itemId: "row-1" }, versionEntry))
+          .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+      }
+    }
+  });
+
+  it("requires write receipts from save and create to carry the decorated changeSetId and status", async () => {
+    const versions = useContentVersionService();
+
+    respond = () => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: normalizedView, userId: null, revision: "rev-p1",
+      changeSetId: null, emittedEvents: [],
+    });
+    await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+    respond = () => ({
+      id: "v1", key: "draft", name: "Draft", outdated: false, mainHash: "hash-1",
+      revision: "rev-v1", changeSetId: null, emittedEvents: ["metadata-event"],
+    });
+    await expect(versions.create({ collection: "orders", itemId: "row-1" }, "Draft"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+    respond = () => ({
+      saved: "v1", revisionId: "revision-current", changeSetId: "metadata-change",
+      emittedEvents: ["metadata-event"],
+    });
+    await expect(versions.save({ collection: "orders", itemId: "row-1" }, versionEntry))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+
+    respond = () => ({
+      saved: "v1", revisionId: "revision-current", changeSetId: "metadata-change",
+      status: "applied", emittedEvents: "metadata-event",
+    });
+    await expect(versions.save({ collection: "orders", itemId: "row-1" }, versionEntry))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
   it("returns fully valid corpus-shaped results untouched", async () => {
     respond = (type, payload) => {
       if (type === "preset.list") {

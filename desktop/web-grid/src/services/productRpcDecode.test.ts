@@ -133,14 +133,18 @@ describe("productRpcDecode", () => {
     }
   });
 
-  it("requires write receipts to echo the targeted identity", () => {
-    const save = { saved: "v1", revisionId: "revision-current", changeSetId: "metadata-change" };
+  it("requires write receipts to echo the targeted identity and producer decorations", () => {
+    const save = { saved: "v1", revisionId: "revision-current", changeSetId: "metadata-change", status: "applied", emittedEvents: ["metadata-event"] };
     expect(decodeVersionSaveResult(save, { versionId: "v1" })).toBe(save);
     expect(decodeVersionSaveResult({ ...save, saved: "v2" }, { versionId: "v1" })).toBeNull();
     expect(decodeVersionSaveResult({ ...save, saved: "" }, { versionId: "" })).toBeNull();
     expect(decodeVersionSaveResult({ ...save, revisionId: "" }, { versionId: "v1" })).toBeNull();
     expect(decodeVersionSaveResult({ ...save, revisionId: undefined }, { versionId: "v1" })).toBeNull();
     expect(decodeVersionSaveResult({ ...save, changeSetId: "" }, { versionId: "v1" })).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, status: "pending" }, { versionId: "v1" })).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, status: undefined }, { versionId: "v1" })).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, emittedEvents: "metadata-event" }, { versionId: "v1" })).toBeNull();
+    expect(decodeVersionSaveResult({ ...save, emittedEvents: [1] }, { versionId: "v1" })).toBeNull();
     expect(decodeVersionSaveResult("applied", { versionId: "v1" })).toBeNull();
 
     const promote = { promoted: "v1", restoredToRevision: "revision-saved", result: { ok: true } };
@@ -150,12 +154,28 @@ describe("productRpcDecode", () => {
     expect(decodeVersionPromoteResult({ ...promote, result: null }, { versionId: "v1" })).toBeNull();
     expect(decodeVersionPromoteResult(null, { versionId: "v1" })).toBeNull();
 
-    expect(decodeDeletePresetVersionResult({ deleted: "p1" }, { id: "p1" })).toEqual({ deleted: "p1" });
-    expect(decodeDeletePresetVersionResult({ deleted: "p1", status: "applied", changeSetId: "c", emittedEvents: [] }, { id: "p1" }))
-      .toMatchObject({ deleted: "p1" });
-    expect(decodeDeletePresetVersionResult({ deleted: "p2" }, { id: "p1" })).toBeNull();
-    expect(decodeDeletePresetVersionResult({ deleted: "" }, { id: "" })).toBeNull();
+    const deleted = { deleted: "p1", status: "applied", changeSetId: "change-scripted", emittedEvents: ["event-scripted"] };
+    expect(decodeDeletePresetVersionResult(deleted, { id: "p1" })).toBe(deleted);
+    expect(decodeDeletePresetVersionResult({ deleted: "p1" }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, deleted: "p2" }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, deleted: "" }, { id: "" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, status: "pending" }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, changeSetId: "" }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, changeSetId: null }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, emittedEvents: "event" }, { id: "p1" })).toBeNull();
+    expect(decodeDeletePresetVersionResult({ ...deleted, emittedEvents: [1] }, { id: "p1" })).toBeNull();
     expect(decodeDeletePresetVersionResult("deleted", { id: "p1" })).toBeNull();
     expect(decodeDeletePresetVersionResult(null, { id: "p1" })).toBeNull();
+
+    // Write receipts for preset.save / version.create must carry the decorated
+    // non-empty changeSetId; list entries keep tolerating null.
+    expect(decodePresetEntry(corpusPreset, { collection: "orders" })).toBe(corpusPreset);
+    expect(decodePresetEntry(corpusPreset, { collection: "orders" }, { writeReceipt: true })).toBeNull();
+    expect(decodePresetEntry({ ...corpusPreset, changeSetId: "change-scripted" }, { collection: "orders" }, { writeReceipt: true }))
+      .toMatchObject({ changeSetId: "change-scripted" });
+    expect(decodeContentVersionEntry(corpusVersion, false)).toBe(corpusVersion);
+    expect(decodeContentVersionEntry(corpusVersion, true)).toBeNull();
+    expect(decodeContentVersionEntry({ ...corpusVersion, changeSetId: "metadata-change" }, true))
+      .toMatchObject({ changeSetId: "metadata-change" });
   });
 });

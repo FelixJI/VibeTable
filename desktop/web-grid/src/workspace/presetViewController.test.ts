@@ -4,8 +4,8 @@ import { effectScope, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PresetEntry, PresetsResult } from "@/contracts";
-import { BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
-import { ProductRpcProtocolError } from "@/services/productRpcResult";
+import { BridgeOperationError, BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
+import { ProductRpcError, ProductRpcProtocolError } from "@/services/productRpcResult";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -175,7 +175,9 @@ describe("presetViewController", () => {
       const id = typeof target === "object" && target !== null && "id" in target
         ? String(target.id)
         : typeof target === "string" ? target : null;
-      if (id === first.id && !view.isDefault) throw new Error("demotion failed");
+      if (id === first.id && !view.isDefault) {
+        throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
+      }
       return {
         ...(id === first.id ? first : second),
         collection,
@@ -248,6 +250,9 @@ describe("presetViewController", () => {
       'Product RPC "preset.save" replied with a success value that violates its DTO contract; the request outcome is unknown. Re-read the authoritative state instead of retrying.')],
     ["bridge timeout", () => new BridgeTimeoutError("preset.save", "req-1", 10_000)],
     ["bridge retirement", () => new BridgeRequestRetiredError()],
+    ["operation.failed after dispatch", () => new BridgeOperationError({ message: "backend unavailable", code: "BACKEND_UNAVAILABLE" })],
+    ["unexpected transport failure", () => new Error("connection reset")],
+    ["unrecognized domain failure", () => new ProductRpcError("preset_storage_failed", "", "storage failed", null, false)],
   ] as const)("默认切换第二写结果未知（%s）时停止补偿写并保留核实提示", async (_label, makeFailure) => {
     const current = preset("current", "orders", true);
     const target = preset("target", "orders");
@@ -293,7 +298,7 @@ describe("presetViewController", () => {
         return { ...target, view: { ...(view as object) }, revision: "revision-target-default" };
       }
       if (savePreset.mock.calls.length === 2) {
-        throw new Error("Preset changed elsewhere.");
+        throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
       }
       return { ...target, view: { ...(view as object) }, revision: "revision-target-demoted" };
     });
