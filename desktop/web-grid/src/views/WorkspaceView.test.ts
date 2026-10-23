@@ -4362,7 +4362,7 @@ describe("WorkspaceView", () => {
 
   it("commits valid JSON through the table mutation seam and blocks invalid JSON", async () => {
     const notify = vi.fn();
-    const request = vi.fn(async (method: string) => {
+    const request = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "table.updateCellRequested") return {
         rowKey: "row-1", column: "metadata", storedValue: { approved: false },
         currentRow: { rowKey: "row-1", metadata: { approved: false } },
@@ -4370,8 +4370,12 @@ describe("WorkspaceView", () => {
       };
       throw new Error(`unexpected request: ${method}`);
     });
+    const requestWithHandle = vi.fn((method: string, payload: unknown) => ({
+      requestId: "json-edit-request", sent: true, promise: request(method, payload),
+    }));
     setHostBridgeForTesting({
       request,
+      requestWithHandle,
       notify,
       notifyWithAdditionalObjects: vi.fn(() => false),
       on: vi.fn(() => vi.fn()),
@@ -4423,7 +4427,7 @@ describe("WorkspaceView", () => {
       '[data-testid="json-editor-save"]',
     );
     expect(save?.disabled).toBe(true);
-    expect(request).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
+    expect(requestWithHandle).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
 
     input!.value = '{"approved":false}';
     input!.dispatchEvent(new Event("input", { bubbles: true }));
@@ -4434,13 +4438,16 @@ describe("WorkspaceView", () => {
     expect(validSave?.disabled).toBe(false);
     validSave?.click();
     await flushPromises();
-    expect(request).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
+    expect(requestWithHandle).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
       table: "items",
       rowKey: "row-1",
       column: "metadata",
+      oldValue: { approved: true },
       newValue: { approved: false },
       schemaRevision: "schema-1",
     }));
+    expect(useTableStore().allRows[0]?.metadata).toEqual({ approved: false });
+    expect(useHistoryStore().canUndo).toBe(true);
   });
 
   // -----------------------------------------------------------------------

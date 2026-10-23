@@ -13,6 +13,74 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    [DataRow(false, "mismatch")]
+    [DataRow(true, "mismatch")]
+    [DataRow(false, "missing-receipt")]
+    [DataRow(true, "missing-receipt")]
+    [DataRow(false, "missing-readback")]
+    [DataRow(true, "missing-readback")]
+    [DataRow(false, "different-record")]
+    [DataRow(true, "different-operation")]
+    [DataRow(false, "match")]
+    [DataRow(true, "match")]
+    public async Task MutationReadbackMustMatchItsCommittedReceipt(bool insert, string scenario)
+    {
+        const string recordId = "copiedrow000001";
+        string committedDigest = "sha256:" + new string('a', 64);
+        string readbackDigest = scenario == "mismatch" ? "sha256:" + new string('b', 64) : committedDigest;
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        if (!insert)
+        {
+            transport.Respond("query.readRows", JsonSerializer.Serialize(new { rows = new[] {
+                new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "Before", ["__vibetableDigest"] = committedDigest },
+            } }));
+        }
+        object[] affected = scenario == "missing-receipt" ? [] : [new
+        {
+            recordId = scenario == "different-record" ? "other-record" : recordId,
+            operation = scenario == "different-operation" ? "delete" : insert ? "insert" : "update",
+            revision = "row_0002", digest = committedDigest,
+        }];
+        transport.Respond("mutation.apply", JsonSerializer.Serialize(new {
+            contractVersion = "2.0", status = "applied", changeSetId = "change-1", affectedRows = affected,
+            computedFields = new { }, newRevision = "data_0002", emittedEvents = Array.Empty<string>(), warnings = Array.Empty<object>(),
+        }));
+        var readback = new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "Normalized authority" };
+        if (scenario != "missing-readback") readback["__vibetableDigest"] = readbackDigest;
+        var releaseReadback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RespondAfter("query.readRows", JsonSerializer.Serialize(new { rows = new[] { readback } }), releaseReadback.Task);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var service = new TableWorkspaceService(gateway);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        Task<bool> pending = insert
+            ? service.InsertRowAsync("orders", new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "User input" }, "schema_0001", "readback-request")
+            : service.UpdateCellAsync("orders", recordId, "title", "Before", "User input", "schema_0001", requestId: "readback-request");
+        await transport.WaitForMethodCountAsync(insert ? 3 : 4);
+        Assert.IsFalse(pending.IsCompleted); // Commit succeeded; its separate readback is still in flight.
+        releaseReadback.SetResult();
+        bool applied = await pending;
+        Assert.AreEqual(scenario == "match", applied);
+        Assert.HasCount(1, notifications);
+        Assert.AreEqual("readback-request", notifications[0].RequestId);
+        if (scenario == "match")
+        {
+            Assert.AreEqual(insert ? "table.rowsInserted" : "table.editCommitted", notifications[0].Type);
+            object? result = notifications[0].MutationResult!.Result;
+            Assert.AreEqual("Normalized authority", insert
+                ? ((InsertRowResult)result!).Row["title"] : ((UpdateCellResult)result!).StoredValue);
+        }
+        else
+        {
+            Assert.AreEqual("table.editRejected", notifications[0].Type);
+            Assert.AreEqual(MutationErrorKind.Unknown, notifications[0].MutationResult!.Error!.Value.Kind);
+        }
+        Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
     public async Task InsertCopiedRowOmitsRelationLabelsAndPreservesRelationIds()
     {
         var transport = new ProductTransport();
@@ -25,7 +93,8 @@ public sealed class PocketBaseTableGatewayTests
             """);
         transport.Respond("query.readRows", """
             {"rows":[{"id":"copiedrow000001","f_customer":"customer0000001",
-            "__vibetableRelationLabels":{"f_customer":{"customer0000001":"Acme"}}}]}
+            "__vibetableRelationLabels":{"f_customer":{"customer0000001":"Acme"}},
+            "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
@@ -129,7 +198,7 @@ public sealed class PocketBaseTableGatewayTests
             """
             {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
              "affectedRows":[{"recordId":"row-1","operation":"update","revision":"row_0002",
-             "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+             "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
              "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
             """);
         transport.Respond(
@@ -472,7 +541,8 @@ public sealed class PocketBaseTableGatewayTests
              "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
             """);
         transport.Respond("query.readRows", """
-            {"rows":[{"id":"numberrow000001","f_number00":"HT-000001"}]}
+            {"rows":[{"id":"numberrow000001","f_number00":"HT-000001",
+             "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
@@ -1276,7 +1346,10 @@ public sealed class PocketBaseTableGatewayTests
             }
             else if (stage is "readback" or "receipt")
             {
-                transport.Respond("mutation.apply", """{"newRevision":"invalid"}""");
+                transport.Respond("mutation.apply", """
+                    {"newRevision":"invalid","affectedRows":[{"recordId":"row-1","operation":"update",
+                     "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+                    """);
                 if (stage == "readback")
                     transport.RespondError("query.readRows", -32150, privateText,
                         JsonSerializer.Serialize(new { code = productCode, details = new { path = privateText } }));

@@ -10,9 +10,6 @@ export function useMutationScope(onRetire: () => void) {
   const session = useWorkspaceSessionStore();
   const table = useTableStore();
   const history = useHistoryStore();
-  const stopRefresh = watch(() => table.pageGeneration, () => {
-    if (table.pages[0]?.revision?.databaseSessionId) history.confirmWriteRefresh();
-  }, { flush: "sync" });
   let generation = 0;
   let disposed = false;
   let databaseSessionId = table.revision?.databaseSessionId ?? "";
@@ -20,15 +17,19 @@ export function useMutationScope(onRetire: () => void) {
     generation += 1;
     onRetire();
   };
+  const retireContext = (): void => {
+    history.retireWriteScope();
+    retire();
+  };
   const stopContext = watch(
     () => [ws.currentTable, ws.phase === "opening", session.activeWorkspaceId,
       session.sessionEpoch, session.isTransitioning],
-    retire,
+    retireContext,
     { flush: "sync" },
   );
   const stopSession = watch(() => table.revision?.databaseSessionId, (next) => {
     if (!next) return; // A refresh can temporarily withhold the revision.
-    if (databaseSessionId && next !== databaseSessionId) retire();
+    if (databaseSessionId && next !== databaseSessionId) retireContext();
     databaseSessionId = next;
   }, { flush: "sync" });
   return {
@@ -41,7 +42,6 @@ export function useMutationScope(onRetire: () => void) {
       disposed = true;
       stopContext();
       stopSession();
-      stopRefresh();
       retire();
     },
   };

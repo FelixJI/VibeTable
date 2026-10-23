@@ -97,3 +97,14 @@ it("confirmed entries use authoritative commit order despite callback arrival or
   store.push({ kind: "updateCell", label: "earlier", dataRevision: 2, undo: vi.fn() } as never, true);
   expect(store.undoStack.map((entry) => entry.label)).toEqual(["earlier", "later"]);
 });
+
+it("clearing history preserves uncertainty and only its own recovery query can confirm it", () => {
+  setActivePinia(createPinia()); const store = useHistoryStore();
+  const beforeUnknown = store.captureWriteRefresh(); store.markWriteUncertain();
+  beforeUnknown(); expect(store.writeUncertain).toBe(true);
+  const firstRecovery = store.captureWriteRefresh(); store.clear(); expect(store.writeUncertain).toBe(true);
+  store.markWriteUncertain(); firstRecovery(); expect(store.writeUncertain).toBe(true);
+  store.captureWriteRefresh()(); expect(store.writeUncertain).toBe(false);
+  store.markWriteUncertain(); const retired = store.captureWriteRefresh(); store.retireWriteScope();
+  store.markWriteUncertain(); retired(); expect(store.writeUncertain).toBe(true);
+});

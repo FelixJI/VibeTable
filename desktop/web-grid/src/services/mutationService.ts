@@ -23,14 +23,12 @@ export function useMutationService() {
   let editRejectedHandler: ((error: MutationErrorPayload) => void) | undefined;
   let rowInsertedHandler: ((result: InsertRowResult) => void) | undefined;
   const waiting = new Set<() => void>();
-  const deferred = new Map<string, { newValue: unknown }>();
-  const cellStates = shallowReactive(new Map<string, {
-    latest: number;
-    pending: number;
-    baseValue: unknown;
-    historyIsCurrent: () => boolean;
-    committed: { result: UpdateCellResult; oldValue: unknown }[];
-  }>());
+  const deferred = new Map<string, { newValue: unknown; isCurrent: () => boolean }>();
+  type CellState = {
+    latest: number; pending: number; value: unknown;
+    valueIsCurrent: () => boolean; tail: Promise<void> | null;
+  };
+  const cellStates = shallowReactive(new Map<string, CellState>());
   let cellSequence = 0;
   const rowRevisions = new Map<number | string, number>();
   let projectionRevision = table.revision;
@@ -121,8 +119,6 @@ export function useMutationService() {
     if (!isCurrent()) throw new Error("The mutation context changed before sending.");
     if (history.writeUncertain) throw new Error(UNKNOWN_MESSAGE);
     const requestHistoryIsCurrent = history.captureGeneration();
-    // A new action invalidates existing redo at submission, not at late confirmation.
-    if (normal) history.beginAction();
     const expectedSession = table.revision?.databaseSessionId;
     let result: unknown;
     try {
@@ -132,7 +128,10 @@ export function useMutationService() {
         waiting.add(cancel);
       });
       try {
-        result = await Promise.race([bridge.request(type, payload), retired]);
+        const request = bridge.requestWithHandle(type, payload);
+        // Invalidate redo only after postMessage accepted the envelope, never on a late receipt.
+        if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) history.beginAction();
+        result = await Promise.race([request.promise, retired]);
       } finally {
         waiting.delete(cancel);
       }
@@ -197,17 +196,55 @@ export function useMutationService() {
       else history.clear();
     } else if (historyIsCurrent()) push?.();
   }
+  function enqueueCell<T>(
+    key: string, initialValue: unknown, run: (state: CellState) => Promise<T>, sequence?: number,
+  ): Promise<T> {
+    const state = cellStates.get(key) ?? {
+      latest: 0, pending: 0, value: initialValue,
+      valueIsCurrent: history.captureGeneration(), tail: null,
+    };
+    const previous = state.tail;
+    state.pending += 1;
+    if (sequence !== undefined) state.latest = sequence;
+    cellStates.set(key, state);
+    const execute = async (): Promise<T> => {
+      try {
+        if (previous) await previous;
+        return await run(state);
+      } finally {
+        state.pending -= 1;
+        if (state.pending === 0 && cellStates.get(key) === state) cellStates.delete(key);
+      }
+    };
+    const task = execute();
+    state.tail = task.then(() => {}, () => {});
+    return task;
+  }
+
   async function replay<K extends MutationType>(
     type: K,
     payload: Omit<WebPayloadMap[K], "schemaRevision">,
     expected: MutationRevision,
     isCurrent: () => boolean,
   ): Promise<MutationResult> {
-    const schemaRevision = await readyRevision(isCurrent, expected);
-    const result = await send(type, { ...payload, schemaRevision } as WebPayloadMap[K], isCurrent, false);
-    if (!isCurrent()) throw new Error("The mutation context changed before applying its response.");
-    applyResult(result);
-    return result;
+    const historyIsCurrent = history.captureGeneration();
+    const canSend = () => isCurrent() && historyIsCurrent();
+    const execute = async (state?: CellState): Promise<MutationResult> => {
+      const schemaRevision = await readyRevision(canSend, expected);
+      const result = await send(type, { ...payload, schemaRevision } as WebPayloadMap[K], canSend, false);
+      if (!isCurrent()) throw new Error("The mutation context changed before applying its response.");
+      if (state && "storedValue" in result) {
+        state.value = result.storedValue;
+        state.valueIsCurrent = historyIsCurrent;
+      }
+      applyResult(result);
+      return result;
+    };
+    if (type === "table.updateCellRequested") {
+      const cell = payload as Omit<WebPayloadMap["table.updateCellRequested"], "schemaRevision">;
+      return enqueueCell(JSON.stringify([typeof cell.rowKey, cell.rowKey, cell.column]), cell.oldValue, execute);
+    }
+    return execute();
   }
 
   function cellHistory(r: UpdateCellResult, oldValue: () => unknown, tableId: string, isCurrent: () => boolean): void {
@@ -259,69 +296,47 @@ export function useMutationService() {
     }
     const key = JSON.stringify([typeof rowKey, rowKey, column]);
     const existing = deferred.get(key);
-    if (existing) { existing.newValue = newValue; return; }
+    if (existing?.isCurrent()) { existing.newValue = newValue; return; }
     const sequence = ++cellSequence;
-    const previousState = cellStates.get(key);
-    const state = previousState?.historyIsCurrent() ? previousState : {
-      latest: sequence, pending: 0, baseValue: oldValue, committed: [],
-      historyIsCurrent: history.captureGeneration(),
-    };
-    state.latest = sequence;
-    state.pending += 1;
-    cellStates.set(key, state);
     const isCurrent = scope.capture();
+    const historyIsCurrent = history.captureGeneration();
+    const canSend = () => isCurrent() && historyIsCurrent();
     const tableId = ws.currentTable ?? "";
     const digest = expectedDigest ?? findRowDigest(rowKey);
-    const submit = async (schemaRevision: string, value: unknown): Promise<void> => {
+    const item = { newValue, isCurrent: canSend };
+    if (!table.revision?.schemaRevision) deferred.set(key, item);
+    void enqueueCell(key, oldValue, async (state) => {
+      let submitted = false;
       try {
+        if (!canSend()) throw new Error("The mutation context changed before sending.");
+        const schemaRevision = table.revision?.schemaRevision || await readyRevision(canSend);
+        if (!canSend()) throw new Error("The mutation context changed before sending.");
+        if (deferred.get(key) === item) deferred.delete(key);
+        if (!state.valueIsCurrent()) state.value = oldValue;
+        state.valueIsCurrent = historyIsCurrent;
+        const before = state.value;
+        submitted = true;
         const r = await send("table.updateCellRequested", {
-          table: tableId, rowKey, column, oldValue, newValue: value,
+          table: tableId, rowKey, column, oldValue, newValue: item.newValue,
           expectedDigest: digest, schemaRevision,
-        }, isCurrent, true, (error, notSent) => {
-          if (state.latest !== sequence) return;
-          // A conflict row may contain stale values for other pending columns.
-          const currentRow = error.currentRow && Object.hasOwn(error.currentRow, column)
-            ? { [column]: error.currentRow[column] } : undefined;
-          const storedValue = notSent ? oldValue : state.committed.length > 0
-            ? state.committed.at(-1)!.result.storedValue : state.baseValue;
-          table.rollbackCellEdit(rowKey, column, storedValue, currentRow);
+        }, isCurrent, true, (error) => {
+          // Only this column belongs to this command; other columns may be in flight.
+          if (error.currentRow && Object.hasOwn(error.currentRow, column)) state.value = error.currentRow[column];
+          if (state.latest === sequence) table.rollbackCellEdit(rowKey, column, state.value);
         }) as UpdateCellResult;
         if (!isCurrent()) return;
-        const committed = { result: r, oldValue };
-        state.committed.push(committed);
-        state.committed.sort((a, b) => a.result.revision.dataRevision - b.result.revision.dataRevision);
-        applyResult(r);
-      } finally {
-        state.pending -= 1;
-        if (state.pending === 0 && cellStates.get(key) === state) {
-          cellStates.delete(key);
-          if (isCurrent() && state.historyIsCurrent()) {
-            let before = state.baseValue;
-            for (const entry of state.committed) {
-              entry.oldValue = before;
-              before = entry.result.storedValue;
-              cellHistory(entry.result, () => entry.oldValue, tableId, isCurrent);
-            }
-          }
+        state.value = r.storedValue;
+        state.valueIsCurrent = historyIsCurrent;
+        applyResult(r, () => cellHistory(r, () => before, tableId, isCurrent), historyIsCurrent);
+      } catch (error) {
+        if (!submitted && canSend()) {
+          if (state.latest === sequence) table.rollbackCellEdit(rowKey, column, state.value);
+          report({ kind: "backend_unavailable", message: error instanceof Error ? error.message : "The table revision is unavailable.", conflictingRowKeys: [rowKey] });
         }
+      } finally {
+        if (deferred.get(key) === item) deferred.delete(key);
       }
-    };
-    if (table.revision?.schemaRevision) {
-      void submit(table.revision.schemaRevision, newValue).catch(() => {});
-      return;
-    }
-    const item = { newValue };
-    deferred.set(key, item);
-    void readyRevision(isCurrent).then((revision) => {
-      deferred.delete(key);
-      return submit(revision, item.newValue);
-    }, (error: Error) => {
-      deferred.delete(key);
-      if (cellStates.get(key) === state) cellStates.delete(key);
-      if (!isCurrent() || !state.historyIsCurrent()) return;
-      table.rollbackCellEdit(rowKey, column, oldValue);
-      report({ kind: "backend_unavailable", message: error.message, conflictingRowKeys: [rowKey] });
-    }).catch(() => {});
+    }, sequence).catch(() => {});
   }
 
   function canInsertRow(): boolean {

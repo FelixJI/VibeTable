@@ -34,6 +34,7 @@ export const useHistoryStore = defineStore("history", () => {
   const writeUncertain = ref(false);
   let generation = 0;
   let actionGeneration = 0;
+  let uncertaintyGeneration = 0;
 
   const canUndo = computed(() => !busy.value && !writeUncertain.value && undoStack.value.length > 0
     && (undoStack.value.at(-1)?.canReplay?.() ?? true));
@@ -43,10 +44,22 @@ export const useHistoryStore = defineStore("history", () => {
 
   function markWriteUncertain(): void {
     clear();
+    uncertaintyGeneration += 1;
     writeUncertain.value = true;
   }
 
-  function confirmWriteRefresh(): void {
+  // Only a query started after the unresolved write can acknowledge recovery.
+  function captureWriteRefresh(): () => void {
+    const captured = uncertaintyGeneration;
+    const wasUncertain = writeUncertain.value;
+    return () => {
+      if (wasUncertain && captured === uncertaintyGeneration) writeUncertain.value = false;
+    };
+  }
+
+  function retireWriteScope(): void {
+    clear();
+    uncertaintyGeneration += 1;
     writeUncertain.value = false;
   }
 
@@ -124,7 +137,6 @@ export const useHistoryStore = defineStore("history", () => {
 
   function clear(): void {
     generation += 1;
-    writeUncertain.value = false;
     undoStack.value = [];
     redoStack.value = [];
     lastError.value = null;
@@ -140,7 +152,8 @@ export const useHistoryStore = defineStore("history", () => {
     undoStackSize,
     writeUncertain,
     markWriteUncertain,
-    confirmWriteRefresh,
+    captureWriteRefresh,
+    retireWriteScope,
     captureGeneration,
     beginAction,
     push,

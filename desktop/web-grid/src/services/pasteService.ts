@@ -45,11 +45,12 @@ export function usePasteService() {
     applying = true;
     previewSequence += 1;
     const historyIsCurrent = history.captureGeneration();
-    history.beginAction();
     store.beginApply();
-    void bridge.request("table.applyPasteRequested", {
+    const request = bridge.requestWithHandle("table.applyPasteRequested", {
       collection: payload.collection, token: payload.token, idempotencyKey: payload.idempotencyKey,
-    }).then((result) => {
+    });
+    if (request.sent && isCurrent() && historyIsCurrent()) history.beginAction();
+    void request.promise.then((result) => {
       if (!isCurrent()) return;
       applying = false;
       const applied = result as ApplyPasteResult;

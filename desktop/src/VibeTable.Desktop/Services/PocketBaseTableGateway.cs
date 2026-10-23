@@ -154,6 +154,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             }
             rows[0].TryGetValue(column, out object? storedValue);
             stage = "receipt";
+            RequireCommittedReadback(receipt, recordId, "update", rows[0]);
             return new UpdateCellResult(
                 rowKey,
                 column,
@@ -291,6 +292,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         {
             throw new InvalidOperationException("PocketBase omitted the inserted row.");
         }
+        RequireCommittedReadback(receipt, recordId, "insert", rows[0]);
         return new InsertRowResult(
             recordId,
             rows[0],
@@ -1492,6 +1494,31 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             && value.StartsWith("sha256:", StringComparison.Ordinal)
             && value.AsSpan(7).IndexOfAnyExcept(
                 "0123456789abcdef".AsSpan()) < 0;
+
+    private static void RequireCommittedReadback(
+        JsonElement receipt,
+        string recordId,
+        string operation,
+        IReadOnlyDictionary<string, object?> row)
+    {
+        JsonElement affectedRows = RequiredProperty(receipt, "affectedRows");
+        if (affectedRows.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("PocketBase receipt omitted its affected rows.");
+        }
+        JsonElement affected = affectedRows.EnumerateArray().SingleOrDefault(item =>
+            string.Equals(RequiredString(item, "recordId"), recordId, StringComparison.Ordinal)
+            && string.Equals(RequiredString(item, "operation"), operation, StringComparison.Ordinal));
+        string committedDigest = RequiredString(affected, "digest");
+        // Both digests come from the existing canonical product-row contract.
+        // Readback can race a later writer; never attach that later row to this receipt.
+        if (!IsProductDigest(committedDigest)
+            || !string.Equals(committedDigest, RequiredRowDigest(row), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The committed row could not be confirmed by its readback. Refresh and verify authoritative data before retrying.");
+        }
+    }
 
     private static string RequiredRowDigest(
         IReadOnlyDictionary<string, object?> row)

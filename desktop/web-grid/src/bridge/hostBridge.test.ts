@@ -136,6 +136,16 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("a sent handle remains sent when the correlated request later times out", async () => {
+    vi.useFakeTimers(); const bridge = createHostBridge({ webview, timeoutMs: 100 }); bridge.start();
+    const handle = bridge.requestWithHandle("table.updateCellRequested", {
+      table: "u", rowKey: 1, column: "name", oldValue: "old", newValue: "new", expectedDigest: null, schemaRevision: "sr",
+    });
+    expect(handle.sent).toBe(true); const failure = handle.promise.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100); expect(await failure).toMatchObject({ name: "BridgeTimeoutError" });
+    expect(handle.sent).toBe(true); bridge.stop();
+  });
+
   it("identifies synchronous transport rejection as not sent and retires its response id", async () => {
     vi.useFakeTimers();
     const diagnostics = vi.fn();
@@ -144,9 +154,11 @@ describe("HostBridge", () => {
     bridge.start(); bridge.on("table.editCommitted", callback);
     const cause = new Error("transport unavailable");
     webview.postMessage.mockImplementationOnce(() => { throw cause; });
-    const failure = await bridge.request("table.updateCellRequested", {
+    const handle = bridge.requestWithHandle("table.updateCellRequested", {
       table: "u", rowKey: 1, column: "name", oldValue: "old", newValue: "new", expectedDigest: null, schemaRevision: "sr",
-    }).catch((error: unknown) => error);
+    });
+    expect(handle.sent).toBe(false);
+    const failure = await handle.promise.catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(BridgeRequestNotSentError);
     expect(failure).toMatchObject({ requestId: "not-sent", messageType: "table.updateCellRequested", cause });
     expect(vi.getTimerCount()).toBe(0);
