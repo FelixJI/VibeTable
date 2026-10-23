@@ -14,6 +14,10 @@ import {
 } from "./notificationPolicy";
 
 describe("notificationPolicy", () => {
+  it.each(["mutation_validation", "not_writable"] as const)("review17 preserves the public reason of a definite %s rejection", kind => {
+    expect(mutationRejectionMessage({ kind, message: "Referenced records cannot be deleted." })).toBe("Referenced records cannot be deleted.");
+  });
+
   it("review10 a proven preflight unknown uses safe generic rejection copy", () => {
     const error = { kind: "unknown", notSubmitted: true, message: "private host detail" };
     const message = mutationRejectionMessage(error as MutationErrorPayload);

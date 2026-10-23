@@ -69,6 +69,12 @@ export function workspaceV2ErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A typed business rejection proves zero writes without claiming Apply was never called. */
+export function isDefiniteMutationRejection(error: MutationErrorPayload): boolean {
+  return error.notSubmitted === true || error.kind === "edit_conflict" || error.kind === "mutation_validation"
+    || error.kind === "schema_mismatch" || error.kind === "not_writable";
+}
+
 export function mutationRejectionMessage(error: MutationErrorPayload): string {
   switch (error.kind) {
     case "unknown":
@@ -78,9 +84,9 @@ export function mutationRejectionMessage(error: MutationErrorPayload): string {
     case "schema_mismatch":
       return t("workspace.editRejected.schema");
     case "mutation_validation":
-      return t("workspace.editRejected.validation");
+      return error.message || t("workspace.editRejected.validation");
     case "not_writable":
-      return t("workspace.editRejected.notWritable");
+      return error.message || t("workspace.editRejected.notWritable");
     case "backend_unavailable":
       return t("workspace.editRejected.backendUnavailable");
     default:

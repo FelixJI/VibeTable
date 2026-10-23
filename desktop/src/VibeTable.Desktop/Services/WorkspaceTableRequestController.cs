@@ -487,6 +487,12 @@ public sealed class WorkspaceTableRequestController
             settled(result.Outcome != "pending");
             _reply.PostResponse("table.pasteApplied", request.RequestId, result);
         }
+        catch (TableMutationRejectedException rejected)
+        {
+            settled(true);
+            TableNotificationPresenter.Post(_reply, new TableNotification("table.editRejected", null,
+                new MutationOutcome("applyPaste", false, rejected.Error, null), request.RequestId));
+        }
         catch (Exception exception)
         {
             _reply.PostOperationFailed(

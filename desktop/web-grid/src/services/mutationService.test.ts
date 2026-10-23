@@ -79,6 +79,20 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it.each(["insert", "delete"] as const)("review17 rejected %s keeps unrelated history and redo without replaying the rejected write", async (operation) => {
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    if (operation === "insert") s.service.insertRow({}); else s.service.deleteRows([{ rowKey: 2, expectedDigest: digest }]);
+    await flush(); const request = s.posted.at(-1)!;
+    expect(request.payload).toMatchObject(operation === "insert" ? { values: {} } : { rows: [{ rowKey: 2, expectedDigest: digest }] });
+    const code = operation === "insert" ? "mutation.field.invalid_value" : "mutation.relation.restricted";
+    s.reply(request, "table.editRejected", { kind: "mutation_validation", code, message: "The business constraint rejected this write.", notSubmitted: false }); await flush();
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.canRedo).toBe(true); expect(s.history.undoStackSize).toBe(0);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ code, notSubmitted: false }));
+    const redo = s.service.performRedo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 4)); await redo;
+    expect(s.history.undoStackSize).toBe(1); expect(s.posted.filter((item) => item.type === request.type)).toHaveLength(1);
+  });
+
   it.each(["rejection-first", "undo-first"] as const)("review16 transaction rejection preserves unrelated history and executable redo (%s)", async (order) => {
     const s = setup(); await seed(s);
     s.service.updateCell(2, "name", "two", "changed");
@@ -1080,6 +1094,49 @@ describe("paste request ownership", () => {
     collection: "u", schemaRevision: "sr", selection: { querySnapshot: { snapshotId: "q", digest: "q-digest", databaseId: "s", table: "u", schemaRevision: "sr", dataRevision: 1, normalizedQuery: {} }, dataRevision: 1, rowKeys: [] },
     startCell: { column: "name" }, cells: [],
   };
+
+  it.each([
+    ["paste_token_expired", true, "The paste preview expired."],
+    ["mutation.field.invalid_value", false, "A required field is missing."],
+  ] as const)("review17 owned paste rejection %s preserves history and executable redo", async (code, notSubmitted, message) => {
+    const s = pasteSetup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed"); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("two", 2, "name", 4)); await undo;
+    const broadcast = vi.fn(); const off = s.bridge.on("table.editRejected", broadcast); cleanups.push(off);
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    const payload = { kind: "mutation_validation", code, notSubmitted, message, operation: "applyPaste" };
+    s.reply(apply, "table.editRejected", payload); await flush();
+    expect(s.store.phase).toBe("error"); expect(s.store.error).toBe(message);
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.undoStackSize).toBe(1); expect(s.history.canRedo).toBe(true);
+    expect(s.rejected).not.toHaveBeenCalled(); expect(broadcast).not.toHaveBeenCalled(); expect(s.table.error).toBeNull(); expect(s.applied).not.toHaveBeenCalled();
+    s.reply(apply, "table.editRejected", payload); s.reply(apply, "operation.failed", { message: "duplicate" }); await flush();
+    expect(s.store.error).toBe(message); expect(broadcast).not.toHaveBeenCalled();
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 2, newValue: "changed" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 5)); await redo;
+    expect(s.history.undoStackSize).toBe(2); expect(s.posted.filter((request) => request.type === "table.applyPasteRequested")).toHaveLength(1);
+  });
+
+  it.each(["paste_token_consumed", "paste_idempotency_mismatch", "mutation.storage.failed", "paste_future_code", "typed-unknown"])("review17 %s cannot turn paste uncertainty into zero writes", async (code) => {
+    const s = pasteSetup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    if (code === "typed-unknown") s.reply(apply, "table.editRejected", { kind: "unknown", code, message: "The write is uncertain." });
+    else s.reply(apply, "operation.failed", { code, message: "The write is uncertain." });
+    await flush(); expect(s.history.writeUncertain).toBe(true); expect(s.history.canRedo).toBe(false); expect(s.store.error).toContain("尚未确认");
+    expect(s.applied).not.toHaveBeenCalled(); const requests = s.posted.length;
+    s.paste.apply(input); await s.service.performRedo(); expect(s.posted).toHaveLength(requests);
+  });
+
+  it("review17 a late known paste rejection cannot erase a sibling write's uncertainty", async () => {
+    const s = pasteSetup(); await seed(s);
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "unconfirmed");
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "unknown", message: "uncertain" }); await flush();
+    s.reply(apply, "table.editRejected", { kind: "mutation_validation", code: "paste_token_expired", notSubmitted: true, message: "The preview expired." }); await flush();
+    expect(s.history.writeUncertain).toBe(true); expect(s.history.canRedo).toBe(false); expect(s.history.canUndo).toBe(false);
+    expect(s.rejected).toHaveBeenCalledTimes(1); expect(s.applied).not.toHaveBeenCalled();
+  });
 
   it.each(["conflict-first", "undo-first"] as const)("review16 rejected paste preserves the undo that invalidated its preview (%s)", async (order) => {
     const s = pasteSetup(); await seed(s);

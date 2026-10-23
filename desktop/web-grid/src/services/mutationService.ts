@@ -2,7 +2,7 @@ import { shallowReactive } from "vue";
 import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
-import { mutationRejectionMessage } from "./notificationPolicy";
+import { isDefiniteMutationRejection, mutationRejectionMessage } from "./notificationPolicy";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHistoryStore } from "@/stores/historyStore";
@@ -164,9 +164,7 @@ export function useMutationService() {
     if (typeof result === "object" && result !== null && "kind" in result) {
       const rejection = result as MutationErrorPayload;
       // These typed rejections prove zero business writes even when Apply was invoked.
-      settleAction?.(rejection.notSubmitted === true || rejection.kind === "edit_conflict"
-        || rejection.kind === "mutation_validation" || rejection.kind === "schema_mismatch"
-        || rejection.kind === "not_writable");
+      settleAction?.(isDefiniteMutationRejection(rejection));
       if (rejection.notSubmitted === true) {
         if (isCurrent() && requestHistoryIsCurrent()) {
           onRejected?.(rejection, true);

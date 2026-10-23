@@ -1,9 +1,10 @@
 import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
+import { isDefiniteMutationRejection } from "./notificationPolicy";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
-import type { ApplyPasteResult, PastePlan, PreviewPasteRequestedPayload } from "@/contracts";
+import type { ApplyPasteResult, MutationErrorPayload, PastePlan, PreviewPasteRequestedPayload } from "@/contracts";
 
 export function usePasteService() {
   const bridge = useHostBridge();
@@ -67,6 +68,17 @@ export function usePasteService() {
     if (request.sent) retireApplying = markUncertain;
     const settleAction = request.sent && isCurrent() && historyIsCurrent() ? history.beginAction() : undefined;
     void request.promise.then((result) => {
+      if (typeof result === "object" && result !== null && "kind" in result) {
+        const rejection = result as MutationErrorPayload;
+        const zeroWrites = isDefiniteMutationRejection(rejection);
+        settleAction?.(zeroWrites);
+        if (!zeroWrites) markUncertain();
+        if (!isCurrent()) return;
+        applying = false;
+        retireApplying = undefined;
+        store.setError(zeroWrites ? rejection.message : "粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
+        return;
+      }
       const applied = result as ApplyPasteResult;
       // Conflict is an atomic rejection; an empty committed result is the all-skip path.
       const zeroWrites = applied.outcome === "conflict" || (applied.outcome === "committed"

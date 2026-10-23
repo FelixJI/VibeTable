@@ -656,13 +656,22 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         => _product.PreviewPasteAsync(
             new PreviewPasteRpcParams(collection, schemaRevision, selection, startCell, cells), token);
 
-    public Task<ApplyPasteResult> ApplyPasteAsync(
+    public async Task<ApplyPasteResult> ApplyPasteAsync(
         string collection,
         string token,
         string idempotencyKey,
         CancellationToken cancellationToken)
-        => AwaitWriteOutcomeAsync(() => _product.ApplyPasteAsync(
-            new ApplyPasteRpcParams(collection, token, idempotencyKey), cancellationToken));
+    {
+        try
+        {
+            return await AwaitWriteOutcomeAsync(() => _product.ApplyPasteAsync(
+                new ApplyPasteRpcParams(collection, token, idempotencyKey), cancellationToken)).ConfigureAwait(false);
+        }
+        catch (RpcRemoteException remote) when (MutationErrorMapper.MapPasteApplyRejection(remote) is { } rejection)
+        {
+            throw new TableMutationRejectedException(rejection, remote);
+        }
+    }
 
     public void Dispose()
     {

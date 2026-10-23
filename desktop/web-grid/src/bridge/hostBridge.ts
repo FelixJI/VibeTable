@@ -579,7 +579,7 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "table.deleteRowsRequested": ["table.rowsDeleted", "table.editRejected"],
   "table.queryRequested": ["table.pageLoaded"],
   "table.previewPasteRequested": ["table.pastePreviewReady"],
-  "table.applyPasteRequested": ["table.pasteApplied"],
+  "table.applyPasteRequested": ["table.pasteApplied", "table.editRejected"],
   "history.queryRequested": ["history.pageLoaded"],
   "history.previewRestoreRequested": ["history.restorePreviewReady"],
   "history.applyRestoreRequested": ["history.restoreApplied"],

@@ -56,7 +56,7 @@ internal sealed class TableMutationPreflightException : InvalidOperationExceptio
     internal MutationErrorKind Kind { get; } = MutationErrorKind.Unknown;
 }
 
-// Created only at mutation.apply, never for a failure while reading back a committed write.
+// Created only at mutation.apply/table.applyPaste, never for a committed write's readback failure.
 internal sealed class TableMutationRejectedException(MutationError error, RpcRemoteException original)
     : InvalidOperationException(error.Message, original)
 {
@@ -135,23 +135,70 @@ public static class MutationErrorMapper
         return new MutationError(MutationErrorKind.Unknown, exception.Message);
     }
 
-    // The mutation kernel returns these guard failures before commit or after transaction rollback.
-    // Other product codes (including storage/internal failures) do not prove a terminal outcome.
+    // Only Apply callers may classify these public rejections. Preview validation and failures
+    // inside kernel.Apply's RunInTransaction return before commit; readback uses Map instead.
     internal static MutationError? MapApplyRejection(RpcRemoteException remote)
+        => remote.Code == -32150 ? BusinessRejection(remote) : null;
+
+    internal static MutationError? MapPasteApplyRejection(RpcRemoteException remote)
     {
-        if (remote.Code != -32150) return null;
+        if (remote.Code != -32040 || ReadString(remote.ErrorData, "kind") != "paste_error") return null;
+        string? code = ReadString(remote.ErrorData, "code");
+        // pasteOwner.apply/describe reject these before kernel.Apply. Consumed tokens and
+        // idempotency mismatches deliberately remain unknown: an earlier apply may have committed.
+        MutationErrorKind kind = code switch
+        {
+            "paste_token_invalid" or "paste_token_unknown" or "paste_token_expired" or "paste_plan_invalid"
+                => MutationErrorKind.Validation,
+            "schema_unknown" or "schema_mismatch" => MutationErrorKind.SchemaMismatch,
+            _ => MutationErrorKind.Unknown,
+        };
+        return kind == MutationErrorKind.Unknown ? BusinessRejection(remote)
+            : Rejection(remote, kind, code, notSubmitted: true);
+    }
+
+    private static MutationError? BusinessRejection(RpcRemoteException remote)
+    {
         string? code = ReadString(remote.ErrorData, "code");
         MutationErrorKind kind = code switch
         {
             "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.record.not_found"
                 => MutationErrorKind.EditConflict,
-            "mutation.schema_revision_conflict" => MutationErrorKind.SchemaMismatch,
+            "mutation.schema_revision_conflict" or "mutation.table.not_found" => MutationErrorKind.SchemaMismatch,
+            // kernel.preview: writable fields/table and the field migration write fence.
+            "mutation.table.read_only" or "mutation.field.read_only" or "field.migration.write_locked"
+                => MutationErrorKind.NotWritable,
+            // kernel.preview fieldvalue/relation checks; applyOperation/resolveOperationRecord;
+            // storageSaveFailure's validation.Errors branch and archive.go. Storage errors are excluded.
+            "mutation.field.invalid_value" or "mutation.field.unknown" or "mutation.field.duplicate"
+                or "mutation.validation.failed" or "mutation.record.already_exists" or "mutation.record.deleted_in_batch"
+                or "mutation.relation.cardinality" or "mutation.relation.duplicate" or "mutation.relation.invalid_value"
+                or "mutation.relation.target_not_found" or "mutation.relation.reciprocal_cardinality" or "mutation.relation.restricted"
+                or "mutation.archive.already_archived" or "mutation.archive.requires_operation" or "mutation.archive.unsupported"
+                or "mutation.attachment.requires_operation"
+                // validateRequestShape/row guards reject before any business operation.
+                or "mutation.contract.unsupported_version" or "mutation.request.invalid" or "mutation.actor.invalid"
+                or "mutation.guard.invalid" or "mutation.batch.limit" or "mutation.body.limit" or "mutation.values.limit"
+                or "mutation.operation.empty" or "mutation.operation.invalid" or "mutation.operation.unsupported"
+                or "mutation.record.missing_id" => MutationErrorKind.Validation,
+            // Never infer zero writes from a prefix, retryable flag, or arbitrary product RPC code.
             _ => MutationErrorKind.Unknown,
         };
-        return kind == MutationErrorKind.Unknown ? null : new MutationError(kind,
-            kind == MutationErrorKind.EditConflict
-                ? Localize("edit_conflict", "edit_conflict", "This row was changed by another session.")
-                : "The table schema changed.", Code: code);
+        return kind == MutationErrorKind.Unknown ? null : Rejection(remote, kind, code);
+    }
+
+    private static MutationError Rejection(RpcRemoteException remote, MutationErrorKind kind, string? code, bool notSubmitted = false)
+    {
+        string fallback = kind switch
+        {
+            MutationErrorKind.EditConflict => Localize("edit_conflict", "edit_conflict", "This row was changed by another session."),
+            MutationErrorKind.SchemaMismatch => "The table schema changed.",
+            MutationErrorKind.NotWritable => "The table or field is not writable.",
+            _ => Localize("mutation_validation", "mutation_validation", "The value could not be saved."),
+        };
+        // These are explicit public business messages, not provider exception text.
+        string? message = ReadString(remote.ErrorData, "message");
+        return new MutationError(kind, string.IsNullOrWhiteSpace(message) ? fallback : message, Code: code, NotSubmitted: notSubmitted);
     }
 
     private static MutationError MapRemote(RpcRemoteException remote)

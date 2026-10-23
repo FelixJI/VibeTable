@@ -13,6 +13,10 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    [DataRow("insert", "apply", -32150, "mutation.field.invalid_value", MutationErrorKind.Validation)]
+    [DataRow("delete", "apply", -32150, "mutation.relation.restricted", MutationErrorKind.Validation)]
+    [DataRow("update", "readback", -32150, "mutation.field.invalid_value", MutationErrorKind.Unknown)]
+    [DataRow("update", "apply", -32150, "mutation.idempotency_conflict", MutationErrorKind.Unknown)]
     [DataRow("update", "apply", -32150, "mutation.digest_conflict", MutationErrorKind.EditConflict)]
     [DataRow("insert", "apply", -32150, "mutation.revision_conflict", MutationErrorKind.EditConflict)]
     [DataRow("delete", "apply", -32150, "mutation.record.not_found", MutationErrorKind.EditConflict)]
@@ -41,7 +45,7 @@ public sealed class PocketBaseTableGatewayTests
         var controller = new WorkspaceTableRequestController(service, new FakeDatabasePicker(null), sink, () => null) { MutationReads = barrier };
         object payload = operation switch {
             "update" => new { table = "orders", rowKey = "copiedrow000001", column = "title", oldValue = "Before", newValue = "After", schemaRevision = "schema_0001" },
-            "insert" => new { table = "orders", values = new { title = "After" }, schemaRevision = "schema_0001" },
+            "insert" => new { table = "orders", values = new { }, schemaRevision = "schema_0001" },
             _ => (object)new { table = "orders", rows = new[] { new { rowKey = "copiedrow000001", expectedDigest = digest } }, schemaRevision = "schema_0001" },
         };
         var request = new RoutedWebRequest("table." + (operation == "update" ? "updateCellRequested" : operation == "insert" ? "insertRowRequested" : "deleteRowsRequested"),
@@ -62,6 +66,29 @@ public sealed class PocketBaseTableGatewayTests
         Assert.AreEqual(MutationErrorMapper.ToWireKind(expectedKind), wire.GetProperty("kind").GetString());
         Assert.IsFalse(wire.TryGetProperty("notSubmitted", out var notSubmitted) && notSubmitted.GetBoolean());
         Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
+    // kernel.preview (fieldvalue/relation checks), applyOperation/resolveOperationRecord and archive.go.
+    [DataRow(MutationErrorKind.Validation, "mutation.field.invalid_value mutation.field.unknown mutation.field.duplicate mutation.validation.failed mutation.record.already_exists mutation.record.deleted_in_batch mutation.relation.cardinality mutation.relation.duplicate mutation.relation.invalid_value mutation.relation.target_not_found mutation.relation.reciprocal_cardinality mutation.relation.restricted mutation.archive.already_archived mutation.archive.requires_operation mutation.archive.unsupported mutation.attachment.requires_operation")]
+    [DataRow(MutationErrorKind.NotWritable, "mutation.table.read_only mutation.field.read_only field.migration.write_locked")]
+    [DataRow(MutationErrorKind.SchemaMismatch, "mutation.table.not_found")]
+    // validateRequestShape runs before replay/operations and never proves the status of an older idempotency key.
+    [DataRow(MutationErrorKind.Validation, "mutation.contract.unsupported_version mutation.request.invalid mutation.actor.invalid mutation.guard.invalid mutation.batch.limit mutation.body.limit mutation.values.limit mutation.operation.empty mutation.operation.invalid mutation.operation.unsupported mutation.record.missing_id")]
+    public async Task Review17BusinessRejectionCatalogKeepsThePublicCodeAndReason(MutationErrorKind kind, string codes)
+    {
+        foreach (string code in codes.Split(' '))
+        {
+            var transport = new ProductTransport();
+            transport.RespondError("mutation.apply", -32150, "Product data error",
+                JsonSerializer.Serialize(new { kind = "product_data_error", code, message = "The public business reason." }));
+            await using var client = new JsonRpcClient(transport);
+            var remote = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() => client.InvokeAsync<object, JsonElement>("mutation.apply", new { }, CancellationToken.None));
+            var mapped = MutationErrorMapper.MapApplyRejection(remote);
+            Assert.IsNotNull(mapped, code);
+            Assert.AreEqual(kind, mapped.Value.Kind, code); Assert.AreEqual(code, mapped.Value.Code);
+            Assert.AreEqual("The public business reason.", mapped.Value.Message); Assert.IsFalse(mapped.Value.NotSubmitted);
+        }
     }
 
     [TestMethod]
@@ -1823,9 +1850,10 @@ public sealed class PocketBaseTableGatewayTests
         Trace.Listeners.Add(listener);
         try
         {
-            RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            Exception failure = await Assert.ThrowsAsync<Exception>(() =>
                 gateway.UpdateCellAsync("orders", "row-1", "title", "Before", privateText,
                     "schema_0001", CancellationToken.None));
+            var error = (RpcRemoteException)(failure is TableMutationRejectedException ? failure.InnerException! : failure);
             Assert.AreEqual(privateText, error.Message);
             Assert.AreEqual(errorData, error.ErrorData!.Value.GetRawText());
         }
