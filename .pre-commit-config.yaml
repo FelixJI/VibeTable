@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: ruff-format
         name: ruff-format
-        entry: python qa/precommit.py ruff-format
+        entry: uv run --frozen --no-sync python qa/precommit.py ruff-format
         language: system
         types: [python]
         exclude: ^(?:runtime/node/node_modules/|scripts/automation_core\.py$)
@@ -11,7 +11,7 @@ repos:
 
       - id: ruff-check
         name: ruff-check
-        entry: python qa/precommit.py ruff-check
+        entry: uv run --frozen --no-sync python qa/precommit.py ruff-check
         language: system
         types: [python]
         exclude: ^runtime/node/node_modules/
@@ -19,14 +19,14 @@ repos:
 
       - id: version-consistency
         name: version-consistency
-        entry: python qa/precommit.py version-consistency
+        entry: uv run --frozen --no-sync python qa/precommit.py version-consistency
         language: system
         pass_filenames: false
         always_run: true
 
       - id: package-contract
         name: package-contract
-        entry: python qa/precommit.py package-contract
+        entry: uv run --frozen --no-sync python qa/precommit.py package-contract
         language: system
         pass_filenames: false
         always_run: true

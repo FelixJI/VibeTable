@@ -533,7 +533,9 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
         and env["PATH"].split(automation_project.os.pathsep)[:2] == [str(npm_bin), str(node.parent)]
         for _command, env in npm_calls
     )
-    assert (("install-w64devkit",), None) in observed
+    # Bootstrap no longer installs the race-only w64devkit; the race lanes and
+    # the serial release smoke install it at their consumption points.
+    assert (("install-w64devkit",), None) not in observed
 
 
 def test_quality_and_release_build_keep_the_locked_node_toolchain(
@@ -575,6 +577,22 @@ def test_quality_and_release_build_keep_the_locked_node_toolchain(
 
     automation_project.build_candidate()
 
+    # Without the candidate prepare mode the build stays a plain release build
+    # plus the archive handoff and never adopts the PR E2E journeys.
+    assert [command for command, _env in observed] == [
+        ("uv", "run", "python", "scripts/build_next.py", "--release"),
+        (
+            "uv",
+            "run",
+            "python",
+            "qa/release_candidate.py",
+            "create",
+            "--package-root",
+            "dist/VibeTable.Next",
+            "--archive",
+            str(tmp_path / "VibeTable-v1.2.3-win-x64.zip"),
+        ),
+    ]
     build_next = next(call for call in observed if "scripts/build_next.py" in call[0])
     assert build_next[1] == {"PATH": locked_path}
 
@@ -631,6 +649,7 @@ def test_pr_e2e_builds_a_package_and_selects_exact_release_smoke_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[str, ...]] = []
+    monkeypatch.delenv(automation_project.CI_PREPARE_MODE_ENV, raising=False)
     monkeypatch.setattr(
         automation_project,
         "_node_environment",
@@ -645,12 +664,114 @@ def test_pr_e2e_builds_a_package_and_selects_exact_release_smoke_capability(
     automation_project.pr_e2e()
 
     assert len(observed) == 3
-    assert observed[0][-1] == "scripts/build_next.py"
+    assert observed[0] == ("uv", "run", "python", "scripts/build_next.py")
     assert observed[1][:3] == ("go", "run", "./cmd/workbench-qualification")
     assert observed[1][observed[1].index("--profile") + 1] == "pr"
     assert observed[1][observed[1].index("--logical-bytes") + 1] == str(64 << 20)
     assert observed[2][3:5] == ("qa/product_acceptance.py", "--package-root")
     assert observed[2][-2:] == ("--capability", "release.smoke")
+
+
+def test_candidate_prepare_defers_pr_e2e_into_the_single_release_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The candidate prepare stage must contain exactly one release build:
+    `pr-e2e` defers explicitly and the `build` step runs the identical
+    workbench/product journeys between that build and the archive handoff.
+    The journey arguments are pinned by the standalone pr-e2e test above."""
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
+    monkeypatch.setattr(automation_project, "_artifacts_dir", lambda: tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(automation_project, "_write_build_identity", lambda *_args: None)
+    monkeypatch.setattr(automation_project, "_write_spdx", lambda *_args: None)
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.pr_e2e()
+
+    assert observed == []
+    assert "defer PR E2E" in capsys.readouterr().out
+
+    automation_project.build_candidate()
+
+    def stage(command: tuple[str, ...]) -> str:
+        for marker, name in (
+            ("scripts/build_next.py", "release-build"),
+            ("./cmd/workbench-qualification", "workbench"),
+            ("qa/product_acceptance.py", "acceptance"),
+            ("qa/release_candidate.py", "archive"),
+        ):
+            if marker in command:
+                return name
+        return "unexpected"
+
+    assert [stage(command) for command in observed] == [
+        "release-build",
+        "workbench",
+        "acceptance",
+        "archive",
+    ]
+    assert [command for command in observed if "scripts/build_next.py" in command] == [
+        ("uv", "run", "python", "scripts/build_next.py", "--release"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "failing_command",
+    ["scripts/build_next.py", "./cmd/workbench-qualification", "qa/product_acceptance.py"],
+)
+def test_candidate_build_or_e2e_failure_never_hands_off_the_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_command: str,
+) -> None:
+    """A failing release build or deferred PR E2E journey must abort the
+    candidate before archive creation, build identity, and SBOM are written."""
+    observed: list[tuple[str, ...]] = []
+    handed_off: list[str] = []
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
+    monkeypatch.setattr(automation_project, "_artifacts_dir", lambda: tmp_path)
+    monkeypatch.setattr(automation_project, "read_project_version", lambda _root: "1.2.3")
+    monkeypatch.setattr(
+        automation_project,
+        "_write_build_identity",
+        lambda *_args: handed_off.append("build-identity"),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_write_spdx",
+        lambda *_args: handed_off.append("spdx"),
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+
+    def run(*command: str, **_kwargs: object) -> None:
+        observed.append(command)
+        if failing_command in command:
+            raise subprocess.CalledProcessError(3, command)
+
+    monkeypatch.setattr(automation_project, "_run", run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        automation_project.build_candidate()
+
+    assert any(failing_command in command for command in observed)
+    assert not any("qa/release_candidate.py" in command for command in observed)
+    assert handed_off == []
 
 
 def test_contract_gate_runs_generation_and_all_runtime_consumers(

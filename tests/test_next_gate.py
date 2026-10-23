@@ -4529,3 +4529,51 @@ def test_capability_services_failure_retains_picker_proof_without_private_state(
         assert (retained / scenario_id / filename).read_text() == "raw-native-proof"
     assert not (retained / scenario_id / "workspace.db").exists()
     assert not (retained / scenario_id / "unrelated.png").exists()
+
+
+def test_non_build_timeout_with_inherited_pipe_has_bounded_drain(monkeypatch):
+    class ExitedProcess:
+        pid = 987
+        returncode = 0
+        calls = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired("test", timeout)
+            assert timeout == 5, "an inherited pipe must not hang the CI job"
+            raise subprocess.TimeoutExpired("test", timeout)
+
+    process = ExitedProcess()
+    monkeypatch.setattr(next_gate.subprocess, "Popen", lambda *_a, **_k: process)
+    monkeypatch.setattr(
+        next_gate.subprocess, "run", lambda *_a, **_k: pytest.fail("must not kill an exited PID")
+    )
+    code, stdout, stderr = next_gate._run_command(["test"], cwd=".", environment={}, timeout=1)
+    assert code == next_gate.TIMEOUT_RETURNCODE
+    assert process.calls == 2
+    assert stdout == ""
+    assert "output may be incomplete" in stderr
+
+
+def test_race_discovery_uses_the_same_build_tags_as_execution(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "binaries")
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "list":
+            return 0, f"example/tagged\t{tmp_path}\n", ""
+        if "-list" in command:
+            name = "TestRaceOnly" if "-race" in command else "TestNonRaceOnly"
+            return 0, f"TestShared\n{name}\n", ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", run)
+    code, _, _ = next_gate._run_go_race(cwd=str(tmp_path), environment={})
+    assert code == 0
+    selected = {arg for command in commands for arg in command if arg.startswith("-test.run=")}
+    assert selected == {"-test.run=^TestShared$", "-test.run=^TestRaceOnly$"}
