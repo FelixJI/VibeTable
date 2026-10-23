@@ -211,6 +211,78 @@ describe("workCalendarStore", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a fully valid receipt whose overrides contradict the submission", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "我提交的");
+    const count = request.mock.calls.length;
+    // Structurally legal, fully decorated — but the authority echoes a
+    // different override set than the one submitted this time.
+    request.mockResolvedValueOnce({
+      status: "applied", changeSetId: "change-1", emittedEvents: [],
+      overrides: [{ date: "2026-07-19", kind: "holiday", name: "别的会话" }], revision: "revision-x",
+    });
+    await store.save();
+    expect(store.status).toBe("error");
+    expect(store.draft[0]?.name).toBe("我提交的");
+    expect(store.overrides).toEqual([]);
+    expect(store.revision).toBe("");
+    expect(request).toHaveBeenCalledTimes(count + 1);
+  });
+
+  it("binds the commit receipt to the dispatch-time snapshot during a real in-flight mutation", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "提交内容");
+    const submitted: Array<unknown> = [];
+    request.mockImplementationOnce(async (_type: string, payload: Record<string, unknown>) => {
+      submitted.push(payload.overrides);
+      return new Promise(resolve => { setTimeout(() => resolve({
+        status: "applied", changeSetId: "change-1", emittedEvents: [],
+        overrides: payload.overrides, revision: "revision-s",
+      }), 0); });
+    });
+    const saving = store.save();
+    // Mutate the draft while the request is genuinely in flight.
+    store.draft = [{ date: "2026-07-19", kind: "holiday", name: "飞行中修改" }];
+    await saving;
+    // The receipt echoes the submitted snapshot, not the mutated draft.
+    expect(store.status).toBe("ready");
+    expect(store.overrides).toEqual([{ date: "2026-07-18", kind: "workday", name: "提交内容" }]);
+    expect(submitted[0]).toEqual([{ date: "2026-07-18", kind: "workday", name: "提交内容" }]);
+
+    // A fully legal receipt that matches neither the snapshot nor the draft
+    // stays a protocol failure and keeps the (mutated) draft untouched.
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    store.draft = [{ date: "2026-07-18", kind: "workday", name: "第二轮" }];
+    const failing = store.save();
+    store.draft = [...store.draft, { date: "2026-07-20", kind: "holiday", name: "等待" }];
+    finish({
+      status: "applied", changeSetId: "change-2", emittedEvents: [],
+      overrides: [{ date: "2026-07-21", kind: "workday", name: "别的会话" }], revision: "revision-o",
+    });
+    await failing;
+    expect(store.status).toBe("error");
+    expect(store.overrides).toEqual([{ date: "2026-07-18", kind: "workday", name: "提交内容" }]);
+    expect(store.revision).toBe("revision-s");
+    expect(store.draft[1]?.name).toBe("等待");
+  });
+
+  it("accepts the producer-normalized echo of the submitted overrides", async () => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    store.setOverride("2026-07-18", "workday", "　规范化名　");
+    request.mockResolvedValueOnce({
+      status: "applied", changeSetId: "change-1", emittedEvents: [],
+      overrides: [{ date: "2026-07-18", kind: "workday", name: "规范化名" }], revision: "revision-n",
+    });
+    await store.save();
+    expect(store.status).toBe("ready");
+    expect(store.revision).toBe("revision-n");
+    expect(store.day("2026-07-18")).toMatchObject({ name: "规范化名" });
+  });
+
   it("waits for database.opened and reads only the completed workspace epoch", async () => {
     useWorkspaceStore().phase = "opening";
     const session = useWorkspaceSessionStore();

@@ -4,8 +4,11 @@ import { effectScope, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PresetEntry, PresetsResult } from "@/contracts";
-import { BridgeOperationError, BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
+import type { HostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { usePresetVersionService } from "@/services/presetVersionService";
 import { ProductRpcError, ProductRpcProtocolError } from "@/services/productRpcResult";
+import { BridgeOperationError, BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -212,6 +215,47 @@ describe("presetViewController", () => {
     await controller.dispatch({ type: "view.reload" });
     expect(listPresets).toHaveBeenCalledTimes(2);
     scope.stop();
+  });
+
+  it("首写回执与请求 view 不符时不发降级旧默认的第二写", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const posted: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    // Real service over a recording bridge: the first preset.save receipt is
+    // structurally legal but demotes the promoted default in its view echo.
+    const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
+      posted.push({ type, payload });
+      if (type === "preset.list") return { collection: "orders", presets: [current, target] };
+      if (type === "preset.save") {
+        return {
+          id: (payload.presetId as string | null) ?? "p-new", collection: "orders",
+          name: String(payload.name), scope: "system",
+          view: { ...(payload.view as object), isDefault: false },
+          userId: null, revision: "rev-new", changeSetId: "change-1", emittedEvents: [],
+        };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    try {
+      const deps = dependencies(usePresetVersionService());
+      const scope = effectScope();
+      const controller = scope.run(() => createPresetViewController(deps))!;
+
+      deps.workspace.selectTable("orders");
+      await flushPromises();
+
+      await controller.dispatch({ type: "view.setDefault", view: target });
+
+      // The service rejects the contradictory view echo, so the controller
+      // stops before demoting the old default: exactly one save was posted.
+      expect(posted.filter(item => item.type === "preset.save")).toHaveLength(1);
+      expect(deps.presets.presets.find(item => item.id === "current")?.view.isDefault).toBe(true);
+      expect(deps.presets.error).toBeTruthy();
+      scope.stop();
+    } finally {
+      setHostBridgeForTesting(null);
+    }
   });
 
   it("切换视图时等待当前视图保存完成后再激活目标视图", async () => {

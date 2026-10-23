@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import type { PresetView } from "@/contracts";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useContentVersionService } from "./contentVersionService";
@@ -33,7 +34,10 @@ describe("presetVersionService", () => {
       if (type === "preset.save") {
         return {
           id: payload.presetId ?? "p1", collection: String(payload.collection),
-          name: String(payload.name), scope: "system", view: normalizedView,
+          name: String(payload.name), scope: "system",
+          // Echo the request view (a canonicalized producer echo is covered by
+          // the dedicated view-binding cases below).
+          view: payload.view,
           userId: null, revision: "rev-p1", changeSetId: "change-scripted",
           emittedEvents: ["event-scripted"],
         };
@@ -609,6 +613,169 @@ describe("presetVersionService", () => {
       };
     };
     await expect(usePresetVersionService().listPresets("orders")).resolves.toBeTruthy();
+  });
+
+  it("binds the save receipt to the requested view semantics", async () => {
+    const authored = {
+      filters: [], sorts: [], search: "", visibleFields: ["title"], layout: "table",
+      isDefault: true,
+    } as const;
+    const mismatched = (view: unknown) => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view, userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    });
+    const legitNormalized = {
+      filters: [], sorts: [], groups: [], summaries: [], search: "",
+      visibleFields: ["title"], layout: "table", kind: "table", dateField: null,
+      endDateField: null, titleField: null, groupField: null, coverField: null,
+      columns: [], density: "comfortable", isDefault: true,
+    };
+    // A structurally valid receipt whose view contradicts the request (the
+    // promoted default came back demoted, a field differs) is a protocol
+    // failure — it must not seed a second write or the local store.
+    for (const view of [
+      { ...legitNormalized, isDefault: false },
+      { ...legitNormalized, visibleFields: ["other"] },
+      { ...legitNormalized, search: "changed" },
+    ]) {
+      respond = (type) => {
+        if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+        return mismatched(view);
+      };
+      await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    }
+    // The Go producer echoes the normalized request view; that stays accepted.
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return mismatched(legitNormalized);
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
+  });
+
+  it("accepts receipts whose view defaults the producer normalizes in", async () => {
+    const authored = {
+      filters: [{ field: "status", operator: "eq", value: "open" }],
+      sorts: [{ field: "created" }],
+      groups: [{ field: "warehouse", numberInterval: 10 }],
+      summaries: [{ field: "amount", function: "sum" }],
+      search: "", visibleFields: [], layout: "table", kind: "calendar", dateField: "start",
+    } as const;
+    const normalizedEcho = {
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: {
+        filters: [{ field: "status", operator: "eq", value: "open", logic: "AND" }],
+        sorts: [{ field: "created", direction: "asc", nullsLast: true }],
+        groups: [{ field: "warehouse", direction: "asc", bucket: "value", numberInterval: 10 }],
+        summaries: [{ field: "amount", function: "sum" }],
+        search: "", visibleFields: [], layout: "table", kind: "calendar", dateField: "start",
+        endDateField: null, titleField: null, groupField: null, coverField: null,
+        columns: [], density: "comfortable", isDefault: false,
+      },
+      userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    };
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return normalizedEcho;
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
+  });
+
+  it("compares views semantically, ignoring JSON object key order", async () => {
+    const authored = {
+      filters: [{ field: "meta", operator: "eq", value: { z: 1, a: 2 } }],
+      sorts: [], search: "", visibleFields: [], layout: "table",
+      columns: [{ width: 100, name: "title" }],
+    } as const;
+    const receipt = (columns: unknown, value: unknown) => ({
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: {
+        filters: [{ field: "meta", operator: "eq", value, logic: "AND" }],
+        sorts: [], groups: [], summaries: [], search: "", visibleFields: [],
+        layout: "table", kind: "table", dateField: null, endDateField: null,
+        titleField: null, groupField: null, coverField: null, columns,
+        density: "comfortable", isDefault: false,
+      },
+      userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    });
+    // Go map JSON encoding re-orders keys; a legal echo must still pass.
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return receipt([{ name: "title", width: 100 }], { a: 2, z: 1 });
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null)).resolves.toBeTruthy();
+
+    const prototypeKeyView = { ...authored, filters: [{ field: "meta", operator: "eq", value: JSON.parse('{"__proto__":{}}') }] } as const;
+    respond = () => receipt([{ name: "title", width: 100 }], { different: 1 });
+    await expect(usePresetVersionService().savePreset("orders", "My view", prototypeKeyView, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    // Content drift inside opaque values (including nested objects) is still a
+    // protocol failure.
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return receipt([{ name: "title", width: 100 }], { z: 1, a: 3 });
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return receipt([{ name: "title", width: 101 }], { a: 2, z: 1 });
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    respond = (type) => {
+      if (type !== "preset.save") throw new Error(`unexpected ${type}`);
+      return receipt([{ width: 100, name: "title" }], { z: 1, a: { x: 2 } });
+    };
+    await expect(usePresetVersionService().savePreset("orders", "My view", authored, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("compares against the dispatch-time snapshot when the view mutates in flight", async () => {
+    const nested = { z: 1, a: 2 };
+    const view: PresetView = {
+      filters: [{ field: "meta", operator: "eq", value: nested }],
+      sorts: [], search: "init", visibleFields: [], layout: "table",
+    };
+    let finish!: (value: unknown) => void;
+    respond = () => new Promise(resolve => { finish = resolve; });
+    const saving = usePresetVersionService().savePreset("orders", "My view", view, null);
+    // Mutate the very object that was submitted (including nested values)
+    // while the request is in flight.
+    (view as { search: string }).search = "mutated";
+    nested.a = 3;
+    const echoOfSubmission = {
+      id: "p1", collection: "orders", name: "My view", scope: "system",
+      view: {
+        filters: [{ field: "meta", operator: "eq", value: { a: 2, z: 1 }, logic: "AND" }],
+        sorts: [], groups: [], summaries: [], search: "init", visibleFields: [],
+        layout: "table", kind: "table", dateField: null, endDateField: null,
+        titleField: null, groupField: null, coverField: null, columns: [],
+        density: "comfortable", isDefault: false,
+      },
+      userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+      emittedEvents: ["event-scripted"],
+    };
+    finish(echoOfSubmission);
+    await expect(saving).resolves.toBeTruthy();
+
+    let finishSecond!: (value: unknown) => void;
+    respond = () => new Promise(resolve => { finishSecond = resolve; });
+    const second = usePresetVersionService().savePreset("orders", "My view", view, null);
+    finishSecond({ ...echoOfSubmission, view: { ...echoOfSubmission.view, search: "mutated", filters: [{ field: "meta", operator: "eq", value: { a: 3, z: 1 }, logic: "AND" }] } });
+    // This call's dispatch snapshot IS the mutated view, so its echo passes.
+    await expect(second).resolves.toBeTruthy();
+
+    // A stale echo of the first submission no longer matches this dispatch.
+    let finishThird!: (value: unknown) => void;
+    respond = () => new Promise(resolve => { finishThird = resolve; });
+    const third = usePresetVersionService().savePreset("orders", "My view", view, null);
+    finishThird({ ...echoOfSubmission });
+    await expect(third)
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
   });
 
   it("returns fully valid corpus-shaped results untouched", async () => {

@@ -91,13 +91,18 @@ export const useWorkCalendarStore = defineStore("work-calendar", () => {
   async function save(): Promise<void> {
     if (!editable.value || !dirty.value) return;
     const current = generation;
+    // Snapshot the submission: the receipt must match what was sent, never a
+    // draft that may change while the request is in flight. sanitizeOverrides
+    // mirrors the Go producer normalization (trimmed names, date order).
+    const submitted = sanitizeOverrides(draft.value);
     status.value = "saving";
     error.value = "";
     try {
       const value = unwrapProductRpcResult<CalendarResult>(await useHostBridge().request("settings.commitWorkCalendar", {
-        overrides: draft.value.map(item => ({ ...item })), expectedRevision: revision.value,
+        overrides: submitted.map(item => ({ ...item })), expectedRevision: revision.value,
         idempotencyKey: crypto.randomUUID(),
-      }), candidate => (isWorkCalendarCommitReceipt(candidate) ? candidate : null), "settings.commitWorkCalendar");
+      }), candidate => (isWorkCalendarCommitReceipt(candidate)
+        && JSON.stringify(candidate.overrides) === JSON.stringify(submitted) ? candidate : null), "settings.commitWorkCalendar");
       if (current === generation) receive(value);
     } catch (value) { if (current === generation) fail(value); }
   }

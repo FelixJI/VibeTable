@@ -4,7 +4,7 @@ import type {
   PresetView,
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
-import { decodePresetEntry, decodePresetsResult, decodeDeletePresetVersionResult } from "./productRpcDecode";
+import { decodePresetEntry, decodePresetsResult, decodeDeletePresetVersionResult, snapshotPresetView } from "./productRpcDecode";
 import { unwrapProductRpcResult } from "./productRpcResult";
 
 export type PresetSaveTarget = Pick<PresetEntry, "id" | "revision">;
@@ -30,6 +30,10 @@ export function usePresetVersionService() {
     view: PresetView,
     target: PresetSaveTarget | null,
   ): Promise<PresetEntry> {
+    // Capture the submission semantics before dispatch: the caller may mutate
+    // the view (including nested opaque objects) while the request is in
+    // flight, and the receipt must match what was sent, not the live object.
+    const submittedView = snapshotPresetView(view);
     return unwrapProductRpcResult(
       await bridge.request("preset.save", {
         collection,
@@ -39,7 +43,7 @@ export function usePresetVersionService() {
         expectedRevision: target?.revision ?? null,
         operationId: operationId(),
       }),
-      value => decodePresetEntry(value, { collection, presetId: target?.id, name }, { writeReceipt: true }),
+      value => decodePresetEntry(value, { collection, presetId: target?.id, name, submittedView }, { writeReceipt: true }),
       "preset.save",
     );
   }

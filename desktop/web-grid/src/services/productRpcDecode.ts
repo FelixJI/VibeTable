@@ -112,6 +112,138 @@ function decodeSummary(value: unknown): boolean {
   return oneOf(value.function, SUMMARY_FUNCTIONS);
 }
 
+// --- Request/receipt view equivalence (Go normalizePresetView mirror) ------
+// The producer echoes normalizePresetView(request.view) back over JSON, where
+// Go map encoding orders keys differently than the in-memory request object.
+// Both sides are canonicalized with the producer's rules (defaults filled,
+// leaf value/logic defaults, group defaults, numeric numberInterval, empty
+// collapsedGroupKeys omitted) and then compared semantically: object key
+// order is ignored, array order is preserved, opaque values (filter value,
+// columns, summaries) are deep-copied so the snapshot cannot be mutated.
+
+type CanonicalRecord = Record<string, unknown>;
+export type PresetViewSnapshot = CanonicalRecord | null;
+
+/** Dispatch-time semantic snapshot of a view; null when the view is invalid. */
+export function snapshotPresetView(view: PresetView): PresetViewSnapshot {
+  return canonicalView(view);
+}
+
+/** Key-order-insensitive deep equality for JSON values; arrays keep order. */
+function semanticEquals(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => semanticEquals(item, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length
+      && keys.every(key => Object.hasOwn(b, key) && semanticEquals(a[key], b[key]));
+  }
+  return false;
+}
+
+function jsonClone(value: unknown): unknown {
+  return value === undefined ? null : JSON.parse(JSON.stringify(value ?? null));
+}
+
+function canonicalFilter(filter: unknown): CanonicalRecord | null {
+  if (!isPlainObject(filter)) return null;
+  if ("filters" in filter) {
+    if (!Array.isArray(filter.filters) || filter.filters.length === 0) return null;
+    const children: CanonicalRecord[] = [];
+    for (const child of filter.filters) {
+      const canonical = canonicalFilter(child);
+      if (!canonical) return null;
+      children.push(canonical);
+    }
+    const group: CanonicalRecord = {
+      groupLogic: typeof filter.groupLogic === "string" ? filter.groupLogic : "AND",
+      filters: children,
+    };
+    if (typeof filter.logic === "string") group.logic = filter.logic;
+    return group;
+  }
+  if (typeof filter.field !== "string" || typeof filter.operator !== "string") return null;
+  return {
+    field: filter.field,
+    operator: filter.operator,
+    value: jsonClone("value" in filter ? filter.value : null),
+    logic: typeof filter.logic === "string" ? filter.logic : "AND",
+  };
+}
+
+function canonicalQueryPart(value: unknown, kind: "sort" | "group"): CanonicalRecord | null {
+  if (!isPlainObject(value) || typeof value.field !== "string") return null;
+  const canonical: CanonicalRecord = {
+    field: value.field,
+    direction: typeof value.direction === "string" ? value.direction : "asc",
+  };
+  if (kind === "sort") {
+    canonical.nullsLast = typeof value.nullsLast === "boolean" ? value.nullsLast : true;
+    return canonical;
+  }
+  canonical.bucket = typeof value.bucket === "string" ? value.bucket : "value";
+  if (typeof value.numberInterval === "number") {
+    if (!Number.isFinite(value.numberInterval)) return null;
+    canonical.numberInterval = value.numberInterval;
+  } else if (value.numberInterval !== undefined && value.numberInterval !== null) {
+    return null;
+  }
+  return canonical;
+}
+
+function canonicalView(view: unknown): CanonicalRecord | null {
+  if (!isPlainObject(view)) return null;
+  if (!Array.isArray(view.filters) || !Array.isArray(view.sorts)) return null;
+  const filters: CanonicalRecord[] = [];
+  for (const filter of view.filters) {
+    const canonical = canonicalFilter(filter);
+    if (!canonical) return null;
+    filters.push(canonical);
+  }
+  const sorts: CanonicalRecord[] = [];
+  for (const sort of view.sorts) {
+    const canonical = canonicalQueryPart(sort, "sort");
+    if (!canonical) return null;
+    sorts.push(canonical);
+  }
+  const groups: CanonicalRecord[] = [];
+  for (const group of (Array.isArray(view.groups) ? view.groups : [])) {
+    const canonical = canonicalQueryPart(group, "group");
+    if (!canonical) return null;
+    groups.push(canonical);
+  }
+  const collapsed = Array.isArray(view.collapsedGroupKeys) ? view.collapsedGroupKeys : [];
+  const canonical: CanonicalRecord = {
+    filters,
+    sorts,
+    groups,
+    summaries: jsonClone(Array.isArray(view.summaries) ? view.summaries : []),
+    search: typeof view.search === "string" ? view.search : "",
+    visibleFields: [...(Array.isArray(view.visibleFields) ? view.visibleFields : [])],
+    layout: typeof view.layout === "string" ? view.layout : "table",
+    kind: typeof view.kind === "string" ? view.kind : "table",
+    dateField: view.dateField ?? null,
+    endDateField: view.endDateField ?? null,
+    titleField: view.titleField ?? null,
+    groupField: view.groupField ?? null,
+    coverField: view.coverField ?? null,
+    columns: jsonClone(Array.isArray(view.columns) ? view.columns : []),
+    density: typeof view.density === "string" ? view.density : "comfortable",
+    isDefault: typeof view.isDefault === "boolean" ? view.isDefault : false,
+  };
+  // The producer omits empty collapsedGroupKeys entirely.
+  if (collapsed.length > 0) canonical.collapsedGroupKeys = [...collapsed];
+  return canonical;
+}
+
+/** True when the receipt view is a producer-normalized echo of the snapshot. */
+function viewEchoesRequest(receiptView: unknown, submitted: CanonicalRecord | null): boolean {
+  const receipt = canonicalView(receiptView);
+  return receipt !== null && submitted !== null && semanticEquals(receipt, submitted);
+}
+
 function decodePresetView(value: unknown): PresetView | null {
   if (!isPlainObject(value)) return null;
   const leaves = { count: 0 };
@@ -140,11 +272,19 @@ function decodePresetView(value: unknown): PresetView | null {
  * content_version.go Write output) with a non-empty `changeSetId` and an
  * `emittedEvents` array; delete/save receipts also carry `status: "applied"`.
  * `writeReceipt` mode rejects truncated echoes that the producer can never
- * emit, while list entries keep tolerating `changeSetId: null`.
+ * emit, while list entries keep tolerating `changeSetId: null`. `expected`
+ * additionally binds collection, id, name and — for saves — that the receipt
+ * view is the producer-normalized echo of the request view.
  */
 export function decodePresetEntry(
   value: unknown,
-  expected: { readonly collection: string; readonly presetId?: string; readonly name?: string } | null,
+  expected: {
+    readonly collection: string;
+    readonly presetId?: string;
+    readonly name?: string;
+    /** Dispatch-time canonical snapshot of the request view. */
+    readonly submittedView?: CanonicalRecord | null;
+  } | null,
   options: { readonly writeReceipt?: boolean } = {},
 ): PresetEntry | null {
   if (!isPlainObject(value)) return null;
@@ -161,6 +301,7 @@ export function decodePresetEntry(
     if (value.collection !== expected.collection) return null;
     if (expected.presetId !== undefined && value.id !== expected.presetId) return null;
     if (expected.name !== undefined && value.name !== expected.name) return null;
+    if (expected.submittedView !== undefined && !viewEchoesRequest(value.view, expected.submittedView)) return null;
   }
   return value as unknown as PresetEntry;
 }
