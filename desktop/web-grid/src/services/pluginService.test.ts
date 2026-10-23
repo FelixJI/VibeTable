@@ -1254,22 +1254,22 @@ describe("pluginService canonical wire", () => {
     const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" });
     const first = usePluginService(); const second = usePluginService(); second.init();
     const write = first.setEnabled(unrelated, true);
+    harness.event(current); // the notification must wait behind the pending write
+    await flushPromises();
+    expect(harness.posted.filter(request => request.type === "plugin.catalog.list")).toHaveLength(0);
     const completion = writeSucceeds ? write : expect(write).rejects.toThrow("write failed");
-    harness.event(current); await flushPromises();
-    const initialRead = harness.posted.find(request => request.type === "plugin.catalog.list")!;
     if (writeSucceeds) harness.reply(harness.posted[0]!, { ...unrelated, revision: 2 });
     else harness.fail(harness.posted[0]!, "write failed");
-    await completion;
-    harness.reply(initialRead, [current]); await flushPromises();
+    await completion; await flushPromises();
     const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
-    expect(reads).toHaveLength(2);
-    if (refreshSucceeds) harness.reply(reads[1]!, [current]);
-    else harness.fail(reads[1]!, "refresh failed");
+    expect(reads).toHaveLength(1); // the write terminal's single catch-up read
+    if (refreshSucceeds) harness.reply(reads[0]!, [current]);
+    else harness.fail(reads[0]!, "refresh failed");
     await flushPromises();
     expect(store.plugins[0]?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
     expect(store.lastError).toBe(writeSucceeds ? refreshSucceeds ? null : "refresh failed" : "write failed");
     expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
-    expect(harness.posted).toHaveLength(3);
+    expect(harness.posted).toHaveLength(2);
     second.dispose();
   });
 
@@ -1404,6 +1404,7 @@ describe("pluginService lifecycle retirement", () => {
     posted: Array<{ type: string; requestId: string; payload?: unknown }>;
     reply: (requestId: string, snapshots: PluginSnapshot[]) => void;
     fail: (requestId: string) => void;
+    respond: (type: string, requestId: string, payload: unknown) => void;
     event: (value: PluginSnapshot) => void;
   } {
     const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
@@ -1426,6 +1427,8 @@ describe("pluginService lifecycle retirement", () => {
       fail: (requestId) => listener?.({
         data: { type: "operation.failed", requestId, payload: { message: "host list failed", code: "X" } },
       }),
+      respond: (type, requestId, payload) =>
+        listener?.({ data: { type, requestId, payload } }),
       event: (value) => listener?.({
         data: { type: "plugin.catalog.changed", payload: {
           contract: "vibetable.plugin-event.v1",
@@ -1445,6 +1448,7 @@ describe("pluginService lifecycle retirement", () => {
     revision: 2,
   };
   const disabledSnapshot: PluginSnapshot = { ...snapshot, status: "disabled" };
+  const enabledSnapshot: PluginSnapshot = { ...snapshot, status: "enabled" };
 
   it("cannot replace the shared catalog from a disposed instance's late list success", async () => {
     const { posted, reply } = deferredCatalogBridge();
@@ -1617,6 +1621,277 @@ describe("pluginService lifecycle retirement", () => {
 
     reply(posted.find((item) => item.type === "plugin.catalog.list")!.requestId, [snapshot]);
     for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("recovers the notification when a newer manual read retires after superseding the refresh", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve(); // the scheduler picks root's demand and posts R1
+    const reads0 = posted.filter((item) => item.type === "plugin.catalog.list");
+    const r1 = reads0[0]!;
+    // center starts a newer manual read whose sequence supersedes R1.
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+    expect(r2.requestId).not.toBe(r1.requestId);
+
+    // R1 lands first while center is still alive: its stale completion must
+    // keep root's demand unsatisfied instead of consuming it.
+    reply(r1.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    center.dispose();
+    reply(r2.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(3); // exactly one authoritative takeover read
+    reply(reads[2]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("needs no takeover when the newer read projects legally before its owner retires", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const r1 = posted.find((item) => item.type === "plugin.catalog.list")!;
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+
+    // R2 projects first (center alive); the older R1 is merely stale.
+    reply(r2.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    reply(r1.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(2);
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+    // A later dispose cannot revive the settled demand.
+    center.dispose();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(2);
+  });
+
+  it("takes over without surfacing an error when the newest read fails after retiring", async () => {
+    const { posted, reply, fail, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const r1 = posted.find((item) => item.type === "plugin.catalog.list")!;
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+
+    reply(r1.requestId, [enabledSnapshot]); // stale: root's demand stays
+    center.dispose();
+    fail(r2.requestId);                     // retired failure: no pollution
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(3);
+    expect(store.lastError).toBeNull();
+    reply(reads[2]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("ends the notification when the newest read fails while its owner is still current", async () => {
+    const { posted, reply, fail, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const r1 = posted.find((item) => item.type === "plugin.catalog.list")!;
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+
+    reply(r1.requestId, [enabledSnapshot]); // stale completion first
+    fail(r2.requestId);                     // live failure of the newest read
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    // A current failure is visible and ends the notification: no auto retry.
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    expect(store.lastError).toBe("host list failed");
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("disabled");
+
+    // A later dispose must not reclassify the failure or revive the demand.
+    center.dispose();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(2);
+    expect(store.lastError).toBe("host list failed");
+  });
+
+  it("keeps a notification waiting behind a real pending write", async () => {
+    const { posted, reply, respond, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const unrelated: PluginSnapshot = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    store.applyPlugin(unrelated);
+    const root = usePluginService();
+    root.init();
+
+    // A real setEnabled write stays pending; the notification must not race it.
+    const write = root.setEnabled(unrelated, true);
+    const writeRequest = posted.find((item) => item.type === "plugin.lifecycle.setEnabled")!;
+    event(snapshot);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(0);
+
+    // The write terminal releases its barrier and queues the normal refresh.
+    respond("plugin.lifecycle.setEnabled", writeRequest.requestId, { ...unrelated, status: "enabled" as const, revision: 2 });
+    await write;
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(1);
+    expect(posted.filter((item) => item.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+
+    reply(reads[0]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("never lets an old-generation write terminal steal the new generation's barrier", async () => {
+    const { posted, reply, respond, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const unrelated: PluginSnapshot = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    store.applyPlugin(unrelated);
+    const first = usePluginService();
+    first.init();
+    const second = usePluginService();
+    second.init();
+
+    // Old generation: a real write stays pending when the project resets.
+    const oldWrite = first.setEnabled(unrelated, true);
+    const oldRequest = posted.find((item) => item.type === "plugin.lifecycle.setEnabled")!;
+    store.setProjectContext("local:default", "r2");
+
+    // New generation: a notification and a new real write.
+    event(snapshot);
+    const newWrite = second.setEnabled(unrelated, true);
+    const newRequest = posted.filter((item) => item.type === "plugin.lifecycle.setEnabled").at(-1)!;
+    expect(newRequest.requestId).not.toBe(oldRequest.requestId);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    // The new write's barrier must hold the notification.
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(0);
+
+    // The old-generation terminal releases nothing of the new generation.
+    respond("plugin.lifecycle.setEnabled", oldRequest.requestId, { ...unrelated, status: "enabled" as const, revision: 2 });
+    await oldWrite;
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(0);
+
+    // The new write terminal serves the notification with exactly one read;
+    // each write executed exactly once.
+    respond("plugin.lifecycle.setEnabled", newRequest.requestId, { ...unrelated, status: "enabled" as const, revision: 3 });
+    await newWrite;
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(1);
+    expect(posted.filter((item) => item.type === "plugin.lifecycle.setEnabled")).toHaveLength(2);
+    reply(reads[0]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("preserves a new-generation demand when an old-generation read fails late", async () => {
+    const { posted, reply, fail, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const oldRead = posted.find((item) => item.type === "plugin.catalog.list")!;
+    store.setProjectContext("local:default", "r2");
+    // The same stable owner queues a fresh demand in the new generation.
+    event(snapshot);
+    fail(oldRead.requestId); // the old read's late failure surfaces nothing
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    expect(store.lastError).toBeNull();
+    reply(reads[1]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("preserves a newer same-owner notification when an older read fails", async () => {
+    const { posted, reply, fail, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const firstRead = posted.find((item) => item.type === "plugin.catalog.list")!;
+    event(snapshot); // a newer notification replaces the same reader's demand
+    fail(firstRead.requestId);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    expect(store.lastError).toBeNull();
+    reply(reads[1]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it.each([
+    ["r1-first", true], ["r2-first", false],
+  ] as const)("recovers when center retires before both replies land (%s)", async (label, r1First) => {
+    void label;
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const r1 = posted.find((item) => item.type === "plugin.catalog.list")!;
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+
+    center.dispose();
+    const order = r1First ? [r1, r2] : [r2, r1];
+    for (const request of order) reply(request.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(3); // exactly one authoritative takeover
+    reply(reads[2]!.requestId, [enabledSnapshot]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
     expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
   });
 });

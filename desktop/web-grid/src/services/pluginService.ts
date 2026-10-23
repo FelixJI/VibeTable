@@ -182,35 +182,47 @@ export function usePluginService(): PluginService {
   }
 
   async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
-    // dispose() retires this instance's in-flight catalog reads even while the
-    // shared project context is unchanged; without the lifecycle guard a
-    // retired owner's late success/failure could still write the shared
-    // plugin store that a newer owner now consumes.
     const requestLifecycle = lifecycleRevision;
     const isInstanceCurrent = () => lifecycleRevision === requestLifecycle;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
-    const sequence = store.beginCatalogRead();
-    const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
-      "plugin.catalog.list",
-      { projectKey },
-      {
-        errorPolicy: "background",
-        isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
-        isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
-      },
-    );
-    if (!isInstanceCurrent() || store.projectKey !== projectKey || store.projectContextGeneration !== generation
-      || !store.isCurrentCatalogRead(sequence)) return snapshots;
-    store.replaceCatalog(projectKey, snapshots);
-    return snapshots;
+    // The observed read lets the store scheduler yield to this newer activity;
+    // its terminal is frozen below with the same classification call's error
+    // policy uses to decide visibility.
+    const receipt = store.beginObservedCatalogRead(isInstanceCurrent);
+    const sequence = receipt.sequence;
+    const coversCurrentActivity = () => isInstanceCurrent() && store.projectKey === projectKey
+      && store.projectContextGeneration === generation && store.isCurrentCatalogRead(sequence);
+    try {
+      const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
+        "plugin.catalog.list",
+        { projectKey },
+        {
+          errorPolicy: "background",
+          isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
+          isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
+        },
+      );
+      if (!coversCurrentActivity()) {
+        store.settleObservedCatalogRead(receipt, isInstanceCurrent() ? "superseded" : "retired");
+        return snapshots;
+      }
+      store.replaceCatalog(projectKey, snapshots);
+      store.settleObservedCatalogRead(receipt, "projected");
+      return snapshots;
+    } catch (error) {
+      store.settleObservedCatalogRead(receipt, coversCurrentActivity() ? "failed-current"
+        : isInstanceCurrent() ? "superseded" : "retired");
+      throw error;
+    }
   }
 
   async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
     const requestLifecycle = lifecycleRevision;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
-    const sequence = store.beginCatalogRead();
+    const barrier = store.beginCatalogWriteBarrier();
+    const sequence = barrier.sequence;
     const currentContext = () => store.projectKey === projectKey && store.projectContextGeneration === generation;
     try {
       const result = await request();
@@ -219,8 +231,10 @@ export function usePluginService(): PluginService {
       }
       return result;
     } finally {
-      // A consumed notification may have settled before this write; read
-      // authority in either order. A retired owner must not queue a refresh.
+      // The write terminal releases only its own barrier token and performs
+      // the normal refresh; the write itself never re-sends. A stale token
+      // (generation switched) is inert in the store.
+      store.endCatalogWriteBarrier(barrier);
       if (lifecycleRevision === requestLifecycle && currentContext()) {
         store.refreshCatalog(list, catalogOwnerIsCurrent());
       }

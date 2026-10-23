@@ -354,15 +354,36 @@ describe("pluginStore", () => {
     expect(store.nativeTaskReceipts).toEqual([]);
   });
 
+  // Bare test readers wrap the receipt protocol the real list() implements:
+  // every read registers as the newest activity and settles a terminal.
+  function observedReader(
+    store: ReturnType<typeof usePluginStore>,
+    impl: () => Promise<{ snapshots: readonly PluginSnapshot[]; outcome: "projected" | "superseded" | "retired" }>,
+  ): () => Promise<readonly PluginSnapshot[]> {
+    return () => {
+      const receipt = store.beginObservedCatalogRead(() => true);
+      return impl().then(
+        ({ snapshots, outcome }) => { store.settleObservedCatalogRead(receipt, outcome); return snapshots; },
+        (error: unknown) => { store.settleObservedCatalogRead(receipt, "failed-current"); throw error; },
+      );
+    };
+  }
+
   it("merges repeated notifications from one owner into a single follow-up read", async () => {
     const store = usePluginStore();
     store.setProjectContext("local:default", "r1");
     const first = deferred<readonly PluginSnapshot[]>();
     let started = 0;
-    const reader = () => {
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const reader = observedReader(store, () => {
       started += 1;
-      return started === 1 ? first.promise : Promise.resolve([plugin(1)]);
-    };
+      return started === 1
+        ? first.promise.then((snapshots) => ({ snapshots, outcome: "superseded" as const }))
+        : project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
     store.refreshCatalog(reader);
     await Promise.resolve(); // the first read starts
     expect(started).toBe(1);
@@ -381,9 +402,19 @@ describe("pluginStore", () => {
     let oldStarted = 0;
     let freshStarted = 0;
     let oldOwnerRetired = false;
-    const oldReader = () => { oldStarted += 1; return oldRead.promise; };
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const oldReader = observedReader(store, () => {
+      oldStarted += 1;
+      return oldRead.promise.then((snapshots) => ({ snapshots, outcome: "retired" as const }));
+    });
     const oldOwnerCurrent = () => !oldOwnerRetired;
-    const freshReader = () => { freshStarted += 1; return Promise.resolve([plugin(1)]); };
+    const freshReader = observedReader(store, () => {
+      freshStarted += 1;
+      return project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
 
     store.refreshCatalog(oldReader, oldOwnerCurrent);
     await Promise.resolve(); // the old batch starts reading
@@ -408,9 +439,19 @@ describe("pluginStore", () => {
     let oldStarted = 0;
     let freshStarted = 0;
     let oldOwnerRetired = false;
-    const oldReader = () => { oldStarted += 1; return oldRead.promise; };
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const oldReader = observedReader(store, () => {
+      oldStarted += 1;
+      return oldRead.promise.then((snapshots) => ({ snapshots, outcome: "retired" as const }));
+    });
     const oldOwnerCurrent = () => !oldOwnerRetired;
-    const freshReader = () => { freshStarted += 1; return Promise.resolve([plugin(1)]); };
+    const freshReader = observedReader(store, () => {
+      freshStarted += 1;
+      return project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
 
     store.refreshCatalog(oldReader, oldOwnerCurrent);
     store.refreshCatalog(freshReader);
@@ -423,6 +464,70 @@ describe("pluginStore", () => {
 
     expect(oldStarted).toBe(1);
     expect(freshStarted).toBe(1); // one takeover read serves the notification
+  });
+
+  it("keeps a barriered demand waiting for the write terminal instead of racing it", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    let rootStarted = 0;
+    let writerStarted = 0;
+    let releaseRoot!: (snapshots: readonly PluginSnapshot[]) => void;
+    const rootRead = new Promise<readonly PluginSnapshot[]>((done) => { releaseRoot = done; });
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const rootReader = observedReader(store, () => {
+      rootStarted += 1;
+      return rootStarted === 1
+        ? rootRead.then((snapshots) => ({ snapshots, outcome: "superseded" as const }))
+        : project([plugin(2)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
+    const writerReader = observedReader(store, () =>
+      project([plugin(2)]).then((snapshots) => ({ snapshots, outcome: "projected" as const })));
+
+    store.refreshCatalog(rootReader);
+    await Promise.resolve();
+    expect(rootStarted).toBe(1);
+    // mutateCatalog-style write barrier: the sequence advances behind a write.
+    const barrier = store.beginCatalogWriteBarrier();
+    releaseRoot([]); // the superseded read settles without projecting
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    // The unsatisfied demand waits for the write terminal; no racing read.
+    expect(rootStarted).toBe(1);
+    // The write terminal releases only its own token and queues the refresh.
+    store.endCatalogWriteBarrier(barrier);
+    store.refreshCatalog(writerReader);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    // Exactly one catch-up read serves the pending demand; nothing re-sends.
+    expect(rootStarted).toBe(2);
+    expect(writerStarted).toBe(0);
+  });
+
+  it("ignores an old-generation barrier release while a new write is pending", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    let freshStarted = 0;
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const freshReader = observedReader(store, () => {
+      freshStarted += 1;
+      return project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
+
+    const staleBarrier = store.beginCatalogWriteBarrier();
+    store.setProjectContext("local:default", "r2"); // generation switch clears it
+    store.refreshCatalog(freshReader);
+    const newBarrier = store.beginCatalogWriteBarrier(); // a new write is pending
+    store.endCatalogWriteBarrier(staleBarrier);         // old terminal: inert
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(freshStarted).toBe(0); // the new barrier still holds the demand
+
+    store.endCatalogWriteBarrier(newBarrier);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(freshStarted).toBe(1);
   });
 
 });
