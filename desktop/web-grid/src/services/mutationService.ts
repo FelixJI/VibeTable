@@ -27,6 +27,7 @@ export function useMutationService() {
   type CellState = {
     latest: number; pending: number; value: unknown;
     valueIsCurrent: () => boolean; tail: Promise<void> | null;
+    receipt?: UpdateCellResult; guards: Set<string>;
   };
   const cellStates = shallowReactive(new Map<string, CellState>());
   let cellSequence = 0;
@@ -201,7 +202,7 @@ export function useMutationService() {
   ): Promise<T> {
     const state = cellStates.get(key) ?? {
       latest: 0, pending: 0, value: initialValue,
-      valueIsCurrent: history.captureGeneration(), tail: null,
+      valueIsCurrent: history.captureGeneration(), tail: null, guards: new Set<string>(),
     };
     const previous = state.tail;
     state.pending += 1;
@@ -221,6 +222,30 @@ export function useMutationService() {
     return task;
   }
 
+  function receiptDigest(result: UpdateCellResult): string | null {
+    const value = result.currentRow.__vibetableDigest;
+    return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value) ? value : null;
+  }
+
+  function cellBaseline(state: CellState, oldValue: unknown, expectedDigest: string | null) {
+    const receipt = state.valueIsCurrent() ? state.receipt : undefined;
+    const digest = receipt && receiptDigest(receipt);
+    // Advance only guards already belonging to this local serial chain. A newly
+    // captured external guard must retain its own old value and concurrency check.
+    return receipt && digest && expectedDigest && state.guards.has(expectedDigest)
+      ? { oldValue: receipt.storedValue, expectedDigest: digest }
+      : { oldValue, expectedDigest };
+  }
+
+  function rememberCellReceipt(state: CellState, result: UpdateCellResult, capturedDigest: string | null): void {
+    if (!capturedDigest || !state.guards.has(capturedDigest)) state.guards.clear();
+    if (capturedDigest) state.guards.add(capturedDigest);
+    const digest = receiptDigest(result);
+    if (digest) state.guards.add(digest);
+    state.value = result.storedValue;
+    state.receipt = result;
+  }
+
   async function replay<K extends MutationType>(
     type: K,
     payload: Omit<WebPayloadMap[K], "schemaRevision">,
@@ -231,10 +256,13 @@ export function useMutationService() {
     const canSend = () => isCurrent() && historyIsCurrent();
     const execute = async (state?: CellState): Promise<MutationResult> => {
       const schemaRevision = await readyRevision(canSend, expected);
-      const result = await send(type, { ...payload, schemaRevision } as WebPayloadMap[K], canSend, false);
+      const cell = type === "table.updateCellRequested"
+        ? payload as Omit<WebPayloadMap["table.updateCellRequested"], "schemaRevision"> : undefined;
+      const baseline = state && cell ? cellBaseline(state, cell.oldValue, cell.expectedDigest) : {};
+      const result = await send(type, { ...payload, ...baseline, schemaRevision } as WebPayloadMap[K], canSend, false);
       if (!isCurrent()) throw new Error("The mutation context changed before applying its response.");
       if (state && "storedValue" in result) {
-        state.value = result.storedValue;
+        rememberCellReceipt(state, result, cell!.expectedDigest);
         state.valueIsCurrent = historyIsCurrent;
       }
       applyResult(result);
@@ -312,20 +340,24 @@ export function useMutationService() {
         const schemaRevision = table.revision?.schemaRevision || await readyRevision(canSend);
         if (!canSend()) throw new Error("The mutation context changed before sending.");
         if (deferred.get(key) === item) deferred.delete(key);
-        if (!state.valueIsCurrent()) state.value = oldValue;
+        if (!state.valueIsCurrent()) {
+          state.value = oldValue;
+          state.receipt = undefined;
+          state.guards.clear();
+        }
         state.valueIsCurrent = historyIsCurrent;
-        const before = state.value;
+        const baseline = cellBaseline(state, oldValue, digest);
+        const before = state.receipt ? baseline.oldValue : state.value;
         submitted = true;
         const r = await send("table.updateCellRequested", {
-          table: tableId, rowKey, column, oldValue, newValue: item.newValue,
-          expectedDigest: digest, schemaRevision,
+          table: tableId, rowKey, column, ...baseline, newValue: item.newValue, schemaRevision,
         }, isCurrent, true, (error) => {
           // Only this column belongs to this command; other columns may be in flight.
           if (error.currentRow && Object.hasOwn(error.currentRow, column)) state.value = error.currentRow[column];
           if (state.latest === sequence) table.rollbackCellEdit(rowKey, column, state.value);
         }) as UpdateCellResult;
         if (!isCurrent()) return;
-        state.value = r.storedValue;
+        rememberCellReceipt(state, r, digest);
         state.valueIsCurrent = historyIsCurrent;
         applyResult(r, () => cellHistory(r, () => before, tableId, isCurrent), historyIsCurrent);
       } catch (error) {

@@ -13,6 +13,33 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceSessionEnvelopeFilterTests
 {
     [TestMethod]
+    public async Task RecoveryReadLeaseRetiresDuringDrainButSentWriteKeepsItsLeaseUntilTerminal()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("写入", "Mutation");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var terminal = new TaskCompletionSource<UpdateCellResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = new FakeTableRpcGateway { PendingUpdateCell = terminal };
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(new TableWorkspaceService(gateway), new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(gateway, _ => { }), sessionEnvelopeFilter: filter);
+        Task write = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.updateCellRequested", "write", JsonSerializer.SerializeToElement(new {
+            table = "records", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr",
+        }), "", ScopeFor(opened, sequence: 2)));
+        Task query = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.queryRequested", "recovery", JsonSerializer.SerializeToElement(new {
+            table = "records", query = new { },
+        }), "", ScopeFor(opened, sequence: 3)));
+        Task drain = filter.DrainAsync(entry.WorkspaceId, opened.SessionEpoch, CancellationToken.None);
+        await query.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(drain.IsCompleted, "cancelling a read must not pretend the sent write was cancelled");
+        Assert.HasCount(0, gateway.RawViewQueries);
+        terminal.SetResult(new UpdateCellResult("r", "name", "after", new Dictionary<string, object?> { ["rowKey"] = "r", ["name"] = "after" }, new MutationRevision("s", "sr", 2)));
+        await write; await drain.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "table.pageLoaded"));
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task GridQueryDispatcherDrainsEpochBeforeIgnoringLateRead(bool fails)

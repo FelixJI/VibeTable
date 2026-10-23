@@ -143,11 +143,11 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 },
                 token).ConfigureAwait(false);
             stage = "readback";
-            var rows = await ReadRowsInternalAsync(
+            var rows = await AwaitWriteOutcomeAsync(() => ReadRowsInternalAsync(
                 table,
                 new[] { recordId },
                 schemaRevision,
-                token).ConfigureAwait(false);
+                token)).ConfigureAwait(false);
             if (rows.Count != 1)
             {
                 throw new InvalidOperationException("PocketBase omitted the updated row.");
@@ -283,11 +283,11 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 },
             },
             token).ConfigureAwait(false);
-        var rows = await ReadRowsInternalAsync(
+        var rows = await AwaitWriteOutcomeAsync(() => ReadRowsInternalAsync(
             table,
             new[] { recordId },
             schemaRevision,
-            token).ConfigureAwait(false);
+            token)).ConfigureAwait(false);
         if (rows.Count != 1)
         {
             throw new InvalidOperationException("PocketBase omitted the inserted row.");
@@ -640,8 +640,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string token,
         string idempotencyKey,
         CancellationToken cancellationToken)
-        => _product.ApplyPasteAsync(
-            new ApplyPasteRpcParams(collection, token, idempotencyKey), cancellationToken);
+        => AwaitWriteOutcomeAsync(() => _product.ApplyPasteAsync(
+            new ApplyPasteRpcParams(collection, token, idempotencyKey), cancellationToken));
 
     public void Dispose()
     {
@@ -749,9 +749,22 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             ["expectedRevision"] = null,
             ["expectedDigest"] = null,
         };
-        return await _product.ApplyMutationAsync(
+        return await AwaitWriteOutcomeAsync(() => _product.ApplyMutationAsync(
             JsonSerializer.SerializeToElement(request, JsonOptions),
-            token).ConfigureAwait(false);
+            token)).ConfigureAwait(false);
+    }
+
+    private static async Task<T> AwaitWriteOutcomeAsync<T>(Func<Task<T>> operation)
+    {
+        try { return await operation().ConfigureAwait(false); }
+        catch (Exception exception) when (exception is BackendUnavailableException
+            or OperationCanceledException or TimeoutException or System.IO.IOException
+            or System.Net.Http.HttpRequestException)
+        {
+            // A transport/cancellation result after submission cannot prove zero writes.
+            throw new InvalidOperationException(
+                "写入结果尚未确认，请重新打开工作区并核实数据，不要直接重试写入。", exception);
+        }
     }
 
     private static IReadOnlyList<ColumnSchema> ReadColumns(JsonElement schema)

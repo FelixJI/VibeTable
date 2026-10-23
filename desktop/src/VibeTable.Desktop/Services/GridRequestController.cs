@@ -13,6 +13,7 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public sealed class GridRequestController
 {
+    internal TableMutationReadBarrier? MutationReads { get; set; }
     private readonly GridStateCoordinator? _coordinator;
     private readonly IWebReplySink _reply;
     private readonly Func<CancellationToken> _sessionToken;
@@ -108,6 +109,8 @@ public sealed class GridRequestController
                 && (_sessions is null || _sessions.IsCurrent(lease));
             try
             {
+                if (request.Type == "table.queryRequested" && MutationReads is not null)
+                    await MutationReads.WaitAsync(request, lifetime.Token).ConfigureAwait(false);
                 TablePage? page = await read(lifetime.Token).ConfigureAwait(false);
                 if (!IsCurrent() || page is null) return;
                 if (correlate && request.RequestId is not null)
@@ -132,7 +135,8 @@ public sealed class GridRequestController
                 if (!IsCurrent()) return;
                 MutationError error = MutationErrorMapper.Map(exception);
                 if (correlate && request.RequestId is not null)
-                    await RejectAsync(request, error.Message, error.Code ?? "QUERY_FAILED");
+                    await RejectAsync(request, error.Message, exception is TableMutationUnconfirmedException
+                        ? "WRITE_TERMINAL_UNCONFIRMED" : error.Code ?? "QUERY_FAILED");
                 else
                     TableNotificationPresenter.Post(_reply, new TableNotification
                     {

@@ -13,6 +13,8 @@ public sealed class WorkspaceRequestDispatcher :
     IProductSidecarForwarderBinding
 {
     private readonly IWebReplySink _reply;
+    private readonly TableMutationReadBarrier _mutationReads = new();
+    private (string ProjectKey, ulong Epoch)? _mutationAuthority;
     private readonly DatabaseOpenTerminalPublisher _terminals;
     private readonly WorkspaceTableRequestController _tableController;
     private readonly ProductDataRequestController _productController;
@@ -115,6 +117,7 @@ public sealed class WorkspaceRequestDispatcher :
             ?? new PluginProjectContextBindingRegistry(_authority);
         _ownsPluginBindings = databaseOpens is null;
         PluginProjectContext? initialContext = pluginContext?.Invoke();
+        if (initialContext is not null) _mutationAuthority = (initialContext.ProjectKey, initialContext.SessionGeneration);
         if (_ownsAuthority) _authority.Transition(initialContext);
         if (_ownsPluginBindings)
             _pluginBindings.SetAfterAuthorityTransition(initialContext);
@@ -149,6 +152,8 @@ public sealed class WorkspaceRequestDispatcher :
                 sessionEnvelopeFilter);
         _gridController = new GridRequestController(
             coordinator, _reply, () => _workspaceSessionToken, sessionEnvelopeFilter);
+        _tableController.MutationReads = _mutationReads;
+        _gridController.MutationReads = _mutationReads;
         _documentController = new DocumentBrowseRequestController(
             _reply,
             readRecoveryTimeout);
@@ -216,7 +221,6 @@ public sealed class WorkspaceRequestDispatcher :
         PluginProjectContext? context,
         CancellationToken sessionToken = default)
     {
-        _workspaceSessionToken = sessionToken;
         _authority.Transition(context, sessionToken);
         PostRetiredDatabaseOpenCancellations(
             RetireDatabaseOpensAfterAuthorityTransition(context, sessionToken));
@@ -225,7 +229,15 @@ public sealed class WorkspaceRequestDispatcher :
     internal IReadOnlyList<string> RetireDatabaseOpensAfterAuthorityTransition(
         PluginProjectContext? context,
         CancellationToken sessionToken = default)
-        => _pluginBindings.SetAfterAuthorityTransition(context, sessionToken);
+    {
+        // Drain/protection can temporarily withdraw a context and then resume
+        // the same epoch. That is not evidence that an uncertain write settled.
+        var identity = context is null ? ((string, ulong)?)null : (context.ProjectKey, context.SessionGeneration);
+        _mutationReads.RetireReads(retireAuthority: identity is not null && identity != _mutationAuthority);
+        if (identity is not null) _mutationAuthority = identity;
+        _workspaceSessionToken = sessionToken;
+        return _pluginBindings.SetAfterAuthorityTransition(context, sessionToken);
+    }
 
     internal void PostRetiredDatabaseOpenCancellations(
         IReadOnlyList<string> openIds) =>
@@ -233,6 +245,7 @@ public sealed class WorkspaceRequestDispatcher :
 
     public void Dispose()
     {
+        _mutationReads.Dispose();
         if (_ownsPluginBindings) _pluginBindings.Dispose();
         if (_ownsAuthority) _authority.Dispose();
     }
@@ -257,6 +270,7 @@ public sealed class WorkspaceRequestDispatcher :
 
     private async Task DispatchAsync(RoutedWebRequest request)
     {
+        if (request.Type == "table.selected") _mutationReads.RetireReads();
         foreach (RequestRoute route in _routes)
         {
             if (!route.Handles(request.Type)) continue;

@@ -79,6 +79,75 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it("review4 queued edits use only their local receipt chain to advance real CAS guards", async () => {
+    const s = setup(); let value: unknown = "old"; let authorityDigest = digest; let commit = 1;
+    const requests: Envelope[] = [];
+    s.postMessage.mockImplementation((message: unknown) => {
+      const request = (typeof message === "string" ? JSON.parse(message) : message) as Envelope;
+      s.posted.push(request); requests.push(request);
+    });
+    const apply = async (request: Envelope) => {
+      if (request.payload.expectedDigest !== authorityDigest || request.payload.oldValue !== value) {
+        s.reply(request, "table.editRejected", { kind: "edit_conflict", message: "real CAS rejected stale baseline" });
+      } else {
+        value = String(request.payload.newValue).trim(); commit += 1;
+        authorityDigest = `sha256:${String(commit).repeat(64)}`;
+        s.reply(request, "table.editCommitted", { ...edit(value, 1, "name", commit), currentRow: { rowKey: 1, name: value, __vibetableDigest: authorityDigest } });
+      }
+      await flush();
+    };
+    s.service.updateCell(1, "name", "old", " first ", digest);
+    s.service.updateCell(1, "name", " first ", "second", digest);
+    s.service.updateCell(1, "name", "second", "third", digest);
+    await apply(requests[0]!); await apply(requests[1]!); await apply(requests[2]!);
+    expect(value).toBe("third"); expect(s.rejected).not.toHaveBeenCalled(); expect(s.history.undoStackSize).toBe(3);
+    const undo = s.service.performUndo(); await flush(); await apply(requests.at(-1)!); await undo;
+    expect(value).toBe("second");
+  });
+
+  it.each([true, false])("review4 a guard outside the local receipt chain remains protected (%s)", async (validExternalGuard) => {
+    const s = setup(); const externalDigest = `sha256:${"e".repeat(64)}`; const firstDigest = `sha256:${"b".repeat(64)}`;
+    s.service.updateCell(1, "name", "old", "first", digest); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "external value", "next", externalDigest);
+    s.reply(first, "table.editCommitted", { ...edit("first"), currentRow: { rowKey: 1, name: "first", __vibetableDigest: firstDigest } }); await flush();
+    const next = s.posted.at(-1)!;
+    expect(next.payload).toMatchObject({ oldValue: "external value", expectedDigest: externalDigest });
+    const authorityDigest = validExternalGuard ? externalDigest : firstDigest;
+    const authorityValue = validExternalGuard ? "external value" : "first";
+    if (next.payload.expectedDigest === authorityDigest && next.payload.oldValue === authorityValue)
+      s.reply(next, "table.editCommitted", { ...edit("next", 1, "name", 4), currentRow: { rowKey: 1, name: "next", __vibetableDigest: externalDigest } });
+    else s.reply(next, "table.editRejected", { kind: "edit_conflict", message: "external CAS mismatch" });
+    await flush(); expect(s.posted).toHaveLength(2);
+    expect(s.history.undoStackSize).toBe(validExternalGuard ? 2 : 1);
+    if (validExternalGuard) {
+      const undo = s.service.performUndo(); await flush(); expect(s.posted.at(-1)?.payload.newValue).toBe("external value");
+      s.reply(s.posted.at(-1)!, "table.editCommitted", edit("external value", 1, "name", 5)); await undo;
+    } else expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ kind: "edit_conflict" }));
+  });
+
+  it.each([false, true])("review4 an unconfirmed Host terminal exposes recovery only to its current query (%s)", async (retired) => {
+    const s = setup(); const tables = useTableService(); tables.init(); cleanups.push(tables.dispose);
+    s.history.markWriteUncertain(); const recovery = tables.reloadCurrentQuery(); const request = s.posted.at(-1)!;
+    if (retired) { s.ws.selectTable("other"); s.ws.selectTable("u"); }
+    s.reply(request, "operation.failed", { code: "WRITE_TERMINAL_UNCONFIRMED", message: "请重新打开工作区并核实数据，不要直接重试写入。" });
+    await recovery;
+    if (retired) expect(s.table.error).toBeNull();
+    else { expect(s.table.error).toContain("重新打开工作区"); expect(s.history.writeUncertain).toBe(true); }
+  });
+
+  it("review4 Host terminal uncertainty retires write ownership even before renderer timeout", async () => {
+    const s = setup(); await seed(s); const tables = useTableService(); tables.init(); cleanups.push(tables.dispose);
+    s.service.updateCell(2, "name", "two", "possibly committed"); const write = s.posted.at(-1)!;
+    s.table.rollbackCellEdit(2, "name", "possibly committed");
+    const recovery = tables.reloadCurrentQuery(); const query = s.posted.at(-1)!;
+    s.reply(query, "operation.failed", { code: "WRITE_TERMINAL_UNCONFIRMED", message: "写入结果尚未确认，请重新打开工作区核实。" }); await recovery;
+    expect(s.history.writeUncertain).toBe(true); expect(s.history.canUndo).toBe(false);
+    expect(s.table.error).toContain("重新打开工作区");
+    s.reply(write, "table.editRejected", { kind: "mutation_validation", message: "late rejection" }); await flush();
+    expect(s.table.allRows[1]?.name).toBe("possibly committed"); expect(s.rejected).not.toHaveBeenCalled();
+    s.service.updateCell(2, "name", "possibly committed", "blind retry"); expect(s.posted).toHaveLength(3);
+  });
+
   it("review3 serializes same-cell writes across gateway commit and delayed readback", async () => {
     const s = setup();
     let authority: unknown = "old";
@@ -192,7 +261,7 @@ describe("mutationService correlated writes", () => {
     s.service.updateCell(1, "name", "new", "next"); expect(s.posted).toHaveLength(2);
     s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo; await flush();
     expect(s.posted).toHaveLength(3); expect(s.history.canRedo).toBe(false);
-    expect(s.posted.at(-1)?.payload).toMatchObject({ oldValue: "new", newValue: "next", expectedDigest: digest });
+    expect(s.posted.at(-1)?.payload).toMatchObject({ oldValue: "old", newValue: "next", expectedDigest: digest });
     s.reply(s.posted.at(-1)!, "table.editCommitted", edit("next", 1, "name", 4)); await flush();
     const undoNext = s.service.performUndo(); await flush(); expect(s.posted.at(-1)?.payload.newValue).toBe("old");
     s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 5)); await undoNext;

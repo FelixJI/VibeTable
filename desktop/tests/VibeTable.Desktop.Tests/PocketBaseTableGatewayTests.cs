@@ -13,6 +13,107 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    [DataRow("update", "apply")]
+    [DataRow("update", "readback")]
+    [DataRow("insert", "apply")]
+    [DataRow("insert", "readback")]
+    [DataRow("delete", "apply")]
+    public async Task EarlyTransportFailureAfterSubmissionIsUnknown(string kind, string stage)
+    {
+        const string recordId = "copiedrow000001";
+        string digest = "sha256:" + new string('a', 64);
+        var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        string row = JsonSerializer.Serialize(new { rows = new[] { new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "Before", ["__vibetableDigest"] = digest } } });
+        if (kind == "update") transport.Respond("query.readRows", row);
+        string receipt = JsonSerializer.Serialize(new { newRevision = "data_0002", affectedRows = new[] { new { recordId, operation = kind, digest } } });
+        transport.RespondAfter("mutation.apply", receipt, stage == "apply" ? blocked.Task : Task.CompletedTask);
+        if (stage == "readback") transport.RespondAfter("query.readRows", row, blocked.Task);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var service = new TableWorkspaceService(gateway);
+        var notifications = new List<TableNotification>(); service.Notification += notifications.Add;
+        Task<bool> write = kind switch {
+            "update" => service.UpdateCellAsync("orders", recordId, "title", "Before", "After", "schema_0001", requestId: "early-failure"),
+            "insert" => service.InsertRowAsync("orders", new Dictionary<string, object?> { ["id"] = recordId, ["title"] = "After" }, "schema_0001", "early-failure"),
+            _ => service.DeleteRowsAsync("orders", new[] { ((object)recordId, digest) }, "schema_0001", "early-failure"),
+        };
+        await transport.WaitForMethodCountAsync((kind == "update" ? 3 : 2) + (stage == "readback" ? 1 : 0));
+        transport.CloseReadLoop();
+        Assert.IsFalse(await write.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(MutationErrorKind.Unknown, notifications.Single().MutationResult!.Error!.Value.Kind);
+        Assert.AreEqual("early-failure", notifications.Single().RequestId);
+        Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
+    [DataRow("apply")]
+    [DataRow("readback")]
+    public async Task CancellationAfterSubmissionCannotClaimZeroWrites(string stage)
+    {
+        string digest = "sha256:" + new string('a', 64);
+        var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        string row = JsonSerializer.Serialize(new { rows = new[] { new Dictionary<string, object?> { ["id"] = "row-1", ["title"] = "Before", ["__vibetableDigest"] = digest } } });
+        transport.Respond("query.readRows", row);
+        transport.RespondAfter("mutation.apply", JsonSerializer.Serialize(new { newRevision = "data_0002", affectedRows = new[] { new { recordId = "row-1", operation = "update", digest } } }),
+            stage == "apply" ? blocked.Task : Task.CompletedTask);
+        if (stage == "readback") transport.RespondAfter("query.readRows", row, blocked.Task);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        using var cancellation = new CancellationTokenSource();
+        Task<UpdateCellResult> write = gateway.UpdateCellAsync("orders", "row-1", "title", "Before", "After", "schema_0001", cancellation.Token);
+        await transport.WaitForMethodCountAsync(stage == "apply" ? 3 : 4); cancellation.Cancel();
+        var failure = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => write);
+        Assert.AreEqual(MutationErrorKind.Unknown, MutationErrorMapper.Map(failure).Kind);
+        Assert.IsInstanceOfType<OperationCanceledException>(failure.InnerException);
+        Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
+    public async Task RecoveryQueryWaitsForEarlierHostPreflightAndCommittedReceipt()
+    {
+        string rowDigest = "sha256:" + new string('a', 64);
+        var releasePreflight = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.RespondAfter("query.readRows", JsonSerializer.Serialize(new { rows = new[] {
+            new Dictionary<string, object?> { ["id"] = "row-1", ["title"] = "Before", ["__vibetableDigest"] = rowDigest },
+        } }), releasePreflight.Task);
+        transport.Respond("mutation.apply", JsonSerializer.Serialize(new {
+            affectedRows = new[] { new { recordId = "row-1", operation = "update", digest = rowDigest } }, newRevision = "data_0002",
+        }));
+        transport.Respond("query.readRows", JsonSerializer.Serialize(new { rows = new[] {
+            new Dictionary<string, object?> { ["id"] = "row-1", ["title"] = "After", ["__vibetableDigest"] = rowDigest },
+        } }));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var queryGateway = new FakeTableRpcGateway();
+        queryGateway.WindowReadOverride = (_, _, _, _) => new TablePage("orders", [], [new Dictionary<string, object?> {
+            ["rowKey"] = "row-1", ["title"] = transport.Methods.Contains("mutation.apply") ? "After" : "Before",
+        }], 0, 100, 1, "remote");
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(new TableWorkspaceService(gateway), new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(queryGateway, _ => { }));
+        Task write = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.updateCellRequested", "old-write",
+            JsonSerializer.SerializeToElement(new { table = "orders", rowKey = "row-1", column = "title", oldValue = "Before", newValue = "After", schemaRevision = "schema_0001", expectedDigest = rowDigest }), ""));
+        await transport.WaitForMethodCountAsync(2);
+        Task query = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.queryRequested", "recovery-query",
+            JsonSerializer.SerializeToElement(new { table = "orders", query = new { limit = 100 } }), ""));
+        try
+        {
+            await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+            Assert.IsFalse(transport.Methods.Contains("mutation.apply"), "the original write is still in actual gateway preflight");
+            Assert.HasCount(0, queryGateway.RawViewQueries, "recovery must not read an old snapshot before that write can submit");
+        }
+        finally { releasePreflight.TrySetResult(); await write; await query; }
+        TablePage page = (TablePage)sink.Replies.Single(reply => reply.RequestId == "recovery-query").Payload!;
+        Assert.AreEqual("After", page.Rows.Single()["title"]);
+    }
+
+    [TestMethod]
     [DataRow(false, "mismatch")]
     [DataRow(true, "mismatch")]
     [DataRow(false, "missing-receipt")]
@@ -1551,6 +1652,8 @@ public sealed class PocketBaseTableGatewayTests
                 }
             }
         }
+
+        public void CloseReadLoop() => _incoming.Writer.TryComplete();
 
         public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
             => _incoming.Reader.ReadAsync(cancellationToken).AsTask();

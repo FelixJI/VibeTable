@@ -1,3 +1,4 @@
+import { BridgeOperationError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { nextTick, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -387,6 +388,7 @@ export function useTableService(): {
     const requestGeneration = ++queryReloadGeneration;
     const loadGeneration = tableStore.loadGeneration;
     const confirmWriteRefresh = history.captureWriteRefresh();
+    const writeHistoryIsCurrent = history.captureGeneration();
     const workspaceId = workspaceSessionStore.activeWorkspaceId;
     const sessionEpoch = workspaceSessionStore.sessionEpoch;
     const stillCurrent = (): boolean =>
@@ -418,7 +420,12 @@ export function useTableService(): {
       if (!stillCurrent() || !tableStore.datasetReady) return "retired";
       if (page.revision.databaseSessionId) confirmWriteRefresh();
       return "applied";
-    } catch {
+    } catch (error) {
+      if (stillCurrent() && writeHistoryIsCurrent() && error instanceof BridgeOperationError
+        && error.code === "WRITE_TERMINAL_UNCONFIRMED") {
+        history.markWriteUncertain();
+        tableStore.setError(error.message);
+      }
       return stillCurrent() ? "failed" : "retired";
     }
   }
