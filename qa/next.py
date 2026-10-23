@@ -794,20 +794,19 @@ def _run_command(
             evidence = _persist_race_build_timeout(process.pid, events)
             record("evidence", pid=process.pid, **evidence)
         _terminate_process_tree(process)
-        if race_build:
-            try:
-                final_stdout, final_stderr = process.communicate(timeout=5)
-            except subprocess.TimeoutExpired as drain_error:
-                # A descendant may retain a pipe after the root exits. Do not chase
-                # historical PIDs or close a stream locked by a reader thread.
+        try:
+            final_stdout, final_stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired as drain_error:
+            # A descendant may retain a pipe after the root exits. Do not chase
+            # historical PIDs or close a stream locked by a reader thread.
+            # Windows communicate() may expose no output before EOF.
+            if race_build:
                 record("drain_timeout", pid=process.pid, timeoutSeconds=5)
-                final_stdout = _timeout_text(drain_error.output)
-                final_stderr = _timeout_text(drain_error.stderr)
-                final_stderr += "\noutput may be incomplete: pipe drain timed out after 5s\n"
-        else:
-            final_stdout, final_stderr = process.communicate()
-        stdout = _timeout_text(exc.output) + (final_stdout or "")
-        stderr = _timeout_text(exc.stderr) + (final_stderr or "")
+            final_stdout = _timeout_text(drain_error.output)
+            final_stderr = _timeout_text(drain_error.stderr) or _timeout_text(exc.stderr)
+            final_stderr += "\noutput may be incomplete: pipe drain timed out after 5s\n"
+        stdout = final_stdout or _timeout_text(exc.output)
+        stderr = final_stderr or _timeout_text(exc.stderr)
         stderr += f"\nprocess tree timed out after {timeout}s and was terminated\n"
         code = TIMEOUT_RETURNCODE
     if race_build:
@@ -931,6 +930,7 @@ def _run_go_race(
     package_command = [
         go,
         "list",
+        "-race",
         "-f",
         "{{.ImportPath}}\t{{.Dir}}",
         "./...",
@@ -968,6 +968,7 @@ def _run_go_race(
             go,
             "test",
             package,
+            "-race",
             "-list",
             "^(Test|Example|Fuzz)",
         ]

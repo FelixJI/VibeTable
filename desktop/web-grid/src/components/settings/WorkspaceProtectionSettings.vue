@@ -92,11 +92,14 @@ watch(
     session.policyEnabled,
     session.activeWorkspaceId,
     session.sessionEpoch,
+    session.sessionState,
+    session.isTransitioning,
     protection.retentionHydrated,
     protection.retentionStatus,
   ] as const,
   ([policyEnabled]) => {
-    if (!policyEnabled) return;
+    if (!policyEnabled || !session.activeWorkspaceId || session.isTransitioning
+      || !["openedWritable", "openedProvisional", "openedReadOnly"].includes(session.sessionState)) return;
     if (!protection.retentionHydrated) {
       emit("action", { method: "retention.get", params: {} });
       return;

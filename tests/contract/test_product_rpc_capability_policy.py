@@ -268,6 +268,11 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
 
     public_types = TS_OUTPUT.read_text(encoding="utf-8")
     assert "export type ProductRpcMethod" in public_types
+    global_methods = public_types.split("export const PRODUCT_RPC_GLOBAL_METHODS = ", 1)[1]
+    assert json.loads(global_methods.split(" as const;", 1)[0]) == [
+        "settings.readDevice",
+        "settings.saveDevice",
+    ]
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")

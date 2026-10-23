@@ -32,7 +32,7 @@
 
 ### 阶段一：消除同一次 CI 内的重复质量检查
 
-保持公共 `scripts/automation.py`/`scripts/automation_core.py` 不变，只在 VibeTable prepare step 注入候选模式。项目 adapter 在该模式仅恢复 release build 需要的 uv、web-grid npm 与 .NET 依赖，并把 quality 延后到候选绑定的 `core`、`race`、`resilience` 和 `release` lanes；19 个 `REQUIRED_STAGES` 保持不变。未设置候选模式的本地与串行入口继续执行完整 bootstrap/quality。
+保持公共 `scripts/automation.py`/`scripts/automation_core.py` 不变，只在 VibeTable prepare step 注入候选模式。项目 adapter 在该模式仅恢复 release build 需要的 uv、web-grid npm 与 .NET 依赖，并把 quality 延后到候选绑定的 `core`、`race`、`resilience` 和 `release` lanes；当前 `qa/release_eligibility.py` 声明的 24 个 `REQUIRED_STAGES` 保持不变。未设置候选模式的本地与串行入口继续执行完整 bootstrap/quality。
 
 release build 已确认只依赖候选模式恢复的依赖，不消费 quality 生成物。PR #42 首轮 run `31102199882` 的 prepare 从历史约 14 分钟降至 4 分 55 秒，缩短约 9 分钟（约 65%）。
 
@@ -50,6 +50,12 @@ race worker 先输出结构化 `RACE_PACKAGE_TIMING`，记录 package、测试�
 
 用 Actions job 时间和项目报告检查 checkout、setup、`uv sync`、`npm ci`、Go module 与 .NET restore 的实际占比。只优化被数据证明占用显著的步骤；不为理论上的缓存 miss 增加额外校验层。
 
+### 阶段四：候选 prepare 复用唯一的 release 构建
+
+候选 prepare 阶段此前仍执行两轮完整四栈打包：`pr-e2e` 先跑非 release 的 `scripts/build_next.py` 再执行 workbench qualification 与 `release.smoke` product acceptance，`build` 随后又完整执行 `scripts/build_next.py --release` 并 archive、build identity、SBOM。现在候选模式下 `pr-e2e` 显式输出延期，`build` 在唯一一次 `--release` 构建成功后执行与独立 `pr-e2e` 完全相同的 workbench/product acceptance 旅程，全部通过才进入 `qa/release_candidate.py create`、build identity 与 SBOM；release 构建或任一 E2E 旅程失败都不会交接 archive。不引入缓存 marker 或版本 SHA 猜测旧包可复用，也不修改共享 core。未设置候选模式的入口行为不变：独立 `pr-e2e` 仍然构建加 E2E，独立 `build` 仍然是纯 release 构建加交接。同时 bootstrap 不再安装 race 专属的 w64devkit（core lane 不消费该工具链）；race lane 与串行 release smoke 在消费点安装保持不变。
+
+当前证据（CI [run 39880277810](https://github.com/FelixJI/VibeTable/actions/runs/39880277810)）：本阶段合入前的基线为 `prepare` 20 分 17 秒、`core` 34 分 49 秒。本阶段的实际节省以新 PR 的 CI 运行为准，在取得新的 Actions 墙钟数据前不声称已节省的具体分钟数。
+
 ## PR CI、main CI 与 CD 是否重复
 
 CD 本身没有重复 CI。它由成功的 `main` CI 唤起，下载同一 run、同一合并后 source SHA 的候选，然后进行 stage、attestation、Release 与镜像同步。
@@ -59,7 +65,13 @@ PR CI 与 `main` CI 的完整门禁确实重复，但职责不同：PR CI 决定
 ## 验收方式
 
 - 修改前后各取至少三次成功 PR run，比较中位墙钟和各 job 耗时；
-- 聚合报告仍包含全部 19 个 `REQUIRED_STAGES`，`required` 是唯一权威门禁；
+- 聚合报告仍包含全部 24 个 `REQUIRED_STAGES`，`required` 是唯一权威门禁；
 - `main` CI 仍上传 `release-candidate`，普通 PR 不上传正式候选；
 - CD 仍只消费成功 `main` CI 的候选，未新增构建或完整测试步骤；
 - 不降低覆盖率，不跳过 E2E，不把失败改成 warning，不增加无依据重试。
+
+## 门禁执行的一致性与失败收尾
+
+race lane 的包枚举与测试发现均使用 `-race`，与实际执行二进制的 build tags 一致。此前普通构建发现的 `!race` 测试会在 race 二进制中空跑，未来仅 `race` 构建的测试也可能漏测；非 race 容量预算仍由普通 Go 测试和覆盖率阶段执行。完整测试集合、逐测试进程隔离与 race 检测保持不变。
+
+QA 子进程超时后统一最多等待 5 秒排空输出，防止已退出根进程的后代仍持有管道时无限挂起；失败继续返回 124 并标记输出不完整；Windows 管道未关闭时可能无法取回输出，已有独立诊断文件仍保留。开发 pre-commit 的 Python 检查统一通过 `uv run --frozen --no-sync python`，避免系统 Python 版本与项目 3.14 不一致。

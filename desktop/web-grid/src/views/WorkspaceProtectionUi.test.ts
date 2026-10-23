@@ -1359,8 +1359,29 @@ describe("workspace protection UI capability gates", () => {
     });
   });
 
+  it.each([
+    { state: "opening", phase: "starting" },
+    { state: "openedWritable", phase: "draining" },
+    { state: "closed", phase: "idle" },
+  ] as const)("waits for an admitted session before retention hydration ($state/$phase)", async ({ state, phase }) => {
+    const session = applyOpenedSession();
+    session.configureCapabilities([
+      "workspace.session.v2", "retention.policy.v2", "repository.settings.v2",
+    ]);
+    session.applySession({ ...openedSession(), state, phase });
+    const settings = mount(WorkspaceProtectionSettings, { props: { mode: "storage" } });
+
+    expect(settings.emitted("action")).toBeUndefined();
+    session.applySession(openedSession());
+    await settings.vm.$nextTick();
+    expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
+      { method: "retention.get", params: {} },
+    ]);
+    settings.unmount();
+  });
+
   it("requests retention only from authority and stays disabled before hydration", () => {
-    const session = useWorkspaceSessionStore();
+    const session = applyOpenedSession();
     session.configureCapabilities([
       "workspace.session.v2",
       "retention.policy.v2",
@@ -1381,7 +1402,7 @@ describe("workspace protection UI capability gates", () => {
   });
 
   it("requests retention when policy capability arrives after settings mount", async () => {
-    const session = useWorkspaceSessionStore();
+    const session = applyOpenedSession();
     const protection = useWorkspaceProtectionStore();
     const settings = mount(WorkspaceProtectionSettings, {
       props: { mode: "storage" },

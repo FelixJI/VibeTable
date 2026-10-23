@@ -381,7 +381,7 @@ def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_
 
     def observe(command, **kwargs):
         commands.append(command)
-        assert 0 < kwargs["timeout"] <= 5
+        assert 0 < kwargs["timeout"] <= 15
         return SimpleNamespace(
             stdout=json.dumps(
                 {"pid": 12, "hwnd": 14, "buttons": [] if len(commands) == 1 else [button]}
@@ -708,3 +708,85 @@ def test_application_workspace_isolation_acceptance_checks_real_scope_receipts()
         timeout=30,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_native_chrome_uses_remaining_request_budget_for_cold_start(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    button = {
+        "id": "plugin-confirm-reject",
+        "pid": 12,
+        "enabled": True,
+        "x": 10,
+        "y": 20,
+        "width": 30,
+        "height": 40,
+    }
+    clock = [100.0]
+    calls = []
+
+    def observe(command, **kwargs):
+        calls.append(command)
+        # CI recorded 4.6 seconds before capture even started. The existing
+        # request budget must cover startup and capture without a second cap.
+        assert kwargs["timeout"] == 12
+        clock[0] += 6
+        return SimpleNamespace(stdout=json.dumps({"pid": 12, "hwnd": 14, "buttons": [button]}))
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 14)
+    _, found = native._observe_owned_chrome(
+        owned,
+        tmp_path / "observer",
+        14,
+        12,
+        {"action": "click", "stage": "rejected", "buttonId": button["id"]},
+        tmp_path / "capture.png",
+        deadline=112,
+    )
+    assert found == button
+    assert len(calls) == 1
+
+
+def test_native_input_is_rejected_after_request_deadline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    clock = [100.0]
+    sent = []
+
+    def observe(*args, **kwargs):
+        clock[0] = kwargs["deadline"]
+        return {}, {"x": 0, "y": 0, "width": 10, "height": 10}
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(native, "_observe_owned_chrome", observe)
+    monkeypatch.setattr(native, "_send_input", lambda *a, **kw: sent.append(True))
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *a: None,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "expired",
+            "action": "click",
+            "buttonId": "plugin-manage",
+            "stage": "application",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert "request budget" in result["error"]
+    assert sent == []

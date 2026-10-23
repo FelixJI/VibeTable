@@ -91,3 +91,8 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
 
 export type ProductRpcMethod =
   (typeof PRODUCT_RPC_PUBLIC_METHODS)[number];
+
+export const PRODUCT_RPC_GLOBAL_METHODS = [
+  "settings.readDevice",
+  "settings.saveDevice"
+] as const;
