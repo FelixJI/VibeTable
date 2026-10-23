@@ -1,3 +1,4 @@
+import type { MutationErrorPayload } from "@/contracts";
 import { describe, expect, it } from "vitest";
 import { WorkspaceV2RequestError } from "./workspaceV2HostAdapter";
 import {
@@ -7,11 +8,31 @@ import {
 } from "@/bridge/hostBridge";
 import {
   createNotificationDeduper,
+  mutationRejectionMessage,
   relationLookupErrorMessage,
   workspaceV2ErrorMessage,
 } from "./notificationPolicy";
 
 describe("notificationPolicy", () => {
+  it.each(["mutation_validation", "not_writable"] as const)("review17 preserves the public reason of a definite %s rejection", kind => {
+    expect(mutationRejectionMessage({ kind, message: "Referenced records cannot be deleted." })).toBe("Referenced records cannot be deleted.");
+  });
+
+  it("review10 a proven preflight unknown uses safe generic rejection copy", () => {
+    const error = { kind: "unknown", notSubmitted: true, message: "private host detail" };
+    const message = mutationRejectionMessage(error as MutationErrorPayload);
+    expect(message).not.toContain("尚未确认"); expect(message).not.toContain("private host detail");
+  });
+
+  it("keeps an unknown write outcome distinct from a confirmed rejection", () => {
+    const message = mutationRejectionMessage({ kind: "unknown", message: "private host detail" });
+    expect(message).toContain("尚未确认");
+    expect(message).toContain("核实");
+    expect(message).toContain("不要直接重试");
+    expect(message).not.toContain("未保存");
+    expect(message).not.toContain("private host detail");
+  });
+
   it("deduplicates the same burst while allowing a later retry", () => {
     let now = 1_000;
     const shouldShow = createNotificationDeduper(3_000, () => now);

@@ -302,6 +302,105 @@ public sealed class WorkspaceTableRequestControllerTests
     }
 
     [TestMethod]
+    public async Task PastePreview_PreservesRequestIdentityAndLegacyNotificationCompatibility()
+    {
+        foreach (string? requestId in new string?[] { "preview-1", null })
+        {
+            var gateway = new FakeTableRpcGateway();
+            var sink = new FakeWebReplySink();
+            var controller = new WorkspaceTableRequestController(
+                new TableWorkspaceService(gateway),
+                new FakeDatabasePicker(null), sink, () => null,
+                NoDatabaseOpenRoute.Instance);
+            using var payload = JsonDocument.Parse(
+                """
+                {
+                  "collection":"orders","schemaRevision":"schema-1",
+                  "selection":{
+                    "querySnapshot":{"snapshotId":"query-1","digest":"query-digest",
+                      "databaseId":"database-1","table":"orders","schemaRevision":"schema-1",
+                      "dataRevision":1,"normalizedQuery":{}},
+                    "dataRevision":1,"rowKeys":[]
+                  },
+                  "startCell":{"column":"name"},
+                  "cells":[[{"rowIndex":0,"columnIndex":0,"column":"name","rawValue":"Alice"}]]
+                }
+                """);
+
+            await controller.DispatchAsync(new RoutedWebRequest(
+                "table.previewPasteRequested", requestId,
+                payload.RootElement.Clone(), string.Empty));
+
+            Assert.HasCount(1, gateway.PreviewPasteCalls);
+            Assert.HasCount(1, sink.Replies);
+            FakeWebReplySink.Reply reply = sink.Replies[0];
+            Assert.AreEqual("table.pastePreviewReady", reply.Type);
+            Assert.AreEqual(requestId, reply.RequestId);
+            Assert.IsInstanceOfType<PastePlan>(reply.Payload);
+            Assert.IsNotNull(reply.Payload);
+            Assert.AreEqual("fake-token", ((PastePlan)reply.Payload).Token.Token);
+        }
+    }
+
+    [TestMethod]
+    public async Task PasteApply_PreservesRequestIdentityAndLegacyNotificationCompatibility()
+    {
+        foreach (string? requestId in new string?[] { "apply-1", null })
+        {
+            var gateway = new FakeTableRpcGateway();
+            var sink = new FakeWebReplySink();
+            var controller = new WorkspaceTableRequestController(
+                new TableWorkspaceService(gateway),
+                new FakeDatabasePicker(null), sink, () => null,
+                NoDatabaseOpenRoute.Instance);
+            using var payload = JsonDocument.Parse(
+                """{"collection":"orders","token":"fake-token","idempotencyKey":"logical-write-1"}""");
+
+            await controller.DispatchAsync(new RoutedWebRequest(
+                "table.applyPasteRequested", requestId,
+                payload.RootElement.Clone(), string.Empty));
+
+            Assert.HasCount(1, gateway.ApplyPasteCalls);
+            Assert.HasCount(1, sink.Replies);
+            FakeWebReplySink.Reply reply = sink.Replies[0];
+            Assert.AreEqual("table.pasteApplied", reply.Type);
+            Assert.AreEqual(requestId, reply.RequestId);
+            Assert.IsInstanceOfType<ApplyPasteResult>(reply.Payload);
+            Assert.IsNotNull(reply.Payload);
+            var result = (ApplyPasteResult)reply.Payload;
+            Assert.AreEqual(ApplyOutcomes.Committed, result.Outcome);
+            Assert.AreEqual("logical-write-1", result.RequestId);
+        }
+    }
+
+    [TestMethod]
+    public async Task PasteFailure_PreservesRequestIdentityBeforeCallingTheGateway()
+    {
+        foreach (string requestType in new[] { "table.previewPasteRequested", "table.applyPasteRequested" })
+        {
+            foreach (string? requestId in new string?[] { "invalid-paste-1", null })
+            {
+                var gateway = new FakeTableRpcGateway();
+                var sink = new FakeWebReplySink();
+                var controller = new WorkspaceTableRequestController(
+                    new TableWorkspaceService(gateway),
+                    new FakeDatabasePicker(null), sink, () => null,
+                    NoDatabaseOpenRoute.Instance);
+                using var payload = JsonDocument.Parse("{}");
+
+                await controller.DispatchAsync(new RoutedWebRequest(
+                    requestType, requestId, payload.RootElement.Clone(), string.Empty));
+
+                Assert.HasCount(1, sink.Replies);
+                Assert.AreEqual("operation.failed", sink.Replies[0].Type);
+                Assert.AreEqual(requestId, sink.Replies[0].RequestId);
+                Assert.HasCount(0, gateway.PreviewPasteCalls);
+                Assert.HasCount(0, gateway.ApplyPasteCalls);
+            }
+        }
+    }
+
+    [TestMethod]
     public void HandlesOnlyTheClosedTableCommandUnion()
     {
         foreach (string type in new[]

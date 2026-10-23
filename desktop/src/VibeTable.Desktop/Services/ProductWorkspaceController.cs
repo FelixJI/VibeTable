@@ -368,15 +368,17 @@ internal static class TableNotificationPresenter
     {
         if (error is null)
             return null;
-        return new
+        var payload = new Dictionary<string, object?>
         {
-            kind = MutationErrorMapper.ToWireKind(error.Value.Kind),
-            operation,
-            code = error.Value.Code,
-            message = error.Value.Message,
-            currentRow = error.Value.CurrentRow,
-            conflictingRowKeys = error.Value.ConflictingRowKeys,
-            fieldErrors = error.Value.FieldErrors,
+            ["kind"] = MutationErrorMapper.ToWireKind(error.Value.Kind),
+            ["operation"] = operation,
+            ["code"] = error.Value.Code,
+            ["message"] = error.Value.Message,
+            ["currentRow"] = error.Value.CurrentRow,
+            ["conflictingRowKeys"] = error.Value.ConflictingRowKeys,
+            ["fieldErrors"] = error.Value.FieldErrors,
         };
+        if (error.Value.NotSubmitted) payload["notSubmitted"] = true;
+        return payload;
     }
 }

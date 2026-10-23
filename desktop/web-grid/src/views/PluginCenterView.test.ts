@@ -175,8 +175,8 @@ describe("PluginCenterView", () => {
     requestWithHandle.mockImplementation(((type: string) => {
       const requestId = `${type}-${++sequence}`;
       return type === "legacyLayout.reportRequested"
-        ? { requestId, promise: Promise.resolve({ interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" }) }
-        : { requestId, promise: new Promise<{ cancelled: boolean; outputDisplayName: string }>(resolve => { resolveExport = resolve; }) };
+        ? { requestId, sent: true, promise: Promise.resolve({ interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" }) }
+        : { requestId, sent: true, promise: new Promise<{ cancelled: boolean; outputDisplayName: string }>(resolve => { resolveExport = resolve; }) };
     }) as HostBridge["requestWithHandle"]);
     setHostBridgeForTesting(bridge);
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });

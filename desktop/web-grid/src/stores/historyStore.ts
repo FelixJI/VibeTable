@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useWorkspaceStore } from "./workspaceStore";
+import { useWorkspaceSessionStore } from "./workspaceSessionStore";
 
 export type HistoryEntryKind =
   | "updateCell"
@@ -12,6 +14,11 @@ export interface HistoryEntry {
   readonly kind: HistoryEntryKind;
   readonly label: string;
   readonly timestamp: number;
+  /** Authority commit order, when the mutation receipt provides one. */
+  readonly dataRevision?: number;
+  /** First commit of a multi-write undo; dataRevision still records its latest commit. */
+  readonly redoDataRevision?: number;
+  readonly canReplay?: () => boolean;
   readonly undo: () => Promise<void>;
   /**
    * Omit when the operation cannot be replayed faithfully. In particular,
@@ -25,19 +32,111 @@ const MAX_STACK = 50;
 
 export const useHistoryStore = defineStore("history", () => {
   const undoStack = ref<HistoryEntry[]>([]);
-  const redoStack = ref<HistoryEntry[]>([]);
+  const redoEntries = ref<{ entry: HistoryEntry; action: number; dataRevision?: number }[]>([]);
+  const pendingActions = ref(new Set<number>());
+  // Dispatch order cannot prove whether an in-flight write commits before or after undo.
+  const redoStack = computed(() => pendingActions.value.size > 0
+    ? [] : redoEntries.value.map((item) => item.entry));
   const lastError = ref<string | null>(null);
   const busy = ref(false);
+  const workspace = useWorkspaceStore();
+  const session = useWorkspaceSessionStore();
+  const uncertainTables = ref(new Map<string, number>());
+  const tableKey = () => workspace.currentTable ?? "";
+  const writeUncertain = computed(() => uncertainTables.value.has(tableKey()));
+  let authorityGeneration = 0;
   let generation = 0;
+  let actionSequence = 0;
+  let lastInvalidatingAction = 0;
+  let lastUnorderedAction = 0;
+  let lastCommittedRevision = -1;
+  let uncertaintyGeneration = 0;
 
-  const canUndo = computed(() => !busy.value && undoStack.value.length > 0);
-  const canRedo = computed(() => !busy.value && redoStack.value.length > 0);
+  const canUndo = computed(() => !busy.value && !writeUncertain.value && undoStack.value.length > 0
+    && (undoStack.value.at(-1)?.canReplay?.() ?? true));
+  const canRedo = computed(() => !busy.value && !writeUncertain.value && redoStack.value.length > 0
+    && (redoStack.value.at(-1)?.canReplay?.() ?? true));
   const undoStackSize = computed(() => undoStack.value.length);
 
-  function push(entry: HistoryEntry): void {
-    undoStack.value.push(entry);
+  function captureWriteUncertainty(): () => void {
+    const table = tableKey();
+    const authority = authorityGeneration;
+    return () => {
+      if (authority !== authorityGeneration) return;
+      if (table === tableKey()) clear();
+      uncertaintyGeneration += 1;
+      uncertainTables.value.set(table, uncertaintyGeneration);
+    };
+  }
+
+  function markWriteUncertain(): void {
+    captureWriteUncertainty()();
+  }
+
+  // Only a query started after this table's unresolved write can acknowledge recovery.
+  function captureWriteRefresh(): () => void {
+    const table = tableKey();
+    const captured = uncertainTables.value.get(table);
+    const authority = authorityGeneration;
+    return () => {
+      if (captured !== undefined && authority === authorityGeneration && table === tableKey()
+        && captured === uncertainTables.value.get(table)) uncertainTables.value.delete(table);
+    };
+  }
+
+  function retireWriteScope(): void {
+    clear();
+    authorityGeneration += 1;
+    uncertainTables.value.clear();
+  }
+
+  // A table/null/transition UI change does not end the PocketBase authority.
+  watch(() => [session.activeWorkspaceId, session.sessionEpoch], retireWriteScope, { flush: "sync" });
+
+  function captureGeneration(): () => boolean {
+    const captured = generation;
+    return () => generation === captured;
+  }
+
+  function redoIsCurrent(item: { action: number; dataRevision?: number }): boolean {
+    return item.action >= lastUnorderedAction && (item.dataRevision === undefined
+      ? item.action >= lastInvalidatingAction : item.dataRevision >= lastCommittedRevision);
+  }
+
+  // Keep at most MAX_STACK redo candidates; only in-flight requests retain action IDs.
+  // Zero business writes include both an unsent request and a confirmed transaction rejection.
+  function beginAction(): (zeroWrites: boolean, dataRevision?: number) => void {
+    const action = ++actionSequence;
+    const historyGeneration = generation;
+    pendingActions.value.add(action);
+    return (zeroWrites, dataRevision) => {
+      if (historyGeneration !== generation || !pendingActions.value.has(action)) return;
+      if (!zeroWrites) {
+        lastInvalidatingAction = ++actionSequence;
+        // Receipts without a commit revision cannot preserve overlapping redo safely.
+        if (dataRevision === undefined) lastUnorderedAction = lastInvalidatingAction;
+        else lastCommittedRevision = Math.max(lastCommittedRevision, dataRevision);
+        redoEntries.value = redoEntries.value.filter(redoIsCurrent);
+      }
+      pendingActions.value.delete(action);
+    };
+  }
+
+  function retainRedo(entry: HistoryEntry, action: number): void {
+    const item = { entry, action, dataRevision: entry.redoDataRevision ?? entry.dataRevision };
+    if (!redoIsCurrent(item)) return;
+    redoEntries.value.push(item);
+    if (redoEntries.value.length > MAX_STACK) redoEntries.value.shift();
+  }
+
+  function push(entry: HistoryEntry, preserveRedo = false): void {
+    const index = entry.dataRevision === undefined ? -1 : undoStack.value.findIndex(
+      (existing) => existing.dataRevision !== undefined && existing.dataRevision > entry.dataRevision!,
+    );
+    if (index < 0) undoStack.value.push(entry);
+    else undoStack.value.splice(index, 0, entry);
     // Clear redo on new action (standard undo semantics).
-    redoStack.value = [];
+    if (!preserveRedo) beginAction()(false);
     // FIFO cap.
     if (undoStack.value.length > MAX_STACK) {
       undoStack.value.shift();
@@ -45,22 +144,23 @@ export const useHistoryStore = defineStore("history", () => {
   }
 
   async function undo(): Promise<void> {
-    if (busy.value) return;
+    if (!canUndo.value) return;
     lastError.value = null;
     const entry = undoStack.value.pop();
     if (!entry) return;
     const startGeneration = generation;
+    const startAction = ++actionSequence;
     busy.value = true;
     try {
       await entry.undo();
       if (entry.redo && generation === startGeneration) {
-        redoStack.value.push(entry);
+        retainRedo(entry, startAction);
       }
     } catch (err) {
-      lastError.value = err instanceof Error ? err.message : "undo failed";
       // Put it back so the user can retry after resolving the conflict.
       if (generation === startGeneration) {
-        undoStack.value.push(entry);
+        lastError.value = err instanceof Error ? err.message : "undo failed";
+        push(entry, true);
       }
     } finally {
       busy.value = false;
@@ -68,22 +168,23 @@ export const useHistoryStore = defineStore("history", () => {
   }
 
   async function redo(): Promise<void> {
-    if (busy.value) return;
+    if (!canRedo.value) return;
     lastError.value = null;
-    const entry = redoStack.value.pop();
+    const entry = redoEntries.value.pop()?.entry;
     if (!entry) return;
     if (!entry.redo) return;
     const startGeneration = generation;
+    const startAction = ++actionSequence;
     busy.value = true;
     try {
       await entry.redo();
       if (generation === startGeneration) {
-        undoStack.value.push(entry);
+        push(entry, true);
       }
     } catch (err) {
-      lastError.value = err instanceof Error ? err.message : "redo failed";
       if (generation === startGeneration) {
-        redoStack.value.push(entry);
+        lastError.value = err instanceof Error ? err.message : "redo failed";
+        retainRedo(entry, startAction);
       }
     } finally {
       busy.value = false;
@@ -93,7 +194,12 @@ export const useHistoryStore = defineStore("history", () => {
   function clear(): void {
     generation += 1;
     undoStack.value = [];
-    redoStack.value = [];
+    redoEntries.value = [];
+    pendingActions.value.clear();
+    actionSequence = 0;
+    lastInvalidatingAction = 0;
+    lastUnorderedAction = 0;
+    lastCommittedRevision = -1;
     lastError.value = null;
   }
 
@@ -105,6 +211,13 @@ export const useHistoryStore = defineStore("history", () => {
     canUndo,
     canRedo,
     undoStackSize,
+    writeUncertain,
+    markWriteUncertain,
+    captureWriteUncertainty,
+    captureWriteRefresh,
+    retireWriteScope,
+    captureGeneration,
+    beginAction,
     push,
     undo,
     redo,

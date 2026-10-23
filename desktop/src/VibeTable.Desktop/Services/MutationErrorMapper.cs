@@ -21,7 +21,8 @@ public readonly record struct MutationError(
     IReadOnlyDictionary<string, object?>? CurrentRow = null,
     IReadOnlyList<object>? ConflictingRowKeys = null,
     IReadOnlyDictionary<string, string>? FieldErrors = null,
-    string? Code = null);
+    string? Code = null,
+    bool NotSubmitted = false);
 
 public enum MutationErrorKind
 {
@@ -45,6 +46,21 @@ public sealed class TableEditConflictException : Exception
         : base(message)
     {
     }
+}
+
+// Only gateway checks completed before Apply may use this definite rejection.
+internal sealed class TableMutationPreflightException : InvalidOperationException
+{
+    internal TableMutationPreflightException(MutationErrorKind kind, string message) : base(message) => Kind = kind;
+    internal TableMutationPreflightException(Exception original) : base(original.Message, original) { }
+    internal MutationErrorKind Kind { get; } = MutationErrorKind.Unknown;
+}
+
+// Created only at mutation.apply/table.applyPaste, never for a committed write's readback failure.
+internal sealed class TableMutationRejectedException(MutationError error, RpcRemoteException original)
+    : InvalidOperationException(error.Message, original)
+{
+    internal MutationError Error { get; } = error;
 }
 
 /// <summary>
@@ -94,11 +110,21 @@ public static class MutationErrorMapper
                 MutationErrorKind.BackendUnavailable, backendGone.Message);
         }
 
+        if (exception is TableMutationRejectedException rejected) return rejected.Error;
+
+        if (exception is TableMutationPreflightException preflight)
+        {
+            return preflight.InnerException is Exception original
+                ? Map(original) with { NotSubmitted = true }
+                : new MutationError(preflight.Kind, preflight.Message, NotSubmitted: true);
+        }
+
         if (exception is TableEditConflictException conflict)
         {
             return new MutationError(
                 MutationErrorKind.EditConflict,
-                conflict.Message);
+                conflict.Message,
+                NotSubmitted: true);
         }
 
         if (exception is RpcRemoteException remote)
@@ -107,6 +133,72 @@ public static class MutationErrorMapper
         }
 
         return new MutationError(MutationErrorKind.Unknown, exception.Message);
+    }
+
+    // Only Apply callers may classify these public rejections. Preview validation and failures
+    // inside kernel.Apply's RunInTransaction return before commit; readback uses Map instead.
+    internal static MutationError? MapApplyRejection(RpcRemoteException remote)
+        => remote.Code == -32150 ? BusinessRejection(remote) : null;
+
+    internal static MutationError? MapPasteApplyRejection(RpcRemoteException remote)
+    {
+        if (remote.Code != -32040 || ReadString(remote.ErrorData, "kind") != "paste_error") return null;
+        string? code = ReadString(remote.ErrorData, "code");
+        // pasteOwner.apply/describe reject these before kernel.Apply. Consumed tokens and
+        // idempotency mismatches deliberately remain unknown: an earlier apply may have committed.
+        MutationErrorKind kind = code switch
+        {
+            "paste_token_invalid" or "paste_token_unknown" or "paste_token_expired" or "paste_plan_invalid"
+                => MutationErrorKind.Validation,
+            "schema_unknown" or "schema_mismatch" => MutationErrorKind.SchemaMismatch,
+            _ => MutationErrorKind.Unknown,
+        };
+        return kind == MutationErrorKind.Unknown ? BusinessRejection(remote)
+            : Rejection(remote, kind, code, notSubmitted: true);
+    }
+
+    private static MutationError? BusinessRejection(RpcRemoteException remote)
+    {
+        string? code = ReadString(remote.ErrorData, "code");
+        MutationErrorKind kind = code switch
+        {
+            "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.record.not_found"
+                => MutationErrorKind.EditConflict,
+            "mutation.schema_revision_conflict" or "mutation.table.not_found" => MutationErrorKind.SchemaMismatch,
+            // kernel.preview: writable fields/table and the field migration write fence.
+            "mutation.table.read_only" or "mutation.field.read_only" or "field.migration.write_locked"
+                => MutationErrorKind.NotWritable,
+            // kernel.preview fieldvalue/relation checks; applyOperation/resolveOperationRecord;
+            // storageSaveFailure's validation.Errors branch and archive.go. Storage errors are excluded.
+            "mutation.field.invalid_value" or "mutation.field.unknown" or "mutation.field.duplicate"
+                or "mutation.validation.failed" or "mutation.record.already_exists" or "mutation.record.deleted_in_batch"
+                or "mutation.relation.cardinality" or "mutation.relation.duplicate" or "mutation.relation.invalid_value"
+                or "mutation.relation.target_not_found" or "mutation.relation.reciprocal_cardinality" or "mutation.relation.restricted"
+                or "mutation.archive.already_archived" or "mutation.archive.requires_operation" or "mutation.archive.unsupported"
+                or "mutation.attachment.requires_operation"
+                // validateRequestShape/row guards reject before any business operation.
+                or "mutation.contract.unsupported_version" or "mutation.request.invalid" or "mutation.actor.invalid"
+                or "mutation.guard.invalid" or "mutation.batch.limit" or "mutation.body.limit" or "mutation.values.limit"
+                or "mutation.operation.empty" or "mutation.operation.invalid" or "mutation.operation.unsupported"
+                or "mutation.record.missing_id" => MutationErrorKind.Validation,
+            // Never infer zero writes from a prefix, retryable flag, or arbitrary product RPC code.
+            _ => MutationErrorKind.Unknown,
+        };
+        return kind == MutationErrorKind.Unknown ? null : Rejection(remote, kind, code);
+    }
+
+    private static MutationError Rejection(RpcRemoteException remote, MutationErrorKind kind, string? code, bool notSubmitted = false)
+    {
+        string fallback = kind switch
+        {
+            MutationErrorKind.EditConflict => Localize("edit_conflict", "edit_conflict", "This row was changed by another session."),
+            MutationErrorKind.SchemaMismatch => "The table schema changed.",
+            MutationErrorKind.NotWritable => "The table or field is not writable.",
+            _ => Localize("mutation_validation", "mutation_validation", "The value could not be saved."),
+        };
+        // These are explicit public business messages, not provider exception text.
+        string? message = ReadString(remote.ErrorData, "message");
+        return new MutationError(kind, string.IsNullOrWhiteSpace(message) ? fallback : message, Code: code, NotSubmitted: notSubmitted);
     }
 
     private static MutationError MapRemote(RpcRemoteException remote)
@@ -141,7 +233,8 @@ public static class MutationErrorMapper
 
     private static string? ReadString(JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -153,7 +246,8 @@ public static class MutationErrorMapper
     private static IReadOnlyDictionary<string, object?>? ReadDict(
         JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -179,7 +273,8 @@ public static class MutationErrorMapper
 
     private static IReadOnlyList<object>? ReadKeyList(JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -200,7 +295,8 @@ public static class MutationErrorMapper
     private static IReadOnlyDictionary<string, string>? ReadFieldErrors(
         JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }

@@ -239,6 +239,18 @@ export class BridgeTimeoutError extends Error {
   }
 }
 
+/** The renderer transport rejected a request synchronously before sending it. */
+export class BridgeRequestNotSentError extends Error {
+  public override readonly name = "BridgeRequestNotSentError";
+  public constructor(
+    public readonly messageType: string,
+    public readonly requestId: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 /** Local settlement of a read owned by a draining workspace. */
 export class BridgeRequestRetiredError extends DOMException {
   public constructor() { super("Workspace request retired.", "AbortError"); }
@@ -563,11 +575,11 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "database.openRequested": ["database.opened", "database.openCancelled"],
   "table.selected": ["table.editSchemaLoaded"],
   "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
-  "table.insertRowRequested": ["table.rowsInserted"],
-  "table.deleteRowsRequested": ["table.rowsDeleted"],
+  "table.insertRowRequested": ["table.rowsInserted", "table.editRejected"],
+  "table.deleteRowsRequested": ["table.rowsDeleted", "table.editRejected"],
   "table.queryRequested": ["table.pageLoaded"],
   "table.previewPasteRequested": ["table.pastePreviewReady"],
-  "table.applyPasteRequested": ["table.pasteApplied"],
+  "table.applyPasteRequested": ["table.pasteApplied", "table.editRejected"],
   "history.queryRequested": ["history.pageLoaded"],
   "history.previewRestoreRequested": ["history.restorePreviewReady"],
   "history.applyRestoreRequested": ["history.restoreApplied"],
@@ -691,23 +703,23 @@ export interface HostBridge {
     type: K,
     payload: SharedWebPayloadMap[K],
   ): Promise<K extends keyof SharedHostPayloadMap ? SharedHostPayloadMap[K] : unknown>;
-  /** Begin a correlated request and expose its envelope id for typed cancellation. */
+  /** Expose correlation and synchronous transport admission; sent never claims a committed write. */
   requestWithHandle<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  ): { readonly requestId: string; readonly sent: boolean; readonly promise: Promise<unknown> };
   requestWithHandle<K extends WorkspaceV2WebMessageType>(
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  ): { readonly requestId: string; readonly sent: boolean; readonly promise: Promise<unknown> };
   requestWithHandle<K extends PreservationWebMessageType>(
     type: K,
     payload: PreservationWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<PreservationRequestResults[K]> };
+  ): { readonly requestId: string; readonly sent: boolean; readonly promise: Promise<PreservationRequestResults[K]> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  ): { readonly requestId: string; readonly sent: boolean; readonly promise: Promise<unknown> };
   /** Outbound fire-and-forget notification (no requestId). */
   notify<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
@@ -896,6 +908,12 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
 
     const type = typeCandidate as string;
 
+    if (type === "table.editRejected" && isPlainObject(payload)
+      && Object.hasOwn(payload, "notSubmitted") && typeof payload.notSubmitted !== "boolean") {
+      onDiagnostic({ kind: "malformed", reason: "mutation notSubmitted must be a boolean when present", raw });
+      return;
+    }
+
     // --- Whitelist filter -------------------------------------------------
     if (!HOST_EVENT_TYPES.has(type as HostMessageType)) {
       onDiagnostic({
@@ -1052,7 +1070,12 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       && new TextEncoder().encode(JSON.stringify(env)).length > CLIPBOARD_MESSAGE_MAX_BYTES) {
       throw new ClipboardOperationError("tooLarge");
     }
-    webview().postMessage(env);
+    try {
+      webview().postMessage(env);
+    } catch (error) {
+      if (env.requestId) throw new BridgeRequestNotSentError(env.type, env.requestId, error);
+      throw error;
+    }
   }
 
   function operationId(): string {
@@ -1116,7 +1139,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   function requestWithHandle<K extends WebMessageType>(
     type: K,
     payload: WebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> } {
+  ): { readonly requestId: string; readonly sent: boolean; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const retiresWithWorkspace = type === "pluginPreservation.exportRequested"
       || type === "legacyLayout.reportRequested"
@@ -1132,7 +1155,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       const session = useWorkspaceSessionStore();
       // A watcher retires existing requests, but cannot admit new work during drain.
       if (session.enabled && (session.isTransitioning || !session.hasOpenWorkspace)) {
-        return { requestId, promise: Promise.reject(new BridgeRequestRetiredError()) };
+        return { requestId, sent: false, promise: Promise.reject(new BridgeRequestRetiredError()) };
       }
     }
     const env = outboundEnvelope(type, payload, requestId);
@@ -1154,6 +1177,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           : type === "command.run" || type === "shortcut.launch"
             ? Math.max(timeoutMs, 135_000)
           : timeoutMs;
+    let sent = false;
     const promise = new Promise<unknown>((resolve, reject) => {
       // Workspace open/switch may perform drain, protection and pre-open work
       // before the native 105-second activation budget begins. A renderer
@@ -1180,13 +1204,14 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       if (pending.get(requestId)?.retirementScope) observeWorkspaceRetirement();
       try {
         postEnvelope(env);
+        sent = true;
       } catch (err) {
         if (timer !== null) clearTimeout(timer);
         pending.delete(requestId);
         reject(err);
       }
     });
-    return { requestId, promise };
+    return { requestId, sent, promise };
   }
 
   function notify<K extends WebMessageType>(

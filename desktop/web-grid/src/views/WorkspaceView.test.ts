@@ -1449,6 +1449,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "status",
@@ -1561,6 +1562,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "due",
@@ -1696,6 +1698,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "start",
@@ -1890,17 +1893,51 @@ describe("WorkspaceView", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it("review7 retains unknown recovery guidance through a failed reload and table return", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge(); setHostBridgeForTesting(bridge);
+    const ws = useWorkspaceStore(); ws.setOpened([{ collection: "orders" }, { collection: "other" }], { orders: "Orders", other: "Other" }); ws.selectTable("orders");
+    const table = useTableStore(); table.setEditSchema([], { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 });
+    const wrapper = mountView(); await flushPromises();
+    wrapper.findComponent(GridHost).props("onCellEdited")!("row-1", "name", "old", "new", null);
+    const update = posted.filter(item => item.type === "table.updateCellRequested").at(-1)!;
+    emit({ type: "table.editRejected", requestId: update.requestId, payload: { kind: "unknown", message: "readback unconfirmed" } }); await flushPromises();
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    await wrapper.get('[data-testid="edit-rejection-reload"]').trigger("click");
+    expect(wrapper.find('[data-testid="edit-rejection-notice"]').exists()).toBe(true);
+    emit({ type: "table.datasetReady", payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 2 } } }); await flushPromises();
+    const query = posted.filter(item => item.type === "table.queryRequested").at(-1)!;
+    emit({ type: "operation.failed", requestId: query.requestId, payload: { code: "BACKEND_UNAVAILABLE", message: "read failed", operation: "query" } }); await flushPromises();
+    expect(useHistoryStore().writeUncertain).toBe(true);
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    ws.selectTable("other"); await flushPromises(); ws.selectTable("orders"); await flushPromises();
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    await wrapper.get('[data-testid="edit-rejection-reload"]').trigger("click");
+    emit({ type: "table.datasetReady", payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 3 } } }); await flushPromises();
+    const confirmed = posted.filter(item => item.type === "table.queryRequested").at(-1)!;
+    emit({ type: "table.pageLoaded", requestId: confirmed.requestId, payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 3 } } }); await flushPromises();
+    expect(useHistoryStore().writeUncertain).toBe(false);
+    expect(wrapper.find('[data-testid="edit-rejection-notice"]').exists()).toBe(false);
+  });
+
   it("shows a localized non-blocking recovery path for stale edits", async () => {
     const { bridge, emit, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
+    const table = useTableStore();
+    table.setEditSchema([], {
+      databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1,
+    });
     const wrapper = mountView();
     await flushPromises();
 
+    wrapper.findComponent(GridHost).props("onCellEdited")!("row-1", "name", "old", "new", null);
+    const update = posted.filter(message => message.type === "table.updateCellRequested").at(-1);
+    expect(update?.requestId).toEqual(expect.any(String));
     emit({
       type: "table.editRejected",
+      requestId: update?.requestId,
       payload: {
         kind: "edit_conflict",
         message: "The row changed before the edit could be applied.",
@@ -3409,8 +3446,9 @@ describe("WorkspaceView", () => {
         values: {},
         schemaRevision: "schema-1",
       },
-      requestId: undefined,
+      requestId: expect.any(String),
     });
+    expect(new Set(posted.filter(message => message.type === "table.insertRowRequested").map(message => message.requestId)).size).toBe(2);
     table.setEditSchema([{ ...table.editSchema![0]!, dataType: "text", editable: false }], table.revision!);
     await flushPromises();
     expect(firstRow.attributes("disabled")).toBeDefined();
@@ -4355,11 +4393,20 @@ describe("WorkspaceView", () => {
 
   it("commits valid JSON through the table mutation seam and blocks invalid JSON", async () => {
     const notify = vi.fn();
-    const request = vi.fn(async (method: string) => {
+    const request = vi.fn(async (method: string, _payload?: unknown) => {
+      if (method === "table.updateCellRequested") return {
+        rowKey: "row-1", column: "metadata", storedValue: { approved: false },
+        currentRow: { rowKey: "row-1", metadata: { approved: false } },
+        revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 2 },
+      };
       throw new Error(`unexpected request: ${method}`);
     });
+    const requestWithHandle = vi.fn((method: string, payload: unknown) => ({
+      requestId: "json-edit-request", sent: true, promise: request(method, payload),
+    }));
     setHostBridgeForTesting({
       request,
+      requestWithHandle,
       notify,
       notifyWithAdditionalObjects: vi.fn(() => false),
       on: vi.fn(() => vi.fn()),
@@ -4411,7 +4458,7 @@ describe("WorkspaceView", () => {
       '[data-testid="json-editor-save"]',
     );
     expect(save?.disabled).toBe(true);
-    expect(notify).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
+    expect(requestWithHandle).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
 
     input!.value = '{"approved":false}';
     input!.dispatchEvent(new Event("input", { bubbles: true }));
@@ -4422,13 +4469,16 @@ describe("WorkspaceView", () => {
     expect(validSave?.disabled).toBe(false);
     validSave?.click();
     await flushPromises();
-    expect(notify).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
+    expect(requestWithHandle).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
       table: "items",
       rowKey: "row-1",
       column: "metadata",
+      oldValue: { approved: true },
       newValue: { approved: false },
       schemaRevision: "schema-1",
     }));
+    expect(useTableStore().allRows[0]?.metadata).toEqual({ approved: false });
+    expect(useHistoryStore().canUndo).toBe(true);
   });
 
   // -----------------------------------------------------------------------

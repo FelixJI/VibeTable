@@ -5141,6 +5141,8 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("packaged_runtime_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("packaged_rpc_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("preview_artifact_publication.test.mjs"),
+        runner.NODE_RUNNER.with_name("scenario08_stale_conflict.test.mjs"),
+        runner.NODE_RUNNER.with_name("scenario10_retired_paste_rejection.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("table_mutation_receipt_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),

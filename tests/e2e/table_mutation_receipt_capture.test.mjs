@@ -161,7 +161,9 @@ test("rejects invalid workspace scopes, requestIds, payloads, and repeated owner
     insertRequest({ scope: scope({ operationId: "not-a-uuid" }) }),
     insertRequest({ scope: scope({ sessionEpoch: 0 }) }),
     insertRequest({ scope: scope({ sequence: -1 }) }),
-    insertRequest({ requestId: "not-a-notify" }),
+    insertRequest({ requestId: "" }),
+    insertRequest({ requestId: null }),
+    insertRequest({ requestId: 7 }),
     insertRequest({ payload: { ...insertRequest().payload, extra: true } }),
   ];
   for (const request of invalid) {
@@ -426,4 +428,45 @@ test("S07 seeds two committed visible records before starting named revision iso
   await result;
   assert.equal(harness.posted.length, 2);
   assert.equal(harness.listeners.size, 0);
+});
+
+test("correlated mutation receipts ignore broadcast and foreign replies", () => {
+  for (const [request, success] of [[editRequest(), editSuccess()], [insertRequest(), insertSuccess()]]) {
+    const { harness } = install(request.type);
+    harness.webview.postMessage({ ...request, requestId: "owned-request" });
+    harness.dispatch(success);
+    harness.dispatch({ ...success, requestId: "foreign-request" });
+    harness.dispatch({ ...rejection(), requestId: "foreign-request" });
+    harness.dispatch({ type: "operation.failed", requestId: "foreign-request", payload: {
+      operation: request.type, message: "unrelated",
+    } });
+    assert.equal(capture().message, null);
+    assert.equal(capture().error, null);
+    harness.dispatch({ ...success, requestId: "owned-request" });
+    assert.equal(capture().message?.requestId, "owned-request");
+    assert.equal(harness.listeners.size, 0);
+  }
+});
+
+test("correlated rejection retains validation and consumes only its request", () => {
+  const { harness } = install("table.updateCellRequested");
+  harness.webview.postMessage(editRequest({ requestId: "owned-request" }));
+  harness.dispatch({ ...rejection(), requestId: "owned-request" });
+  assert.equal(capture().error?.code, "TABLE_MUTATION_REJECTED");
+  const malformed = install("table.updateCellRequested").harness;
+  malformed.webview.postMessage(editRequest({ requestId: "owned-request" }));
+  malformed.dispatch(editSuccess({ requestId: "owned-request", payload: {
+    ...editSuccess().payload, rowKey: "other-row",
+  } }));
+  assert.equal(capture().error?.code, "CAPTURE_TERMINAL_IDENTITY_MISMATCH");
+});
+
+test("optional boolean notSubmitted keeps a correlated rejection consumable", () => {
+  for (const notSubmitted of [true, false, "true"]) {
+    const { harness } = install("table.updateCellRequested");
+    harness.webview.postMessage(editRequest({ requestId: "owned" }));
+    harness.dispatch({ ...rejection({ notSubmitted }), requestId: "owned" });
+    assert.equal(capture().error?.code, typeof notSubmitted === "boolean"
+      ? "TABLE_MUTATION_REJECTED" : "CAPTURE_TERMINAL_IDENTITY_MISMATCH");
+  }
 });

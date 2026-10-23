@@ -16,6 +16,7 @@ public sealed class WorkspaceTableRequestController
     private static readonly TimeSpan RecoveryReadPollInterval =
         TimeSpan.FromMilliseconds(25);
 
+    internal TableMutationReadBarrier? MutationReads { get; set; }
     private readonly TableWorkspaceService _workspace;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly IDatabasePicker _picker;
@@ -137,15 +138,36 @@ public sealed class WorkspaceTableRequestController
             : _databaseOpenEnabled;
 
     public Task DispatchAsync(RoutedWebRequest request)
+        => request.Type is ("table.updateCellRequested" or "table.insertRowRequested"
+            or "table.deleteRowsRequested" or "table.applyPasteRequested")
+            ? DispatchMutationAsync(request) : DispatchCoreAsync(request, _ => { });
+
+    private async Task DispatchMutationAsync(RoutedWebRequest request)
+    {
+        WorkspaceRequestEpochLease? lease = null;
+        if (_sessionEnvelopeFilter is not null && !_sessionEnvelopeFilter.TryCapture(request.Scope, out lease))
+        {
+            _reply.PostOperationFailed(request.RequestId, "Workspace write belongs to a stale session.", "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using (lease)
+        {
+            if (MutationReads is not null)
+                await MutationReads.TrackAsync(request, settled => DispatchCoreAsync(request, settled)).ConfigureAwait(false);
+            else await DispatchCoreAsync(request, _ => { }).ConfigureAwait(false);
+        }
+    }
+
+    private Task DispatchCoreAsync(RoutedWebRequest request, Action<bool> settled)
         => request.Type switch
         {
             "database.openRequested" => OpenDatabaseAsync(request),
             "table.selected" => SelectTableAsync(request),
-            "table.updateCellRequested" => UpdateCellAsync(request),
-            "table.insertRowRequested" => InsertRowAsync(request),
-            "table.deleteRowsRequested" => DeleteRowsAsync(request),
+            "table.updateCellRequested" => UpdateCellAsync(request, settled),
+            "table.insertRowRequested" => InsertRowAsync(request, settled),
+            "table.deleteRowsRequested" => DeleteRowsAsync(request, settled),
             "table.previewPasteRequested" => PreviewPasteAsync(request),
-            "table.applyPasteRequested" => ApplyPasteAsync(request),
+            "table.applyPasteRequested" => ApplyPasteAsync(request, settled),
             "history.queryRequested" => QueryHistoryAsync(request),
             "history.previewRestoreRequested" => PreviewRestoreAsync(request),
             "history.applyRestoreRequested" => ApplyRestoreAsync(request),
@@ -263,12 +285,22 @@ public sealed class WorkspaceTableRequestController
             return;
         }
         using var requestLease = epochLease;
+        if (_sessionEnvelopeFilter is null) MutationReads?.RetireReads();
+        else if (!_sessionEnvelopeFilter.TryUseCurrent(epochLease, () =>
+        {
+            MutationReads?.RetireReads();
+            return true;
+        })) return;
         CancellationToken windowToken = _sessionToken();
         using var linkedCancellation = epochLease is null ? null
             : CancellationTokenSource.CreateLinkedTokenSource(windowToken, epochLease.CancellationToken);
         CancellationToken sessionToken = linkedCancellation?.Token ?? windowToken;
+        bool waitingForWrites = true;
         try
         {
+            if (MutationReads is not null)
+                await MutationReads.WaitAsync(request, sessionToken).ConfigureAwait(false);
+            waitingForWrites = false;
             await _workspace.SelectTableWithSchemaAsync(table, sessionToken)
                 .ConfigureAwait(false);
         }
@@ -276,6 +308,16 @@ public sealed class WorkspaceTableRequestController
             || epochLease?.CancellationToken.IsCancellationRequested == true)
         {
             return;
+        }
+        catch (OperationCanceledException) when (waitingForWrites)
+        {
+            // A newer table selection retires this waiting read, not the sent write.
+            return;
+        }
+        catch (TableMutationUnconfirmedException exception)
+        {
+            _reply.PostOperationFailed(request.RequestId, exception.Message,
+                "WRITE_TERMINAL_UNCONFIRMED", request.Type);
         }
         catch (TableSelectionRecoveryExhaustedException)
         {
@@ -289,7 +331,7 @@ public sealed class WorkspaceTableRequestController
         }
     }
 
-    private async Task UpdateCellAsync(RoutedWebRequest request)
+    private async Task UpdateCellAsync(RoutedWebRequest request, Action<bool> settled)
     {
         string? table = GetString(request.Payload, "table");
         string? column = GetString(request.Payload, "column");
@@ -310,6 +352,7 @@ public sealed class WorkspaceTableRequestController
             Reject(request, "Invalid update-cell digest guard.");
             return;
         }
+        settled(false);
         await _workspace.UpdateCellAsync(
             table,
             ToObject(rowKey)!,
@@ -318,10 +361,10 @@ public sealed class WorkspaceTableRequestController
             ToObject(newValue),
             schemaRevision,
             expectedDigest,
-            request.RequestId).ConfigureAwait(false);
+            request.RequestId, settled).ConfigureAwait(false);
     }
 
-    private async Task InsertRowAsync(RoutedWebRequest request)
+    private async Task InsertRowAsync(RoutedWebRequest request, Action<bool> settled)
     {
         string? table = GetString(request.Payload, "table");
         string? schemaRevision = GetString(request.Payload, "schemaRevision");
@@ -337,14 +380,15 @@ public sealed class WorkspaceTableRequestController
             .ToDictionary(
                 property => property.Name,
                 property => ToObject(property.Value));
+        settled(false);
         await _workspace.InsertRowAsync(
             table,
             values,
             schemaRevision,
-            request.RequestId).ConfigureAwait(false);
+            request.RequestId, settled).ConfigureAwait(false);
     }
 
-    private async Task DeleteRowsAsync(RoutedWebRequest request)
+    private async Task DeleteRowsAsync(RoutedWebRequest request, Action<bool> settled)
     {
         string? table = GetString(request.Payload, "table");
         string? schemaRevision = GetString(request.Payload, "schemaRevision");
@@ -368,11 +412,12 @@ public sealed class WorkspaceTableRequestController
             }
             rows.Add((ToObject(rowKey)!, expectedDigest));
         }
+        settled(false);
         await _workspace.DeleteRowsAsync(
             table,
             rows,
             schemaRevision,
-            request.RequestId).ConfigureAwait(false);
+            request.RequestId, settled).ConfigureAwait(false);
     }
 
     private async Task PreviewPasteAsync(RoutedWebRequest request)
@@ -406,7 +451,7 @@ public sealed class WorkspaceTableRequestController
                 startCell,
                 cells,
                 CancellationToken.None).ConfigureAwait(false);
-            _reply.PostNotification("table.pastePreviewReady", plan);
+            _reply.PostResponse("table.pastePreviewReady", request.RequestId, plan);
         }
         catch (Exception exception)
         {
@@ -417,7 +462,7 @@ public sealed class WorkspaceTableRequestController
         }
     }
 
-    private async Task ApplyPasteAsync(RoutedWebRequest request)
+    private async Task ApplyPasteAsync(RoutedWebRequest request, Action<bool> settled)
     {
         string? collection = GetString(request.Payload, "collection");
         string? token = GetString(request.Payload, "token");
@@ -431,6 +476,7 @@ public sealed class WorkspaceTableRequestController
                 "table.applyPasteRequested requires 'collection', 'token' and 'idempotencyKey'.");
             return;
         }
+        settled(false);
         try
         {
             ApplyPasteResult result = await _workspace.Gateway.ApplyPasteAsync(
@@ -438,7 +484,14 @@ public sealed class WorkspaceTableRequestController
                 token,
                 idempotencyKey,
                 CancellationToken.None).ConfigureAwait(false);
-            _reply.PostNotification("table.pasteApplied", result);
+            settled(result.Outcome != "pending");
+            _reply.PostResponse("table.pasteApplied", request.RequestId, result);
+        }
+        catch (TableMutationRejectedException rejected)
+        {
+            settled(true);
+            TableNotificationPresenter.Post(_reply, new TableNotification("table.editRejected", null,
+                new MutationOutcome("applyPaste", false, rejected.Error, null), request.RequestId));
         }
         catch (Exception exception)
         {

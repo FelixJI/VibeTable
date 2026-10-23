@@ -359,6 +359,8 @@ export interface DeleteRowsResult {
 
 /** A mapped mutation error forwarded by the host. */
 export interface MutationErrorPayload {
+  /** True only when the host proved that mutation.apply was never called. */
+  readonly notSubmitted?: boolean;
   readonly kind:
     | "edit_conflict"
     | "mutation_validation"

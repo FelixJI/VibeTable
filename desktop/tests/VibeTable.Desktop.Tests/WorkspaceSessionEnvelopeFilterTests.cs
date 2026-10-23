@@ -15,6 +15,78 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    public async Task Review15OnlyAdmittedSelectionCanRetireCurrentRecoveryQuery(bool staleSelection)
+    {
+        using var fixture = new SessionFixture();
+        var first = fixture.AddWorkspace("旧", "Old");
+        var second = fixture.AddWorkspace("当前", "Current");
+        var oldSession = await fixture.Manager.OpenAsync(first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var current = await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        var terminal = new TaskCompletionSource<UpdateCellResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = new FakeTableRpcGateway { PendingUpdateCell = terminal };
+        gateway.DatabaseOpenResults["fixture"] = new DatabaseOpenResult(["records", "other"], [], TestDisplayNames.For("records", "other"));
+        gateway.CursorOpenResults["records"] = new TablePage("records", [], [], 0, 100, 0, "remote");
+        gateway.SelectionProjectionResults["other"] = new TableSelectionProjection(new TablePage("other", [], [], 0, 100, 0, "remote"),
+            new EditSchemaResult("other", "sr", "rowKey", true, false, []));
+        var workspace = new TableWorkspaceService(gateway); await workspace.OpenDatabaseAsync("fixture");
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(workspace, new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(gateway, _ => { }), sessionEnvelopeFilter: filter);
+        Task write = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.updateCellRequested", "write", JsonSerializer.SerializeToElement(new {
+            table = "records", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr",
+        }), "", ScopeFor(current, 1)));
+        Task query = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.queryRequested", "query", JsonSerializer.SerializeToElement(new {
+            table = "records", query = new { },
+        }), "", ScopeFor(current, 2)));
+        try
+        {
+            Assert.IsFalse(query.IsCompleted); Assert.HasCount(0, gateway.RawViewQueries);
+            await dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.selected", "selection",
+                JsonSerializer.SerializeToElement(new { table = "other" }), "", ScopeFor(staleSelection ? oldSession : current, 3)));
+            if (staleSelection)
+                Assert.AreEqual("BAD_WORKSPACE_SCOPE", JsonSerializer.SerializeToElement(sink.Replies.Single(reply => reply.RequestId == "selection").Payload).GetProperty("code").GetString());
+        }
+        finally
+        {
+            terminal.TrySetResult(new UpdateCellResult("r", "name", "after", new Dictionary<string, object?> { ["rowKey"] = "r", ["name"] = "after" }, new MutationRevision("s", "sr", 2)));
+            await write.WaitAsync(TimeSpan.FromSeconds(2)); await query.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        var result = sink.Replies.Single(reply => reply.RequestId == "query");
+        Assert.AreEqual(staleSelection ? "table.pageLoaded" : "operation.failed", result.Type);
+        if (!staleSelection)
+            Assert.AreEqual("QUERY_CANCELLED", JsonSerializer.SerializeToElement(result.Payload).GetProperty("code").GetString());
+    }
+    [TestMethod]
+    public async Task RecoveryReadLeaseRetiresDuringDrainButSentWriteKeepsItsLeaseUntilTerminal()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("写入", "Mutation");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var terminal = new TaskCompletionSource<UpdateCellResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = new FakeTableRpcGateway { PendingUpdateCell = terminal };
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(new TableWorkspaceService(gateway), new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(gateway, _ => { }), sessionEnvelopeFilter: filter);
+        Task write = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.updateCellRequested", "write", JsonSerializer.SerializeToElement(new {
+            table = "records", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr",
+        }), "", ScopeFor(opened, sequence: 2)));
+        Task query = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.queryRequested", "recovery", JsonSerializer.SerializeToElement(new {
+            table = "records", query = new { },
+        }), "", ScopeFor(opened, sequence: 3)));
+        Task drain = filter.DrainAsync(entry.WorkspaceId, opened.SessionEpoch, CancellationToken.None);
+        await query.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(drain.IsCompleted, "cancelling a read must not pretend the sent write was cancelled");
+        Assert.HasCount(0, gateway.RawViewQueries);
+        terminal.SetResult(new UpdateCellResult("r", "name", "after", new Dictionary<string, object?> { ["rowKey"] = "r", ["name"] = "after" }, new MutationRevision("s", "sr", 2)));
+        await write; await drain.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "table.pageLoaded"));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     public async Task GridQueryDispatcherDrainsEpochBeforeIgnoringLateRead(bool fails)
     {
         using var fixture = new SessionFixture();

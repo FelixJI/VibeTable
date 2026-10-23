@@ -476,6 +476,10 @@ watch(
   },
 );
 const editRejection = ref<MutationErrorPayload | null>(null);
+watch(() => history.writeUncertain, uncertain => {
+  if (uncertain) editRejection.value = { kind: "unknown", message: "写入结果尚未确认，请核实权威数据；不要直接重试。" };
+  else if (editRejection.value?.kind === "unknown") editRejection.value = null;
+}, { flush: "sync", immediate: true });
 const editRejectionText = computed(() =>
   editRejection.value ? mutationRejectionMessage(editRejection.value) : "");
 
@@ -718,7 +722,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
     if (!relationLookup.acceptLookup(result, currentDataRevision)) return false;
     return tableStore.applyLookupQueryResult(result, { labelsOnly: labelsOnly ?? relationLookup.lookups.length === 0 });
   },
-  clearEditRejection: () => { editRejection.value = null; },
+  clearEditRejection: () => { if (!history.writeUncertain) editRejection.value = null; },
   reportError: content => message.error(content),
 });
 
@@ -1087,7 +1091,7 @@ function initializeBusinessConsumers(): void {
       void relationEditorController.dispatch({ type: "targets.refresh" });
     }
   });
-  pasteService.init();
+  pasteService.init(mutationService.recordPasteResult);
   mutationService.init(
     (error) => {
       if (error.kind !== "cancelled") editRejection.value = error;
@@ -1159,6 +1163,8 @@ onBeforeUnmount(() => {
   stopRecoveryDataInvalidation?.();
   stopRecoveryDataInvalidation = null;
   unregisterWorkspaceEpochReset();
+  mutationService.dispose();
+  pasteService.dispose();
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.dispose();
@@ -1242,7 +1248,7 @@ const workspaceSearchNavigation = createWorkspaceSearchNavigation({
 });
 
 function refreshTable(): void {
-  editRejection.value = null;
+  if (!history.writeUncertain) editRejection.value = null;
   // The retained recovery path already issues one correlated reload and then
   // negotiates Relation/Lookup. Do not race it with the legacy notify refresh.
   if (resumeDirtyTableLookupRecovery()) return;

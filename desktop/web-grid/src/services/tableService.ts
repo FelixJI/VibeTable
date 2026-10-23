@@ -1,3 +1,4 @@
+import { BridgeOperationError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { nextTick, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -62,6 +63,7 @@ export function useTableService(): {
   let initialized = false;
   let disposed = false;
   let queryReloadGeneration = 0;
+  let writeRecoveryLoad: number | null = null;
   let stopQueryReloadWatcher: (() => void) | null = null;
   let realtimeGeneration = 0;
   let pendingDataChange: DataChangedEvent | null = null;
@@ -149,6 +151,12 @@ export function useTableService(): {
     const pending = pendingDataChange;
     pendingDataChange = null;
     if (pending) reconcileDataChange(pending);
+    if (writeRecoveryLoad === tableStore.loadGeneration && history.writeUncertain) {
+      writeRecoveryLoad = null;
+      // A notify page has no request identity. Confirm it with a new correlated
+      // query rather than treating an old broadcast as proof of recovery.
+      void reloadCurrentQuery();
+    }
   }
 
   function retryStaleSnapshot(): void {
@@ -333,6 +341,7 @@ export function useTableService(): {
     // path that resets the table context — including any future caller.
     history.clear();
     tableStore.beginLoad();
+    writeRecoveryLoad = history.writeUncertain ? tableStore.loadGeneration : null;
     bridge.notify("table.selected", { table: name });
     startLoadWatchdogCycle(name);
   }
@@ -358,6 +367,7 @@ export function useTableService(): {
     // own edit clears that edit before Ctrl+Z can act on it.
     if (!options.preserveHistory) history.clear();
     tableStore.beginLoad();
+    writeRecoveryLoad = history.writeUncertain ? tableStore.loadGeneration : null;
     bridge.notify("table.selected", { table: current });
     startLoadWatchdogCycle(current);
   }
@@ -378,6 +388,8 @@ export function useTableService(): {
     const queryKey = queryFingerprint(query);
     const requestGeneration = ++queryReloadGeneration;
     const loadGeneration = tableStore.loadGeneration;
+    const confirmWriteRefresh = history.captureWriteRefresh();
+    const writeHistoryIsCurrent = history.captureGeneration();
     const workspaceId = workspaceSessionStore.activeWorkspaceId;
     const sessionEpoch = workspaceSessionStore.sessionEpoch;
     const stillCurrent = (): boolean =>
@@ -406,8 +418,15 @@ export function useTableService(): {
       // the latter can synchronously retire this acknowledgement by starting
       // a newer load, so only report applied after revalidating the store.
       completeLoad();
-      return stillCurrent() && tableStore.datasetReady ? "applied" : "retired";
-    } catch {
+      if (!stillCurrent() || !tableStore.datasetReady) return "retired";
+      if (page.revision.databaseSessionId) confirmWriteRefresh();
+      return "applied";
+    } catch (error) {
+      if (stillCurrent() && writeHistoryIsCurrent() && error instanceof BridgeOperationError
+        && error.code === "WRITE_TERMINAL_UNCONFIRMED") {
+        history.markWriteUncertain();
+        tableStore.setError(error.message);
+      }
       return stillCurrent() ? "failed" : "retired";
     }
   }

@@ -3843,6 +3843,7 @@ SCENARIO_SCREENSHOTS = {
         "51-plugin-application-commit-unknown-trace.zip",
     ),
     "02-all-field-schema": (
+        "02-edit-undo-redo.png",
         "02-number-display-fixed.png",
         "02-number-display-currency.png",
         "02-number-display-percent.png",

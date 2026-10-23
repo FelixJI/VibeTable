@@ -801,6 +801,7 @@ export const messages: Record<string, string> = {
   "workspace.editRejected.validation": "This value could not be saved. Check it and try again.",
   "workspace.editRejected.notWritable": "This field is not editable. The change was not saved.",
   "workspace.editRejected.backendUnavailable": "The data service is unavailable. This edit was not saved.",
+  "workspace.editRejected.unknown": "The write outcome is unconfirmed. Refresh and verify the authoritative data; do not retry directly.",
   "workspace.editRejected.generic": "This edit was not saved. Reload and try again.",
   "workspace.editRejected.reload": "Reload",
   "plugin.risk.read": "Read only",

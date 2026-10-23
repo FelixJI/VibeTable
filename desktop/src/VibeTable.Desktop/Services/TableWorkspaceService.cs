@@ -743,10 +743,12 @@ public sealed class TableWorkspaceService
         object? newValue,
         string schemaRevision,
         string? expectedDigest = null,
-        string? requestId = null)
+        string? requestId = null,
+        Action<bool>? onWriteSettled = null)
     {
         if (string.IsNullOrEmpty(table))
         {
+            onWriteSettled?.Invoke(true);
             return false;
         }
         int generation = CurrentGeneration;
@@ -755,6 +757,7 @@ public sealed class TableWorkspaceService
             var result = await _gateway.UpdateCellAsync(
                 table, rowKey, column, oldValue, newValue, schemaRevision,
                 CancellationToken.None, expectedDigest).ConfigureAwait(false);
+            onWriteSettled?.Invoke(true);
             if (IsMutationStale(generation, table))
             {
                 // The user switched tables: do NOT apply the commit anywhere.
@@ -769,6 +772,9 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
+            MutationError error = MutationErrorMapper.Map(ex);
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+                or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {
                 return false;
@@ -778,7 +784,7 @@ public sealed class TableWorkspaceService
                 MutationResult: new MutationOutcome(
                     Kind: "updateCell",
                     Success: false,
-                    Error: MutationErrorMapper.Map(ex),
+                    Error: error,
                     Result: null),
                 RequestId: requestId));
             return false;
@@ -790,10 +796,12 @@ public sealed class TableWorkspaceService
         string table,
         IReadOnlyDictionary<string, object?> values,
         string schemaRevision,
-        string? requestId = null)
+        string? requestId = null,
+        Action<bool>? onWriteSettled = null)
     {
         if (string.IsNullOrEmpty(table))
         {
+            onWriteSettled?.Invoke(true);
             return false;
         }
         int generation = CurrentGeneration;
@@ -802,6 +810,7 @@ public sealed class TableWorkspaceService
             var result = await _gateway.InsertRowAsync(
                 table, values, schemaRevision, CancellationToken.None)
                 .ConfigureAwait(false);
+            onWriteSettled?.Invoke(true);
             if (IsMutationStale(generation, table))
             {
                 return false;
@@ -815,6 +824,9 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
+            MutationError error = MutationErrorMapper.Map(ex);
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+                or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {
                 return false;
@@ -824,7 +836,7 @@ public sealed class TableWorkspaceService
                 MutationResult: new MutationOutcome(
                     Kind: "insertRow",
                     Success: false,
-                    Error: MutationErrorMapper.Map(ex),
+                    Error: error,
                     Result: null),
                 RequestId: requestId));
             return false;
@@ -836,10 +848,12 @@ public sealed class TableWorkspaceService
         string table,
         IReadOnlyList<(object RowKey, string ExpectedDigest)> rows,
         string schemaRevision,
-        string? requestId = null)
+        string? requestId = null,
+        Action<bool>? onWriteSettled = null)
     {
         if (string.IsNullOrEmpty(table) || rows.Count == 0)
         {
+            onWriteSettled?.Invoke(true);
             return false;
         }
         int generation = CurrentGeneration;
@@ -848,6 +862,7 @@ public sealed class TableWorkspaceService
             var result = await _gateway.DeleteRowsAsync(
                 table, rows, schemaRevision, CancellationToken.None)
                 .ConfigureAwait(false);
+            onWriteSettled?.Invoke(true);
             if (IsMutationStale(generation, table))
             {
                 return false;
@@ -861,6 +876,9 @@ public sealed class TableWorkspaceService
         }
         catch (Exception ex)
         {
+            MutationError error = MutationErrorMapper.Map(ex);
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+                or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {
                 return false;
@@ -870,7 +888,7 @@ public sealed class TableWorkspaceService
                 MutationResult: new MutationOutcome(
                     Kind: "deleteRows",
                     Success: false,
-                    Error: MutationErrorMapper.Map(ex),
+                    Error: error,
                     Result: null),
                 RequestId: requestId));
             return false;

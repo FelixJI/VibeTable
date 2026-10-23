@@ -1564,6 +1564,7 @@ def persist_product_e2e_evidence(
             "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),
             "32-shared-work-calendar": ("32-shared-work-calendar.png",),
             "02-all-field-schema": (
+                "02-edit-undo-redo.png",
                 "02-number-display-fixed.png",
                 "02-number-display-currency.png",
                 "02-number-display-percent.png",
