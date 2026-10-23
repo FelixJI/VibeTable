@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-import { BridgeOperationError, createHostBridge } from "./hostBridge";
+import { BridgeOperationError, BridgeRequestNotSentError, createHostBridge } from "./hostBridge";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   BridgeMessage,
@@ -133,6 +133,26 @@ describe("HostBridge", () => {
     const result = bridge.request("clipboard.readText", {});
     webview.emit({ type: "clipboard.readText", requestId: "clipboard-read", payload: { text: "中文\t😀" } });
     await expect(result).resolves.toEqual({ text: "中文\t😀" });
+    bridge.stop();
+  });
+
+  it("identifies synchronous transport rejection as not sent and retires its response id", async () => {
+    vi.useFakeTimers();
+    const diagnostics = vi.fn();
+    const bridge = createHostBridge({ webview, generateRequestId: () => "not-sent", onDiagnostic: diagnostics });
+    const callback = vi.fn();
+    bridge.start(); bridge.on("table.editCommitted", callback);
+    const cause = new Error("transport unavailable");
+    webview.postMessage.mockImplementationOnce(() => { throw cause; });
+    const failure = await bridge.request("table.updateCellRequested", {
+      table: "u", rowKey: 1, column: "name", oldValue: "old", newValue: "new", expectedDigest: null, schemaRevision: "sr",
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(BridgeRequestNotSentError);
+    expect(failure).toMatchObject({ requestId: "not-sent", messageType: "table.updateCellRequested", cause });
+    expect(vi.getTimerCount()).toBe(0);
+    webview.emit({ type: "table.editCommitted", requestId: "not-sent", payload: {} });
+    expect(callback).not.toHaveBeenCalled();
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ kind: "orphaned-response" }));
     bridge.stop();
   });
 

@@ -29,13 +29,14 @@ function setup(timeoutMs = 5_000) {
   let listener: ((event: { data: unknown }) => void) | undefined;
   const posted: Envelope[] = [];
   const diagnostics = vi.fn();
+  const postMessage = vi.fn((message: unknown) => { posted.push((typeof message === "string" ? JSON.parse(message) : message) as Envelope); });
   let id = 0;
   const bridge = createHostBridge({
     timeoutMs, generateRequestId: () => `r${++id}`, onDiagnostic: diagnostics,
     webview: {
       addEventListener: (_, fn) => { listener = fn; },
       removeEventListener: () => { listener = undefined; },
-      postMessage: (message) => { posted.push((typeof message === "string" ? JSON.parse(message) : message) as Envelope); },
+      postMessage,
     },
   });
   bridge.start();
@@ -59,7 +60,7 @@ function setup(timeoutMs = 5_000) {
   const reply = (request: Envelope, type: string, payload: unknown) => emit(type, payload, request.requestId);
   const dispose = () => { if ("dispose" in service) service.dispose(); bridge.stop(); };
   cleanups.push(dispose);
-  return { bridge, table, ws, history, service, posted, emit, reply, rejected, inserted, diagnostics };
+  return { bridge, table, ws, history, service, posted, emit, reply, rejected, inserted, diagnostics, postMessage };
 }
 const cleanups: (() => void)[] = [];
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
@@ -88,6 +89,108 @@ describe("mutationService correlated writes", () => {
     await flush();
     expect(s.table.allRows[0]?.name).toBe("new context");
     expect(s.history.canUndo).toBe(false);
+  });
+
+  it("unknown write fences a late rejection and blocks new optimistic writes until authoritative refresh", async () => {
+    vi.useFakeTimers(); const s = setup();
+    s.service.updateCell(1, "name", "old", "possibly committed");
+    await vi.advanceTimersByTimeAsync(1_000);
+    s.service.updateCell(1, "name", "possibly committed", "second"); const second = s.posted.at(-1)!;
+    s.table.rollbackCellEdit(1, "name", "second");
+    await vi.advanceTimersByTimeAsync(4_000);
+    s.reply(second, "table.editRejected", { kind: "mutation_validation", message: "old rejection" }); await flush();
+    expect(s.table.allRows[0]?.name).toBe("second");
+    expect(s.rejected).toHaveBeenCalledTimes(1);
+    expect(s.rejected.mock.calls[0]?.[0].kind).toBe("unknown");
+    s.table.rollbackCellEdit(1, "name", "attempt after unknown");
+    s.service.updateCell(1, "name", "second", "attempt after unknown"); await flush();
+    expect(s.posted).toHaveLength(2);
+    expect(s.table.allRows[0]?.name).toBe("second");
+    const page = { table: "u", columns: [], rows: [{ rowKey: 1, name: "authority", __vibetableDigest: digest }], offset: 0, limit: 1, totalRows: 1, mode: "remote" as const, revision: revision(4) };
+    s.table.setDatasetReady(page);
+    s.service.updateCell(1, "name", "authority", "new action");
+    expect(s.posted).toHaveLength(3);
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new action", 1, "name", 5)); await flush();
+    expect(s.history.canUndo).toBe(true);
+  });
+
+  it("a stale rejection remains fenced after refresh and cannot affect a new same-cell request", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    s.reply(first, "table.editRejected", { kind: "unknown", message: "unknown commit" }); await flush();
+    s.table.setDatasetReady({ table: "u", columns: [], rows: [{ rowKey: 1, name: "authority", __vibetableDigest: digest }], offset: 0, limit: 1, totalRows: 1, mode: "remote", revision: revision(4) });
+    s.service.updateCell(1, "name", "authority", "new action"); const current = s.posted.at(-1)!;
+    s.reply(second, "table.editRejected", { kind: "edit_conflict", message: "stale rejection", currentRow: { name: "stale" } }); await flush();
+    expect(s.table.allRows[0]?.name).toBe("authority"); expect(s.rejected).toHaveBeenCalledTimes(1);
+    s.reply(current, "table.editCommitted", edit("new action", 1, "name", 5)); await flush();
+    expect(s.history.canUndo).toBe(true);
+  });
+
+  it("an unknown result queued between response continuations prevents a sibling rollback", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    s.table.rollbackCellEdit(1, "name", "second");
+    s.reply(first, "table.editRejected", { kind: "unknown", message: "unknown commit" });
+    queueMicrotask(() => s.reply(second, "table.editRejected", { kind: "edit_conflict", message: "late conflict" }));
+    await flush();
+    expect(s.table.allRows[0]?.name).toBe("second");
+    expect(s.rejected).toHaveBeenCalledTimes(1); expect(s.history.writeUncertain).toBe(true);
+  });
+
+  it("a pending same-cell write also fences an already published history item", async () => {
+    const s = setup(); await seed(s);
+    expect(s.history.canUndo).toBe(true); // Populate the computed cache before the pending Map changes.
+    s.service.updateCell(1, "name", "new", "pending"); const pending = s.posted.at(-1)!;
+    expect(s.history.canUndo).toBe(false); await s.service.performUndo(); expect(s.posted).toHaveLength(2);
+    s.reply(pending, "table.editRejected", { kind: "mutation_validation", message: "invalid" }); await flush();
+    expect(s.history.canUndo).toBe(true);
+  });
+
+  it("an early same-cell receipt cannot publish undo before the earlier request settles", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    s.reply(second, "table.editCommitted", edit("second", 1, "name", 3)); await flush();
+    expect(s.table.allRows[0]?.name).toBe("second");
+    expect(s.history.canUndo).toBe(false);
+    await s.service.performUndo(); expect(s.posted).toHaveLength(2);
+    s.reply(first, "table.editCommitted", edit("first", 1, "name", 2)); await flush();
+    expect(s.history.undoStackSize).toBe(2);
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.newValue).toBe("first");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("first", 1, "name", 4)); await undo;
+  });
+
+  it("an unsent second edit restores only its prior visible value while the first is pending", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.table.rollbackCellEdit(1, "name", "second");
+    s.postMessage.mockImplementationOnce(() => { throw new Error("not sent"); });
+    s.service.updateCell(1, "name", "first", "second"); await flush();
+    expect(s.table.allRows[0]?.name).toBe("first"); expect(s.history.canUndo).toBe(false);
+    s.reply(first, "table.editCommitted", edit("first")); await flush(); expect(s.history.undoStackSize).toBe(1);
+  });
+
+  it("a definitely unsent edit rolls back and preserves known history", async () => {
+    const s = setup(); await seed(s);
+    s.table.rollbackCellEdit(2, "name", "optimistic");
+    s.postMessage.mockImplementationOnce(() => { throw new Error("transport unavailable"); });
+    s.service.updateCell(2, "name", "two", "optimistic"); await flush();
+    expect(s.table.allRows[1]?.name).toBe("two");
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ kind: "backend_unavailable" }));
+    expect(s.rejected).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "unknown" }));
+    s.postMessage.mockImplementationOnce(() => { throw new Error("undo not sent"); });
+    await s.service.performUndo();
+    expect(s.history.canUndo).toBe(true); expect(s.history.canRedo).toBe(false);
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.postMessage.mockImplementationOnce(() => { throw new Error("redo not sent"); });
+    await s.service.performRedo();
+    expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(true);
+    expect(s.history.lastError).toBe("redo not sent");
   });
 
   it("ordinary confirmation cannot finish a pending inverse", async () => {
@@ -447,14 +550,15 @@ describe("mutationService correlated writes", () => {
     s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [22], revision: revision(4) }); await redo;
   });
 
-  it("partial multi-row delete undo never restores a blindly replayable entry", async () => {
+  it.each(["edit_conflict", "unknown"] as const)("partial multi-row delete undo never restores a blindly replayable entry after %s", async (kind) => {
     const s = setup(); s.service.deleteRows([{ rowKey: 1, expectedDigest: digest }, { rowKey: 2, expectedDigest: digest }]);
     s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [1, 2], revision: revision(2) }); await flush();
     const undo = s.service.performUndo(); await flush();
     s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 11, row: { rowKey: 11, name: "old" }, revision: revision(3) }); await flush();
-    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "edit_conflict", message: "second failed" }); await undo;
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind, message: "second failed" }); await undo;
     expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
     expect(s.table.allRows).toHaveLength(1);
+    if (kind === "unknown") expect(s.history.writeUncertain).toBe(true);
   });
 
   it("paste history deletes only created rows with current digests and offers no redo", async () => {
@@ -522,6 +626,27 @@ describe("paste request ownership", () => {
     expect(s.store.phase).toBe("applied");
     expect(s.applied).not.toHaveBeenCalled();
     expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
+  });
+
+  it("a definitely unsent paste preserves history and reports no unknown commit", async () => {
+    const s = pasteSetup(); await seed(s);
+    s.postMessage.mockImplementationOnce(() => { throw new Error("paste transport unavailable"); });
+    s.paste.apply(input); await flush();
+    expect(s.store.error).toContain("paste transport unavailable");
+    expect(s.store.error).not.toContain("尚未确认");
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.applied).not.toHaveBeenCalled();
+  });
+
+  it("an unknown paste fences an ordinary sibling rejection and further paste admission", async () => {
+    const s = pasteSetup();
+    s.service.updateCell(1, "name", "old", "pending"); const ordinary = s.posted.at(-1)!;
+    s.table.rollbackCellEdit(1, "name", "pending");
+    s.paste.apply(input); s.reply(s.posted.at(-1)!, "table.pasteApplied", pasteResult({ outcome: "pending" })); await flush();
+    s.reply(ordinary, "table.editRejected", { kind: "edit_conflict", message: "late ordinary failure" }); await flush();
+    expect(s.table.allRows[0]?.name).toBe("pending"); expect(s.rejected).not.toHaveBeenCalled();
+    s.paste.apply({ ...input, idempotencyKey: "another" }); expect(s.posted).toHaveLength(2);
+    expect(s.store.error).toContain("核实"); expect(s.history.writeUncertain).toBe(true);
   });
 
   it("the exact paste failure is shown while a concurrent undo remains pending", async () => {

@@ -14,6 +14,7 @@ export interface HistoryEntry {
   readonly timestamp: number;
   /** Authority commit order, when the mutation receipt provides one. */
   readonly dataRevision?: number;
+  readonly canReplay?: () => boolean;
   readonly undo: () => Promise<void>;
   /**
    * Omit when the operation cannot be replayed faithfully. In particular,
@@ -30,12 +31,24 @@ export const useHistoryStore = defineStore("history", () => {
   const redoStack = ref<HistoryEntry[]>([]);
   const lastError = ref<string | null>(null);
   const busy = ref(false);
+  const writeUncertain = ref(false);
   let generation = 0;
   let actionGeneration = 0;
 
-  const canUndo = computed(() => !busy.value && undoStack.value.length > 0);
-  const canRedo = computed(() => !busy.value && redoStack.value.length > 0);
+  const canUndo = computed(() => !busy.value && !writeUncertain.value && undoStack.value.length > 0
+    && (undoStack.value.at(-1)?.canReplay?.() ?? true));
+  const canRedo = computed(() => !busy.value && !writeUncertain.value && redoStack.value.length > 0
+    && (redoStack.value.at(-1)?.canReplay?.() ?? true));
   const undoStackSize = computed(() => undoStack.value.length);
+
+  function markWriteUncertain(): void {
+    clear();
+    writeUncertain.value = true;
+  }
+
+  function confirmWriteRefresh(): void {
+    writeUncertain.value = false;
+  }
 
   function captureGeneration(): () => boolean {
     const captured = generation;
@@ -62,7 +75,7 @@ export const useHistoryStore = defineStore("history", () => {
   }
 
   async function undo(): Promise<void> {
-    if (busy.value) return;
+    if (!canUndo.value) return;
     lastError.value = null;
     const entry = undoStack.value.pop();
     if (!entry) return;
@@ -86,7 +99,7 @@ export const useHistoryStore = defineStore("history", () => {
   }
 
   async function redo(): Promise<void> {
-    if (busy.value) return;
+    if (!canRedo.value) return;
     lastError.value = null;
     const entry = redoStack.value.pop();
     if (!entry) return;
@@ -111,6 +124,7 @@ export const useHistoryStore = defineStore("history", () => {
 
   function clear(): void {
     generation += 1;
+    writeUncertain.value = false;
     undoStack.value = [];
     redoStack.value = [];
     lastError.value = null;
@@ -124,6 +138,9 @@ export const useHistoryStore = defineStore("history", () => {
     canUndo,
     canRedo,
     undoStackSize,
+    writeUncertain,
+    markWriteUncertain,
+    confirmWriteRefresh,
     captureGeneration,
     beginAction,
     push,

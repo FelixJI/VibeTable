@@ -1,3 +1,4 @@
+import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
 import { usePasteStore } from "@/stores/pasteStore";
@@ -35,6 +36,10 @@ export function usePasteService() {
 
   function apply(payload: ApplyPasteInput): void {
     if (applying) return;
+    if (history.writeUncertain) {
+      store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
+      return;
+    }
     const isCurrent = scope.capture();
     if (!isCurrent()) return;
     applying = true;
@@ -49,7 +54,7 @@ export function usePasteService() {
       applying = false;
       const applied = result as ApplyPasteResult;
       if (applied.outcome === "pending") {
-        history.clear();
+        history.markWriteUncertain();
         store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
         return;
       }
@@ -58,7 +63,15 @@ export function usePasteService() {
     }, (error: Error) => {
       if (!isCurrent()) return;
       applying = false;
-      history.clear();
+      if (error instanceof BridgeRequestNotSentError && historyIsCurrent()) {
+        store.setError(error.message);
+        return;
+      }
+      if (!historyIsCurrent()) {
+        store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
+        return;
+      }
+      history.markWriteUncertain();
       store.setError(`${error.message} 粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。`);
     });
   }

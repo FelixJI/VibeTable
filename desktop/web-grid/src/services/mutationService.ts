@@ -1,3 +1,5 @@
+import { shallowReactive } from "vue";
+import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
 import { useTableStore } from "@/stores/tableStore";
@@ -22,13 +24,13 @@ export function useMutationService() {
   let rowInsertedHandler: ((result: InsertRowResult) => void) | undefined;
   const waiting = new Set<() => void>();
   const deferred = new Map<string, { newValue: unknown }>();
-  const cellStates = new Map<string, {
+  const cellStates = shallowReactive(new Map<string, {
     latest: number;
     pending: number;
     baseValue: unknown;
     historyIsCurrent: () => boolean;
     committed: { result: UpdateCellResult; oldValue: unknown }[];
-  }>();
+  }>());
   let cellSequence = 0;
   const rowRevisions = new Map<number | string, number>();
   let projectionRevision = table.revision;
@@ -52,6 +54,7 @@ export function useMutationService() {
   }
 
   function report(error: MutationErrorPayload): void {
+    if (history.writeUncertain && error.kind !== "unknown") return;
     if (editRejectedHandler) editRejectedHandler(error);
     else table.setError(error.message);
   }
@@ -113,9 +116,11 @@ export function useMutationService() {
     payload: WebPayloadMap[K],
     isCurrent: () => boolean,
     normal: boolean,
-    onRejected?: (error: MutationErrorPayload) => void,
+    onRejected?: (error: MutationErrorPayload, notSent?: boolean) => void,
   ): Promise<MutationResult> {
     if (!isCurrent()) throw new Error("The mutation context changed before sending.");
+    if (history.writeUncertain) throw new Error(UNKNOWN_MESSAGE);
+    const requestHistoryIsCurrent = history.captureGeneration();
     // A new action invalidates existing redo at submission, not at late confirmation.
     if (normal) history.beginAction();
     const expectedSession = table.revision?.databaseSessionId;
@@ -132,8 +137,14 @@ export function useMutationService() {
         waiting.delete(cancel);
       }
     } catch (error) {
-      if (isCurrent()) {
-        history.clear();
+      if (isCurrent() && requestHistoryIsCurrent()) {
+        if (error instanceof BridgeRequestNotSentError) {
+          const rejection: MutationErrorPayload = { kind: "backend_unavailable", message: error.message };
+          onRejected?.(rejection, true);
+          report(rejection);
+          throw error;
+        }
+        history.markWriteUncertain();
         report({ kind: "unknown", message: error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE });
       }
       throw new Error(error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE);
@@ -141,8 +152,9 @@ export function useMutationService() {
     if (!isCurrent()) throw new Error("The mutation context changed after sending.");
     if (typeof result === "object" && result !== null && "kind" in result) {
       const rejection = result as MutationErrorPayload;
+      if (!requestHistoryIsCurrent()) throw new Error(UNKNOWN_MESSAGE);
       if (rejection.kind === "unknown") {
-        history.clear();
+        history.markWriteUncertain();
         report({ ...rejection, message: UNKNOWN_MESSAGE });
       } else {
         onRejected?.(rejection);
@@ -152,7 +164,7 @@ export function useMutationService() {
     }
     const committed = result as MutationResult;
     if (expectedSession && committed.revision.databaseSessionId !== expectedSession) {
-      history.clear();
+      history.markWriteUncertain();
       report({ kind: "unknown", message: UNKNOWN_MESSAGE });
       throw new Error(UNKNOWN_MESSAGE);
     }
@@ -180,8 +192,10 @@ export function useMutationService() {
       for (const key of freshKeys) rowRevisions.set(key, result.revision.dataRevision);
     }
     projectionRevision = table.revision;
-    if (schemaChanged) history.clear();
-    else if (historyIsCurrent()) push?.();
+    if (schemaChanged) {
+      if (history.writeUncertain) history.markWriteUncertain();
+      else history.clear();
+    } else if (historyIsCurrent()) push?.();
   }
   async function replay<K extends MutationType>(
     type: K,
@@ -208,6 +222,7 @@ export function useMutationService() {
     history.push({
       id: crypto.randomUUID(), kind: "updateCell", label: `编辑 ${r.column}`, timestamp: Date.now(),
       get dataRevision() { return dataRevision; },
+      canReplay: () => !cellStates.has(JSON.stringify([typeof r.rowKey, r.rowKey, r.column])),
       undo: () => change(r.storedValue, oldValue()), redo: () => change(oldValue(), r.storedValue),
     }, true);
   }
@@ -237,6 +252,11 @@ export function useMutationService() {
     rowKey: number | string, column: string, oldValue: unknown, newValue: unknown,
     expectedDigest: string | null = null,
   ): void {
+    if (history.writeUncertain) {
+      // Restore only the visible value before this blocked UI edit, never a guessed authority value.
+      table.rollbackCellEdit(rowKey, column, oldValue);
+      return;
+    }
     const key = JSON.stringify([typeof rowKey, rowKey, column]);
     const existing = deferred.get(key);
     if (existing) { existing.newValue = newValue; return; }
@@ -257,12 +277,12 @@ export function useMutationService() {
         const r = await send("table.updateCellRequested", {
           table: tableId, rowKey, column, oldValue, newValue: value,
           expectedDigest: digest, schemaRevision,
-        }, isCurrent, true, (error) => {
+        }, isCurrent, true, (error, notSent) => {
           if (state.latest !== sequence) return;
           // A conflict row may contain stale values for other pending columns.
           const currentRow = error.currentRow && Object.hasOwn(error.currentRow, column)
             ? { [column]: error.currentRow[column] } : undefined;
-          const storedValue = state.committed.length > 0
+          const storedValue = notSent ? oldValue : state.committed.length > 0
             ? state.committed.at(-1)!.result.storedValue : state.baseValue;
           table.rollbackCellEdit(rowKey, column, storedValue, currentRow);
         }) as UpdateCellResult;
@@ -270,15 +290,20 @@ export function useMutationService() {
         const committed = { result: r, oldValue };
         state.committed.push(committed);
         state.committed.sort((a, b) => a.result.revision.dataRevision - b.result.revision.dataRevision);
-        let before = state.baseValue;
-        for (const entry of state.committed) {
-          entry.oldValue = before;
-          before = entry.result.storedValue;
-        }
-        applyResult(r, () => cellHistory(r, () => committed.oldValue, tableId, isCurrent), state.historyIsCurrent);
+        applyResult(r);
       } finally {
         state.pending -= 1;
-        if (state.pending === 0 && cellStates.get(key) === state) cellStates.delete(key);
+        if (state.pending === 0 && cellStates.get(key) === state) {
+          cellStates.delete(key);
+          if (isCurrent() && state.historyIsCurrent()) {
+            let before = state.baseValue;
+            for (const entry of state.committed) {
+              entry.oldValue = before;
+              before = entry.result.storedValue;
+              cellHistory(entry.result, () => entry.oldValue, tableId, isCurrent);
+            }
+          }
+        }
       }
     };
     if (table.revision?.schemaRevision) {
@@ -293,14 +318,14 @@ export function useMutationService() {
     }, (error: Error) => {
       deferred.delete(key);
       if (cellStates.get(key) === state) cellStates.delete(key);
-      if (!isCurrent()) return;
+      if (!isCurrent() || !state.historyIsCurrent()) return;
       table.rollbackCellEdit(rowKey, column, oldValue);
       report({ kind: "backend_unavailable", message: error.message, conflictingRowKeys: [rowKey] });
     }).catch(() => {});
   }
 
   function canInsertRow(): boolean {
-    return !!ws.currentTable
+    return !history.writeUncertain && !!ws.currentTable
       && !ws.collections.some((collection) => collection.collection === ws.currentTable
         && collection.metadata?.kind === "view")
       && !!table.revision?.schemaRevision
@@ -323,6 +348,7 @@ export function useMutationService() {
   }
 
   function deleteRows(rows: readonly DeleteRowReqItem[]): void {
+    if (history.writeUncertain) return;
     const tableId = ws.currentTable ?? "";
     const isCurrent = scope.capture();
     const snapshot = table.snapshotRows(rows.map((row) => row.rowKey));
@@ -349,7 +375,7 @@ export function useMutationService() {
             restoredKeys = insertedKeys;
           } catch (error) {
             // Partial multi-row undo has committed writes and is never safe to replay wholesale.
-            if (insertedKeys.length > 0 && isCurrent()) history.clear();
+            if (insertedKeys.length > 0 && isCurrent() && !history.writeUncertain) history.clear();
             throw error;
           }
         },

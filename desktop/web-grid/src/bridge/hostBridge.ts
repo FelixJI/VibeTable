@@ -239,6 +239,18 @@ export class BridgeTimeoutError extends Error {
   }
 }
 
+/** The renderer transport rejected a request synchronously before sending it. */
+export class BridgeRequestNotSentError extends Error {
+  public override readonly name = "BridgeRequestNotSentError";
+  public constructor(
+    public readonly messageType: string,
+    public readonly requestId: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 /** Local settlement of a read owned by a draining workspace. */
 export class BridgeRequestRetiredError extends DOMException {
   public constructor() { super("Workspace request retired.", "AbortError"); }
@@ -1052,7 +1064,12 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       && new TextEncoder().encode(JSON.stringify(env)).length > CLIPBOARD_MESSAGE_MAX_BYTES) {
       throw new ClipboardOperationError("tooLarge");
     }
-    webview().postMessage(env);
+    try {
+      webview().postMessage(env);
+    } catch (error) {
+      if (env.requestId) throw new BridgeRequestNotSentError(env.type, env.requestId, error);
+      throw error;
+    }
   }
 
   function operationId(): string {

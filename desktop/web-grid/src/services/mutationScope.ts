@@ -1,6 +1,7 @@
 import { watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
 
 /** Local ownership also covers table switches, which do not retire bridge RPCs. */
@@ -8,6 +9,10 @@ export function useMutationScope(onRetire: () => void) {
   const ws = useWorkspaceStore();
   const session = useWorkspaceSessionStore();
   const table = useTableStore();
+  const history = useHistoryStore();
+  const stopRefresh = watch(() => table.pageGeneration, () => {
+    if (table.pages[0]?.revision?.databaseSessionId) history.confirmWriteRefresh();
+  }, { flush: "sync" });
   let generation = 0;
   let disposed = false;
   let databaseSessionId = table.revision?.databaseSessionId ?? "";
@@ -36,6 +41,7 @@ export function useMutationScope(onRetire: () => void) {
       disposed = true;
       stopContext();
       stopSession();
+      stopRefresh();
       retire();
     },
   };
