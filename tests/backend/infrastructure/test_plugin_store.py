@@ -13,10 +13,8 @@ from backend.contracts.plugin import (
     PluginPrivateSetting,
     PluginSnapshot,
 )
-from backend.infrastructure.plugin_store import (
-    InMemoryPluginStore,
-    PluginStoreConflictError,
-)
+from backend.infrastructure.plugin_store import PluginStoreConflictError
+from tests.backend.plugin_store_fixture import InMemoryPluginStore
 
 
 def _manifest(*, version: str = "1.0.0") -> PluginManifest:
