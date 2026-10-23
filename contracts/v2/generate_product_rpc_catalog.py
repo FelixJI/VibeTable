@@ -556,7 +556,15 @@ def _typed(annotation: object, name: str | None = None) -> ResultSpec:
 def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     table = json.loads((fixtures / "table-definition.json").read_text(encoding="utf-8"))
     mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
-    restore_result = _model_payload(RestoreResult)
+    restore_payload, restore_schema = _result_payload(_typed(RestoreResult))
+    restore_result = typing.cast(dict[str, object], restore_payload)
+    promote_result = {
+        "promoted": "version-1",
+        "restoredToRevision": restore_result["restoredToRevision"],
+        "result": restore_result,
+    }
+    promote_schema = _schema_from_example(promote_result)
+    typing.cast(dict[str, object], promote_schema["properties"])["result"] = restore_schema
     formula_draft = {
         "canonicalSource": 'relationSum(f_lines, "f_amount")',
         "resultType": "number",
@@ -590,7 +598,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     receipt_schema = {"$ref": "#/$defs/MutationReceipt"}
     delete_trace = {
         "deleted": "00000000-0000-4000-8000-000000000001",
-        "revision": "revision-1",
+        "status": "applied",
         "changeSetId": "change-set-1",
         "emittedEvents": ["data.changed"],
     }
@@ -970,11 +978,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "version.list": _typed(VersionsResult),
         "version.promote": _manual(
             "PromoteVersionResult",
-            {
-                "promoted": "version-1",
-                "restoredToRevision": "revision-1",
-                "result": restore_result,
-            },
+            promote_result,
+            promote_schema,
         ),
         "version.save": _manual(
             "SaveVersionResult",
@@ -983,7 +988,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "changeSetId": "change-set-1",
                 "revisionId": "revision-1",
                 "metadataRevision": "metadata-1",
-                "revision": "revision-1",
+                "status": "applied",
                 "emittedEvents": ["data.changed"],
             },
         ),

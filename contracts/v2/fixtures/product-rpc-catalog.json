@@ -16793,7 +16793,7 @@
           "changeSetId",
           "deleted",
           "emittedEvents",
-          "revision"
+          "status"
         ],
         "properties": {
           "changeSetId": {
@@ -16808,7 +16808,7 @@
               "type": "string"
             }
           },
-          "revision": {
+          "status": {
             "type": "string"
           }
         }
@@ -16828,7 +16828,7 @@
         "id": "rpc-071",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
-          "revision": "revision-1",
+          "status": "applied",
           "changeSetId": "change-set-1",
           "emittedEvents": [
             "data.changed"
@@ -26986,7 +26986,7 @@
           "changeSetId",
           "deleted",
           "emittedEvents",
-          "revision"
+          "status"
         ],
         "properties": {
           "changeSetId": {
@@ -27001,7 +27001,7 @@
               "type": "string"
             }
           },
-          "revision": {
+          "status": {
             "type": "string"
           }
         }
@@ -27023,7 +27023,7 @@
         "id": "rpc-115",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
-          "revision": "revision-1",
+          "status": "applied",
           "changeSetId": "change-set-1",
           "emittedEvents": [
             "data.changed"
@@ -27184,33 +27184,46 @@
             "type": "string"
           },
           "result": {
-            "type": "object",
             "additionalProperties": false,
-            "required": [
-              "collection",
-              "item",
-              "itemId",
-              "newRevisionId",
-              "restoredToRevision"
-            ],
             "properties": {
               "collection": {
+                "maxLength": 128,
+                "minLength": 1,
                 "type": "string"
               },
-              "item": {
-                "type": "object",
-                "additionalProperties": true
-              },
               "itemId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "restoredToRevision": {
+                "maxLength": 128,
+                "minLength": 1,
                 "type": "string"
               },
               "newRevisionId": {
-                "type": "null"
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
-              "restoredToRevision": {
-                "type": "string"
+              "item": {
+                "additionalProperties": true,
+                "type": "object"
               }
-            }
+            },
+            "required": [
+              "collection",
+              "itemId",
+              "restoredToRevision"
+            ],
+            "type": "object"
           }
         }
       },
@@ -27232,7 +27245,7 @@
         "id": "rpc-117",
         "result": {
           "promoted": "version-1",
-          "restoredToRevision": "revision-1",
+          "restoredToRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "result": {
             "collection": "orders",
             "itemId": "00000000-0000-4000-8000-000000000001",
@@ -27267,9 +27280,9 @@
           "changeSetId",
           "emittedEvents",
           "metadataRevision",
-          "revision",
           "revisionId",
-          "saved"
+          "saved",
+          "status"
         ],
         "properties": {
           "changeSetId": {
@@ -27284,13 +27297,13 @@
           "metadataRevision": {
             "type": "string"
           },
-          "revision": {
-            "type": "string"
-          },
           "revisionId": {
             "type": "string"
           },
           "saved": {
+            "type": "string"
+          },
+          "status": {
             "type": "string"
           }
         }
@@ -27316,7 +27329,7 @@
           "changeSetId": "change-set-1",
           "revisionId": "revision-1",
           "metadataRevision": "metadata-1",
-          "revision": "revision-1",
+          "status": "applied",
           "emittedEvents": [
             "data.changed"
           ]
