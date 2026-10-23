@@ -47,6 +47,12 @@ public sealed class TableEditConflictException : Exception
     }
 }
 
+// Only gateway checks completed before Apply may use this definite rejection.
+internal sealed class TableMutationPreflightException(MutationErrorKind kind, string message) : InvalidOperationException(message)
+{
+    internal MutationErrorKind Kind { get; } = kind;
+}
+
 /// <summary>
 /// Maps <see cref="RpcRemoteException"/> (and transport exceptions) to typed
 /// <see cref="MutationError"/> values. Keeps the
@@ -92,6 +98,11 @@ public static class MutationErrorMapper
         {
             return new MutationError(
                 MutationErrorKind.BackendUnavailable, backendGone.Message);
+        }
+
+        if (exception is TableMutationPreflightException preflight)
+        {
+            return new MutationError(preflight.Kind, preflight.Message);
         }
 
         if (exception is TableEditConflictException conflict)

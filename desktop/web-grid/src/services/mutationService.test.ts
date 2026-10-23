@@ -79,6 +79,59 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it.each(["insert", "paste"] as const)("review7 %s uncertainty survives table/null switches and failed selection recovery", async kind => {
+    const s = setup(); const tables = useTableService(); tables.init(); cleanups.push(tables.dispose);
+    const paste = usePasteService(); cleanups.push(paste.dispose);
+    const apply = () => kind === "insert" ? s.service.insertRow({ name: "new" })
+      : paste.apply({ collection: "u", token: "t", idempotencyKey: "k" });
+    apply(); const sent = s.posted.at(-1)!;
+    if (kind === "insert") s.reply(sent, "table.editRejected", { kind: "unknown", message: "unconfirmed" });
+    else s.reply(sent, "table.pasteApplied", pasteResult({ outcome: "pending" }));
+    await flush(); expect(s.history.writeUncertain).toBe(true);
+    s.ws.selectTable("other"); expect(s.history.writeUncertain).toBe(false);
+    s.ws.clear(); s.ws.selectTable("u"); expect(s.history.writeUncertain).toBe(true);
+    const count = s.posted.length; apply(); expect(s.posted).toHaveLength(count);
+    tables.selectTable("u");
+    s.emit("operation.failed", { operation: "table.selected", code: "WRITE_TERMINAL_UNCONFIRMED", message: "请重新打开工作区核实" });
+    await flush(); expect(s.history.writeUncertain).toBe(true);
+    const page = { table: "u", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: revision(4) };
+    s.emit("table.datasetReady", page); await flush();
+    const query = s.posted.at(-1)!; expect(query.type).toBe("table.queryRequested");
+    s.reply(query, "table.pageLoaded", page); await flush(); expect(s.history.writeUncertain).toBe(false);
+  });
+
+  it.each(["insert", "paste"] as const)("review7 retiring a sent %s synchronously fences its original table", async kind => {
+    const s = setup(); const paste = usePasteService(); cleanups.push(paste.dispose);
+    const apply = () => kind === "insert" ? s.service.insertRow({ name: "new" })
+      : paste.apply({ collection: "u", token: "t", idempotencyKey: "k" });
+    apply(); const count = s.posted.length;
+    s.ws.selectTable("other"); s.ws.selectTable("u");
+    expect(s.history.writeUncertain).toBe(true);
+    apply(); expect(s.posted).toHaveLength(count); await flush();
+  });
+
+  it("review7 a rejected chain cannot replace a separately captured external CAS baseline", async () => {
+    const s = setup(); const externalDigest = `sha256:${"b".repeat(64)}`;
+    s.service.updateCell(1, "name", "old", "invalid", digest); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "external", "corrected", externalDigest);
+    s.reply(first, "table.editRejected", { kind: "mutation_validation", message: "invalid value" }); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ oldValue: "external", expectedDigest: externalDigest });
+  });
+
+  it("review7 a corrected queued edit uses the real unchanged baseline after validation rejection", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "invalid", digest); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "invalid", "corrected", digest);
+    s.reply(first, "table.editRejected", { kind: "mutation_validation", message: "invalid value" }); await flush();
+    const second = s.posted.at(-1)!;
+    // Mirror the real Gateway old-value preflight and Go digest guard, rather than accepting any mocked write.
+    expect(second.payload.oldValue).toBe("old"); expect(second.payload.expectedDigest).toBe(digest);
+    s.reply(second, "table.editCommitted", edit("corrected")); await flush();
+    expect(s.history.undoStackSize).toBe(1); const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)!.payload.newValue).toBe("old");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+  });
+
   it("review4 queued edits use only their local receipt chain to advance real CAS guards", async () => {
     const s = setup(); let value: unknown = "old"; let authorityDigest = digest; let commit = 1;
     const requests: Envelope[] = [];

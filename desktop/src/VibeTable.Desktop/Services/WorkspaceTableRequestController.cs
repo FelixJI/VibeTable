@@ -289,8 +289,12 @@ public sealed class WorkspaceTableRequestController
         using var linkedCancellation = epochLease is null ? null
             : CancellationTokenSource.CreateLinkedTokenSource(windowToken, epochLease.CancellationToken);
         CancellationToken sessionToken = linkedCancellation?.Token ?? windowToken;
+        bool waitingForWrites = true;
         try
         {
+            if (MutationReads is not null)
+                await MutationReads.WaitAsync(request, sessionToken).ConfigureAwait(false);
+            waitingForWrites = false;
             await _workspace.SelectTableWithSchemaAsync(table, sessionToken)
                 .ConfigureAwait(false);
         }
@@ -298,6 +302,16 @@ public sealed class WorkspaceTableRequestController
             || epochLease?.CancellationToken.IsCancellationRequested == true)
         {
             return;
+        }
+        catch (OperationCanceledException) when (waitingForWrites)
+        {
+            // A newer table selection retires this waiting read, not the sent write.
+            return;
+        }
+        catch (TableMutationUnconfirmedException exception)
+        {
+            _reply.PostOperationFailed(request.RequestId, exception.Message,
+                "WRITE_TERMINAL_UNCONFIRMED", request.Type);
         }
         catch (TableSelectionRecoveryExhaustedException)
         {

@@ -242,14 +242,14 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             schemaRevision,
             StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The table schema changed.");
+            throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
         }
         string recordId = values.TryGetValue("id", out object? requestedId)
             ? RowId(requestedId!)
             : Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..15];
         if (!IsPocketBaseRecordId(recordId))
         {
-            throw new InvalidOperationException("The requested record id is invalid.");
+            throw new TableMutationPreflightException(MutationErrorKind.Validation, "The requested record id is invalid.");
         }
         var writable = schema.GetProperty("fields")
             .EnumerateArray()
@@ -265,7 +265,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             }
             if (!writable.Contains(name))
             {
-                throw new InvalidOperationException(
+                throw new TableMutationPreflightException(MutationErrorKind.Validation,
                     $"Insert contains unknown or read-only field '{name}'.");
             }
             sanitizedValues[name] = value;

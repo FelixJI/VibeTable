@@ -17,19 +17,18 @@ export function useMutationScope(onRetire: () => void) {
     generation += 1;
     onRetire();
   };
-  const retireContext = (): void => {
-    history.retireWriteScope();
-    retire();
-  };
   const stopContext = watch(
     () => [ws.currentTable, ws.phase === "opening", session.activeWorkspaceId,
       session.sessionEpoch, session.isTransitioning],
-    retireContext,
+    retire,
     { flush: "sync" },
   );
   const stopSession = watch(() => table.revision?.databaseSessionId, (next) => {
     if (!next) return; // A refresh can temporarily withhold the revision.
-    if (databaseSessionId && next !== databaseSessionId) retireContext();
+    if (databaseSessionId && next !== databaseSessionId) {
+      history.retireWriteScope();
+      retire();
+    }
     databaseSessionId = next;
   }, { flush: "sync" });
   return {

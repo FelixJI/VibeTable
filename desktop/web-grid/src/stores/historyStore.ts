@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useWorkspaceStore } from "./workspaceStore";
+import { useWorkspaceSessionStore } from "./workspaceSessionStore";
 
 export type HistoryEntryKind =
   | "updateCell"
@@ -31,7 +33,12 @@ export const useHistoryStore = defineStore("history", () => {
   const redoStack = ref<HistoryEntry[]>([]);
   const lastError = ref<string | null>(null);
   const busy = ref(false);
-  const writeUncertain = ref(false);
+  const workspace = useWorkspaceStore();
+  const session = useWorkspaceSessionStore();
+  const uncertainTables = ref(new Map<string, number>());
+  const tableKey = () => workspace.currentTable ?? "";
+  const writeUncertain = computed(() => uncertainTables.value.has(tableKey()));
+  let authorityGeneration = 0;
   let generation = 0;
   let actionGeneration = 0;
   let uncertaintyGeneration = 0;
@@ -42,26 +49,40 @@ export const useHistoryStore = defineStore("history", () => {
     && (redoStack.value.at(-1)?.canReplay?.() ?? true));
   const undoStackSize = computed(() => undoStack.value.length);
 
-  function markWriteUncertain(): void {
-    clear();
-    uncertaintyGeneration += 1;
-    writeUncertain.value = true;
+  function captureWriteUncertainty(): () => void {
+    const table = tableKey();
+    const authority = authorityGeneration;
+    return () => {
+      if (authority !== authorityGeneration) return;
+      if (table === tableKey()) clear();
+      uncertaintyGeneration += 1;
+      uncertainTables.value.set(table, uncertaintyGeneration);
+    };
   }
 
-  // Only a query started after the unresolved write can acknowledge recovery.
+  function markWriteUncertain(): void {
+    captureWriteUncertainty()();
+  }
+
+  // Only a query started after this table's unresolved write can acknowledge recovery.
   function captureWriteRefresh(): () => void {
-    const captured = uncertaintyGeneration;
-    const wasUncertain = writeUncertain.value;
+    const table = tableKey();
+    const captured = uncertainTables.value.get(table);
+    const authority = authorityGeneration;
     return () => {
-      if (wasUncertain && captured === uncertaintyGeneration) writeUncertain.value = false;
+      if (captured !== undefined && authority === authorityGeneration && table === tableKey()
+        && captured === uncertainTables.value.get(table)) uncertainTables.value.delete(table);
     };
   }
 
   function retireWriteScope(): void {
     clear();
-    uncertaintyGeneration += 1;
-    writeUncertain.value = false;
+    authorityGeneration += 1;
+    uncertainTables.value.clear();
   }
+
+  // A table/null/transition UI change does not end the PocketBase authority.
+  watch(() => [session.activeWorkspaceId, session.sessionEpoch], retireWriteScope, { flush: "sync" });
 
   function captureGeneration(): () => boolean {
     const captured = generation;
@@ -152,6 +173,7 @@ export const useHistoryStore = defineStore("history", () => {
     undoStackSize,
     writeUncertain,
     markWriteUncertain,
+    captureWriteUncertainty,
     captureWriteRefresh,
     retireWriteScope,
     captureGeneration,

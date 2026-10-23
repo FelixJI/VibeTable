@@ -13,6 +13,34 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    [DataRow("schema")]
+    [DataRow("unknown-field")]
+    [DataRow("read-only")]
+    [DataRow("id")]
+    public async Task Review7InsertPreflightRejectsWithoutPoisoningRecovery(string failure)
+    {
+        JsonObject number = V2Field("number00", "number00", "Contract number", "autoNumber");
+        number["autoNumber"] = new JsonObject { ["prefix"] = "HT-", ["start"] = 1, ["width"] = 6 };
+        number["display"]!["kind"] = "readonly";
+        string schema = failure == "read-only" ? SchemaWithFields("orders", number) : Schema("orders");
+        var transport = new ProductTransport(); transport.Respond("schema.getTable", schema);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var service = new TableWorkspaceService(gateway); var sink = new FakeWebReplySink();
+        var notifications = new List<TableNotification>(); service.Notification += notifications.Add;
+        using var barrier = new TableMutationReadBarrier();
+        var controller = new WorkspaceTableRequestController(service, new FakeDatabasePicker(null), sink, () => null) { MutationReads = barrier };
+        var values = new Dictionary<string, object?> { [failure == "unknown-field" ? "missing" : failure == "read-only" ? "f_number00" : "title"] = "After" };
+        if (failure == "id") values["id"] = "!";
+        await controller.DispatchAsync(new RoutedWebRequest("table.insertRowRequested", "preflight",
+            JsonSerializer.SerializeToElement(new { table = "orders", values, schemaRevision = failure == "schema" ? "schema_0000" : "schema_0001" }), ""));
+        Assert.IsFalse(transport.Methods.Contains("mutation.apply"));
+        Assert.AreNotEqual(MutationErrorKind.Unknown, notifications.Single().MutationResult!.Error!.Value.Kind);
+        await barrier.WaitAsync(new RoutedWebRequest("table.queryRequested", "read-after-rejection",
+            JsonSerializer.SerializeToElement(new { table = "orders" }), ""), CancellationToken.None);
+    }
+
+    [TestMethod]
     [DataRow("update", "apply")]
     [DataRow("update", "readback")]
     [DataRow("insert", "apply")]

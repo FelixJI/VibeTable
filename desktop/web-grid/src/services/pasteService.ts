@@ -12,7 +12,10 @@ export function usePasteService() {
   let onApplied: ((result: ApplyPasteResult) => void) | undefined;
   let previewSequence = 0;
   let applying = false;
+  let retireApplying: (() => void) | undefined;
   const scope = useMutationScope(() => {
+    retireApplying?.();
+    retireApplying = undefined;
     previewSequence += 1;
     applying = false;
     store.reset();
@@ -45,17 +48,20 @@ export function usePasteService() {
     applying = true;
     previewSequence += 1;
     const historyIsCurrent = history.captureGeneration();
+    const markUncertain = history.captureWriteUncertainty();
     store.beginApply();
     const request = bridge.requestWithHandle("table.applyPasteRequested", {
       collection: payload.collection, token: payload.token, idempotencyKey: payload.idempotencyKey,
     });
+    if (request.sent) retireApplying = markUncertain;
     if (request.sent && isCurrent() && historyIsCurrent()) history.beginAction();
     void request.promise.then((result) => {
       if (!isCurrent()) return;
       applying = false;
+      retireApplying = undefined;
       const applied = result as ApplyPasteResult;
       if (applied.outcome === "pending") {
-        history.markWriteUncertain();
+        markUncertain();
         store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
         return;
       }
@@ -64,6 +70,7 @@ export function usePasteService() {
     }, (error: Error) => {
       if (!isCurrent()) return;
       applying = false;
+      retireApplying = undefined;
       if (error instanceof BridgeRequestNotSentError && historyIsCurrent()) {
         store.setError(error.message);
         return;
@@ -72,7 +79,7 @@ export function usePasteService() {
         store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
         return;
       }
-      history.markWriteUncertain();
+      markUncertain();
       store.setError(`${error.message} 粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。`);
     });
   }

@@ -27,7 +27,7 @@ export function useMutationService() {
   type CellState = {
     latest: number; pending: number; value: unknown;
     valueIsCurrent: () => boolean; tail: Promise<void> | null;
-    receipt?: UpdateCellResult; guards: Set<string>;
+    receipt?: UpdateCellResult; guards: Set<string>; rejectedDigest?: string | null;
   };
   const cellStates = shallowReactive(new Map<string, CellState>());
   let cellSequence = 0;
@@ -121,15 +121,21 @@ export function useMutationService() {
     if (history.writeUncertain) throw new Error(UNKNOWN_MESSAGE);
     const requestHistoryIsCurrent = history.captureGeneration();
     const expectedSession = table.revision?.databaseSessionId;
+    const markUncertain = history.captureWriteUncertainty();
+    let sent = false;
     let result: unknown;
     try {
       let cancel!: () => void;
       const retired = new Promise<never>((_, reject) => {
-        cancel = () => reject(new Error("The mutation context retired after sending."));
+        cancel = () => {
+          if (sent) markUncertain();
+          reject(new Error("The mutation context retired after sending."));
+        };
         waiting.add(cancel);
       });
       try {
         const request = bridge.requestWithHandle(type, payload);
+        sent = request.sent;
         // Invalidate redo only after postMessage accepted the envelope, never on a late receipt.
         if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) history.beginAction();
         result = await Promise.race([request.promise, retired]);
@@ -144,7 +150,7 @@ export function useMutationService() {
           report(rejection);
           throw error;
         }
-        history.markWriteUncertain();
+        markUncertain();
         report({ kind: "unknown", message: error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE });
       }
       throw new Error(error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE);
@@ -154,7 +160,7 @@ export function useMutationService() {
       const rejection = result as MutationErrorPayload;
       if (!requestHistoryIsCurrent()) throw new Error(UNKNOWN_MESSAGE);
       if (rejection.kind === "unknown") {
-        history.markWriteUncertain();
+        markUncertain();
         report({ ...rejection, message: UNKNOWN_MESSAGE });
       } else {
         onRejected?.(rejection);
@@ -164,7 +170,7 @@ export function useMutationService() {
     }
     const committed = result as MutationResult;
     if (expectedSession && committed.revision.databaseSessionId !== expectedSession) {
-      history.markWriteUncertain();
+      markUncertain();
       report({ kind: "unknown", message: UNKNOWN_MESSAGE });
       throw new Error(UNKNOWN_MESSAGE);
     }
@@ -234,7 +240,8 @@ export function useMutationService() {
     // captured external guard must retain its own old value and concurrency check.
     return receipt && digest && expectedDigest && state.guards.has(expectedDigest)
       ? { oldValue: receipt.storedValue, expectedDigest: digest }
-      : { oldValue, expectedDigest };
+      : { oldValue: !receipt && state.rejectedDigest !== undefined && state.rejectedDigest === expectedDigest
+        ? state.value : oldValue, expectedDigest };
   }
 
   function rememberCellReceipt(state: CellState, result: UpdateCellResult, capturedDigest: string | null): void {
@@ -242,6 +249,7 @@ export function useMutationService() {
     if (capturedDigest) state.guards.add(capturedDigest);
     const digest = receiptDigest(result);
     if (digest) state.guards.add(digest);
+    delete state.rejectedDigest;
     state.value = result.storedValue;
     state.receipt = result;
   }
@@ -343,6 +351,7 @@ export function useMutationService() {
         if (!state.valueIsCurrent()) {
           state.value = oldValue;
           state.receipt = undefined;
+          delete state.rejectedDigest;
           state.guards.clear();
         }
         state.valueIsCurrent = historyIsCurrent;
@@ -351,7 +360,8 @@ export function useMutationService() {
         submitted = true;
         const r = await send("table.updateCellRequested", {
           table: tableId, rowKey, column, ...baseline, newValue: item.newValue, schemaRevision,
-        }, isCurrent, true, (error) => {
+        }, isCurrent, true, (error, notSent) => {
+          if (notSent || error.kind === "mutation_validation") state.rejectedDigest = digest;
           // Only this column belongs to this command; other columns may be in flight.
           if (error.currentRow && Object.hasOwn(error.currentRow, column)) state.value = error.currentRow[column];
           if (state.latest === sequence) table.rollbackCellEdit(rowKey, column, state.value);

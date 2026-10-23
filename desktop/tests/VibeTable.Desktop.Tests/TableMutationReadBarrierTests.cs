@@ -9,6 +9,55 @@ namespace VibeTable.Desktop.Tests;
 public sealed class TableMutationReadBarrierTests
 {
     [TestMethod]
+    public async Task Review7ReturningSelectionWaitsForTheOriginalWriteAndRetiresOldWaitingReads()
+    {
+        var pending = new TaskCompletionSource<UpdateCellResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = new FakeTableRpcGateway { PendingUpdateCell = pending };
+        gateway.DatabaseOpenResults["fixture"] = new DatabaseOpenResult(["a", "b"], [], new Dictionary<string, string> { ["a"] = "A", ["b"] = "B" });
+        foreach (string table in new[] { "a", "b" })
+            gateway.SelectionProjectionResults[table] = new TableSelectionProjection(new TablePage(table, [], [], 0, 100, 0, "remote"),
+                new EditSchemaResult(table, "sr", "rowKey", true, false, []));
+        var workspace = new TableWorkspaceService(gateway); await workspace.OpenDatabaseAsync("fixture");
+        using var dispatcher = new WorkspaceRequestDispatcher(workspace, new FakeDatabasePicker(null), new FakeWebReplySink(), new GridStateCoordinator(gateway, _ => { }));
+        Task write = dispatcher.DispatchAsyncForTesting(Request("a") with { Type = "table.updateCellRequested", RequestId = "write",
+            Payload = JsonSerializer.SerializeToElement(new { table = "a", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr" }) });
+        Task oldRead = dispatcher.DispatchAsyncForTesting(Request("a") with { Type = "table.selected" });
+        await dispatcher.DispatchAsyncForTesting(Request("b") with { Type = "table.selected" });
+        await oldRead.WaitAsync(TimeSpan.FromSeconds(2));
+        Task returnedRead = dispatcher.DispatchAsyncForTesting(Request("a") with { Type = "table.selected" });
+        try
+        {
+            Assert.IsFalse(returnedRead.IsCompleted);
+            CollectionAssert.AreEqual(new[] { "b" }, gateway.QueryWindowCalls);
+        }
+        finally
+        {
+            pending.TrySetResult(new UpdateCellResult("r", "name", "after", new Dictionary<string, object?> { ["name"] = "after" }, new MutationRevision("fake", "sr", 2)));
+            await write; await returnedRead.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        CollectionAssert.AreEqual(new[] { "b", "a" }, gateway.QueryWindowCalls);
+    }
+
+    [TestMethod]
+    public async Task Review7TableSelectionCannotBypassAnUnconfirmedWrite()
+    {
+        var gateway = new FakeTableRpcGateway { NextUpdateCellException = new BackendUnavailableException("unknown apply") };
+        var sink = new FakeWebReplySink();
+        gateway.DatabaseOpenResults["fixture"] = new DatabaseOpenResult(["a"], [], new Dictionary<string, string> { ["a"] = "A" });
+        gateway.SelectionProjectionResults["a"] = new TableSelectionProjection(new TablePage("a", [], [], 0, 100, 0, "remote"),
+            new EditSchemaResult("a", "sr", "rowKey", true, false, []));
+        var workspace = new TableWorkspaceService(gateway); await workspace.OpenDatabaseAsync("fixture");
+        using var dispatcher = new WorkspaceRequestDispatcher(workspace, new FakeDatabasePicker(null), sink, new GridStateCoordinator(gateway, _ => { }));
+        await dispatcher.DispatchAsyncForTesting(Request("a") with { Type = "table.updateCellRequested", RequestId = "write",
+            Payload = JsonSerializer.SerializeToElement(new { table = "a", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr" }) });
+        await dispatcher.DispatchAsyncForTesting(Request("a") with { Type = "table.selected", RequestId = "return-to-table" });
+        var reply = sink.Replies.Single(item => item.RequestId == "return-to-table");
+        Assert.AreEqual("operation.failed", reply.Type);
+        StringAssert.Contains(JsonSerializer.Serialize(reply.Payload), "WRITE_TERMINAL_UNCONFIRMED");
+        Assert.HasCount(0, gateway.RawViewQueries);
+    }
+
+    [TestMethod]
     public async Task ReadCancellationAndTableRetirementDoNotCancelOrForgetTheSentWrite()
     {
         using var barrier = new TableMutationReadBarrier();

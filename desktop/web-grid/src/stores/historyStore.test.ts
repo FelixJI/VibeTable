@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { useWorkspaceStore } from "./workspaceStore";
+import { useWorkspaceSessionStore } from "./workspaceSessionStore";
 import { useHistoryStore } from "./historyStore";
 
 describe("historyStore", () => {
@@ -107,4 +109,14 @@ it("clearing history preserves uncertainty and only its own recovery query can c
   store.captureWriteRefresh()(); expect(store.writeUncertain).toBe(false);
   store.markWriteUncertain(); const retired = store.captureWriteRefresh(); store.retireWriteScope();
   store.markWriteUncertain(); retired(); expect(store.writeUncertain).toBe(true);
+});
+
+it("review7 authority retirement invalidates old uncertainty and recovery capabilities", () => {
+  setActivePinia(createPinia()); const store = useHistoryStore(); const ws = useWorkspaceStore();
+  ws.selectTable("a"); store.markWriteUncertain(); const oldMark = store.captureWriteUncertainty();
+  const oldRead = store.captureWriteRefresh(); ws.selectTable("b"); store.markWriteUncertain();
+  oldRead(); expect(store.writeUncertain).toBe(true);
+  useWorkspaceSessionStore().sessionEpoch += 1; expect(store.writeUncertain).toBe(false);
+  oldMark(); ws.selectTable("a"); expect(store.writeUncertain).toBe(false);
+  store.markWriteUncertain(); oldRead(); expect(store.writeUncertain).toBe(true);
 });

@@ -341,6 +341,7 @@ export function useTableService(): {
     // path that resets the table context — including any future caller.
     history.clear();
     tableStore.beginLoad();
+    writeRecoveryLoad = history.writeUncertain ? tableStore.loadGeneration : null;
     bridge.notify("table.selected", { table: name });
     startLoadWatchdogCycle(name);
   }

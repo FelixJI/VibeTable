@@ -1888,6 +1888,32 @@ describe("WorkspaceView", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it("review7 retains unknown recovery guidance through a failed reload and table return", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge(); setHostBridgeForTesting(bridge);
+    const ws = useWorkspaceStore(); ws.setOpened([{ collection: "orders" }, { collection: "other" }], { orders: "Orders", other: "Other" }); ws.selectTable("orders");
+    const table = useTableStore(); table.setEditSchema([], { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 });
+    const wrapper = mountView(); await flushPromises();
+    wrapper.findComponent(GridHost).props("onCellEdited")!("row-1", "name", "old", "new", null);
+    const update = posted.filter(item => item.type === "table.updateCellRequested").at(-1)!;
+    emit({ type: "table.editRejected", requestId: update.requestId, payload: { kind: "unknown", message: "readback unconfirmed" } }); await flushPromises();
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    await wrapper.get('[data-testid="edit-rejection-reload"]').trigger("click");
+    expect(wrapper.find('[data-testid="edit-rejection-notice"]').exists()).toBe(true);
+    emit({ type: "table.datasetReady", payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 2 } } }); await flushPromises();
+    const query = posted.filter(item => item.type === "table.queryRequested").at(-1)!;
+    emit({ type: "operation.failed", requestId: query.requestId, payload: { code: "BACKEND_UNAVAILABLE", message: "read failed", operation: "query" } }); await flushPromises();
+    expect(useHistoryStore().writeUncertain).toBe(true);
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    ws.selectTable("other"); await flushPromises(); ws.selectTable("orders"); await flushPromises();
+    expect(wrapper.get('[data-testid="edit-rejection-notice"]').text()).toContain("核实");
+    await wrapper.get('[data-testid="edit-rejection-reload"]').trigger("click");
+    emit({ type: "table.datasetReady", payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 3 } } }); await flushPromises();
+    const confirmed = posted.filter(item => item.type === "table.queryRequested").at(-1)!;
+    emit({ type: "table.pageLoaded", requestId: confirmed.requestId, payload: { table: "orders", columns: [], rows: [], offset: 0, limit: 1, totalRows: 0, mode: "remote", revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 3 } } }); await flushPromises();
+    expect(useHistoryStore().writeUncertain).toBe(false);
+    expect(wrapper.find('[data-testid="edit-rejection-notice"]').exists()).toBe(false);
+  });
+
   it("shows a localized non-blocking recovery path for stale edits", async () => {
     const { bridge, emit, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
