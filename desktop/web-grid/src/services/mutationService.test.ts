@@ -1345,3 +1345,108 @@ describe("paste request ownership", () => {
     expect(s.posted).toHaveLength(3);
   });
 });
+
+describe("mutationService and pasteService dispose ownership", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    cleanups.splice(0).forEach((cleanup) => cleanup());
+    vi.useRealTimers(); setHostBridgeForTesting(null);
+  });
+
+  it("retires an in-flight write as unknown on dispose and ignores its late receipt", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "new");
+    const request = s.posted.at(-1)!;
+    expect(request.type).toBe("table.updateCellRequested");
+    s.service.dispose();
+    await flush();
+
+    // #506 retirement semantics: a sent write stays unknown; local dispose
+    // never claims a remote rollback.
+    expect(s.history.writeUncertain).toBe(true);
+    expect(s.table.allRows.find((row) => row.rowKey === 1)?.name).toBe("old");
+
+    s.reply(request, "table.editCommitted", edit("new"));
+    await flush();
+
+    expect(s.table.allRows.find((row) => row.rowKey === 1)?.name).toBe("old");
+    expect(s.history.undoStackSize).toBe(0);
+    expect(s.rejected).not.toHaveBeenCalled();
+    expect(s.inserted).not.toHaveBeenCalled();
+  });
+
+  it("is permanently dead after dispose: no revival, no public operations, no callbacks", async () => {
+    const s = setup(); await seed(s);
+    const undoSize = s.history.undoStackSize;
+    s.service.dispose();
+    s.service.dispose(); // idempotent
+    const revivedRejected = vi.fn();
+    const revivedInserted = vi.fn();
+    s.service.init(revivedRejected, revivedInserted); // must not revive handlers
+
+    const postedBefore = s.posted.length;
+    s.service.updateCell(1, "name", "old", "dead");
+    s.service.insertRow({});
+    s.service.deleteRows([{ rowKey: 2, expectedDigest: digest }]);
+    await s.service.performUndo();
+    await s.service.performRedo();
+    s.service.recordPasteResult(pasteResult());
+    await flush();
+
+    expect(s.posted).toHaveLength(postedBefore);
+    expect(s.history.undoStackSize).toBe(0);
+    expect(s.history.writeUncertain).toBe(false);
+    expect(s.table.allRows.find((row) => row.rowKey === 1)?.name).toBe("new");
+    expect(s.table.allRows.find((row) => row.rowKey === 2)).toBeDefined();
+    expect(revivedRejected).not.toHaveBeenCalled();
+    expect(revivedInserted).not.toHaveBeenCalled();
+    expect(undoSize).toBe(1);
+  });
+
+  it("keeps only the replacement mutation owner able to write after the old instance is disposed", async () => {
+    const s = setup();
+    s.service.dispose();
+    const replacement = useMutationService();
+    const replacementRejected = vi.fn();
+    const replacementInserted = vi.fn();
+    replacement.init(replacementRejected, replacementInserted);
+
+    s.service.updateCell(1, "name", "old", "dead");
+    replacement.updateCell(1, "name", "old", "live");
+    await flush();
+
+    const writes = s.posted.filter((item) => item.type === "table.updateCellRequested");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.payload).toMatchObject({ newValue: "live" });
+    s.reply(writes[0]!, "table.editCommitted", edit("live"));
+    await flush();
+
+    expect(s.table.allRows.find((row) => row.rowKey === 1)?.name).toBe("live");
+    expect(s.table.error).toBeNull();
+    expect(replacementRejected).not.toHaveBeenCalled();
+  });
+
+  it("paste init cannot revive a disposed paste service and dead callbacks stay inert", async () => {
+    const s = setup();
+    const paste = usePasteService();
+    const applied = vi.fn();
+    paste.init(applied);
+    paste.dispose();
+    paste.dispose(); // idempotent
+    const revivedApplied = vi.fn();
+    paste.init(revivedApplied); // must not restore handlers
+    const store = usePasteStore();
+
+    paste.preview({
+      collection: "u", schemaRevision: "sr", selection: { querySnapshot: { snapshotId: "q", digest: "q-digest", databaseId: "s", table: "u", schemaRevision: "sr", dataRevision: 1, normalizedQuery: {} }, dataRevision: 1, rowKeys: [] },
+      startCell: { column: "name" }, cells: [],
+    });
+    paste.apply({ collection: "u", token: "single-use", idempotencyKey: "logical-apply" });
+    await flush();
+
+    expect(s.posted.filter((item) => item.type.startsWith("table.") && item.type.includes("Paste"))).toEqual([]);
+    expect(store.phase).toBe("idle");
+    expect(applied).not.toHaveBeenCalled();
+    expect(revivedApplied).not.toHaveBeenCalled();
+  });
+});

@@ -46,19 +46,27 @@ function toCollectionsFromChanged(
 /** Subscribe to inbound host events for the workspace. Call once at app boot. */
 export function useWorkspaceService(): {
   init: () => void;
+  dispose: () => void;
   openDatabase: () => Promise<DatabaseOpenOutcome>;
 } {
   const bridge = useHostBridge();
   const store = useWorkspaceStore();
   const pluginStore = usePluginStore();
   const pluginService = usePluginService();
+  const unsubscribe: Array<() => void> = [];
+  let initialized = false;
+  let disposed = false;
   let activeOpen: {
     readonly openId: string;
     readonly settle: (outcome: DatabaseOpenOutcome) => void;
   } | null = null;
 
   function init(): void {
-    bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+    // bridge.on appends a Set entry per subscription, so a repeated init must
+    // not re-subscribe; a disposed instance never re-subscribes either.
+    if (initialized || disposed) return;
+    initialized = true;
+    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       const terminal = takeOpenTerminal(payload.openId);
       if (!terminal) return;
       store.setOpened(toCollections(payload), payload.displayNames);
@@ -71,24 +79,24 @@ export function useWorkspaceService(): {
       pluginStore.setHostContext(payload.currentUser, payload.hostVersion);
       if (pluginStore.projectContextReady) void pluginService.list().catch(() => undefined);
       terminal.settle?.("opened");
-    });
-    bridge.on("database.openCancelled", (payload) => {
+    }));
+    unsubscribe.push(bridge.on("database.openCancelled", (payload) => {
       const terminal = takeOpenTerminal(payload.openId);
       if (!terminal) return;
       store.cancelOpen();
       terminal.settle?.("not-opened");
-    });
-    bridge.on("operation.failed", (payload) => {
+    }));
+    unsubscribe.push(bridge.on("operation.failed", (payload) => {
       if (payload.operation !== "database.openRequested") return;
       const terminal = takeOpenTerminal(payload.operationId);
       if (!terminal) return;
       store.setFailed(payload.message);
       terminal.settle?.("not-opened");
-    });
-    bridge.on("plugin.projectContext.unavailable", () => {
+    }));
+    unsubscribe.push(bridge.on("plugin.projectContext.unavailable", () => {
       pluginService.openProjectContext("", "");
-    });
-    bridge.on("database.collectionsChanged", (payload) => {
+    }));
+    unsubscribe.push(bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(
         toCollectionsFromChanged(payload),
         payload.displayNames,
@@ -97,10 +105,25 @@ export function useWorkspaceService(): {
         pluginService.updateProjectRevision(payload.projectRevision.trim());
       }
       void pluginService.list().catch(() => undefined);
-    });
+    }));
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    for (const stop of unsubscribe.splice(0)) stop();
+    // Retire the helper this instance owns so its in-flight plugin catalog
+    // reads cannot write the shared plugin store after this owner is gone.
+    pluginService.dispose();
+    // Local retirement only finishes the local waiter: the host may still
+    // complete (or have completed) the open remotely, which we cannot prove
+    // or cancel from here.
+    activeOpen?.settle("not-opened");
+    activeOpen = null;
   }
 
   function openDatabase(): Promise<DatabaseOpenOutcome> {
+    if (disposed) return Promise.resolve("not-opened");
     activeOpen?.settle("not-opened");
     const openId = `database-open:${globalThis.crypto.randomUUID()}`;
     const outcome = new Promise<DatabaseOpenOutcome>((settle) => {
@@ -121,7 +144,7 @@ export function useWorkspaceService(): {
     return { settle: terminal.settle };
   }
 
-  return { init, openDatabase };
+  return { init, dispose, openDatabase };
 }
 
 export type DatabaseOpenOutcome = "opened" | "not-opened";

@@ -172,15 +172,25 @@ export function usePluginService(): PluginService {
   }
 
   async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
+    // dispose() retires this instance's in-flight catalog reads even while the
+    // shared project context is unchanged; without the lifecycle guard a
+    // retired owner's late success/failure could still write the shared
+    // plugin store that a newer owner now consumes.
+    const requestLifecycle = lifecycleRevision;
+    const isInstanceCurrent = () => lifecycleRevision === requestLifecycle;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const sequence = store.beginCatalogRead();
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
-      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence), isErrorCurrent },
+      {
+        errorPolicy: "background",
+        isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
+        isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
+      },
     );
-    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation
+    if (!isInstanceCurrent() || store.projectKey !== projectKey || store.projectContextGeneration !== generation
       || !store.isCurrentCatalogRead(sequence)) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
     return snapshots;

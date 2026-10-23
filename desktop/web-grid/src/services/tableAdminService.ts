@@ -54,6 +54,7 @@ function toCollectionsFromChanged(
  */
 export function useTableAdminService(): {
   init: (onTableCreated?: (tableId: string) => void | Promise<void>) => void;
+  dispose: () => void;
   createTable: () => Promise<void>;
   deleteTable: (name: string) => Promise<void>;
   openAdmin: () => void;
@@ -61,18 +62,37 @@ export function useTableAdminService(): {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
   const ui = useUiStore();
+  const unsubscribe: Array<() => void> = [];
   let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
   let operationSequence = 0;
+  let initialized = false;
+  let disposed = false;
 
   function init(
     onTableCreated?: (tableId: string) => void | Promise<void>,
   ): void {
+    // A repeated init only refreshes the callback; re-subscribing would
+    // duplicate the broadcast consumers (bridge.on appends Set entries).
+    if (disposed) return;
     createdCallback = onTableCreated;
-    bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+    if (initialized) return;
+    initialized = true;
+    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       const collections = toCollections(payload);
       store.setCollections(collections);
-    });
-    bridge.on("database.collectionsChanged", applyCollectionsChanged);
+    }));
+    unsubscribe.push(bridge.on("database.collectionsChanged", applyCollectionsChanged));
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // Bumping operationSequence retires continuations already awaiting a
+    // host reply, so a late response cannot settle the shared store, close
+    // the modal, or fire the retired createdCallback for a newer owner.
+    operationSequence += 1;
+    for (const stop of unsubscribe.splice(0)) stop();
+    createdCallback = undefined;
   }
 
   function applyCollectionsChanged(payload: CollectionsChangedPayload): void {
@@ -81,7 +101,7 @@ export function useTableAdminService(): {
   }
 
   async function createTable(): Promise<void> {
-    if (!store.canSubmit) return;
+    if (disposed || !store.canSubmit) return;
     store.beginSubmit();
     const sequence = ++operationSequence;
     const displayName = store.form.name.trim();
@@ -114,6 +134,7 @@ export function useTableAdminService(): {
   }
 
   async function deleteTable(name: string): Promise<void> {
+    if (disposed) return;
     store.requestDelete(name);
     const sequence = ++operationSequence;
     try {
@@ -137,6 +158,7 @@ export function useTableAdminService(): {
   }
 
   function openAdmin(): void {
+    if (disposed) return;
     bridge.notify("admin.openRequested", {
       floatingButtonEnabled: ui.adminFloatingButton,
       confirmClose: ui.adminConfirmClose,
@@ -144,5 +166,5 @@ export function useTableAdminService(): {
     });
   }
 
-  return { init, createTable, deleteTable, openAdmin };
+  return { init, dispose, createTable, deleteTable, openAdmin };
 }

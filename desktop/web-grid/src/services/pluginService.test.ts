@@ -1390,3 +1390,97 @@ describe("pluginService canonical wire", () => {
   });
 
 });
+
+describe("pluginService lifecycle retirement", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    usePluginStore().setProjectContext("local:default", "r1");
+  });
+  afterEach(() => setHostBridgeForTesting(null));
+
+  // Deferred correlated replies keep a catalog read in flight across dispose,
+  // which a same-epoch remount cannot otherwise exercise.
+  function deferredCatalogBridge(): {
+    posted: Array<{ type: string; requestId: string; payload?: unknown }>;
+    reply: (requestId: string, snapshots: PluginSnapshot[]) => void;
+    fail: (requestId: string) => void;
+  } {
+    const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `lifecycle-r${++sequence}`,
+      webview: {
+        postMessage: (message) => { posted.push(message as { type: string; requestId: string; payload?: unknown }); },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    return {
+      posted,
+      reply: (requestId, snapshots) =>
+        listener?.({ data: { type: "plugin.catalog.list", requestId, payload: snapshots } }),
+      fail: (requestId) => listener?.({
+        data: { type: "operation.failed", requestId, payload: { message: "host list failed", code: "X" } },
+      }),
+    };
+  }
+
+  const retiredSnapshot: PluginSnapshot = {
+    ...snapshot,
+    pluginId: "com.acme.retired",
+    revision: 2,
+  };
+
+  it("cannot replace the shared catalog from a disposed instance's late list success", async () => {
+    const { posted, reply } = deferredCatalogBridge();
+    const retired = usePluginService();
+    const pending = retired.list();
+    const request = posted.find((item) => item.type === "plugin.catalog.list")!;
+
+    retired.dispose();
+    reply(request.requestId, [retiredSnapshot]);
+
+    // The read still settles for its caller; it just no longer writes the
+    // shared plugin store a newer owner now consumes.
+    await expect(pending).resolves.toEqual([retiredSnapshot]);
+    await flushPromises();
+    expect(usePluginStore().plugins).toEqual([]);
+  });
+
+  it("cannot surface a shared error from a disposed instance's late list failure", async () => {
+    const { posted, fail } = deferredCatalogBridge();
+    const retired = usePluginService();
+    const pending = retired.list();
+    const request = posted.find((item) => item.type === "plugin.catalog.list")!;
+
+    retired.dispose();
+    fail(request.requestId);
+
+    await expect(pending).rejects.toThrow("host list failed");
+    await flushPromises();
+    expect(usePluginStore().lastError).toBeNull();
+    expect(usePluginStore().busy).toBe(false);
+  });
+
+  it("lets a replacement instance refresh the catalog while the retired read stays inert", async () => {
+    const { posted, reply } = deferredCatalogBridge();
+    const retired = usePluginService();
+    void retired.list().catch(() => undefined);
+    const retiredRequest = posted.find((item) => item.type === "plugin.catalog.list")!;
+    retired.dispose();
+
+    const live = usePluginService();
+    const pendingLive = live.list();
+    const liveRequest = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+    reply(liveRequest.requestId, [snapshot]);
+    await pendingLive;
+    expect(usePluginStore().plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.clean"]);
+
+    reply(retiredRequest.requestId, [retiredSnapshot]);
+    await flushPromises();
+    expect(usePluginStore().plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.clean"]);
+  });
+});
