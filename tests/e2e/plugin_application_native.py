@@ -322,7 +322,7 @@ def _observe_owned_chrome(
             text=True,
             encoding="utf-8",
             check=True,
-            timeout=min(5, remaining),
+            timeout=remaining,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         observation = json.loads(result.stdout)
@@ -416,6 +416,8 @@ def handle_plugin_native_request(
             screenshot,
             deadline=deadline,
         )
+        if time.monotonic() >= deadline:
+            raise OSError("native plugin input exceeded its request budget")
         x, y = button["x"] + button["width"] / 2, button["y"] + button["height"] / 2
         if request["action"] == "click":
             _send_input(native, x=x, y=y)
