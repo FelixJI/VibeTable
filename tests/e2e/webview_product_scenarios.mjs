@@ -6572,15 +6572,23 @@ async function scenario10(page, recorder, _network, runtime) {
 
   // A reopened workspace has a new sidecar owner; an old unconsumed plan
   // must fail instead of attaching to the new session or repeating a write.
+  // The reopened sidecar rejects the stale token with paste_token_unknown,
+  // which Host Apply maps to a correlated table.editRejected reply
+  // (mutation_validation, notSubmitted); table.pasteApplied stays wired so a
+  // wrongly attached plan fails this check fast instead of timing out.
   const retiredPaste = await rawBridgeRequest(page, "table.applyPasteRequested", {
     collection: tableId, token: afterPythonPaste.token.token,
     idempotencyKey: "paste-plan-from-retired-session",
-  });
+  }, 20_000, ["table.pasteApplied", "table.editRejected"]);
   recorder.check("reopening retires the previous sidecar's unconsumed paste plan",
-    retiredPaste.type === "operation.failed"
-      && retiredPaste.payload?.code === "PASTE_APPLY_FAILED"
+    retiredPaste.type === "table.editRejected"
+      && retiredPaste.payload?.kind === "mutation_validation"
+      && retiredPaste.payload?.code === "paste_token_unknown"
+      && retiredPaste.payload?.operation === "applyPaste"
+      && retiredPaste.payload?.notSubmitted === true
       && /paste token not found/i.test(retiredPaste.payload?.message ?? ""), { retiredPaste });
-  await acknowledgeExpectedBridgeFailure(page, retiredPaste);
+  // table.editRejected is a structured product rejection, not a bridge
+  // operation.failed, so diagnostics record no expected failure to acknowledge.
 
   const writableSessionObserved = performance.now();
   runtime.recordUiTiming(
