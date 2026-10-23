@@ -200,14 +200,19 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.conflictEnabled) {
       actions.push({ method: "conflict.list", params: { cursor: null, limit: 50 } });
     }
+    let failed = false;
     for (const action of actions) {
       if (currentSessionKey() !== expectedSessionKey) return;
       try {
         await port.request(action);
       } catch {
-        // Each projection fails closed independently. A later host event or
-        // explicit refresh may recover without discarding the active session.
+        failed = true;
+        // Keep successful projections; a later bootstrap can recover failures.
       }
+    }
+    if (failed && currentSessionKey() === expectedSessionKey
+      && hydratedSessionKey === expectedSessionKey) {
+      hydratedSessionKey = null;
     }
   }
 

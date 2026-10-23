@@ -272,7 +272,18 @@ def _typescript(manifest: ProductCapabilityManifest) -> str:
         "export const PRODUCT_RPC_PUBLIC_METHODS = "
         + json.dumps(methods, ensure_ascii=False, indent=2)
         + " as const;\n\nexport type ProductRpcMethod =\n"
-        "  (typeof PRODUCT_RPC_PUBLIC_METHODS)[number];\n"
+        "  (typeof PRODUCT_RPC_PUBLIC_METHODS)[number];\n\n"
+        "export const PRODUCT_RPC_GLOBAL_METHODS = "
+        + json.dumps(
+            [
+                item["method"]
+                for item in manifest["rpcMethods"]
+                if item["audience"] == "rendererPublic" and item["scope"] == "global"
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+        + " as const;\n"
     )
 
 

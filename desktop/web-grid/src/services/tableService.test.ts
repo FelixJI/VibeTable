@@ -1108,6 +1108,12 @@ function openWorkspaceEpoch(
 ): void {
   const session = useWorkspaceSessionStore();
   session.configureCapabilities(["workspace.session.v2"]);
+  session.setWorkspaces([{
+    contractVersion: "2.0", workspaceId, displayName: "Test workspace",
+    selectedRoot: "D:\\TestWorkspace", activityRoot: null, storageKind: "fixed",
+    coordinationStrength: "strong", lastOpenedAt: null, lastKnownHealth: "healthy",
+    lastSnapshotAt: null, lastSyncAt: null, pendingSync: false,
+  }]);
   session.applySession({
     contractVersion: "2.0", workspaceId, sessionEpoch,
     state: "openedWritable", openMode: "writable",

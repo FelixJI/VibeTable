@@ -301,6 +301,219 @@ describe("HostBridge", () => {
     });
   }
 
+  for (const retirementTrigger of ["beginSwitch", "epochRotate"] as const) {
+    it(`retires scoped product data requests on ${retirementTrigger} instead of waiting for their timeout`, async () => {
+      vi.useFakeTimers();
+      const session = useWorkspaceSessionStore();
+      openWorkspaceSessionFixture(session);
+      let counter = 0;
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 10_000,
+        generateRequestId: () => `scoped-product-${++counter}`,
+      });
+      bridge.start();
+      const retired = vi.fn();
+      window.addEventListener("vibetable:bridge-request-retired", retired);
+      const requests = [
+        bridge.request("query.page", { tableId: "tbl_orders", query: { offset: 0, limit: 100 } }),
+        bridge.request("mutation.apply", { tableId: "tbl_orders", operations: [] }),
+        bridge.request("file.list", {
+          tableId: "tbl_files", recordId: "row-1", fieldId: "tbl_files.attachments",
+        }),
+        bridge.request("schema.describe", {
+          collection: "orders",
+          requestGeneration: 1,
+          accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+        }),
+      ].map(promise => promise.catch(error => error));
+      for (const call of webview.postMessage.mock.calls) {
+        expect((call[0] as BridgeMessage).scope).toMatchObject({ sessionEpoch: 7 });
+      }
+      if (retirementTrigger === "beginSwitch") {
+        expect(session.beginSwitch("workspace-b")).toBe(true);
+      } else {
+        session.applySession({
+          contractVersion: "2.0",
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 8,
+          state: "openedWritable",
+          openMode: "writable",
+          writable: true,
+          provisional: false,
+          phase: "idle",
+          errorCode: null,
+        });
+      }
+      await Promise.resolve();
+      // Regression: the host drops stale-epoch replies after drain, so these
+      // used to sit on their 10s wall-clock timers until BridgeTimeoutError.
+      expect(vi.getTimerCount()).toBe(0);
+      const results = await Promise.all(requests);
+      for (const result of results) {
+        expect(result).toMatchObject({ name: "AbortError" });
+        expect(result).not.toBeInstanceOf(BridgeOperationError);
+      }
+      expect(retired).toHaveBeenCalledTimes(4);
+      if (retirementTrigger === "beginSwitch") {
+        await expect(bridge.request("mutation.apply", {
+          tableId: "tbl_orders", operations: [],
+        })).rejects.toMatchObject({ name: "AbortError" });
+        expect(webview.postMessage).toHaveBeenCalledTimes(4);
+      }
+      window.removeEventListener("vibetable:bridge-request-retired", retired);
+      bridge.stop();
+    });
+  }
+
+  it("settles a drained scoped mutation as an unknown-outcome abort and keeps its late host reply orphaned", async () => {
+    vi.useFakeTimers();
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 10_000,
+      generateRequestId: () => "scoped-mutation-1",
+    });
+    bridge.start();
+    const handle = bridge.requestWithHandle("mutation.apply", {
+      tableId: "tbl_orders",
+      operations: [],
+    });
+    expect(session.beginSwitch("workspace-b")).toBe(true);
+    const settled = handle.promise.catch(error => error);
+    // The abort reports an UNKNOWN write outcome (commit-unknown); the host
+    // may still commit the drained change, so this must never read as a
+    // definite failure such as BridgeOperationError.
+    await expect(settled).resolves.toMatchObject({ name: "AbortError" });
+    // Late host settlements stay orphaned and cannot flip the retired promise
+    // into a definite success or failure.
+    webview.emit({
+      type: "mutation.apply",
+      requestId: handle.requestId,
+      payload: { status: "applied" },
+    });
+    webview.emit({
+      type: "operation.failed",
+      requestId: handle.requestId,
+      payload: { message: "stale session", code: "workspace.session_stale" },
+    });
+    await expect(settled).resolves.toMatchObject({ name: "AbortError" });
+    bridge.stop();
+  });
+
+  it.each([
+    ["tableAdmin.createRequested", { displayName: "Orders" }],
+    ["tableAdmin.deleteRequested", { collection: "tbl_orders" }],
+  ] as const)(
+    "keeps %s on its host-owned schema lifecycle terminal state across a transition",
+    async (type, payload) => {
+      vi.useFakeTimers();
+      const session = useWorkspaceSessionStore();
+      openWorkspaceSessionFixture(session);
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `schema-lifecycle-${type}`,
+      });
+      bridge.start();
+      const retired = vi.fn();
+      window.addEventListener("vibetable:bridge-request-retired", retired);
+      const pending = bridge.request(type, payload);
+      // The request IS scoped, yet its epoch-changing host work must finish
+      // with the host terminal state — never a local retirement.
+      expect((webview.postMessage.mock.calls[0]![0] as BridgeMessage).scope)
+        .toMatchObject({
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 7,
+        });
+      expect(session.beginSwitch("workspace-b")).toBe(true);
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(settled).toBe(false);
+      expect(retired).not.toHaveBeenCalled();
+      webview.emit({
+        type: "database.collectionsChanged",
+        requestId: `schema-lifecycle-${type}`,
+        payload: {},
+      });
+      await expect(pending).resolves.toEqual({});
+      window.removeEventListener("vibetable:bridge-request-retired", retired);
+      bridge.stop();
+    },
+  );
+
+  it("does not retire the pending workspace.switch lifecycle while its own transition is in flight", async () => {
+    vi.useFakeTimers();
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1_000,
+      generateRequestId: () => "switch-lifecycle-1",
+    });
+    bridge.start();
+    const pending = bridge.request("workspace.v2.request", {
+      method: "workspace.switch",
+      params: { targetWorkspaceId: "22222222-2222-4222-8222-222222222222", openMode: "writable" },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        sequence: 5,
+      },
+    });
+    // Lifecycle envelopes carry their scope on `wire`, never on `env.scope`,
+    // so the transition they drive cannot retire the request that owns it.
+    expect((webview.postMessage.mock.calls[0]![0] as BridgeMessage).scope).toBeUndefined();
+    expect(session.beginSwitch("22222222-2222-4222-8222-222222222222")).toBe(true);
+    let settled = false;
+    void pending.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(settled).toBe(false);
+    const reply = {
+      method: "workspace.switch",
+      wire: null,
+      ok: true,
+      result: { session: null },
+      error: null,
+    };
+    webview.emit({
+      type: "workspace.v2.response",
+      requestId: "switch-lifecycle-1",
+      payload: reply,
+    });
+    await expect(pending).resolves.toEqual(reply);
+    bridge.stop();
+  });
+
+  it.each(["update.check", "appPreferences.get"] as const)("keeps global %s pending while scoped workspace requests retire", async (type) => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    let counter = 0;
+    const bridge = createHostBridge({ webview, generateRequestId: () => `global-${++counter}` });
+    bridge.start();
+    const update = type === "update.check"
+      ? bridge.request("update.check", {})
+      : bridge.request("appPreferences.get", {});
+    expect((webview.postMessage.mock.calls[0]![0] as BridgeMessage).scope)
+      .toMatchObject({ sessionEpoch: 7 });
+    const scoped = bridge.requestWithHandle("lookup.query", lookupQueryPayload());
+    expect(session.beginSwitch("workspace-b")).toBe(true);
+    await expect(scoped.promise).rejects.toMatchObject({ name: "AbortError" });
+    webview.emit({ type, requestId: "global-1", payload: { updateAvailable: false } });
+    await expect(update).resolves.toEqual({ updateAvailable: false });
+    bridge.stop();
+  });
+
   it("does not fan out a late database projection while its workspace is switching", () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
