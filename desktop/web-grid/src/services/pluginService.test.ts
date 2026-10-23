@@ -1444,6 +1444,7 @@ describe("pluginService lifecycle retirement", () => {
     pluginId: "com.acme.retired",
     revision: 2,
   };
+  const disabledSnapshot: PluginSnapshot = { ...snapshot, status: "disabled" };
 
   it("cannot replace the shared catalog from a disposed instance's late list success", async () => {
     const { posted, reply } = deferredCatalogBridge();
@@ -1530,5 +1531,92 @@ describe("pluginService lifecycle retirement", () => {
     reply(liveRequest.requestId, [snapshot]);
     for (let i = 0; i < 12; i += 1) await Promise.resolve();
     expect(usePluginStore().plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.clean"]);
+  });
+
+  it("serves a notification through the surviving root when the other owner retired before the refresh ran", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    center.dispose(); // before the coalesced refresh microtask runs
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(1);
+
+    reply(reads[0]!.requestId, [{ ...snapshot, status: "enabled" }]);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("refreshes the surviving root when the retiring owner suppressed its read success", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve(); // the refresh loop has started and posted its read
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(1);
+    center.dispose();
+    // The authority now reports enabled; the retired reader must not swallow
+    // the notification for the still-live root owner.
+    reply(reads[0]!.requestId, [{ ...snapshot, status: "enabled" }]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    const served = posted.filter((item) => item.type === "plugin.catalog.list");
+    if (served.length > 1) reply(served[1]!.requestId, [{ ...snapshot, status: "enabled" }]);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("lets a live owner take over one read when the reading owner retires mid-flight", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const center = usePluginService();
+    center.init(); // queues its reader first, so the batch picks it
+    const root = usePluginService();
+    root.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const firstRead = posted.find((item) => item.type === "plugin.catalog.list")!;
+    center.dispose();
+    reply(firstRead.requestId, [{ ...snapshot, status: "enabled" }]);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2); // exactly one takeover read serves the batch
+    reply(reads[1]!.requestId, [{ ...snapshot, status: "enabled" }]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("coalesces one notification across two live owners into a single read", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(1);
+
+    reply(posted.find((item) => item.type === "plugin.catalog.list")!.requestId, [snapshot]);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
   });
 });

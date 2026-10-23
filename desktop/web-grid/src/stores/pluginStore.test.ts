@@ -3,6 +3,12 @@ import { createPinia, setActivePinia } from "pinia";
 import type { PluginInteractionSnapshot, PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
 import { usePluginStore } from "./pluginStore";
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 const plugin = (revision: number, status: PluginSnapshot["status"] = "enabled"): PluginSnapshot => ({
   installationId: "record-clean",
   projectKey: "local:default",
@@ -346,6 +352,77 @@ describe("pluginStore", () => {
     expect(store.nativeTaskReceipts[0]?.error?.code).toBe("plugin_commit_unknown");
     store.setProjectContext(nextProject, "new-session");
     expect(store.nativeTaskReceipts).toEqual([]);
+  });
+
+  it("merges repeated notifications from one owner into a single follow-up read", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    const first = deferred<readonly PluginSnapshot[]>();
+    let started = 0;
+    const reader = () => {
+      started += 1;
+      return started === 1 ? first.promise : Promise.resolve([plugin(1)]);
+    };
+    store.refreshCatalog(reader);
+    await Promise.resolve(); // the first read starts
+    expect(started).toBe(1);
+    // Two more notifications from the same owner arrive while it is reading.
+    store.refreshCatalog(reader);
+    store.refreshCatalog(reader);
+    first.resolve([plugin(1)]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(started).toBe(2); // one merged follow-up, not one per notification
+  });
+
+  it("lets a newer sequence preempt a retired old batch instead of reading catch-up", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    const oldRead = deferred<readonly PluginSnapshot[]>();
+    let oldStarted = 0;
+    let freshStarted = 0;
+    let oldOwnerRetired = false;
+    const oldReader = () => { oldStarted += 1; return oldRead.promise; };
+    const oldOwnerCurrent = () => !oldOwnerRetired;
+    const freshReader = () => { freshStarted += 1; return Promise.resolve([plugin(1)]); };
+
+    store.refreshCatalog(oldReader, oldOwnerCurrent);
+    await Promise.resolve(); // the old batch starts reading
+    expect(oldStarted).toBe(1);
+
+    // A new notification advances the catalog sequence while the old read is
+    // still in flight, then the old owner retires.
+    store.refreshCatalog(freshReader);
+    oldOwnerRetired = true;
+    oldRead.resolve([plugin(1)]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    // The stale batch must not run a catch-up read; only the fresh batch reads.
+    expect(oldStarted).toBe(1);
+    expect(freshStarted).toBe(1);
+  });
+
+  it("takes over with another live candidate when the reading owner retires mid-flight", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    const oldRead = deferred<readonly PluginSnapshot[]>();
+    let oldStarted = 0;
+    let freshStarted = 0;
+    let oldOwnerRetired = false;
+    const oldReader = () => { oldStarted += 1; return oldRead.promise; };
+    const oldOwnerCurrent = () => !oldOwnerRetired;
+    const freshReader = () => { freshStarted += 1; return Promise.resolve([plugin(1)]); };
+
+    store.refreshCatalog(oldReader, oldOwnerCurrent);
+    store.refreshCatalog(freshReader);
+    await Promise.resolve();
+    expect(oldStarted).toBe(1);
+
+    oldOwnerRetired = true;
+    oldRead.resolve([plugin(1)]);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    expect(oldStarted).toBe(1);
+    expect(freshStarted).toBe(1); // one takeover read serves the notification
   });
 
 });

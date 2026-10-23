@@ -20,7 +20,10 @@ export const usePluginStore = defineStore("plugins", () => {
   let catalogReadSequence = 0;
   let catalogRefreshRunning = false;
   let catalogRefreshAgain = false;
-  let catalogRefreshReader: (() => Promise<readonly PluginSnapshot[]>) | null = null;
+  // Queued refresh candidates: each legal consumer registers its stable
+  // reader with an owner-current predicate captured at queue time. A single
+  // reader slot would let one retired owner swallow the whole notification.
+  let catalogRefreshPending = new Map<() => Promise<readonly PluginSnapshot[]>, () => boolean>();
   const currentUser = ref<Readonly<Record<string, unknown>>>({});
   const hostVersion = ref("unknown");
   const catalogRevision = ref(-1);
@@ -84,30 +87,58 @@ export const usePluginStore = defineStore("plugins", () => {
   function beginCatalogRead(): number { return ++catalogReadSequence; }
   function isCurrentCatalogRead(sequence: number): boolean { return sequence === catalogReadSequence; }
   function invalidateCatalogReads(): void { catalogReadSequence++; }
-  function refreshCatalog(read: () => Promise<readonly PluginSnapshot[]>): void {
+  function refreshCatalog(
+    read: () => Promise<readonly PluginSnapshot[]>,
+    ownerCurrent: () => boolean = () => true,
+  ): void {
     invalidateCatalogReads();
-    catalogRefreshReader = read;
+    // Keying by the stable reader merges repeated notifications from one
+    // owner instead of stacking candidates.
+    catalogRefreshPending.set(read, ownerCurrent);
     catalogRefreshAgain = true;
     if (catalogRefreshRunning) return;
     catalogRefreshRunning = true;
     void Promise.resolve().then(async () => {
       try {
         // One active read and one dirty bit coalesce a recovered event backlog.
-        while (catalogRefreshAgain && catalogRefreshReader) {
-          const reader = catalogRefreshReader;
+        while (catalogRefreshAgain && catalogRefreshPending.size > 0) {
+          const batch = [...catalogRefreshPending];
+          catalogRefreshPending = new Map();
           catalogRefreshAgain = false;
-          const generation = projectContextGeneration.value;
-          const reading = reader();
-          const sequence = catalogReadSequence;
-          try { await reading; }
-          catch (error) {
-            if (generation === projectContextGeneration.value && isCurrentCatalogRead(sequence))
-              failIfNoError(error);
+          while (batch.length > 0) {
+            // Owners retired before this batch reads drop out; any one live
+            // candidate serves the whole notification.
+            const chosen = batch.find(([, current]) => current());
+            if (!chosen) break;
+            const [read, ownerCurrent] = chosen;
+            batch.splice(batch.indexOf(chosen), 1);
+            const generation = projectContextGeneration.value;
+            const reading = read();
+            const sequence = catalogReadSequence;
+            const batchIsCurrent = () => generation === projectContextGeneration.value
+              && isCurrentCatalogRead(sequence);
+            try {
+              await reading;
+              // A reader retired mid-flight may have suppressed its projection;
+              // one other live candidate takes over the read exactly once.
+              if (!ownerCurrent() && batchIsCurrent()
+                && batch.some(([, current]) => current())) continue;
+              break;
+            } catch (error) {
+              // A live reader's failure stays a current user-visible error
+              // and ends the batch without automatic retry; a retired reader
+              // only hands over to a still-live candidate.
+              if (ownerCurrent()) {
+                if (batchIsCurrent()) failIfNoError(error);
+                break;
+              }
+              if (batchIsCurrent() && batch.some(([, current]) => current())) continue;
+              break;
+            }
           }
         }
       } finally {
         catalogRefreshRunning = false;
-        catalogRefreshReader = null;
       }
     });
   }
@@ -119,7 +150,7 @@ export const usePluginStore = defineStore("plugins", () => {
   function setProjectContext(key: string, revision: string): void {
     invalidateCatalogReads();
     catalogRefreshAgain = false;
-    catalogRefreshReader = null;
+    catalogRefreshPending = new Map();
     projectContextGeneration.value += 1;
     taskObservationOrder = 0;
     if (projectKey.value !== key) {
