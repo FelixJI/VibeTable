@@ -92,6 +92,9 @@ function requestCancel(): void {
     </template>
 
     <div class="paste-body">
+      <NText v-if="paste.error" type="error" role="alert" data-testid="paste-error">
+        {{ paste.error }}
+      </NText>
       <NText v-if="paste.summaryText" depth="3" data-testid="paste-summary">
         {{ paste.summaryText }}
       </NText>

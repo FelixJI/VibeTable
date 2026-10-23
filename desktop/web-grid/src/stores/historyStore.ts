@@ -92,6 +92,7 @@ export const useHistoryStore = defineStore("history", () => {
     if (!entry) return;
     if (!entry.redo) return;
     const startGeneration = generation;
+    const startActionGeneration = actionGeneration;
     busy.value = true;
     try {
       await entry.redo();
@@ -101,7 +102,7 @@ export const useHistoryStore = defineStore("history", () => {
     } catch (err) {
       if (generation === startGeneration) {
         lastError.value = err instanceof Error ? err.message : "redo failed";
-        redoStack.value.push(entry);
+        if (actionGeneration === startActionGeneration) redoStack.value.push(entry);
       }
     } finally {
       busy.value = false;

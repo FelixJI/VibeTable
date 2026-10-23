@@ -71,6 +71,23 @@ describe("PastePanel", () => {
     expect(wrapper.get('[data-testid="paste-panel"]').attributes("data-phase")).toBe("applied");
   });
 
+  it.each([
+    "粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。",
+    "HostBridge timeout: 粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。",
+  ])("makes the unknown paste result visible and accessible: %s", (message) => {
+    const ui = useUiStore();
+    const paste = usePasteStore();
+    paste.setError(message);
+    ui.openPastePanel();
+    const wrapper = mountPanel();
+    const error = wrapper.get('[role="alert"]');
+    expect(error.isVisible()).toBe(true);
+    expect(error.text()).toBe(message);
+    expect(wrapper.text()).toContain("粘贴出错");
+    expect(wrapper.text()).not.toContain("未保存");
+    expect(wrapper.get('[data-testid="paste-confirm"]').attributes("disabled")).toBeDefined();
+  });
+
   it("renders the overflow hint when phase is overflow", () => {
     const ui = useUiStore();
     const paste = usePasteStore();

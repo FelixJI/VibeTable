@@ -406,7 +406,7 @@ public sealed class WorkspaceTableRequestController
                 startCell,
                 cells,
                 CancellationToken.None).ConfigureAwait(false);
-            _reply.PostNotification("table.pastePreviewReady", plan);
+            _reply.PostResponse("table.pastePreviewReady", request.RequestId, plan);
         }
         catch (Exception exception)
         {
@@ -438,7 +438,7 @@ public sealed class WorkspaceTableRequestController
                 token,
                 idempotencyKey,
                 CancellationToken.None).ConfigureAwait(false);
-            _reply.PostNotification("table.pasteApplied", result);
+            _reply.PostResponse("table.pasteApplied", request.RequestId, result);
         }
         catch (Exception exception)
         {

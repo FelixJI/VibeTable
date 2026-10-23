@@ -145,6 +145,21 @@ describe("mutationService correlated writes", () => {
     expect(s.history.canRedo).toBe(false);
   });
 
+  it("a failed pending redo cannot return after a new ordinary action was submitted", async () => {
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    const redo = s.service.performRedo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "new action"); const ordinary = s.posted.at(-1)!;
+    s.reply(inverse, "table.editRejected", { kind: "edit_conflict", message: "redo conflict" });
+    await redo;
+    s.reply(ordinary, "table.editCommitted", edit("new action", 2, "name", 4)); await flush();
+    expect(s.history.canRedo).toBe(false);
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.history.lastError).toBe("redo conflict");
+    expect(s.table.allRows[1]?.name).toBe("new action");
+  });
+
   it("a genuinely new write after undo clears redo at submission", async () => {
     const s = setup();
     await seed(s);
