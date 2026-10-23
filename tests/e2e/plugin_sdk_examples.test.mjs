@@ -11,7 +11,7 @@ const start = source.indexOf("export async function waitForDurableActionTerminal
 const end = source.indexOf("export async function exerciseSdkExamples");
 assert.ok(start >= 0 && end > start, "waitForDurableActionTerminal must live in the scenario source");
 const waitForDurableActionTerminal = new Function(
-  "return (" + source.slice(start, end).replace(/^export /u, "").replace(/(\s*\/\/[^\n]*)+\s*$/u, "").trim() + ");",
+  source.slice(start, end).replace(/^export /u, "") + "\nreturn waitForDurableActionTerminal;",
 )();
 
 const RUN = "run-1";
