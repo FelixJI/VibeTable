@@ -558,6 +558,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
     restore_payload, restore_schema = _result_payload(_typed(RestoreResult))
     restore_result = typing.cast(dict[str, object], restore_payload)
+    # Go emits every restore field; nullable values do not make fields omittable.
+    restore_schema["required"] = sorted(restore_result)
     promote_result = {
         "promoted": "version-1",
         "restoredToRevision": restore_result["restoredToRevision"],

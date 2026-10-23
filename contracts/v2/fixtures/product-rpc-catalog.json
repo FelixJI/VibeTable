@@ -27220,7 +27220,9 @@
             },
             "required": [
               "collection",
+              "item",
               "itemId",
+              "newRevisionId",
               "restoredToRevision"
             ],
             "type": "object"

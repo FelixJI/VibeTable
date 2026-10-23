@@ -127,6 +127,16 @@ def test_rpc_catalog_accepts_stable_producer_receipts(oracle_name: str, case_nam
         _validate(result, schema, root, sample["method"])
 
 
+@pytest.mark.parametrize("missing", ["newRevisionId", "item"])
+def test_rpc_catalog_rejects_truncated_restore_receipts(missing: str) -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == "version.promote")
+    result = case["success"]["result"]
+    result["result"].pop(missing)
+    with pytest.raises(SchemaMismatchError, match=missing):
+        _validate(result, case["resultSchema"], _load(SCHEMA_PATH))
+
+
 def test_rpc_catalog_promote_example_preserves_restore_identity() -> None:
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
     case = next(case for case in catalog["rpcCases"] if case["method"] == "version.promote")
