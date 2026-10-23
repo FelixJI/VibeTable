@@ -1401,11 +1401,13 @@ describe("pluginService lifecycle retirement", () => {
   // Deferred correlated replies keep a catalog read in flight across dispose,
   // which a same-epoch remount cannot otherwise exercise.
   function deferredCatalogBridge(): {
+    bridge: ReturnType<typeof createHostBridge>;
     posted: Array<{ type: string; requestId: string; payload?: unknown }>;
     reply: (requestId: string, snapshots: PluginSnapshot[]) => void;
     fail: (requestId: string) => void;
     respond: (type: string, requestId: string, payload: unknown) => void;
     event: (value: PluginSnapshot) => void;
+    emit: (type: string, payload?: unknown) => void;
   } {
     const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
@@ -1421,6 +1423,7 @@ describe("pluginService lifecycle retirement", () => {
     bridge.start();
     setHostBridgeForTesting(bridge);
     return {
+      bridge,
       posted,
       reply: (requestId, snapshots) =>
         listener?.({ data: { type: "plugin.catalog.list", requestId, payload: snapshots } }),
@@ -1439,6 +1442,7 @@ describe("pluginService lifecycle retirement", () => {
           snapshot: value,
         } },
       }),
+      emit: (type, payload = {}) => listener?.({ data: { type, payload } }),
     };
   }
 
@@ -1893,5 +1897,141 @@ describe("pluginService lifecycle retirement", () => {
     reply(reads[2]!.requestId, [enabledSnapshot]);
     for (let i = 0; i < 16; i += 1) await Promise.resolve();
     expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+  });
+
+  it("serves a barrier-held demand after the write terminal instead of letting an in-barrier read consume it", async () => {
+    const { posted, reply, respond, event, emit } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    // center (the PluginCenter owner) starts a real pending write.
+    const write = center.setEnabled(snapshot, true);
+    const writeRequest = posted.find((item) => item.type === "plugin.lifecycle.setEnabled")!;
+    // A legitimate catalog.changed from another plugin queues root's demand
+    // behind the write barrier.
+    const other: PluginSnapshot = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    event(other);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(0);
+
+    // center leaves; the real recovery entry performs a direct read that the
+    // Host executes in parallel with the still-pending write.
+    center.dispose();
+    emit("realtime.recovered", {});
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    const reads = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(1);
+    reply(reads[0]!.requestId, [disabledSnapshot]); // pre-write authority snapshot
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+
+    // The write commits; its terminal releases the barrier and the retired
+    // writer queues no refresh — the surviving demand must still be served.
+    respond("plugin.lifecycle.setEnabled", writeRequest.requestId, { ...snapshot, status: "enabled" as const, revision: 2 });
+    await write;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    const after = posted.filter((item) => item.type === "plugin.catalog.list");
+    expect(after).toHaveLength(2);
+    reply(after[1]!.requestId, [{ ...snapshot, status: "enabled" as const, revision: 2 }]);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("enabled");
+    expect(posted.filter((item) => item.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+  });
+
+  it("freezes a shown failure at its visibility point so a later dispose cannot trigger a takeover", async () => {
+    const { posted, reply, fail, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const center = usePluginService();
+    center.init();
+
+    event(snapshot);
+    await Promise.resolve();
+    const r1 = posted.find((item) => item.type === "plugin.catalog.list")!;
+    void center.list().catch(() => undefined);
+    const r2 = posted.filter((item) => item.type === "plugin.catalog.list").at(-1)!;
+
+    reply(r1.requestId, [enabledSnapshot]); // stale completion first
+    fail(r2.requestId);                     // live failure — shown as current
+    await Promise.resolve();                // exactly the round it becomes visible
+    expect(store.lastError).toBe("host list failed");
+    center.dispose();                       // must not reclassify the shown failure
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(2);
+    expect(store.plugins.find((item) => item.pluginId === snapshot.pluginId)?.status).toBe("disabled");
+    expect(store.lastError).toBe("host list failed");
+  });
+
+  it("bounds a hidden local retirement from a real workspace drain instead of spinning", async () => {
+    const { bridge, posted, event } = deferredCatalogBridge();
+    const store = usePluginStore();
+    store.applyPlugin(disabledSnapshot);
+    const root = usePluginService();
+    root.init();
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    session.setWorkspaces([workspaceId].map(id => ({
+      contractVersion: "2.0" as const,
+      workspaceId: id,
+      displayName: "Workspace 1",
+      selectedRoot: "D:\\Workspace-1",
+      activityRoot: null,
+      storageKind: "fixed" as const,
+      coordinationStrength: "strong" as const,
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy" as const,
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    })));
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId,
+      sessionEpoch: 1,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const attemptsSpy = vi.spyOn(bridge, "request");
+
+    event(snapshot);
+    await Promise.resolve(); // the scheduler starts R1 and posts it once
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(1);
+
+    // A real synchronous drain retirement: the bridge retires the in-flight
+    // request and refuses new workspace-scoped reads without rotating the
+    // plugin generation.
+    session.beginClose();
+    let attempts = 0;
+    let lastError: string | null = null;
+    try {
+      // Bounded observation: stop as soon as a spin is detected (>= 5 reads).
+      for (let i = 0; i < 400 && attempts < 5; i += 1) {
+        await Promise.resolve();
+        attempts = attemptsSpy.mock.calls.length;
+      }
+      attempts = attemptsSpy.mock.calls.length;
+      lastError = store.lastError;
+    } finally {
+      // Synchronously clear the queued demands so a spinning candidate can
+      // never outlive the test, then retire the subscription owner.
+      store.setProjectContext("", "");
+      root.dispose();
+    }
+    // The hidden local retirement must settle bounded: exactly the one real
+    // read, no retry spin, and no user-visible error.
+    expect(attempts).toBe(1);
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toHaveLength(1);
+    expect(lastError).toBeNull();
   });
 });

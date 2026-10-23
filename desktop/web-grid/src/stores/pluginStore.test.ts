@@ -483,8 +483,10 @@ describe("pluginStore", () => {
         ? rootRead.then((snapshots) => ({ snapshots, outcome: "superseded" as const }))
         : project([plugin(2)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
     });
-    const writerReader = observedReader(store, () =>
-      project([plugin(2)]).then((snapshots) => ({ snapshots, outcome: "projected" as const })));
+    const writerReader = observedReader(store, () => {
+      writerStarted += 1;
+      return project([plugin(2)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
 
     store.refreshCatalog(rootReader);
     await Promise.resolve();
@@ -499,9 +501,39 @@ describe("pluginStore", () => {
     store.endCatalogWriteBarrier(barrier);
     store.refreshCatalog(writerReader);
     for (let i = 0; i < 16; i += 1) await Promise.resolve();
-    // Exactly one catch-up read serves the pending demand; nothing re-sends.
+    // Exactly one catch-up read serves the pending demand; the write itself
+    // executed exactly once and nothing re-sends it.
     expect(rootStarted).toBe(2);
     expect(writerStarted).toBe(0);
+  });
+
+  it("projects but never consumes demands from a read begun behind an active write barrier", async () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    let demandStarted = 0;
+    const project = (snapshots: readonly PluginSnapshot[]) => Promise.resolve(snapshots).then((value) => {
+      store.replaceCatalog("local:default", value);
+      return value;
+    });
+    const demandReader = observedReader(store, () => {
+      demandStarted += 1;
+      return project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const }));
+    });
+    const directReader = observedReader(store, () =>
+      project([plugin(1)]).then((snapshots) => ({ snapshots, outcome: "projected" as const })));
+
+    const barrier = store.beginCatalogWriteBarrier();
+    store.refreshCatalog(demandReader); // queued behind the barrier
+    // A direct read (real recovery entry) starts inside the barrier window.
+    await directReader();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(demandStarted).toBe(0); // scheduler still held by the barrier
+
+    // The write terminal releases its own token; the surviving demand gets
+    // its post-write authority read.
+    store.endCatalogWriteBarrier(barrier);
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    expect(demandStarted).toBe(1);
   });
 
   it("ignores an old-generation barrier release while a new write is pending", async () => {

@@ -16,7 +16,10 @@ export interface CatalogReadReceipt {
   readonly generation: number;
   readonly sequence: number;
   readonly ownerCurrent: () => boolean;
-  settled: false | "projected" | "failed-current" | "retired" | "superseded";
+  /** Started behind an active write barrier: its (possibly pre-write)
+   *  projection may not consume queued demands. */
+  readonly barrierWindow: boolean;
+  settled: false | "projected" | "failed-current" | "locally-retired" | "retired" | "superseded";
 }
 
 /** A pending write's ordering barrier token; released only by its owner. */
@@ -117,6 +120,7 @@ export const usePluginStore = defineStore("plugins", () => {
       generation: projectContextGeneration.value,
       sequence: beginCatalogRead(),
       ownerCurrent,
+      barrierWindow: catalogWriteBarriers.size > 0,
       settled: false,
     };
     catalogLatestReceipt = receipt;
@@ -142,10 +146,17 @@ export const usePluginStore = defineStore("plugins", () => {
       return;
     }
     receipt.settled = outcome;
-    if (outcome === "projected" || outcome === "failed-current") {
-      for (const [read, demand] of catalogRefreshPending) {
-        if (demand.generation === receipt.generation && demand.sequence <= receipt.sequence) {
-          catalogRefreshPending.delete(read);
+    if (outcome === "projected" || outcome === "failed-current" || outcome === "locally-retired") {
+      // A read started behind an active write barrier observed pre-write
+      // authority: it must not consume demands. The write terminal's release
+      // re-schedules them for a post-write authority read. A locally retired
+      // request (e.g. a draining workspace refused it) also ends its covered
+      // demands bounded — hidden, but never an endless superseded spin.
+      if (!receipt.barrierWindow) {
+        for (const [read, demand] of catalogRefreshPending) {
+          if (demand.generation === receipt.generation && demand.sequence <= receipt.sequence) {
+            catalogRefreshPending.delete(read);
+          }
         }
       }
     } else if (outcome === "retired") {

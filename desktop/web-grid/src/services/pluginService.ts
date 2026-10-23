@@ -18,6 +18,7 @@ import { useHostBridge } from "./bridgeContext";
 import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 import { useUiStore } from "@/stores/uiStore";
 import { usePluginStore } from "@/stores/pluginStore";
+import type { CatalogReadReceipt } from "@/stores/pluginStore";
 import {
   PluginInstallPlanLease,
   PluginInstallPlanStaleError,
@@ -139,7 +140,7 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean; readonly onErrorClassified?: (classification: "visible" | "hidden-retired" | "hidden-stale") => void } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
@@ -156,17 +157,26 @@ export function usePluginService(): PluginService {
       // the next project context; the scope/reset lifecycle settles it. The
       // local retirement of a draining workspace read is not a current user
       // failure either. Everything else keeps its original visibility.
-      if (isCurrentContext() && !(error instanceof BridgeRequestRetiredError)) {
-        if (options.isErrorCurrent && !options.isErrorCurrent()) {
-          if (errorPolicy === "foreground") store.finishBusy();
-          throw error;
-        }
+      // onErrorClassified freezes that decision synchronously at the same
+      // point it is made: "hidden-retired" is a bounded local retirement,
+      // never reclassified later into a visible failure or a spin.
+      const locallyRetired = error instanceof BridgeRequestRetiredError;
+      const contextCurrent = isCurrentContext() && !locallyRetired;
+      if (contextCurrent && options.isErrorCurrent && !options.isErrorCurrent()) {
+        if (errorPolicy === "foreground") store.finishBusy();
+        options.onErrorClassified?.("hidden-stale");
+        throw error;
+      }
+      if (contextCurrent) {
         if (errorPolicy === "foreground") {
           store.fail(error);
         } else {
           store.failIfNoError(error);
         }
+        options.onErrorClassified?.("visible");
+        throw error;
       }
+      options.onErrorClassified?.(locallyRetired ? "hidden-retired" : "hidden-stale");
       throw error;
     }
   }
@@ -193,6 +203,12 @@ export function usePluginService(): PluginService {
     const sequence = receipt.sequence;
     const coversCurrentActivity = () => isInstanceCurrent() && store.projectKey === projectKey
       && store.projectContextGeneration === generation && store.isCurrentCatalogRead(sequence);
+    let settled = false;
+    const settleOnce = (outcome: Exclude<CatalogReadReceipt["settled"], false>) => {
+      if (settled) return;
+      settled = true;
+      store.settleObservedCatalogRead(receipt, outcome);
+    };
     try {
       const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
         "plugin.catalog.list",
@@ -201,17 +217,24 @@ export function usePluginService(): PluginService {
           errorPolicy: "background",
           isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
           isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
+          // Freeze the receipt at the exact synchronous point call decides
+          // the error's classification; a later dispose must not reclassify
+          // a shown failure, and a hidden local retirement settles bounded
+          // instead of spinning as an endless superseded read.
+          onErrorClassified: classification => settleOnce(
+            classification === "visible" ? "failed-current"
+              : classification === "hidden-retired" ? "locally-retired"
+              : isInstanceCurrent() ? "superseded" : "retired"),
         },
       );
-      if (!coversCurrentActivity()) {
-        store.settleObservedCatalogRead(receipt, isInstanceCurrent() ? "superseded" : "retired");
-        return snapshots;
+      const current = coversCurrentActivity();
+      if (current) {
+        store.replaceCatalog(projectKey, snapshots);
       }
-      store.replaceCatalog(projectKey, snapshots);
-      store.settleObservedCatalogRead(receipt, "projected");
+      settleOnce(current ? "projected" : isInstanceCurrent() ? "superseded" : "retired");
       return snapshots;
     } catch (error) {
-      store.settleObservedCatalogRead(receipt, coversCurrentActivity() ? "failed-current"
+      settleOnce(coversCurrentActivity() ? "failed-current"
         : isInstanceCurrent() ? "superseded" : "retired");
       throw error;
     }
