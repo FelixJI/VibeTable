@@ -5127,6 +5127,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_surface_api.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_sdk_examples.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),

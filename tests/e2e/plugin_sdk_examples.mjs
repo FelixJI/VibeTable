@@ -2,6 +2,37 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { nativePluginInput } from "./plugin_applications.mjs";
 
+// Host's Finish(notify) precedes its own bounded audit.finish, so the durable
+// action terminal can land after the task terminal. Observe this run's audit
+// terminal read-only within the caller's existing deadline: a missing terminal
+// keeps waiting (100ms steps truncated to the remaining time), while anything
+// malformed fails immediately. Business actions are never replayed.
+export async function waitForDurableActionTerminal(page, rawBridgeRequest, options) {
+  const { projectKey, pluginId, runId, taskId, decision, until, recorder } = options;
+  const expectedOutcome = decision === "approved" ? "succeeded" : decision === "conflict" ? "failed" : decision;
+  let audit; let terminals = []; let observations = 0;
+  while (true) {
+    const remaining = until - Date.now();
+    if (remaining <= 0) break;
+    audit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey, pluginId },
+      Math.min(20_000, remaining))).payload;
+    observations += 1;
+    if (!Array.isArray(audit)) {
+      recorder.check(`native normalization ${decision} audit list must be an array`, false, { audit });
+      break;
+    }
+    terminals = audit.filter(event => event.eventType === "action" && event.runId === runId);
+    if (terminals.length > 0) break;
+    const step = Math.min(100, until - Date.now());
+    if (step <= 0) break;
+    await page.waitForTimeout(step);
+  }
+  recorder.check(`native normalization ${decision} has one durable receipt for one authorized row`, terminals.length === 1
+    && terminals[0].targetCount === 1 && terminals[0].details?.taskId === taskId
+    && terminals[0].outcome === expectedOutcome, { terminals, taskId, runId, observations, audit });
+  return terminals;
+}
+
 // Real CLI-built examples execute in isolated surfaces; their data still comes from Go.
 export async function exerciseSdkExamples(page, recorder, runtime, projectKey, helpers) {
   const { createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest, selectTable,
@@ -101,11 +132,9 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
         && valueOf(rows, selectedId, secondField) === expectedSecond && valueOf(rows, otherId, secondField) === otherSecond
         && (decision === "approved" ? settled?.state === "succeeded" : decision === "conflict" ? settled?.state === "failed" && settled.error?.code === "mutation.digest_conflict" : settled?.state === "cancelled"), { settled, rows });
       await page.getByTestId("plugin-headless-close").waitFor({ timeout: 30000 }); await page.getByTestId("plugin-headless-close").click();
-      const audit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey, pluginId: "com.vibetable.examples.normalize-text" })).payload;
-      const terminals = audit.filter(event => event.eventType === "action" && event.runId === settled.runId);
-      recorder.check(`native normalization ${decision} has one durable receipt for one authorized row`, terminals.length === 1
-        && terminals[0].targetCount === 1 && terminals[0].details?.taskId === taskId
-        && terminals[0].outcome === (decision === "approved" ? "succeeded" : decision === "conflict" ? "failed" : decision), { terminals, taskId });
+      await waitForDurableActionTerminal(page, rawBridgeRequest, {
+        projectKey, pluginId: "com.vibetable.examples.normalize-text", runId: settled.runId, taskId, decision, until, recorder,
+      });
       if (decision === "conflict") await applyProductMutation(page, table.tableId, [{ kind: "update", recordId: selectedId, values: { [field]: initial } }], "sdk-reset-synthetic-value");
     }
   } finally { await fs.writeFile(sourceControl, originalSource, "utf8"); }
