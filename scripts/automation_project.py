@@ -145,8 +145,8 @@ def bootstrap() -> None:
     for project in projects:
         _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     _run("dotnet", "restore", "desktop/VibeTable.Desktop.sln")
-    if not candidate_prepare:
-        _install_w64devkit()
+    # The race lanes and the serial release smoke consume w64devkit, so they
+    # install it at their own consumption points instead of every bootstrap.
 
 
 def contracts() -> None:
@@ -336,6 +336,10 @@ def build_candidate() -> None:
         "--release",
         env=_node_environment(),
     )
+    if _candidate_prepare_mode():
+        # The candidate prepare deferred pr-e2e, so its journeys run against
+        # this single release build before any archive handoff.
+        _run_pr_e2e()
     _run(
         "uv",
         "run",
@@ -351,15 +355,8 @@ def build_candidate() -> None:
     _write_spdx(artifacts / "SBOM.spdx.json", version, archive)
 
 
-def pr_e2e() -> None:
-    """Build a package, run four tagged journeys, and qualify a real quick corpus."""
-    _run(
-        "uv",
-        "run",
-        "python",
-        "scripts/build_next.py",
-        env=_node_environment(),
-    )
+def _run_pr_e2e() -> None:
+    """Run the PR E2E journeys against the package currently in dist/."""
     _run(
         "go",
         "run",
@@ -391,6 +388,24 @@ def pr_e2e() -> None:
         "release.smoke",
         env=_node_environment(),
     )
+
+
+def pr_e2e() -> None:
+    """Build a package, run four tagged journeys, and qualify a real quick corpus."""
+    if _candidate_prepare_mode():
+        print(
+            "+ defer PR E2E to the candidate release build",
+            flush=True,
+        )
+        return
+    _run(
+        "uv",
+        "run",
+        "python",
+        "scripts/build_next.py",
+        env=_node_environment(),
+    )
+    _run_pr_e2e()
 
 
 def _spdx_id(value: str) -> str:

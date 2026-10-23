@@ -179,6 +179,29 @@ function fakeBridge(resultFor?: (payload: WorkspaceV2RequestPayload) => unknown)
           replicaVerified: true,
         },
       };
+    } else if (payload.method === "fileHistory.queryDocuments") {
+      result = { documents: [], nextCursor: null, topologyRevision: 0 };
+    } else if (payload.method === "fileHistory.listPendingChanges") {
+      result = { changes: [] };
+    } else if (payload.method === "retention.get") {
+      result = {
+        contractVersion: "2.0", policyRevision: 2,
+        snapshotDays: 30, snapshotCount: 20, snapshotBuckets: ["daily"],
+        fileRevisionDays: 30, fileRevisionCount: 20, fileRevisionBuckets: ["weekly"],
+        trashMonths: 3, repositoryLimitBytes: null,
+      };
+    } else if (payload.method === "retention.status") {
+      result = {
+        repositoryUsageBytes: 0, repositoryLimitBytes: null,
+        automaticSnapshotsPaused: false, warningCode: null,
+        integrityStatus: "unknown", integrityFailure: null,
+        lastIncrementalCheckAt: null, lastFullCheckAt: null,
+        maintenanceFailure: null, maintenanceFailureStage: null, lastMaintenanceFailureAt: null,
+      };
+    } else if (payload.method === "replica.status") {
+      result = { coordinationStrength: "advisory", syncState: "syncing", pendingSync: true };
+    } else if (payload.method === "conflict.list") {
+      result = { conflicts: [], nextCursor: null };
     } else {
       throw new Error(`unexpected method ${payload.method}`);
     }
@@ -364,6 +387,51 @@ describe("workspace v2 production host adapter", () => {
     publish(ready);
     await Promise.resolve();
     expect(fake.request).toHaveBeenCalledTimes(6);
+  });
+
+  it("retries a failed projection on a later same-session bootstrap", async () => {
+    let attempts = 0;
+    const fake = fakeBridge(() => {
+      if (++attempts === 1) throw new Error("sidecar temporarily unavailable");
+      return { snapshots: bootstrap().snapshots, nextCursor: null };
+    });
+    const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+    const ready = { ...bootstrap(), snapshots: [], capabilities: [
+      "workspace.session.v2", "snapshot.timeline.v2",
+    ] };
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    publish(ready);
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    publish(ready);
+    await vi.waitFor(() => expect(useWorkspaceProtectionStore().snapshots).toHaveLength(1));
+    expect(attempts).toBe(2);
+    publish(ready);
+    await nextTick();
+    expect(attempts).toBe(2);
+    adapter.dispose();
+  });
+
+  it("does not let a late old-session failure reopen current hydration", async () => {
+    const fake = fakeBridge(() => ({ snapshots: bootstrap().snapshots, nextCursor: null }));
+    let rejectOld!: (error: Error) => void;
+    fake.request.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }));
+    const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+    const ready = { ...bootstrap(), snapshots: [], capabilities: [
+      "workspace.session.v2", "snapshot.timeline.v2",
+    ] };
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    publish(ready);
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(1));
+    const next = { ...ready, session: { ...ready.session, sessionEpoch: ready.session.sessionEpoch + 1 } };
+    publish(next);
+    rejectOld(new Error("old session failed late"));
+    await vi.waitFor(() => expect(useWorkspaceProtectionStore().snapshots).toHaveLength(1));
+    await nextTick();
+    await nextTick();
+    publish(next);
+    await nextTick();
+    expect(fake.request).toHaveBeenCalledTimes(2);
+    adapter.dispose();
   });
 
   it("retains hydrated snapshots across an empty health bootstrap but accepts an empty list reply", async () => {

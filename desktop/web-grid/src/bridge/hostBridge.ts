@@ -1,4 +1,7 @@
 import { watch } from "vue";
+import {
+  PRODUCT_RPC_PUBLIC_METHODS, PRODUCT_RPC_GLOBAL_METHODS,
+} from "@/contracts/generated/productRpcCapabilities";
 import { getActivePinia } from "pinia";
 /**
  * HostBridge — a typed, whitelist-only bridge over `window.chrome.webview`.
@@ -148,6 +151,17 @@ type WebPayloadMap =
   & ReleaseUpdateWebPayloadMap
   & PreservationWebPayloadMap
   & WorkspaceV2WebPayloadMap;
+
+const globalProductMethods = new Set<string>(PRODUCT_RPC_GLOBAL_METHODS);
+const workspaceProductMethods = new Set<string>(PRODUCT_RPC_PUBLIC_METHODS.filter(
+  method => !globalProductMethods.has(method),
+));
+const legacyWorkspaceRequests = new Set<string>([
+  "table.queryRequested", "table.cursorRequested", "table.selected",
+  "table.updateCellRequested", "table.insertRowRequested", "table.deleteRowsRequested",
+  "table.previewPasteRequested", "table.applyPasteRequested",
+  "history.queryRequested", "history.previewRestoreRequested", "history.applyRestoreRequested",
+]);
 
 /** Diagnostic emitted when an inbound message is dropped. */
 export type DiagnosticKind =
@@ -1112,7 +1126,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       || type === "plugin.catalog.list" || type === "plugin.audit.list"
       || type === "plugin.cleanup.listPending"
       || type.startsWith("command.") || type.startsWith("shortcut.")
-      || type.startsWith("clipboard.");
+      || type.startsWith("clipboard.")
+      || workspaceProductMethods.has(type) || legacyWorkspaceRequests.has(type);
     if (retiresWithWorkspace && getActivePinia()) {
       const session = useWorkspaceSessionStore();
       // A watcher retires existing requests, but cannot admit new work during drain.
@@ -1152,6 +1167,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             }
           }, requestTimeoutMs);
       pending.set(requestId, {
+        // Workspace controllers suppress stale replies; global/lifecycle requests still settle on Host.
         retirementScope: retiresWithWorkspace && env.scope
           ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
