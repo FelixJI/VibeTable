@@ -114,15 +114,14 @@ rg -n 'schema\.getTable' desktop backend contracts tests
 阅读对应的 `hostBridge.test.ts`、`WebMessageRouterTests.cs` 和
 `ProductDataRpcRegistryTests.cs`，至少找出一条成功用例和一条拒绝非法输入的用例。
 
-### 第三步：进入 Python BFF
+### 第三步：路由到 Go sidecar
 
-- `desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs` 将请求映射到 stdio JSON-RPC 方法。
-- `backend/__main__.py` 把 product RPC 注册到 dispatcher。
-- `backend/contracts/product_rpc.py` 定义 Python 侧参数契约。
-- `backend/adapters/pocketbase/product_rpc.py` 实现 `get_table_schema`。
-- `backend/adapters/pocketbase/client.py` 通过 PocketBase API 读取权威数据。
+- `desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs` 把 `schema.getTable` 交给 `HostProductRpcInvoker`，经宿主私有 loopback HTTP 调用 Go sidecar。
+- `sidecar/internal/app/schema_product_rpc.go` 注册 `schema.getTable` 并校验 `tableId` 参数闭集；组装点见 `sidecar/internal/app/app.go`。
+- `sidecar/internal/app/field_routes.go` 组装表结构与字段域，`sidecar/internal/schemaexecution/table.go` 从 PocketBase 读取并组装表结构快照。
+- `backend/contracts/product_rpc.py` 仍定义 Python BFF 侧的同名参数闭集；`schema.getTable` 的现行执行 owner 是 Go sidecar（GO_AUTHORITY，见 `contracts/v2/product-runtime-ownership-inventory.json` 的 `rpc.schema-get-table`）。
 
-这一链路的关键结论是：Python 做契约适配和应用服务，但不绕过 PocketBase 直接写 SQLite。
+这一链路的关键结论是：宿主做 typed routing，schema 读取由 Go sidecar 完成，PocketBase 是唯一数据权威，任何栈都不绕过它直接写 SQLite。
 
 ## 5. 进阶纵向链：列出 Snapshot `snapshot.list`
 
