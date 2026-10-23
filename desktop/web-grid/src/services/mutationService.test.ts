@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createPinia, setActivePinia } from "pinia";
-import { createHostBridge } from "@/bridge/hostBridge";
+import { BridgeRequestNotSentError, createHostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
@@ -85,6 +85,108 @@ describe("mutationService correlated writes", () => {
     s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "parse failed" }); await flush();
     s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
     expect(s.history.writeUncertain).toBe(false); expect(s.history.canRedo).toBe(true);
+  });
+
+  it.each(["undo-first", "rejection-first"])("review12 pending undo survives zero submission in %s order", async order => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "preflight fails"); const failed = s.posted.at(-1)!;
+    const reject = async () => { s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "parse failed" }); await flush(); };
+    const commitUndo = async () => { s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo; };
+    if (order === "undo-first") {
+      await commitUndo(); expect(s.history.canRedo).toBe(false); await reject();
+    } else { await reject(); await commitUndo(); }
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.canRedo).toBe(true);
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 4)); await redo;
+  });
+
+  it.each([false, true])("review12 concurrent zero submissions restore redo regardless of rejection order (%s)", async reverse => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.service.updateCell(1, "other", "before", "A"); const first = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "B"); const second = s.posted.at(-1)!;
+    const requests = reverse ? [second, first] : [first, second];
+    s.reply(requests[0]!, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight" }); await flush();
+    expect(s.history.canRedo).toBe(false);
+    s.reply(requests[1]!, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight" }); await flush();
+    expect(s.history.canRedo).toBe(true); expect(s.history.redoStack).toHaveLength(1); expect(s.history.writeUncertain).toBe(false);
+  });
+
+  it.each([false, true])("review12 zero submission retains older redo without resurrecting a later consumed redo (%s)", async consumeNewer => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed"); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    const firstUndo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("two", 2, "name", 4)); await firstUndo;
+    const olderRedo = s.history.redoStack[0];
+    s.service.updateCell(1, "other", "before", "preflight fails"); const failed = s.posted.at(-1)!;
+    const secondUndo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 5)); await secondUndo;
+    const newerRedo = s.history.redoStack[0]; expect(newerRedo).not.toBe(olderRedo);
+    if (consumeNewer) {
+      const redo = s.service.performRedo(); await flush();
+      expect(s.posted.at(-1)!.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+      s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 6)); await redo;
+    }
+    s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight" }); await flush();
+    expect(s.history.redoStack).toEqual(consumeNewer ? [olderRedo] : [olderRedo, newerRedo]);
+  });
+
+  it.each(["clear", "authority", "unknown"])("review12 late zero submission cannot revive redo after %s", async retirement => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.service.updateCell(2, "name", "two", "preflight fails"); const failed = s.posted.at(-1)!;
+    if (retirement === "clear") s.history.clear();
+    else if (retirement === "authority") useWorkspaceSessionStore().sessionEpoch += 1;
+    else {
+      s.service.updateCell(1, "other", "before", "uncertain");
+      s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "unknown", message: "unconfirmed" }); await flush();
+    }
+    s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight" }); await flush();
+    expect(s.history.redoStack).toHaveLength(0); expect(s.history.canRedo).toBe(false);
+    expect(s.history.writeUncertain).toBe(retirement === "unknown");
+  });
+
+  it("review12 a synchronous bridge exception without a sent fact remains uncertain", async () => {
+    const s = setup(); vi.spyOn(s.bridge, "requestWithHandle").mockImplementationOnce(() => { throw new Error("no submission fact"); });
+    s.service.updateCell(2, "name", "two", "uncertain"); await flush();
+    expect(s.history.writeUncertain).toBe(true);
+  });
+
+  it.each([false, true])("review12 synchronous paste bridge failure distinguishes proven notSent (%s)", async notSent => {
+    const s = setup(); const paste = usePasteService(); cleanups.push(paste.dispose);
+    await seed(s); const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    const cause = new Error("no submission fact");
+    vi.spyOn(s.bridge, "requestWithHandle").mockImplementationOnce(() => {
+      throw notSent ? new BridgeRequestNotSentError("table.applyPasteRequested", "unsent", cause) : cause;
+    });
+    const input = { collection: "u", token: "t", idempotencyKey: "k" };
+    expect(() => paste.apply(input)).not.toThrow(); await flush();
+    expect(s.history.writeUncertain).toBe(!notSent); expect(s.history.canRedo).toBe(notSent);
+    expect(usePasteStore().phase).toBe("error");
+    if (!notSent) { expect(usePasteStore().error).toContain("尚未确认"); s.history.captureWriteRefresh()(); }
+    const count = s.posted.length; paste.apply(input); expect(s.posted).toHaveLength(count + 1);
+  });
+  it.each(["edit", "paste", "closed-edit", "closed-paste"])("review12 bridge admission rejects unsent %s without fencing its authority", async kind => {
+    const s = setup(); const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const closed = kind.startsWith("closed-");
+    if (!closed) {
+      session.setWorkspaces([{ contractVersion: "2.0", workspaceId, displayName: "test", selectedRoot: "D:/Workspaces/test", activityRoot: null,
+        storageKind: "fixed", coordinationStrength: "strong", lastOpenedAt: null, lastKnownHealth: "healthy", lastSnapshotAt: null, lastSyncAt: null, pendingSync: false }]);
+      session.applySession({ contractVersion: "2.0", workspaceId, sessionEpoch: 1, state: "openedWritable", openMode: "writable", writable: true, provisional: false, phase: "idle", errorCode: null });
+      expect(session.hasOpenWorkspace).toBe(true);
+      expect(session.beginSwitch("22222222-2222-4222-8222-222222222222")).toBe(true); session.reportTransitionPhase("draining");
+    } else expect(session.hasOpenWorkspace).toBe(false);
+    const paste = usePasteService(); cleanups.push(paste.dispose);
+    s.history.push({ id: "kept", kind: "updateCell", label: "kept", timestamp: 0, undo: async () => {}, redo: async () => {} });
+    const count = s.posted.length;
+    if (kind.endsWith("edit")) s.service.updateCell(2, "name", "two", "unsent");
+    else paste.apply({ collection: "u", token: "t", idempotencyKey: "k" });
+    await flush();
+    expect(s.posted).toHaveLength(count); expect(s.history.writeUncertain).toBe(false); expect(s.history.undoStackSize).toBe(1);
+    if (!closed) { session.failSwitch("SWITCH_ABORTED"); await flush(); expect(session.sessionEpoch).toBe(1); expect(session.hasOpenWorkspace).toBe(true); }
+    expect(s.history.writeUncertain).toBe(false);
   });
 
   it("review10 decoder rejects a non-boolean submission fact without settling its owner", async () => {

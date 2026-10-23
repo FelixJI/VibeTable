@@ -121,7 +121,7 @@ it("review7 authority retirement invalidates old uncertainty and recovery capabi
   store.markWriteUncertain(); oldRead(); expect(store.writeUncertain).toBe(true);
 });
 
-it.each(["clear", "undo", "redo"])("review10 zero-submission action recovery cannot overwrite %s activity", async activity => {
+it.each(["clear", "undo", "redo"])("review12 zero submission preserves redo alongside later %s activity", async activity => {
   setActivePinia(createPinia()); const store = useHistoryStore();
   const entry = { kind: "updateCell", label: "old", undo: vi.fn(), redo: vi.fn() } as never;
   store.push(entry); await store.undo(); const restore = store.beginAction();
@@ -130,5 +130,25 @@ it.each(["clear", "undo", "redo"])("review10 zero-submission action recovery can
     store.push({ kind: "updateCell", label: "new", undo: vi.fn(), redo: vi.fn() } as never, true);
     await store.undo(); if (activity === "redo") await store.redo();
   }
-  const before = [...store.redoStack]; restore(); expect(store.redoStack).toEqual(before);
+  const before = [...store.redoStack]; restore(true); expect(store.redoStack).toEqual(activity === "clear" ? before : [entry, ...before]);
+});
+
+it("review12 late settlements cannot lower the invalidation watermark for a pending undo", async () => {
+  setActivePinia(createPinia()); const store = useHistoryStore();
+  let complete!: () => void;
+  store.push({ kind: "updateCell", label: "old", undo: () => new Promise<void>(resolve => { complete = resolve; }), redo: vi.fn() } as never);
+  const older = store.beginAction(); const undo = store.undo(); const newer = store.beginAction();
+  newer(false); older(false); complete(); await undo;
+  expect(store.canRedo).toBe(false); expect(store.redoStack).toHaveLength(0);
+});
+
+it("review12 hidden redo candidates retain the same 50 entry bound", async () => {
+  setActivePinia(createPinia()); const store = useHistoryStore(); const settlements: ((notSubmitted: boolean) => void)[] = [];
+  for (let i = 0; i < 55; i++) {
+    store.push({ kind: "updateCell", label: `e${i}`, undo: vi.fn(), redo: vi.fn() } as never, true);
+    await store.undo(); settlements.push(store.beginAction());
+  }
+  expect(store.redoStack).toHaveLength(0);
+  settlements.forEach(settle => settle(true));
+  expect(store.redoStack).toHaveLength(50); expect(store.redoStack[0]?.label).toBe("e5");
 });

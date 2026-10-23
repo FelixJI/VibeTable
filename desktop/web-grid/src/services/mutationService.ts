@@ -124,8 +124,8 @@ export function useMutationService() {
     const contextIsCurrent = scope.capture();
     const expectedSession = table.revision?.databaseSessionId;
     const markUncertain = history.captureWriteUncertainty();
-    let sent = false;
-    let restoreUnsubmittedAction: (() => void) | undefined;
+    let sent: boolean | undefined;
+    let settleAction: ((notSubmitted: boolean) => void) | undefined;
     let result: unknown;
     try {
       let cancel!: () => void;
@@ -139,21 +139,23 @@ export function useMutationService() {
       try {
         const request = bridge.requestWithHandle(type, payload);
         sent = request.sent;
-        // Invalidate redo only after postMessage accepted the envelope, never on a late receipt.
-        if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) restoreUnsubmittedAction = history.beginAction();
+        // Hide redo as soon as postMessage accepts the envelope; only proven zero submission restores it.
+        if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) settleAction = history.beginAction();
         result = await Promise.race([request.promise, retired]);
       } finally {
         waiting.delete(cancel);
       }
     } catch (error) {
-      if (error instanceof BridgeRequestNotSentError) {
+      if (sent === false || error instanceof BridgeRequestNotSentError) {
+        settleAction?.(true);
         if (isCurrent() && requestHistoryIsCurrent()) {
-          const rejection: MutationErrorPayload = { kind: "backend_unavailable", notSubmitted: true, message: error.message };
+          const rejection: MutationErrorPayload = { kind: "backend_unavailable", notSubmitted: true, message: error instanceof Error ? error.message : "The bridge request was not sent." };
           onRejected?.(rejection, true);
           report(rejection);
         }
         throw error;
       }
+      settleAction?.(false);
       // Submission uncertainty belongs to the captured table/authority, not to undo history.
       markUncertain();
       if (contextIsCurrent()) report({ kind: "unknown", message: UNKNOWN_MESSAGE });
@@ -161,9 +163,9 @@ export function useMutationService() {
     }
     if (typeof result === "object" && result !== null && "kind" in result) {
       const rejection = result as MutationErrorPayload;
+      settleAction?.(rejection.notSubmitted === true);
       if (rejection.notSubmitted === true) {
         if (isCurrent() && requestHistoryIsCurrent()) {
-          restoreUnsubmittedAction?.();
           onRejected?.(rejection, true);
           report(rejection);
         }
@@ -176,6 +178,7 @@ export function useMutationService() {
       }
       throw new Error(rejection.notSubmitted === true ? mutationRejectionMessage(rejection) : rejection.message);
     }
+    settleAction?.(false);
     if (!isCurrent()) throw new Error("The mutation context changed after sending.");
     const committed = result as MutationResult;
     if (expectedSession && committed.revision.databaseSessionId !== expectedSession) {
