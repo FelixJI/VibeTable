@@ -5,42 +5,83 @@ import { setHostBridgeForTesting } from "./bridgeContext";
 import { useContentVersionService } from "./contentVersionService";
 import { usePresetVersionService } from "./presetVersionService";
 
+// Fixtures mirror the Go producers (sidecar/internal/metadata/preset.go,
+// content_version.go) and the cross-stack corpus
+// (contracts/v2/preset-python-oracle.json, content-version-python-oracle.json).
+const normalizedView = {
+  filters: [], sorts: [], groups: [], summaries: [], search: "",
+  visibleFields: [], layout: "table", kind: "table", dateField: null,
+  endDateField: null, titleField: null, groupField: null, coverField: null,
+  columns: [], density: "comfortable", isDefault: false,
+} as const;
 const versionEntry = { id: "v1", key: "draft", name: "Draft", outdated: false, mainHash: "hash-1", revision: "rev-v1", emittedEvents: [] };
+const authoredView = {
+  filters: [], sorts: [], search: "", visibleFields: [], layout: "table",
+} as const;
 
 describe("presetVersionService", () => {
   const requests: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  let respond: (type: string, payload: Record<string, unknown>) => unknown;
 
   beforeEach(() => {
     setActivePinia(createPinia());
     requests.length = 0;
-    const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
-      requests.push({ type, payload });
+    respond = (type: string, payload: Record<string, unknown>): unknown => {
       if (type === "preset.list") {
         return { collection: String(payload.collection), presets: [] };
       }
       if (type === "preset.save") {
         return {
-          id: "p1", collection: "orders", name: "My view", scope: "system",
-          view: payload.view, userId: null, revision: "rev-p1",
-          changeSetId: null, emittedEvents: [],
+          id: payload.presetId ?? "p1", collection: String(payload.collection),
+          name: String(payload.name), scope: "system", view: normalizedView,
+          userId: null, revision: "rev-p1", changeSetId: "change-scripted",
+          emittedEvents: ["event-scripted"],
+        };
+      }
+      if (type === "preset.delete") {
+        return {
+          deleted: String(payload.presetId), status: "applied",
+          changeSetId: "change-scripted", emittedEvents: ["event-scripted"],
         };
       }
       if (type === "version.create") {
         return {
           id: "v1", key: "draft", name: "Draft", outdated: false,
-          mainHash: "hash-1", revision: "rev-v1", changeSetId: null, emittedEvents: [],
+          mainHash: "hash-1", revision: "rev-v1", changeSetId: "metadata-change",
+          emittedEvents: ["metadata-event"],
         };
       }
       if (type === "version.list") {
-        return { collection: "orders", itemId: "row-1", versions: [] };
+        return { collection: String(payload.collection), itemId: String(payload.itemId), versions: [] };
+      }
+      if (type === "version.save") {
+        return {
+          saved: String(payload.versionId), revisionId: "revision-current",
+          metadataRevision: "rev-v1", changeSetId: "metadata-change",
+          emittedEvents: ["metadata-event"], status: "applied",
+        };
       }
       if (type === "version.compare") {
         return {
-          collection: "orders", itemId: "row-1", versionId: "v1",
-          outdated: false, mainHash: "hash-1", differences: {},
+          collection: String(payload.collection), itemId: String(payload.itemId),
+          versionId: String(payload.versionId), outdated: false,
+          mainHash: "hash-1", versionRevision: "rev-v1", differences: {},
         };
       }
-      return { deleted: String(payload.presetId ?? payload.versionId ?? "") };
+      if (type === "version.promote") {
+        return {
+          promoted: String(payload.versionId), restoredToRevision: "revision-saved",
+          result: { itemId: String(payload.itemId) },
+        };
+      }
+      return {
+        deleted: String(payload.versionId), status: "applied",
+        changeSetId: "metadata-change", emittedEvents: ["metadata-event"],
+      };
+    };
+    const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
+      requests.push({ type, payload });
+      return respond(type, payload);
     });
     setHostBridgeForTesting({ request } as unknown as HostBridge);
   });
@@ -135,11 +176,7 @@ describe("presetVersionService", () => {
     const service = usePresetVersionService();
 
     await expect(service.savePreset("orders", "My view", {
-      filters: [],
-      sorts: [],
-      search: "",
-      visibleFields: [],
-      layout: "table",
+      filters: [], sorts: [], search: "", visibleFields: [], layout: "table",
     }, {
       id: "p1",
       revision: "revision-stale",
@@ -147,6 +184,183 @@ describe("presetVersionService", () => {
       code: "preset_edit_conflict",
       path: "expectedRevision",
       message: "Preset changed elsewhere.",
+      retryable: false,
     });
+  });
+
+  it("rejects a malformed error envelope instead of returning it as success", async () => {
+    respond = () => ({ error: { code: "authority.failed" } });
+    const service = usePresetVersionService();
+
+    await expect(service.savePreset("orders", "My view", authoredView, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+    await expect(service.listPresets("orders"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+  });
+
+  it("rejects non-object and incomplete error envelopes as protocol failures", async () => {
+    const service = usePresetVersionService();
+    const versions = useContentVersionService();
+
+    respond = () => ({ error: "boom" });
+    await expect(versions.list({ collection: "orders", itemId: "row-1" }))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+
+    respond = () => ({ error: { code: "preset_edit_conflict", path: "expectedRevision" } });
+    await expect(service.deletePreset("p1", "rev-p1"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+
+    respond = () => ({ error: null });
+    await expect(versions.promote({ collection: "orders", itemId: "row-1" }, {
+      collection: "orders", itemId: "row-1", versionId: "v1",
+      versionRevision: "rev-v1", mainHash: "hash-1", outdated: false, differences: {},
+    })).rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+  });
+
+  it("rejects a preset.list success payload whose entries miss required fields", async () => {
+    respond = (type) => {
+      if (type !== "preset.list") throw new Error(`unexpected ${type}`);
+      return {
+        collection: "orders",
+        presets: [{
+          id: "p1", collection: "orders", name: "My view", scope: "system",
+          view: normalizedView, userId: null, emittedEvents: [],
+        }],
+      };
+    };
+    const service = usePresetVersionService();
+
+    await expect(service.listPresets("orders"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("rejects a version.compare reply without versionRevision before it can seed promote", async () => {
+    respond = (type, payload) => {
+      if (type !== "version.compare") throw new Error(`unexpected ${type}`);
+      return {
+        collection: String(payload.collection), itemId: String(payload.itemId),
+        versionId: String(payload.versionId), outdated: false,
+        mainHash: "hash-1", differences: {},
+      };
+    };
+
+    await expect(useContentVersionService().compare({ collection: "orders", itemId: "row-1" }, "v1"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("rejects responses whose identity does not match the request", async () => {
+    const service = usePresetVersionService();
+    const versions = useContentVersionService();
+
+    respond = (type, payload) => {
+      if (type === "version.list") {
+        return { collection: "other", itemId: String(payload.itemId), versions: [] };
+      }
+      if (type === "version.compare") {
+        return {
+          collection: String(payload.collection), itemId: String(payload.itemId),
+          versionId: "v-other", outdated: false, mainHash: "hash-1",
+          versionRevision: "rev-v1", differences: {},
+        };
+      }
+      if (type === "version.save") {
+        return {
+          saved: "v-other", revisionId: "revision-current", metadataRevision: "rev-v1",
+          changeSetId: "metadata-change", emittedEvents: [], status: "applied",
+        };
+      }
+      if (type === "version.promote") {
+        return { promoted: "v-other", restoredToRevision: "revision-saved", result: {} };
+      }
+      if (type === "preset.save") {
+        return {
+          id: "p-other", collection: "orders", name: "My view", scope: "system",
+          view: normalizedView, userId: null, revision: "rev-p1",
+          changeSetId: "change-scripted", emittedEvents: [],
+        };
+      }
+      if (type === "preset.delete" || type === "version.delete") {
+        return { deleted: "other", status: "applied", changeSetId: "change", emittedEvents: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    };
+
+    await expect(versions.list({ collection: "orders", itemId: "row-1" }))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(versions.compare({ collection: "orders", itemId: "row-1" }, "v1"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(versions.save({ collection: "orders", itemId: "row-1" }, versionEntry))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(versions.promote({ collection: "orders", itemId: "row-1" }, {
+      collection: "orders", itemId: "row-1", versionId: "v1",
+      versionRevision: "rev-v1", mainHash: "hash-1", outdated: false, differences: {},
+    })).rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(service.savePreset("orders", "My view", authoredView, { id: "p1", revision: "rev-p1" }))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(service.deletePreset("p1", "rev-p1"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(versions.delete({ collection: "orders", itemId: "row-1" }, versionEntry))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("does not let a void write pass silently on an unverifiable receipt", async () => {
+    respond = () => "applied";
+
+    await expect(useContentVersionService().save({ collection: "orders", itemId: "row-1" }, versionEntry))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(usePresetVersionService().deletePreset("p1", "rev-p1"))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+    await expect(useContentVersionService().promote({ collection: "orders", itemId: "row-1" }, {
+      collection: "orders", itemId: "row-1", versionId: "v1",
+      versionRevision: "rev-v1", mainHash: "hash-1", outdated: false, differences: {},
+    })).rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+  });
+
+  it("rejects a legal-looking envelope whose optional fields have illegal types", async () => {
+    respond = () => ({
+      error: {
+        code: "preset_edit_conflict", path: "expectedRevision",
+        message: "Preset changed elsewhere.", details: 42, retryable: "true",
+      },
+    });
+
+    await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, null))
+      .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "malformed-error-envelope" });
+  });
+
+  it("returns fully valid corpus-shaped results untouched", async () => {
+    respond = (type, payload) => {
+      if (type === "preset.list") {
+        return {
+          collection: "orders",
+          presets: [{
+            id: "z", collection: "orders", name: "Existing", scope: "role",
+            view: normalizedView, userId: null, revision: "revision-scripted-before",
+            changeSetId: null, emittedEvents: [],
+          }],
+        };
+      }
+      if (type === "version.list") {
+        return {
+          collection: String(payload.collection), itemId: String(payload.itemId),
+          versions: [{
+            id: "version-a", key: "alpha", name: "命名 \"修订", outdated: true,
+            mainHash: "bbbb", revision: "metadata-old", changeSetId: null,
+            emittedEvents: [],
+          }],
+        };
+      }
+      throw new Error(`unexpected ${type}`);
+    };
+
+    await expect(usePresetVersionService().listPresets("orders")).resolves.toMatchObject({
+      collection: "orders",
+      presets: [{ id: "z", revision: "revision-scripted-before", scope: "role" }],
+    });
+    await expect(useContentVersionService().list({ collection: "orders", itemId: "row-1" }))
+      .resolves.toMatchObject({
+        collection: "orders", itemId: "row-1",
+        versions: [{ id: "version-a", revision: "metadata-old", outdated: true }],
+      });
   });
 });

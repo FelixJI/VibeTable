@@ -113,6 +113,27 @@ describe("workCalendarStore", () => {
     await store.save();
     expect(request).toHaveBeenCalledTimes(1);
   });
+
+  it("reports a protocol error for a malformed error envelope without inventing calendar state", async () => {
+    request.mockResolvedValueOnce({ error: { code: "authority.failed" } });
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    expect(store.status).toBe("error");
+    expect(store.overrides).toEqual([]);
+    expect(store.error).toContain("settings.readWorkCalendar");
+    // A save whose receipt cannot be verified must neither claim success nor auto-resubmit.
+    request.mockResolvedValueOnce({ overrides: [], revision: "current" });
+    await store.load();
+    expect(store.status).toBe("ready");
+    store.setOverride("2026-07-18", "workday", "未知回执");
+    request.mockClear();
+    request.mockResolvedValueOnce({ error: "not-an-envelope" });
+    await store.save();
+    expect(store.status).toBe("error");
+    expect(store.error).toContain("settings.commitWorkCalendar");
+    expect(store.draft[0]?.name).toBe("未知回执");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("waits for database.opened and reads only the completed workspace epoch", async () => {
     useWorkspaceStore().phase = "opening";
     const session = useWorkspaceSessionStore();
