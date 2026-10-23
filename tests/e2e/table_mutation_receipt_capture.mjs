@@ -98,6 +98,7 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
   window.__vibetableE2EBridgeCaptureSequence = nextId;
   const previousPostMessage = webview.postMessage;
   let owner = null;
+  let ownerRequestId = null;
   let listenerInstalled = false;
   let wrapperInstalled = false;
   const capture = {
@@ -136,8 +137,12 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
     release();
   };
   const freezeOwner = (message) => {
-    if (!exact(message, ["type", "scope", "payload"])
-      || !validScope(message.scope)) return false;
+    const correlated = typeof message.requestId === "string" && message.requestId.length > 0;
+    const envelopeKeys = correlated
+      ? ["type", "scope", "payload", "requestId"]
+      : ["type", "scope", "payload"];
+    if (!exact(message, envelopeKeys) || !validScope(message.scope)) return false;
+    ownerRequestId = correlated ? message.requestId : null;
     const payload = message.payload;
     const scopeOwner = {
       workspaceId: message.scope.workspaceId,
@@ -215,10 +220,11 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
   function onMessage(event) {
     if (capture.message || capture.error || !owner) return;
     const message = parse(event.data);
+    if (ownerRequestId !== null && message?.requestId !== ownerRequestId) return;
     if (message?.type === specification.successType) {
       const payload = message.payload;
       let valid = exact(message, ["type", "requestId", "payload"])
-        && message.requestId === null
+        && message.requestId === ownerRequestId
         && validRevision(payload?.revision, owner.schemaRevision);
       if (requestType === "table.insertRowRequested") {
         valid = valid
@@ -250,7 +256,7 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
       if (message.payload?.operation !== specification.operation) return;
       if (
         !exact(message, ["type", "requestId", "payload"])
-        || message.requestId !== null
+        || message.requestId !== ownerRequestId
         || !validRejection(message.payload)
       ) {
         fail("CAPTURE_TERMINAL_IDENTITY_MISMATCH", "table mutation rejection is malformed");
@@ -265,7 +271,7 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
       release();
       return;
     }
-    if (message?.type !== "operation.failed" || message.requestId !== null) return;
+    if (message?.type !== "operation.failed" || message.requestId !== ownerRequestId) return;
     const operation = message.payload?.operation;
     if (operation !== requestType) return;
     const rawCode = message.payload?.code;

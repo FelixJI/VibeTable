@@ -71,6 +71,8 @@ export function workspaceV2ErrorMessage(error: unknown): string {
 
 export function mutationRejectionMessage(error: MutationErrorPayload): string {
   switch (error.kind) {
+    case "unknown":
+      return t("workspace.editRejected.unknown");
     case "edit_conflict":
       return t("workspace.editRejected.conflict");
     case "schema_mismatch":

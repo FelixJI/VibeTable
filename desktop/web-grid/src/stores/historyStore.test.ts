@@ -58,3 +58,42 @@ describe("historyStore", () => {
     expect(s.undoStackSize).toBe(50);
   });
 });
+
+it("new action during pending undo invalidates that future redo", async () => {
+  setActivePinia(createPinia());
+  const store = useHistoryStore();
+  let resolve!: () => void;
+  store.push({ kind: "updateCell", label: "edit", undo: () => new Promise<void>((r) => { resolve = r; }), redo: vi.fn() } as never);
+  const undo = store.undo();
+  store.beginAction();
+  resolve(); await undo;
+  expect(store.canRedo).toBe(false);
+});
+
+it("late confirmation can preserve redo created after submission", async () => {
+  setActivePinia(createPinia());
+  const store = useHistoryStore();
+  store.push({ kind: "updateCell", label: "edit", undo: vi.fn(), redo: vi.fn() } as never);
+  store.beginAction();
+  await store.undo();
+  store.push({ kind: "updateCell", label: "late", undo: vi.fn(), redo: vi.fn() } as never, true);
+  expect(store.canRedo).toBe(true);
+  expect(store.undoStackSize).toBe(1);
+});
+
+it("a rejected retired history operation does not put its error into the new generation", async () => {
+  setActivePinia(createPinia());
+  const store = useHistoryStore();
+  let reject!: (error: Error) => void;
+  store.push({ kind: "updateCell", label: "edit", undo: () => new Promise<void>((_, r) => { reject = r; }), redo: vi.fn() } as never);
+  const undo = store.undo(); store.clear(); reject(new Error("old error")); await undo;
+  expect(store.lastError).toBeNull(); expect(store.canUndo).toBe(false);
+});
+
+it("confirmed entries use authoritative commit order despite callback arrival order", () => {
+  setActivePinia(createPinia());
+  const store = useHistoryStore();
+  store.push({ kind: "updateCell", label: "later", dataRevision: 3, undo: vi.fn() } as never, true);
+  store.push({ kind: "updateCell", label: "earlier", dataRevision: 2, undo: vi.fn() } as never, true);
+  expect(store.undoStack.map((entry) => entry.label)).toEqual(["earlier", "later"]);
+});

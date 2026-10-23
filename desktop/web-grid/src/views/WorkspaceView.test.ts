@@ -1448,6 +1448,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "status",
@@ -1560,6 +1561,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "due",
@@ -1695,6 +1697,7 @@ describe("WorkspaceView", () => {
 
     emit({
       type: "table.editCommitted",
+      requestId: update?.requestId,
       payload: {
         rowKey: "row-1",
         column: "start",
@@ -1891,11 +1894,19 @@ describe("WorkspaceView", () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
+    const table = useTableStore();
+    table.setEditSchema([], {
+      databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1,
+    });
     const wrapper = mountView();
     await flushPromises();
 
+    wrapper.findComponent(GridHost).props("onCellEdited")!("row-1", "name", "old", "new", null);
+    const update = posted.filter(message => message.type === "table.updateCellRequested").at(-1);
+    expect(update?.requestId).toEqual(expect.any(String));
     emit({
       type: "table.editRejected",
+      requestId: update?.requestId,
       payload: {
         kind: "edit_conflict",
         message: "The row changed before the edit could be applied.",
@@ -3404,8 +3415,9 @@ describe("WorkspaceView", () => {
         values: {},
         schemaRevision: "schema-1",
       },
-      requestId: undefined,
+      requestId: expect.any(String),
     });
+    expect(new Set(posted.filter(message => message.type === "table.insertRowRequested").map(message => message.requestId)).size).toBe(2);
     table.setEditSchema([{ ...table.editSchema![0]!, dataType: "text", editable: false }], table.revision!);
     await flushPromises();
     expect(firstRow.attributes("disabled")).toBeDefined();
@@ -4351,6 +4363,11 @@ describe("WorkspaceView", () => {
   it("commits valid JSON through the table mutation seam and blocks invalid JSON", async () => {
     const notify = vi.fn();
     const request = vi.fn(async (method: string) => {
+      if (method === "table.updateCellRequested") return {
+        rowKey: "row-1", column: "metadata", storedValue: { approved: false },
+        currentRow: { rowKey: "row-1", metadata: { approved: false } },
+        revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 2 },
+      };
       throw new Error(`unexpected request: ${method}`);
     });
     setHostBridgeForTesting({
@@ -4406,7 +4423,7 @@ describe("WorkspaceView", () => {
       '[data-testid="json-editor-save"]',
     );
     expect(save?.disabled).toBe(true);
-    expect(notify).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
+    expect(request).not.toHaveBeenCalledWith("table.updateCellRequested", expect.anything());
 
     input!.value = '{"approved":false}';
     input!.dispatchEvent(new Event("input", { bubbles: true }));
@@ -4417,7 +4434,7 @@ describe("WorkspaceView", () => {
     expect(validSave?.disabled).toBe(false);
     validSave?.click();
     await flushPromises();
-    expect(notify).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("table.updateCellRequested", expect.objectContaining({
       table: "items",
       rowKey: "row-1",
       column: "metadata",

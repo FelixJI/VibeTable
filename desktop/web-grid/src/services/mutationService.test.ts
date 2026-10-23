@@ -2,1173 +2,568 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createPinia, setActivePinia } from "pinia";
-import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
+import { createHostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useMutationService } from "./mutationService";
+import { usePasteService } from "./pasteService";
+import { usePasteStore } from "@/stores/pasteStore";
+import { useErrorRouter } from "./errorRouter";
+import type { ApplyPasteResult, PastePlan } from "@/contracts";
 
-interface FieldValueCorpus {
-  readonly cases: readonly {
-    readonly id: string;
-    readonly field: string;
-    readonly productValue: unknown;
-  }[];
-}
+type Envelope = { type: string; payload: Record<string, unknown>; requestId: string };
+const digest = `sha256:${"a".repeat(64)}`;
+const revision = (dataRevision = 1, schemaRevision = "sr") => ({ databaseSessionId: "s", schemaRevision, dataRevision });
+const edit = (storedValue: unknown, rowKey: number | string = 1, column = "name", dataRevision = 2) => ({
+  rowKey, column, storedValue, currentRow: { rowKey, [column]: storedValue, __vibetableDigest: digest }, revision: revision(dataRevision),
+});
+const pasteResult = (overrides: Partial<ApplyPasteResult> = {}): ApplyPasteResult => ({
+  collection: "u", outcome: "committed", createdRowKeys: [10], updatedRowKeys: [], skippedRowKeys: [],
+  conflicts: [], requestId: "paste-result", ...overrides,
+});
 
-const fieldValueCorpus = JSON.parse(
-  readFileSync(
-    resolve(
-      process.cwd(),
-      "..",
-      "..",
-      "contracts",
-      "schema-v2",
-      "fixtures",
-      "field-value-entry-corpus.json",
-    ),
-    "utf8",
-  ),
-) as FieldValueCorpus;
-
-// Build a bridge with a controllable inbound shim (same shape as
-// errorRouter.test.ts). The shim captures the message listener so tests can
-// drive inbound events via `emit`.
-function makeShimBridge(): {
-  bridge: HostBridge;
-  emit: (type: string, payload: unknown) => void;
-} {
-  let listener: ((e: { data: unknown }) => void) | null = null;
-  const shim = {
-    addEventListener: (_: string, fn: (e: { data: unknown }) => void) => {
-      listener = fn;
+function setup(timeoutMs = 5_000) {
+  let listener: ((event: { data: unknown }) => void) | undefined;
+  const posted: Envelope[] = [];
+  const diagnostics = vi.fn();
+  let id = 0;
+  const bridge = createHostBridge({
+    timeoutMs, generateRequestId: () => `r${++id}`, onDiagnostic: diagnostics,
+    webview: {
+      addEventListener: (_, fn) => { listener = fn; },
+      removeEventListener: () => { listener = undefined; },
+      postMessage: (message) => { posted.push((typeof message === "string" ? JSON.parse(message) : message) as Envelope); },
     },
-    removeEventListener: (
-      _: string,
-      fn: (e: { data: unknown }) => void,
-    ) => {
-      if (listener === fn) listener = null;
-    },
-    postMessage: () => {},
-  };
-  const bridge = createHostBridge({ webview: shim });
+  });
   bridge.start();
-  return {
-    bridge,
-    emit: (type, payload) =>
-      listener?.({ data: JSON.stringify({ type, payload }) }),
-  };
+  setHostBridgeForTesting(bridge);
+  const table = useTableStore();
+  const ws = useWorkspaceStore();
+  ws.selectTable("u");
+  table.beginLoad();
+  table.appendPage({ table: "u", columns: [], rows: [
+    { rowKey: 1, name: "old", other: "before", __vibetableDigest: digest },
+    { rowKey: 2, name: "two", __vibetableDigest: digest },
+  ], offset: 0, limit: 2, totalRows: 2, mode: "remote" });
+  table.setEditSchema([{ name: "name", storageName: "name", dataType: "text", editable: true,
+    nullable: true, primaryKey: false, editor: { kind: "text" }, validation: [] }], revision());
+  const history = useHistoryStore();
+  const rejected = vi.fn();
+  const inserted = vi.fn();
+  const service = useMutationService();
+  service.init(rejected, inserted);
+  const emit = (type: string, payload: unknown, requestId?: string) => listener?.({ data: { type, payload, ...(requestId ? { requestId } : {}) } });
+  const reply = (request: Envelope, type: string, payload: unknown) => emit(type, payload, request.requestId);
+  const dispose = () => { if ("dispose" in service) service.dispose(); bridge.stop(); };
+  cleanups.push(dispose);
+  return { bridge, table, ws, history, service, posted, emit, reply, rejected, inserted, diagnostics };
+}
+const cleanups: (() => void)[] = [];
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+async function seed(s: ReturnType<typeof setup>, oldValue: unknown = "old") {
+  s.service.updateCell(1, "name", oldValue, "new");
+  s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new"));
+  await flush();
 }
 
-describe("mutationService", () => {
+describe("mutationService correlated writes", () => {
   beforeEach(() => setActivePinia(createPinia()));
-
-  // CRITICAL: `useHostBridge` is a module singleton. Reset to null so the fake
-  // bridge does not leak into other test files.
   afterEach(() => {
+    cleanups.splice(0).forEach((cleanup) => cleanup());
     vi.useRealTimers();
     setHostBridgeForTesting(null);
   });
 
-  it("creates rows with readonly autoNumber while rejecting missing schema, readonly text and views", () => {
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("numbers");
-    const service = useMutationService();
-    service.insertRow({});
-    expect(spy).not.toHaveBeenCalled();
-    const column = {
-      name: "number", storageName: "number", dataType: "autoNumber" as const,
-      editable: false, nullable: false, primaryKey: false,
-      editor: { kind: "text" as const }, validation: [],
-    };
-    const revision = { databaseSessionId: "s", schemaRevision: "sr1", dataRevision: 1 };
-    table.setEditSchema([column], revision);
-    expect(service.canInsertRow()).toBe(true);
-    service.insertRow({});
-    expect(spy).toHaveBeenLastCalledWith("table.insertRowRequested", {
-      table: "numbers", values: {}, schemaRevision: "sr1",
-    });
-    expect(table.editSchema?.[0].editable).toBe(false);
-    spy.mockClear();
-    table.setEditSchema([{ ...column, dataType: "text" }], revision);
-    service.insertRow({});
-    expect(spy).not.toHaveBeenCalled();
-    table.setEditSchema([column], revision);
-    ws.setOpened([{ collection: "numbers", metadata: { kind: "view" } }], {});
-    service.insertRow({});
-    expect(spy).not.toHaveBeenCalled();
+  it("response queued before a microtask table switch cannot apply afterward", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "old response");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old response"));
+    queueMicrotask(() => queueMicrotask(() => {
+      s.ws.selectTable("other"); s.ws.selectTable("u");
+      s.table.rollbackCellEdit(1, "name", "new context");
+    }));
+    await flush();
+    expect(s.table.allRows[0]?.name).toBe("new context");
+    expect(s.history.canUndo).toBe(false);
   });
 
-  it("forwards shared corpus product values unchanged for inline edits", () => {
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("corpus");
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr-corpus",
-      dataRevision: 1,
-    });
-    const service = useMutationService();
+  it("ordinary confirmation cannot finish a pending inverse", async () => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "changed"); const ordinary = s.posted.at(-1)!;
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 3)); await flush();
+    expect(s.history.busy).toBe(true);
+    expect(s.history.undoStackSize).toBe(1);
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 4)); await undo;
+    expect(s.history.canRedo).toBe(true);
+  });
 
-    for (const test of fieldValueCorpus.cases) {
-      service.updateCell(1, test.field, null, test.productValue);
-      expect(spy, test.id).toHaveBeenLastCalledWith(
-        "table.updateCellRequested",
-        expect.objectContaining({
-          column: test.field,
-          newValue: test.productValue,
-        }),
-      );
+  it("older confirmations for a different row still project their committed value", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "one"); const first = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "second"); const second = s.posted.at(-1)!;
+    s.reply(second, "table.editCommitted", edit("second", 2, "name", 3)); await flush();
+    s.reply(first, "table.editCommitted", edit("one", 1, "name", 2)); await flush();
+    expect(s.table.allRows[0]?.name).toBe("one"); expect(s.table.allRows[1]?.name).toBe("second");
+  });
+
+  it.each(["ordinary-first", "undo-first"])("keeps r2 ordinary history and r1 redo for %s confirmations", async (order) => {
+    const s = setup();
+    await seed(s);
+    s.service.updateCell(2, "name", "two", "changed");
+    const ordinary = s.posted.at(-1)!;
+    const undo = s.service.performUndo();
+    await flush();
+    const inverse = s.posted.at(-1)!;
+    expect(inverse.requestId).not.toBe(ordinary.requestId);
+    if (order === "ordinary-first") {
+      s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 3));
+      await flush();
+      expect(s.history.busy).toBe(true);
+      expect(s.history.undoStackSize).toBe(1);
+      s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 4));
+    } else {
+      s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3));
+      await undo;
+      expect(s.history.canRedo).toBe(true);
+      s.reply(ordinary, "table.editCommitted", edit("changed", 2, "name", 4));
+    }
+    await undo;
+    await flush();
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.history.canRedo).toBe(true);
+    const redo = s.service.performRedo();
+    await flush();
+    expect(s.posted.at(-1)?.payload).toMatchObject({ rowKey: 1, newValue: "new" });
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("new", 1, "name", 5));
+    await redo;
+    expect(s.table.allRows.find((r) => r.rowKey === 1)?.name).toBe("new");
+    expect(s.history.undoStackSize).toBe(2);
+    expect(s.history.canRedo).toBe(false);
+  });
+
+  it("a genuinely new write after undo clears redo at submission", async () => {
+    const s = setup();
+    await seed(s);
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3));
+    await undo;
+    expect(s.history.canRedo).toBe(true);
+    s.service.updateCell(2, "name", "two", "changed");
+    expect(s.history.canRedo).toBe(false);
+  });
+
+  it("forwards shared product-value corpus, old null and captured digest unchanged", async () => {
+    const s = setup();
+    const corpus = JSON.parse(readFileSync(resolve(process.cwd(), "../../contracts/schema-v2/fixtures/field-value-entry-corpus.json"), "utf8")) as {
+      cases: { id: string; field: string; productValue: unknown }[];
+    };
+    for (const item of corpus.cases) {
+      s.service.updateCell(1, item.field, null, item.productValue, digest);
+      expect(s.posted.at(-1)?.payload, item.id).toMatchObject({ column: item.field, newValue: item.productValue, oldValue: null, expectedDigest: digest, schemaRevision: "sr" });
+    }
+    const s2 = setup();
+    await seed(s2, null);
+    s2.table.applyCellEdit(edit("new", 1, "name", 3));
+    const undo = s2.service.performUndo(); await flush();
+    expect(s2.posted.at(-1)?.payload.newValue).toBeNull();
+    s2.reply(s2.posted.at(-1)!, "table.editCommitted", edit(null, 1, "name", 4));
+    await undo;
+    expect(s2.table.allRows[0]?.name).toBeNull();
+  });
+
+  it.each([
+    [1, "name", 1, "name"], [1, "name", 1, "other"], [1, "name", 2, "name"],
+  ] as const)("owns rejection for %s/%s independently of %s/%s", async (rowA, colA, rowB, colB) => {
+    const s = setup();
+    s.service.updateCell(rowA, colA, "old-A", "new-A");
+    const a = s.posted.at(-1)!;
+    s.service.updateCell(rowB, colB, "old-B", "new-B");
+    const b = s.posted.at(-1)!;
+    s.reply(b, "table.editCommitted", edit("new-B", rowB, colB, 3));
+    await flush();
+    s.reply(a, "table.editRejected", { kind: "edit_conflict", message: "A rejected", currentRow: { [colA]: "authority-A", [colB]: "stale-B" } });
+    await flush();
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.table.allRows.find((r) => r.rowKey === rowB)?.[colB]).toBe("new-B");
+    expect(s.rejected).toHaveBeenCalledOnce();
+    s.reply(b, "table.editCommitted", edit("duplicate", rowB, colB, 4));
+    s.reply(a, "table.editRejected", { kind: "edit_conflict", message: "duplicate" });
+    await flush();
+    expect(s.history.undoStackSize).toBe(1);
+    expect(s.rejected).toHaveBeenCalledOnce();
+  });
+
+  it.each(["first-first", "second-first"])("two rejected writes to one cell restore its true baseline for %s", async (order) => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    const rejection = { kind: "mutation_validation", message: "invalid" };
+    s.reply(order === "first-first" ? first : second, "table.editRejected", rejection); await flush();
+    s.reply(order === "first-first" ? second : first, "table.editRejected", rejection); await flush();
+    expect(s.table.allRows[0]?.name).toBe("old"); expect(s.history.canUndo).toBe(false);
+  });
+
+  it("a rejected earlier optimistic value is not used as the next successful write's undo value", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    s.reply(second, "table.editCommitted", edit("second", 1, "name", 2)); await flush();
+    s.reply(first, "table.editRejected", { kind: "mutation_validation", message: "invalid first" }); await flush();
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.newValue).toBe("old");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+  });
+
+  it("rolls back only the exact rejected cell and preserves unrelated optimistic columns", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "optimistic");
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "edit_conflict", message: "conflict", currentRow: { name: "authority", other: "stale" } });
+    await flush();
+    expect(s.table.allRows[0]).toMatchObject({ name: "authority", other: "before" });
+    expect(s.table.error).toBeNull();
+    expect(s.history.canUndo).toBe(false);
+  });
+
+  it("does not overwrite a later committed projection with an older response", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
+    s.service.updateCell(1, "name", "first", "second"); const second = s.posted.at(-1)!;
+    s.reply(second, "table.editCommitted", edit("second", 1, "name", 3));
+    s.reply(first, "table.editCommitted", edit("first", 1, "name", 2));
+    await flush();
+    expect(s.table.allRows[0]?.name).toBe("second");
+    expect(s.history.undoStackSize).toBe(2);
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.newValue).toBe("first");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("first", 1, "name", 4)); await undo;
+  });
+
+  it.each(["insert", "delete"])("%s rejection cannot consume an inline edit or pending undo", async (kind) => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "pending");
+    const editRequest = s.posted.at(-1)!;
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    if (kind === "insert") s.service.insertRow({ name: "insert" });
+    else s.service.deleteRows([{ rowKey: 2, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "mutation_validation", message: `${kind} rejected` });
+    await flush();
+    expect(s.history.busy).toBe(true);
+    expect(s.table.allRows[1]?.name).toBe("two");
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3));
+    await undo;
+    s.reply(editRequest, "table.editRejected", { kind: "edit_conflict", message: "edit rejected" });
+    await flush();
+    expect(s.rejected.mock.calls.map((c) => c[0].message)).toEqual([`${kind} rejected`, "edit rejected"]);
+  });
+
+  it("ignores uncorrelated and orphaned mutation results, failures and duplicates", async () => {
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.emit("table.editCommitted", edit("broadcast"));
+    s.emit("table.editRejected", { kind: "edit_conflict", message: "broadcast" });
+    s.emit("operation.failed", { message: "query failed", operation: "query.page" });
+    s.emit("operation.failed", { message: "orphan" }, "absent");
+    await flush();
+    expect(s.history.busy).toBe(true);
+    expect(s.rejected).not.toHaveBeenCalled();
+    expect(s.table.allRows[0]?.name).toBe("new");
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3));
+    await undo;
+    s.reply(inverse, "table.editCommitted", edit("duplicate", 1, "name", 4));
+    await flush();
+    expect(s.history.canRedo).toBe(true);
+    expect(s.table.allRows[0]?.name).toBe("old");
+    expect(s.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ kind: "orphaned-response" }));
+  });
+
+  it("a definite undo rejection restores its own entry for conflict resolution", async () => {
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "edit_conflict", message: "undo conflict" });
+    await undo;
+    expect(s.history.canUndo).toBe(true);
+    expect(s.history.canRedo).toBe(false);
+    expect(s.history.lastError).toBe("undo conflict");
+  });
+
+  it("a confirmed sibling cannot rebuild replayable history after an unknown write", async () => {
+    vi.useFakeTimers(); const s = setup();
+    s.service.updateCell(1, "name", "old", "unknown");
+    await vi.advanceTimersByTimeAsync(1_000);
+    s.service.updateCell(1, "name", "unknown", "confirmed"); const sibling = s.posted.at(-1)!;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ kind: "unknown" }));
+    s.reply(sibling, "table.editCommitted", edit("confirmed", 1, "name", 3)); await flush();
+    expect(s.table.allRows[0]?.name).toBe("confirmed");
+    expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
+    expect(s.posted).toHaveLength(2);
+  });
+
+  it("sent undo timeout is unknown, cannot be retried and drops its late response", async () => {
+    vi.useFakeTimers();
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    await vi.advanceTimersByTimeAsync(5_000); await undo;
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ kind: "unknown", message: expect.stringContaining("核实") }));
+    expect(s.history.canUndo).toBe(false);
+    expect(s.history.canRedo).toBe(false);
+    s.reply(inverse, "table.editCommitted", edit("late", 1, "name", 3)); await flush();
+    expect(s.table.allRows[0]?.name).toBe("new");
+    expect(s.posted).toHaveLength(2);
+  });
+
+  it.each(["table", "workspace", "epoch", "dispose", "session"])("retires in-flight commands on %s change without contaminating a new context", async (change) => {
+    const s = setup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    if (change === "table") { s.ws.selectTable("other"); s.ws.selectTable("u"); }
+    if (change === "workspace") useWorkspaceSessionStore().activeWorkspaceId = "another";
+    if (change === "epoch") useWorkspaceSessionStore().sessionEpoch += 1;
+    if (change === "dispose") s.service.dispose();
+    if (change === "session") s.table.revision = { ...revision(), databaseSessionId: "another" };
+    s.table.rollbackCellEdit(1, "name", "new context");
+    s.reply(inverse, "table.editCommitted", edit("old context", 1, "name", 4));
+    await undo; await flush();
+    expect(s.table.allRows[0]?.name).toBe("new context");
+    expect(s.history.undoStackSize).toBe(0);
+    expect(s.history.canRedo).toBe(false);
+    expect(s.rejected).not.toHaveBeenCalled();
+  });
+
+  it("coalesces unsent deferred edits with the original old value and guard", async () => {
+    vi.useFakeTimers(); const s = setup(); s.table.reset();
+    s.service.updateCell(1, "name", "old", "first", digest);
+    s.service.updateCell(1, "name", "first", "second", "different");
+    expect(s.posted).toHaveLength(0);
+    s.table.setEditSchema([], revision());
+    await vi.advanceTimersByTimeAsync(25);
+    expect(s.posted).toHaveLength(1);
+    expect(s.posted[0]?.payload).toMatchObject({ oldValue: "old", newValue: "second", expectedDigest: digest });
+  });
+
+  it("an unsent deferred timeout rolls back once and remains distinct from sent unknown", async () => {
+    vi.useFakeTimers(); const s = setup(); s.table.setEditSchema([], { ...revision(), schemaRevision: "" });
+    s.table.rollbackCellEdit(1, "name", "optimistic");
+    s.service.updateCell(1, "name", "old", "first");
+    s.service.updateCell(1, "name", "first", "second");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(s.posted).toHaveLength(0);
+    expect(s.table.allRows[0]?.name).toBe("old");
+    expect(s.rejected).toHaveBeenCalledOnce();
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ kind: "backend_unavailable" }));
+  });
+
+  it("dispose cancels revision timers and never sends into a later table", async () => {
+    vi.useFakeTimers(); const s = setup(); s.table.reset();
+    s.service.updateCell(1, "name", "old", "pending");
+    s.service.dispose();
+    s.table.setEditSchema([], revision());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(s.posted).toHaveLength(0);
+    expect(s.rejected).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["ready", "schema", "empty-session"])("undo readiness handles %s before sending", async (mode) => {
+    vi.useFakeTimers(); const s = setup(); await seed(s); s.table.reset();
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted).toHaveLength(1);
+    s.table.setEditSchema([], mode === "ready" ? revision(2) : {
+      ...revision(2, mode === "schema" ? "changed" : "sr"), databaseSessionId: "",
+    });
+    await vi.advanceTimersByTimeAsync(mode === "empty-session" ? 5_000 : 25);
+    if (mode === "ready") {
+      expect(s.posted).toHaveLength(2);
+      s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3));
+    }
+    await undo;
+    if (mode !== "ready") {
+      expect(s.posted).toHaveLength(1);
+      expect(s.history.lastError).toContain(mode === "schema" ? "schema changed" : "revision did not become ready");
     }
   });
 
-  it("updateCell notifies table.updateCellRequested with schemaRevision", () => {
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("users");
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr1",
-      dataRevision: 1,
-    });
-    const svc = useMutationService();
-    svc.updateCell(5, "name", "old", "new");
-    expect(spy).toHaveBeenCalledWith("table.updateCellRequested", {
-      table: "users",
-      rowKey: 5,
-      column: "name",
-      oldValue: "old",
-      newValue: "new",
-      expectedDigest: null,
-      schemaRevision: "sr1",
-    });
+  it("schema changes clear history at the confirmed revision boundary", async () => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(1, "name", "new", "changed");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", { ...edit("changed"), revision: revision(3, "next") }); await flush();
+    expect(s.history.canUndo).toBe(false);
   });
 
-  it("updateCell preserves the digest captured when editing began", () => {
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    const digest = `sha256:${"b".repeat(64)}`;
-    ws.selectTable("users");
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr1",
-      dataRevision: 1,
-    });
-
-    useMutationService().updateCell(5, "name", "old", "new", digest);
-
-    expect(spy).toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.objectContaining({ expectedDigest: digest }),
-    );
+  it("insert eligibility permits readonly autoNumber, rejects readonly text and views", () => {
+    const s = setup();
+    s.table.setEditSchema([{ name: "n", storageName: "n", dataType: "autoNumber", editable: false,
+      nullable: false, primaryKey: false, editor: { kind: "text" }, validation: [] }], revision());
+    expect(s.service.canInsertRow()).toBe(true); s.service.insertRow({}); expect(s.posted).toHaveLength(1);
+    s.table.setEditSchema([{ name: "n", storageName: "n", dataType: "text", editable: false,
+      nullable: false, primaryKey: false, editor: { kind: "text" }, validation: [] }], revision());
+    s.service.insertRow({}); expect(s.posted).toHaveLength(1);
+    s.ws.setOpened([{ collection: "u", metadata: { kind: "view" } }], {});
+    expect(s.service.canInsertRow()).toBe(false);
+    s.table.reset(); expect(s.service.canInsertRow()).toBe(false);
   });
 
-  it("defers an inline edit until a refresh publishes a schema revision", async () => {
-    vi.useFakeTimers();
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("users");
-    const service = useMutationService();
-
-    service.updateCell(5, "name", "old", "new");
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr-after-refresh",
-      dataRevision: 2,
-    });
-    await vi.advanceTimersByTimeAsync(25);
-
-    expect(spy).toHaveBeenCalledWith("table.updateCellRequested", {
-      table: "users",
-      rowKey: 5,
-      column: "name",
-      oldValue: "old",
-      newValue: "new",
-      expectedDigest: null,
-      schemaRevision: "sr-after-refresh",
-    });
+  it("insert confirmation, undo and redo retain the new authoritative row key", async () => {
+    const s = setup(); s.service.insertRow({ name: "added" });
+    s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 10, row: { rowKey: 10, name: "added", __vibetableDigest: digest }, revision: revision(2) }); await flush();
+    expect(s.inserted).toHaveBeenCalledOnce(); expect(s.history.undoStackSize).toBe(1);
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 10, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [10], revision: revision(3) }); await undo;
+    const redo = s.service.performRedo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 11, row: { rowKey: 11, name: "added", __vibetableDigest: digest }, revision: revision(4) }); await redo;
+    const again = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 11, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [11], revision: revision(5) }); await again;
   });
 
-  it("coalesces repeated deferred edits and preserves the first guard", async () => {
-    vi.useFakeTimers();
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    const originalDigest = `sha256:${"a".repeat(64)}`;
-    const refreshedDigest = `sha256:${"b".repeat(64)}`;
-    ws.selectTable("users");
-    table.beginLoad();
-    table.appendPage({
-      table: "users",
-      columns: [],
-      rows: [{ rowKey: 5, name: "first", __vibetableDigest: originalDigest }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const service = useMutationService();
-
-    service.updateCell(5, "name", "before", "first");
-    table.allRows[0]!.name = "second";
-    service.updateCell(5, "name", "first", "second");
-    table.allRows[0]!.__vibetableDigest = refreshedDigest;
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr-after-refresh",
-      dataRevision: 2,
-    });
-    await vi.advanceTimersByTimeAsync(25);
-
-    const updates = spy.mock.calls.filter(
-      ([type]) => type === "table.updateCellRequested",
-    );
-    expect(updates).toEqual([[
-      "table.updateCellRequested",
-      {
-        table: "users",
-        rowKey: 5,
-        column: "name",
-        oldValue: "before",
-        newValue: "second",
-        expectedDigest: originalDigest,
-        schemaRevision: "sr-after-refresh",
-      },
-    ]]);
+  it("delete owns its snapshot and redoes using restored row identities", async () => {
+    const s = setup(); s.service.deleteRows([{ rowKey: 2, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [2], revision: revision(2) }); await flush();
+    expect(s.table.allRows).toHaveLength(1);
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.values).toMatchObject({ name: "two" });
+    s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 22, row: { rowKey: 22, name: "two", __vibetableDigest: digest }, revision: revision(3) }); await undo;
+    const redo = s.service.performRedo(); await flush();
+    expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 22, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [22], revision: revision(4) }); await redo;
   });
 
-  it("rolls repeated deferred edits back to the first old value", async () => {
-    vi.useFakeTimers();
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("users");
-    table.beginLoad();
-    table.appendPage({
-      table: "users",
-      columns: [],
-      rows: [{ rowKey: 5, name: "first" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const onRejected = vi.fn();
-    const service = useMutationService();
-    service.init(onRejected);
+  it("partial multi-row delete undo never restores a blindly replayable entry", async () => {
+    const s = setup(); s.service.deleteRows([{ rowKey: 1, expectedDigest: digest }, { rowKey: 2, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [1, 2], revision: revision(2) }); await flush();
+    const undo = s.service.performUndo(); await flush();
+    s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 11, row: { rowKey: 11, name: "old" }, revision: revision(3) }); await flush();
+    s.reply(s.posted.at(-1)!, "table.editRejected", { kind: "edit_conflict", message: "second failed" }); await undo;
+    expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
+    expect(s.table.allRows).toHaveLength(1);
+  });
 
-    service.updateCell(5, "name", "before", "first");
-    table.allRows[0]!.name = "second";
-    service.updateCell(5, "name", "first", "second");
+  it("paste history deletes only created rows with current digests and offers no redo", async () => {
+    const s = setup(); s.service.recordPasteResult(pasteResult({ createdRowKeys: [2] }));
+    const undo = s.service.performUndo(); await flush();
+    expect(s.posted.at(-1)?.payload.rows).toEqual([{ rowKey: 2, expectedDigest: digest }]);
+    s.reply(s.posted.at(-1)!, "table.rowsDeleted", { deletedRowKeys: [2], revision: revision(2) }); await undo;
+    expect(s.history.canRedo).toBe(false);
+    s.service.recordPasteResult(pasteResult({ createdRowKeys: [], updatedRowKeys: [1] }));
+    await s.service.performUndo(); expect(s.posted).toHaveLength(1);
+  });
+});
+
+describe("paste request ownership", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    cleanups.splice(0).forEach((cleanup) => cleanup());
+    vi.useRealTimers(); setHostBridgeForTesting(null);
+  });
+  function pasteSetup() {
+    const s = setup();
+    const paste = usePasteService();
+    const applied = vi.fn(s.service.recordPasteResult);
+    paste.init(applied);
+    cleanups.push(paste.dispose);
+    useErrorRouter().init();
+    return { ...s, paste, applied, store: usePasteStore() };
+  }
+  const input = { collection: "u", token: "single-use", idempotencyKey: "logical-apply" };
+  const previewInput = {
+    collection: "u", schemaRevision: "sr", selection: { querySnapshot: { snapshotId: "q", digest: "q-digest", databaseId: "s", table: "u", schemaRevision: "sr", dataRevision: 1, normalizedQuery: {} }, dataRevision: 1, rowKeys: [] },
+    startCell: { column: "name" }, cells: [],
+  };
+
+  it("unrelated query failures cannot settle undo or an applying paste", async () => {
+    const s = pasteSetup(); await seed(s);
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    const query = s.bridge.request("table.queryRequested", { table: "u", query: { offset: 0, limit: 2 } });
+    const rejection = query.catch((error: Error) => error);
+    s.reply(s.posted.at(-1)!, "operation.failed", { operation: "query.page", message: "correlated query failed" });
+    await rejection; await flush();
+    expect(s.store.phase).toBe("applying"); expect(s.history.busy).toBe(true);
+    expect(s.table.error).toBeNull();
+    s.emit("operation.failed", { operation: "directory.list", message: "general diagnostic" }); await flush();
+    expect(s.store.phase).toBe("applying"); expect(s.history.busy).toBe(true);
+    expect(s.table.error).toBe("general diagnostic");
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    s.reply(apply, "table.pasteApplied", pasteResult()); await flush();
+    expect(s.store.phase).toBe("applied"); expect(s.applied).toHaveBeenCalledOnce();
+    expect(s.history.undoStack.filter((entry) => entry.kind === "applyPaste")).toHaveLength(1);
+    s.reply(apply, "table.pasteApplied", pasteResult());
+    s.reply(apply, "operation.failed", { message: "duplicate failed" });
+    s.emit("table.pasteApplied", pasteResult());
+    await flush(); expect(s.applied).toHaveBeenCalledOnce(); expect(s.store.phase).toBe("applied");
+  });
+
+  it("a late paste confirmation cannot rebuild history after another write becomes unknown", async () => {
+    vi.useFakeTimers(); const s = pasteSetup();
+    s.service.updateCell(1, "name", "old", "unknown");
+    await vi.advanceTimersByTimeAsync(1_000);
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    await vi.advanceTimersByTimeAsync(4_000);
+    s.reply(apply, "table.pasteApplied", pasteResult()); await flush();
+    expect(s.store.phase).toBe("applied");
+    expect(s.applied).not.toHaveBeenCalled();
+    expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
+  });
+
+  it("the exact paste failure is shown while a concurrent undo remains pending", async () => {
+    const s = pasteSetup(); await seed(s);
+    const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    s.reply(apply, "operation.failed", { message: "paste backend unavailable" }); await flush();
+    expect(s.store.error).toContain("paste backend unavailable");
+    expect(s.store.error).toContain("核实");
+    expect(s.history.busy).toBe(true);
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    expect(s.history.canUndo).toBe(false); expect(s.history.canRedo).toBe(false);
+  });
+
+  it("coalesces apply admission, preserves token/idempotency and does not retry timeout", async () => {
+    vi.useFakeTimers(); const s = pasteSetup();
+    s.paste.apply(input); const apply = s.posted.at(-1)!;
+    s.paste.apply(input); s.paste.preview(previewInput);
+    expect(s.posted).toHaveLength(1); expect(apply.payload).toEqual(input);
     await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(table.allRows[0]?.name).toBe("before");
-    expect(onRejected).toHaveBeenCalledTimes(1);
-    expect(onRejected).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "backend_unavailable" }),
-    );
+    expect(s.store.error).toContain("核实"); expect(s.applied).not.toHaveBeenCalled();
+    s.reply(apply, "table.pasteApplied", pasteResult()); await flush();
+    expect(s.store.phase).toBe("error"); expect(s.posted).toHaveLength(1);
   });
 
-  it("cancels a deferred edit without rolling it into a newly selected table", async () => {
-    vi.useFakeTimers();
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("users");
-    table.beginLoad();
-    table.appendPage({
-      table: "users",
-      columns: [],
-      rows: [{ rowKey: 5, name: "old-table" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const onRejected = vi.fn();
-    const service = useMutationService();
-    service.init(onRejected);
-    service.updateCell(5, "name", "old-table", "queued-edit");
-
-    ws.selectTable("orders");
-    table.reset();
-    table.beginLoad();
-    table.appendPage({
-      table: "orders",
-      columns: [],
-      rows: [{ rowKey: 5, name: "new-table" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    await vi.advanceTimersByTimeAsync(25);
-
-    expect(table.allRows[0]?.name).toBe("new-table");
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-    expect(onRejected).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "cancelled" }),
-    );
+  it.each(["conflict", "pending"] as const)("does not manufacture committed history for a %s paste", async (outcome) => {
+    const s = pasteSetup(); s.paste.apply(input);
+    s.reply(s.posted.at(-1)!, "table.pasteApplied", pasteResult({ outcome })); await flush();
+    expect(s.applied).not.toHaveBeenCalled(); expect(s.history.canUndo).toBe(false);
+    if (outcome === "pending") expect(s.store.error).toContain("核实");
+    else expect(s.store.result?.outcome).toBe("conflict");
   });
 
-  it("rolls back a deferred edit when the revision never becomes ready", async () => {
-    vi.useFakeTimers();
-    const { bridge } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const spy = vi.spyOn(bridge, "notify");
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("users");
-    table.beginLoad();
-    table.appendPage({
-      table: "users",
-      columns: [],
-      rows: [{ rowKey: 5, name: "optimistic" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const onRejected = vi.fn();
-    const service = useMutationService();
-    service.init(onRejected);
-    service.updateCell(5, "name", "before", "optimistic");
-
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(table.allRows[0]?.name).toBe("before");
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-    expect(onRejected).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "backend_unavailable" }),
-    );
+  it.each(["table", "epoch", "dispose"])("discards old paste results and failures after %s retirement", async (kind) => {
+    const s = pasteSetup(); s.paste.apply(input); const apply = s.posted.at(-1)!;
+    if (kind === "table") { s.ws.selectTable("other"); s.ws.selectTable("u"); }
+    if (kind === "epoch") useWorkspaceSessionStore().sessionEpoch += 1;
+    if (kind === "dispose") s.paste.dispose();
+    s.reply(apply, "table.pasteApplied", pasteResult()); await flush();
+    s.reply(apply, "operation.failed", { message: "old rejection" }); await flush();
+    expect(s.store.phase).toBe("idle"); expect(s.store.error).toBeNull();
+    expect(s.applied).not.toHaveBeenCalled(); expect(s.history.canUndo).toBe(false);
   });
 
-  it("on editCommitted, applies edit + pushes undoable history entry", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(table.allRows[0]?.name).toBe("new");
-    expect(history.canUndo).toBe(true);
-  });
-
-  it("preserves a pending null old value when realtime refresh wins the commit race", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: null }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr",
-      dataRevision: 1,
-    });
-    const svc = useMutationService();
-    svc.init();
-    svc.updateCell(1, "name", null, "new");
-
-    // Realtime data refresh can expose the committed value before the
-    // editCommitted notification consumes the pending edit.
-    table.applyCellEdit({
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-
-    const notify = vi.spyOn(bridge, "notify").mockImplementation((type, payload) => {
-      if (type !== "table.updateCellRequested") return;
-      expect(payload).toEqual(expect.objectContaining({
-        oldValue: "new",
-        newValue: null,
-      }));
-      emit("table.editCommitted", {
-        rowKey: 1,
-        column: "name",
-        storedValue: null,
-        currentRow: { rowKey: 1, name: null },
-        revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 3 },
-      });
-    });
-
-    await svc.performUndo();
-    expect(notify).toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.objectContaining({ newValue: null }),
-    );
-    expect(table.allRows[0]?.name).toBeNull();
-  });
-
-  it("rolls back a rejected edit locally without entering table error state", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "optimistic" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const onRejected = vi.fn();
-    const svc = useMutationService();
-    svc.init(onRejected);
-    svc.updateCell(1, "name", "before", "optimistic");
-
-    emit("table.editRejected", {
-      kind: "edit_conflict",
-      message: "The row changed before the edit could be applied.",
-      currentRow: { rowKey: 1, name: "authoritative" },
-      conflictingRowKeys: [1],
-    });
-
-    expect(table.error).toBeNull();
-    expect(table.allRows[0]?.name).toBe("authoritative");
-    expect(onRejected).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "edit_conflict" }),
-    );
-  });
-
-  it("notifies the full-create workflow after an inserted row is reconciled", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("customers");
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr",
-      dataRevision: 1,
-    });
-    const inserted = vi.fn();
-    useMutationService().init(undefined, inserted);
-
-    emit("table.rowsInserted", {
-      rowKey: "customer-9",
-      row: { name: "Ada" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-
-    expect(inserted).toHaveBeenCalledWith(expect.objectContaining({
-      rowKey: "customer-9",
-      row: { name: "Ada" },
-    }));
-  });
-
-  it("on rowsDeleted, applies delete + pushes history with cached snapshot", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [
-        { rowKey: 1, name: "a" },
-        { rowKey: 2, name: "b" },
-      ],
-      offset: 0,
-      limit: 2,
-      totalRows: 2,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr",
-      dataRevision: 1,
-    });
-    const svc = useMutationService();
-    svc.init();
-    // deleteRows caches the snapshot BEFORE sending the request.
-    svc.deleteRows([{ rowKey: 2, expectedDigest: "d" }]);
-    emit("table.rowsDeleted", {
-      deletedRowKeys: [2],
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(table.allRows).toHaveLength(1);
-    expect(history.canUndo).toBe(true);
-    vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.insertRowRequested") {
-        queueMicrotask(() => {
-          emit("table.rowsInserted", {
-            rowKey: 2,
-            row: { rowKey: 2, name: "b" },
-            revision: {
-              databaseSessionId: "s",
-              schemaRevision: "sr",
-              dataRevision: 3,
-            },
-          });
-        });
-      }
-    });
-    // Undo does not complete until the host confirms the inserted row.
-    await history.undo();
-    expect(table.allRows).toHaveLength(2);
-    expect(history.canRedo).toBe(true);
-  });
-
-  it("clears history on schema change (revision.schemaRevision differs)", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1 }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "x",
-      storedValue: 1,
-      currentRow: { rowKey: 1, x: 1 },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(history.canUndo).toBe(true);
-    // Second commit arrives with a DIFFERENT schemaRevision — history must be
-    // cleared because undo/redo across a schema change is unsafe.
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "x",
-      storedValue: 2,
-      currentRow: { rowKey: 1, x: 2 },
-      revision: {
-        databaseSessionId: "s",
-        schemaRevision: "CHANGED",
-        dataRevision: 3,
-      },
-    });
-    expect(history.canUndo).toBe(false);
-  });
-
-  // -------------------------------------------------------------------------
-  // Feedback-loop guard: performUndo/performRedo suppress history pushes so the
-  // host's confirmation round-trip does not clear the redo stack.
-  //
-  // The guard is CONSUME-ON-INBOUND, not time/await based. performUndo arms
-  // the suppress flag and DOES NOT clear it on await; the matching inbound
-  // result (editCommitted/rowsInserted/rowsDeleted/pasteApplied) consumes it.
-  // This is what makes the guard survive the real WebView2 host's async
-  // response — `await history.undo()` resolves long before the C# host
-  // processes the re-notification and broadcasts its confirmation.
-  //
-  // Two scenarios are covered:
-  //   (a) Synchronous host (shim emits inside the undo closure): the existing
-  //       "performUndo suppresses the re-notification's history push" test.
-  //   (b) Asynchronous host (response emitted AFTER undo resolves): the new
-  //       "performUndo survives an ASYNC host confirmation" test below — this
-  //       is the case the previous await-based flag could NOT handle.
-  // -------------------------------------------------------------------------
-
-  it("performUndo suppresses the re-notification's history push (redo preserved)", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(history.undoStackSize).toBe(1);
-
-    // Stub notify so that an undo's updateCellRequested triggers a SYNCHRONOUS
-    // editCommitted re-notification from the "host" — while suppress is active.
-    vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.updateCellRequested") {
-        emit("table.editCommitted", {
-          rowKey: 1,
-          column: "name",
-          storedValue: "old",
-          currentRow: { rowKey: 1, name: "old" },
-          revision: {
-            databaseSessionId: "s",
-            schemaRevision: "sr",
-            dataRevision: 3,
-          },
-        });
-      }
-    });
-
-    await svc.performUndo();
-
-    // The undo stack did NOT grow from the re-notification (1 → 0 via undo,
-    // not 1 → 1 → 0). canRedo must still be true: the feedback loop did not
-    // clear the redo stack.
-    expect(history.undoStackSize).toBe(0);
-    expect(history.canRedo).toBe(true);
-  });
-
-  it("waits for a refreshed schema revision before replaying undo", async () => {
-    vi.useFakeTimers();
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: {
-        databaseSessionId: "s",
-        schemaRevision: "sr",
-        dataRevision: 2,
-      },
-    });
-
-    // A background refresh temporarily removes the mutation revision.
-    table.reset();
-    table.beginLoad();
-    const spy = vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.updateCellRequested") {
-        emit("table.editCommitted", {
-          rowKey: 1,
-          column: "name",
-          storedValue: "old",
-          currentRow: { rowKey: 1, name: "old" },
-          revision: {
-            databaseSessionId: "s",
-            schemaRevision: "sr",
-            dataRevision: 3,
-          },
-        });
-      }
-    });
-
-    const undo = svc.performUndo();
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "new" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr",
-      dataRevision: 2,
-    });
-    await vi.advanceTimersByTimeAsync(25);
-    await undo;
-
-    expect(spy).toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.objectContaining({ schemaRevision: "sr" }),
-    );
-    expect(table.allRows[0]?.name).toBe("old");
-  });
-
-  it("rejects a pending undo when the schema changes during refresh", async () => {
-    vi.useFakeTimers();
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-
-    table.reset();
-    table.beginLoad();
-    const spy = vi.spyOn(bridge, "notify");
-    const undo = svc.performUndo();
-    table.setEditSchema([], {
-      databaseSessionId: "",
-      schemaRevision: "sr-next",
-      dataRevision: 0,
-    });
-    await vi.advanceTimersByTimeAsync(25);
-
-    await undo;
-    expect(useHistoryStore().lastError).toContain("schema changed");
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-  });
-
-  it("times out an undo that only observes an empty-session revision", async () => {
-    vi.useFakeTimers();
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-
-    table.reset();
-    table.beginLoad();
-    table.setEditSchema([], {
-      databaseSessionId: "",
-      schemaRevision: "sr",
-      dataRevision: 0,
-    });
-    const spy = vi.spyOn(bridge, "notify");
-    const undo = svc.performUndo();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await undo;
-
-    const history = useHistoryStore();
-    expect(history.lastError).toContain("did not become ready");
-    expect(history.busy).toBe(false);
-    expect(spy).not.toHaveBeenCalledWith(
-      "table.updateCellRequested",
-      expect.anything(),
-    );
-  });
-
-  it("performUndo returns entry to redo stack (basic undo semantics)", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    const beforeUndo = history.undoStackSize;
-    vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.updateCellRequested") {
-        queueMicrotask(() => {
-          emit("table.editCommitted", {
-            rowKey: 1,
-            column: "name",
-            storedValue: "old",
-            currentRow: { rowKey: 1, name: "old" },
-            revision: {
-              databaseSessionId: "s",
-              schemaRevision: "sr",
-              dataRevision: 3,
-            },
-          });
-        });
-      }
-    });
-    await svc.performUndo();
-    expect(history.undoStackSize).toBe(beforeUndo - 1);
-    expect(history.canRedo).toBe(true);
-  });
-
-  // -------------------------------------------------------------------------
-  // ASYNC feedback-loop guard: the real WebView2 host processes the undo's
-  // re-notification asynchronously and emits `table.editCommitted` AFTER
-  // `performUndo`'s promise has already resolved. A time/await-based suppress
-  // flag would have flipped back off by then and the inbound handler would
-  // push a duplicate entry, clearing the redo stack. The consume-on-inbound
-  // guard survives the async gap.
-  // -------------------------------------------------------------------------
-
-  it("performUndo survives an ASYNC host confirmation (redo preserved)", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(history.undoStackSize).toBe(1);
-
-    // Stub notify so the undo's updateCellRequested schedules the host's
-    // editCommitted confirmation via setTimeout(0) — i.e. AFTER the
-    // microtask queue drains and `await svc.performUndo()` resolves. This
-    // mirrors the real WebView2 host's async behavior.
-    vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.updateCellRequested") {
-        setTimeout(() => {
-          emit("operation.failed", {
-            operation: "realtime.stream", code: "realtime.stopped", message: "Realtime stopped.",
-          });
-          emit("table.editCommitted", {
-            rowKey: 1,
-            column: "name",
-            storedValue: "old",
-            currentRow: { rowKey: 1, name: "old" },
-            revision: {
-              databaseSessionId: "s",
-              schemaRevision: "sr",
-              dataRevision: 3,
-            },
-          });
-        }, 0);
-      }
-    });
-
-    // performUndo resolves BEFORE the host's async confirmation lands.
-    await svc.performUndo();
-    // At this instant, suppressHistory is STILL up (not cleared by await).
-    // The redo stack already has the entry (history.undo moved it there).
-    expect(history.canRedo).toBe(true);
-    expect(history.lastError).toBeNull();
-
-    // Flush the setTimeout(0) so the host's async confirmation arrives now.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    // The async confirmation did NOT push a duplicate entry (undoStackSize
-    // stayed at 0, not 1) and did NOT clear the redo stack.
-    expect(history.undoStackSize).toBe(0);
-    expect(history.canRedo).toBe(true);
-    // The store WAS updated by the inbound handler (apply still runs).
-    expect(table.allRows[0]?.name).toBe("old");
-  });
-
-  it("performUndo clears the suppress guard when the host emits operation.failed", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const table = useTableStore();
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [{ rowKey: 1, name: "old" }],
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      mode: "remote",
-    });
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "new",
-      currentRow: { rowKey: 1, name: "new" },
-      revision: { databaseSessionId: "s", schemaRevision: "sr", dataRevision: 2 },
-    });
-    expect(history.undoStackSize).toBe(1);
-
-    // Host fails the undo's re-notification — no editCommitted will arrive.
-    vi.spyOn(bridge, "notify").mockImplementation((type) => {
-      if (type === "table.updateCellRequested") {
-        setTimeout(() => {
-          emit("operation.failed", { message: "host rejected undo" });
-        }, 0);
-      }
-    });
-
-    await svc.performUndo();
-    expect(history.lastError).toBe("host rejected undo");
-    expect(history.undoStackSize).toBe(1);
-    expect(history.canRedo).toBe(false);
-
-    // The failed entry remains retryable, and the next user edit is recorded.
-    emit("table.editCommitted", {
-      rowKey: 1,
-      column: "name",
-      storedValue: "user-typed",
-      currentRow: { rowKey: 1, name: "user-typed" },
-      revision: {
-        databaseSessionId: "s",
-        schemaRevision: "sr",
-        dataRevision: 4,
-      },
-    });
-    expect(history.undoStackSize).toBe(2);
-    expect(table.allRows[0]?.name).toBe("user-typed");
-  });
-
-  // -------------------------------------------------------------------------
-  // C2: pasteApplied history producer.
-  // -------------------------------------------------------------------------
-
-  it("on pasteApplied with createdRowKeys, pushes an applyPaste history entry", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.pasteApplied", {
-      collection: "u",
-      outcome: "committed",
-      createdRowKeys: [10, 11],
-      updatedRowKeys: [],
-      skippedRowKeys: [],
-      conflicts: [],
-      requestId: "rq-1",
-    });
-    expect(history.canUndo).toBe(true);
-    expect(history.undoStack[0]?.kind).toBe("applyPaste");
-    expect(history.undoStack[0]?.label).toBe("粘贴");
-  });
-
-  it("pasteApplied undo notifies deleteRowsRequested for the created rowKeys", async () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const ws = useWorkspaceStore();
-    ws.selectTable("u");
-    const table = useTableStore();
-    const digestA = `sha256:${"a".repeat(64)}`;
-    const digestB = `sha256:${"b".repeat(64)}`;
-    table.beginLoad();
-    table.appendPage({
-      table: "u",
-      columns: [],
-      rows: [
-        { rowKey: 10, __vibetableDigest: digestA },
-        { rowKey: 11, __vibetableDigest: digestB },
-      ],
-      offset: 0,
-      limit: 2,
-      totalRows: 2,
-      mode: "remote",
-    });
-    table.setEditSchema([], {
-      databaseSessionId: "s",
-      schemaRevision: "sr",
-      dataRevision: 1,
-    });
-    const spy = vi.spyOn(bridge, "notify");
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.pasteApplied", {
-      collection: "u",
-      outcome: "committed",
-      createdRowKeys: [10, 11],
-      updatedRowKeys: [],
-      skippedRowKeys: [],
-      conflicts: [],
-      requestId: "rq-1",
-    });
-    spy.mockClear();
-    spy.mockImplementation((type) => {
-      if (type === "table.deleteRowsRequested") {
-        queueMicrotask(() => {
-          emit("table.rowsDeleted", {
-            deletedRowKeys: [10, 11],
-            revision: {
-              databaseSessionId: "s",
-              schemaRevision: "",
-              dataRevision: 2,
-            },
-          });
-        });
-      }
-    });
-    await history.undo();
-    const del = spy.mock.calls.find((c) => c[0] === "table.deleteRowsRequested");
-    expect(del).toBeTruthy();
-    const payload = del?.[1] as unknown as {
-      rows: { rowKey: number; expectedDigest: string }[];
-    };
-    expect(payload.rows).toEqual([
-      { rowKey: 10, expectedDigest: digestA },
-      { rowKey: 11, expectedDigest: digestB },
-    ]);
-    expect(history.canRedo).toBe(false);
-  });
-
-  it("pasteApplied with no created rows pushes nothing", () => {
-    const { bridge, emit } = makeShimBridge();
-    setHostBridgeForTesting(bridge);
-    const history = useHistoryStore();
-    const svc = useMutationService();
-    svc.init();
-    emit("table.pasteApplied", {
-      collection: "u",
-      outcome: "committed",
-      createdRowKeys: [],
-      updatedRowKeys: [5],
-      skippedRowKeys: [],
-      conflicts: [],
-      requestId: "rq-1",
-    });
-    // Only-updates paste still pushes an entry (per spec the producer runs for
-    // every paste), but the undo closure no-ops because there is nothing to
-    // remove. Verify canUndo flipped and redo no-ops without throwing.
-    expect(history.canUndo).toBe(true);
-    expect(history.undoStack[0]?.kind).toBe("applyPaste");
+  it("accepts only the current correlated preview and ignores late preview failures", async () => {
+    const s = pasteSetup();
+    s.paste.preview(previewInput); const first = s.posted.at(-1)!;
+    s.paste.preview(previewInput); const second = s.posted.at(-1)!;
+    const plan = { collection: "u", token: { token: "second", expiresAt: 100, consumed: false }, overflow: false } as PastePlan;
+    s.reply(second, "table.pastePreviewReady", plan); await flush();
+    s.reply(first, "operation.failed", { message: "old preview failure" });
+    s.emit("table.pastePreviewReady", { ...plan, token: { token: "broadcast" } }); await flush();
+    expect(s.store.plan?.token.token).toBe("second"); expect(s.store.error).toBeNull();
+    s.paste.preview(previewInput);
+    s.reply(s.posted.at(-1)!, "operation.failed", { message: "current preview failure" }); await flush();
+    expect(s.store.error).toBe("current preview failure");
+    s.paste.dispose(); s.paste.preview(previewInput); s.paste.apply(input);
+    expect(s.posted).toHaveLength(3);
   });
 });

@@ -1087,7 +1087,7 @@ function initializeBusinessConsumers(): void {
       void relationEditorController.dispatch({ type: "targets.refresh" });
     }
   });
-  pasteService.init();
+  pasteService.init(mutationService.recordPasteResult);
   mutationService.init(
     (error) => {
       if (error.kind !== "cancelled") editRejection.value = error;
@@ -1159,6 +1159,8 @@ onBeforeUnmount(() => {
   stopRecoveryDataInvalidation?.();
   stopRecoveryDataInvalidation = null;
   unregisterWorkspaceEpochReset();
+  mutationService.dispose();
+  pasteService.dispose();
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.dispose();

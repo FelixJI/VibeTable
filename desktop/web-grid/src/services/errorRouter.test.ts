@@ -135,7 +135,7 @@ describe("errorRouter", () => {
     expect(table.error).toBe("cannot delete");
   });
 
-  it("routes to pasteStore when applying", () => {
+  it("keeps applying paste independent of uncorrelated failures", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
     const paste = usePasteStore();
@@ -144,8 +144,9 @@ describe("errorRouter", () => {
     const router = useErrorRouter();
     router.init();
     emit("operation.failed", { message: "paste failed", code: "X" });
-    expect(paste.phase).toBe("error");
-    expect(paste.error).toBe("paste failed");
+    expect(paste.phase).toBe("applying");
+    expect(paste.error).toBeNull();
+    expect(useTableStore().error).toBe("paste failed");
   });
 
   it("falls back to tableStore when no admin/paste active", () => {

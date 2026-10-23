@@ -1052,6 +1052,38 @@ async function scenario02(page, recorder, _network, runtime) {
     { rowsAfterUndo, computedAfterUndo },
   );
 
+  for (const [shiftKey, expectedValue, action] of [
+    [true, "undo-this-data-edit", "redo"],
+    [false, rowsAfterUndo.rows[0][titleField.physicalName], "undo again"],
+  ]) {
+    const capture = await page.evaluate(installTableMutationReceiptCaptureInPage, {
+      requestType: "table.updateCellRequested",
+    });
+    const handled = await page.evaluate((shift) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "z", ctrlKey: true, shiftKey: shift, bubbles: true, cancelable: true,
+      });
+      document.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, shiftKey);
+    recorder.check(`history ${action} shortcut is accepted`, handled);
+    const terminal = await waitForCapturedBridgeMessage(page, 30_000, capture);
+    recorder.check(`history ${action} consumes its correlated native commit`,
+      terminal.type === "table.editCommitted"
+        && typeof terminal.requestId === "string"
+        && terminal.payload?.storedValue === expectedValue,
+      { terminal });
+    const authoritative = await waitForQueryPage(page, {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    }, (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[titleField.physicalName] === expectedValue);
+    recorder.check(`history ${action} agrees with the authoritative row`,
+      authoritative.payload.rows[0][titleField.physicalName] === expectedValue,
+      { authoritative });
+  }
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-edit-undo-redo.png"), fullPage: true,
+  });
   // The formula workbench must run its draft validation, error feedback, and
   // sample preview against the Go owner. Drive the real editor and prove the
   // failing drafts never touch the committed schema or business rows.

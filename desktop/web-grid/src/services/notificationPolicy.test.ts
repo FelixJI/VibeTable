@@ -7,11 +7,21 @@ import {
 } from "@/bridge/hostBridge";
 import {
   createNotificationDeduper,
+  mutationRejectionMessage,
   relationLookupErrorMessage,
   workspaceV2ErrorMessage,
 } from "./notificationPolicy";
 
 describe("notificationPolicy", () => {
+  it("keeps an unknown write outcome distinct from a confirmed rejection", () => {
+    const message = mutationRejectionMessage({ kind: "unknown", message: "private host detail" });
+    expect(message).toContain("尚未确认");
+    expect(message).toContain("核实");
+    expect(message).toContain("不要直接重试");
+    expect(message).not.toContain("未保存");
+    expect(message).not.toContain("private host detail");
+  });
+
   it("deduplicates the same burst while allowing a later retry", () => {
     let now = 1_000;
     const shouldShow = createNotificationDeduper(3_000, () => now);

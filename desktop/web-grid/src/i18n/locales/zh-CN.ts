@@ -801,6 +801,7 @@ export const messages: Record<string, string> = {
   "workspace.editRejected.validation": "该值未能保存，请检查后重试",
   "workspace.editRejected.notWritable": "当前字段不可编辑，本次更改未保存",
   "workspace.editRejected.backendUnavailable": "数据服务暂不可用，本次编辑未保存",
+  "workspace.editRejected.unknown": "写入结果尚未确认，请刷新并核实权威数据；不要直接重试。",
   "workspace.editRejected.generic": "本次编辑未保存，请重新加载后重试",
   "workspace.editRejected.reload": "重新加载",
   "plugin.risk.read": "只读",
