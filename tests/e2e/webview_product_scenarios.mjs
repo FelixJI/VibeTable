@@ -5705,8 +5705,8 @@ async function scenario08(page, recorder) {
   await page.waitForFunction(
     ({ field, value }) => Array.from(
       document.querySelectorAll(`.tabulator-cell[tabulator-field="${field}"]`),
-    ).some((node) => node.textContent?.includes(value)),
-    { field: valueField, value: "competitor-write" },
+    ).some((node) => node.querySelector(".vt-json-value")?.getAttribute("title") === JSON.stringify(value)),
+    { field: valueField, value: competitorValue },
     { timeout: 30_000 },
   );
   await page.getByTestId("json-editor-modal").waitFor();

@@ -23,6 +23,21 @@ test("scene08 submits a real stale draft and requires its owned rejection plus u
   let noticeVisible = false;
   let submitted = null;
   let competitorCommitted = false;
+  let competitorRendered = false;
+  // Match jsonValueFormatter: objects have a compact label and serialized JSON in the child title.
+  const jsonSpan = { textContent: "—", title: "空值", getAttribute(name) { return name === "title" ? this.title : null; } };
+  const renderedCell = {
+    get textContent() { return jsonSpan.textContent; },
+    getAttribute(name) { return name === "aria-haspopup" ? "dialog" : null; },
+    querySelector(selector) { assert.equal(selector, ".vt-json-value"); return jsonSpan; },
+  };
+  const document = {
+    querySelector(selector) {
+      assert.equal(selector, `.tabulator-cell[tabulator-field="${field}"]`);
+      return renderedCell;
+    },
+    querySelectorAll(selector) { return [this.querySelector(selector)]; },
+  };
   const requests = [];
   const checks = [];
   const listeners = new Set();
@@ -58,6 +73,7 @@ test("scene08 submits a real stale draft and requires its owned rejection plus u
           if (id !== "json-editor-save") return;
           assert.equal(modalOpen, true);
           assert.equal(competitorCommitted, true);
+          assert.equal(competitorRendered, true, "wait for the authoritative row to render before stale save");
           assert.equal(draft.expectedDigest, original.__vibetableDigest);
           assert.deepEqual(draft.originalValue, original[field]);
           submitted = { requestId: "ui-owned-edit", requestType: "table.updateCellRequested" };
@@ -76,11 +92,22 @@ test("scene08 submits a real stale draft and requires its owned rejection plus u
       };
     },
     async evaluate(fn, arg) { return vm.runInNewContext(`(${fn.toString()})(argument)`, { window, argument: arg }); },
-    async waitForFunction(_predicate, arg) {
-      if (typeof arg === "string") { assert.equal(competitorCommitted, false); return; }
+    async waitForFunction(predicate, arg) {
+      const evaluate = () => vm.runInNewContext(`(${predicate.toString()})(argument)`, { document, argument: arg });
+      if (typeof arg === "string") {
+        assert.equal(competitorCommitted, false);
+        assert.equal(evaluate(), true, "the JSON cell exposes its editor");
+        return;
+      }
       assert.equal(competitorCommitted, true);
+      assert.equal(evaluate(), false, "a committed but unrendered value must not release the wait");
       // A same-table authority refresh replaces the grid row, not the open modal's captured guard.
       assert.equal(authority.__vibetableDigest, "digest-after");
+      jsonSpan.textContent = `{…} · ${Object.keys(authority[field]).length} 个键`;
+      jsonSpan.title = JSON.stringify(authority[field]);
+      assert.equal(renderedCell.textContent.includes("competitor-write"), false);
+      assert.equal(evaluate(), true, "the real predicate must recognize the rendered JSON value");
+      competitorRendered = true;
     },
   };
   const query = () => ({ payload: { rows: [structuredClone(authority)], snapshot: { schemaRevision: "schema-1" } } });
