@@ -68,18 +68,18 @@ export function usePasteService() {
       store.setResult(applied);
       if (applied.outcome === "committed" && historyIsCurrent()) onApplied?.(applied);
     }, (error: Error) => {
-      if (!isCurrent()) return;
-      applying = false;
-      retireApplying = undefined;
-      if (error instanceof BridgeRequestNotSentError && historyIsCurrent()) {
-        store.setError(error.message);
-        return;
-      }
-      if (!historyIsCurrent()) {
-        store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
+      if (error instanceof BridgeRequestNotSentError) {
+        if (isCurrent()) {
+          applying = false;
+          retireApplying = undefined;
+          store.setError(error.message);
+        }
         return;
       }
       markUncertain();
+      if (!isCurrent()) return;
+      applying = false;
+      retireApplying = undefined;
       store.setError(`${error.message} 粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。`);
     });
   }

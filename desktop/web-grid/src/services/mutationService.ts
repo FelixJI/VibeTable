@@ -2,6 +2,7 @@ import { shallowReactive } from "vue";
 import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
+import { mutationRejectionMessage } from "./notificationPolicy";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHistoryStore } from "@/stores/historyStore";
@@ -55,7 +56,7 @@ export function useMutationService() {
   function report(error: MutationErrorPayload): void {
     if (history.writeUncertain && error.kind !== "unknown") return;
     if (editRejectedHandler) editRejectedHandler(error);
-    else table.setError(error.message);
+    else table.setError(error.notSubmitted === true ? mutationRejectionMessage(error) : error.message);
   }
 
   function findRowDigest(rowKey: number | string): string | null {
@@ -120,9 +121,11 @@ export function useMutationService() {
     if (!isCurrent()) throw new Error("The mutation context changed before sending.");
     if (history.writeUncertain) throw new Error(UNKNOWN_MESSAGE);
     const requestHistoryIsCurrent = history.captureGeneration();
+    const contextIsCurrent = scope.capture();
     const expectedSession = table.revision?.databaseSessionId;
     const markUncertain = history.captureWriteUncertainty();
     let sent = false;
+    let restoreUnsubmittedAction: (() => void) | undefined;
     let result: unknown;
     try {
       let cancel!: () => void;
@@ -137,37 +140,43 @@ export function useMutationService() {
         const request = bridge.requestWithHandle(type, payload);
         sent = request.sent;
         // Invalidate redo only after postMessage accepted the envelope, never on a late receipt.
-        if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) history.beginAction();
+        if (normal && request.sent && isCurrent() && requestHistoryIsCurrent()) restoreUnsubmittedAction = history.beginAction();
         result = await Promise.race([request.promise, retired]);
       } finally {
         waiting.delete(cancel);
       }
     } catch (error) {
-      if (isCurrent() && requestHistoryIsCurrent()) {
-        if (error instanceof BridgeRequestNotSentError) {
-          const rejection: MutationErrorPayload = { kind: "backend_unavailable", message: error.message };
+      if (error instanceof BridgeRequestNotSentError) {
+        if (isCurrent() && requestHistoryIsCurrent()) {
+          const rejection: MutationErrorPayload = { kind: "backend_unavailable", notSubmitted: true, message: error.message };
           onRejected?.(rejection, true);
           report(rejection);
-          throw error;
         }
-        markUncertain();
-        report({ kind: "unknown", message: error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE });
+        throw error;
       }
-      throw new Error(error instanceof Error ? `${error.message} ${UNKNOWN_MESSAGE}` : UNKNOWN_MESSAGE);
+      // Submission uncertainty belongs to the captured table/authority, not to undo history.
+      markUncertain();
+      if (contextIsCurrent()) report({ kind: "unknown", message: UNKNOWN_MESSAGE });
+      throw new Error(UNKNOWN_MESSAGE);
     }
-    if (!isCurrent()) throw new Error("The mutation context changed after sending.");
     if (typeof result === "object" && result !== null && "kind" in result) {
       const rejection = result as MutationErrorPayload;
-      if (!requestHistoryIsCurrent()) throw new Error(UNKNOWN_MESSAGE);
-      if (rejection.kind === "unknown") {
+      if (rejection.notSubmitted === true) {
+        if (isCurrent() && requestHistoryIsCurrent()) {
+          restoreUnsubmittedAction?.();
+          onRejected?.(rejection, true);
+          report(rejection);
+        }
+      } else if (rejection.kind === "unknown") {
         markUncertain();
-        report({ ...rejection, message: UNKNOWN_MESSAGE });
-      } else {
+        if (contextIsCurrent()) report({ ...rejection, message: UNKNOWN_MESSAGE });
+      } else if (isCurrent() && requestHistoryIsCurrent()) {
         onRejected?.(rejection);
         report(rejection);
       }
-      throw new Error(rejection.message);
+      throw new Error(rejection.notSubmitted === true ? mutationRejectionMessage(rejection) : rejection.message);
     }
+    if (!isCurrent()) throw new Error("The mutation context changed after sending.");
     const committed = result as MutationResult;
     if (expectedSession && committed.revision.databaseSessionId !== expectedSession) {
       markUncertain();

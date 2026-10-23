@@ -120,3 +120,15 @@ it("review7 authority retirement invalidates old uncertainty and recovery capabi
   oldMark(); ws.selectTable("a"); expect(store.writeUncertain).toBe(false);
   store.markWriteUncertain(); oldRead(); expect(store.writeUncertain).toBe(true);
 });
+
+it.each(["clear", "undo", "redo"])("review10 zero-submission action recovery cannot overwrite %s activity", async activity => {
+  setActivePinia(createPinia()); const store = useHistoryStore();
+  const entry = { kind: "updateCell", label: "old", undo: vi.fn(), redo: vi.fn() } as never;
+  store.push(entry); await store.undo(); const restore = store.beginAction();
+  if (activity === "clear") store.clear();
+  else {
+    store.push({ kind: "updateCell", label: "new", undo: vi.fn(), redo: vi.fn() } as never, true);
+    await store.undo(); if (activity === "redo") await store.redo();
+  }
+  const before = [...store.redoStack]; restore(); expect(store.redoStack).toEqual(before);
+});

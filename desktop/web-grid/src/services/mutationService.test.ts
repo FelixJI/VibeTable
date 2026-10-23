@@ -79,6 +79,55 @@ describe("mutationService correlated writes", () => {
     setHostBridgeForTesting(null);
   });
 
+  it("review10 a proven zero-submission action cannot invalidate a pending undo's future redo", async () => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush(); const inverse = s.posted.at(-1)!;
+    s.service.updateCell(2, "name", "two", "preflight fails"); const failed = s.posted.at(-1)!;
+    s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "parse failed" }); await flush();
+    s.reply(inverse, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.canRedo).toBe(true);
+  });
+
+  it("review10 decoder rejects a non-boolean submission fact without settling its owner", async () => {
+    const s = setup(); s.service.updateCell(1, "name", "old", "optimistic"); const request = s.posted.at(-1)!;
+    s.reply(request, "table.editRejected", { kind: "unknown", notSubmitted: "true", message: "malformed fact" }); await flush();
+    expect(s.rejected).not.toHaveBeenCalled(); expect(s.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ kind: "malformed" }));
+    s.reply(request, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "known preflight failure" }); await flush();
+    expect(s.history.writeUncertain).toBe(false); expect(s.rejected).toHaveBeenCalledOnce();
+  });
+
+  it("review10 notSubmitted after history clear cannot roll back the refreshed row or erase its history", async () => {
+    const s = setup(); s.service.updateCell(1, "name", "old", "old optimistic"); const write = s.posted.at(-1)!;
+    s.history.clear(); s.table.rollbackCellEdit(1, "name", "refreshed authority");
+    s.reply(write, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "preflight failed" }); await flush();
+    expect(s.table.allRows[0]?.name).toBe("refreshed authority"); expect(s.history.writeUncertain).toBe(false); expect(s.rejected).not.toHaveBeenCalled();
+  });
+
+  it.each(["timeout", "unknown"])("review10 sent %s after history clear still fences its table", async failure => {
+    vi.useFakeTimers(); const s = setup(); s.service.updateCell(1, "name", "old", "possibly committed"); const write = s.posted.at(-1)!;
+    s.history.clear();
+    if (failure === "timeout") await vi.advanceTimersByTimeAsync(5_000);
+    else { s.reply(write, "table.editRejected", { kind: "unknown", message: "unconfirmed" }); await flush(); }
+    expect(s.history.writeUncertain).toBe(true);
+    const count = s.posted.length; s.service.insertRow({ name: "blind retry" }); expect(s.posted).toHaveLength(count);
+  });
+
+  it("review10 proven notSubmitted keeps unrelated history and rolls back only its edit", async () => {
+    const s = setup(); await seed(s);
+    s.service.updateCell(2, "name", "two", "optimistic"); const write = s.posted.at(-1)!; s.table.rollbackCellEdit(2, "name", "optimistic");
+    s.reply(write, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "private preflight parse" }); await flush();
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.undoStackSize).toBe(1);
+    expect(s.table.allRows[1]?.name).toBe("two"); expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({ notSubmitted: true }));
+  });
+
+  it.each([false, true])("review10 notSubmitted restores only the redo cleared by its own action (%s)", async newerAction => {
+    const s = setup(); await seed(s); const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
+    expect(s.history.canRedo).toBe(true);
+    s.service.updateCell(2, "name", "two", "preflight fails"); const failed = s.posted.at(-1)!;
+    if (newerAction) { s.service.insertRow({ name: "newer" }); s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 9, row: { id: 9, name: "newer" }, revision: revision(4) }); await flush(); }
+    s.reply(failed, "table.editRejected", { kind: "unknown", notSubmitted: true, message: "parse failed" }); await flush();
+    expect(s.history.writeUncertain).toBe(false); expect(s.history.canRedo).toBe(!newerAction);
+  });
+
   it.each(["insert", "paste"] as const)("review7 %s uncertainty survives table/null switches and failed selection recovery", async kind => {
     const s = setup(); const tables = useTableService(); tables.init(); cleanups.push(tables.dispose);
     const paste = usePasteService(); cleanups.push(paste.dispose);
@@ -859,6 +908,18 @@ describe("paste request ownership", () => {
     collection: "u", schemaRevision: "sr", selection: { querySnapshot: { snapshotId: "q", digest: "q-digest", databaseId: "s", table: "u", schemaRevision: "sr", dataRevision: 1, normalizedQuery: {} }, dataRevision: 1, rowKeys: [] },
     startCell: { column: "name" }, cells: [],
   };
+
+  it("review10 notSent paste remains definitely unsent even if history clears synchronously", async () => {
+    const s = pasteSetup(); s.postMessage.mockImplementationOnce(() => { s.history.clear(); throw new Error("not posted"); });
+    s.paste.apply(input); await flush();
+    expect(s.history.writeUncertain).toBe(false); expect(s.store.error).not.toContain("尚未确认");
+  });
+
+  it("review10 sent paste timeout after history clear still fences its table", async () => {
+    vi.useFakeTimers(); const s = pasteSetup(); s.paste.apply(input); s.history.clear();
+    await vi.advanceTimersByTimeAsync(5_000); expect(s.history.writeUncertain).toBe(true);
+    const count = s.posted.length; s.paste.apply(input); expect(s.posted).toHaveLength(count);
+  });
 
   it("unrelated query failures cannot settle undo or an applying paste", async () => {
     const s = pasteSetup(); await seed(s);

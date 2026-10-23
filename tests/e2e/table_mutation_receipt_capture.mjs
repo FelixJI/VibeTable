@@ -206,9 +206,12 @@ export function installTableMutationReceiptCaptureInPage(configuration) {
     const fieldsValid = payload?.fieldErrors === null
       || (record(payload?.fieldErrors)
         && Object.values(payload.fieldErrors).every((value) => typeof value === "string"));
+    const hasSubmissionFact = record(payload) && Object.hasOwn(payload, "notSubmitted");
     return exact(payload, [
       "kind", "operation", "code", "message", "currentRow", "conflictingRowKeys", "fieldErrors",
+      ...(hasSubmissionFact ? ["notSubmitted"] : []),
     ])
+      && (!hasSubmissionFact || typeof payload.notSubmitted === "boolean")
       && kinds.includes(payload.kind)
       && payload.operation === specification.operation
       && codeValid

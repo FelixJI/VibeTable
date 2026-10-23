@@ -773,7 +773,7 @@ public sealed class TableWorkspaceService
         catch (Exception ex)
         {
             MutationError error = MutationErrorMapper.Map(ex);
-            onWriteSettled?.Invoke(error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
                 or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {
@@ -825,7 +825,7 @@ public sealed class TableWorkspaceService
         catch (Exception ex)
         {
             MutationError error = MutationErrorMapper.Map(ex);
-            onWriteSettled?.Invoke(error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
                 or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {
@@ -877,7 +877,7 @@ public sealed class TableWorkspaceService
         catch (Exception ex)
         {
             MutationError error = MutationErrorMapper.Map(ex);
-            onWriteSettled?.Invoke(error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
+            onWriteSettled?.Invoke(error.NotSubmitted || error.Kind is MutationErrorKind.EditConflict or MutationErrorKind.Validation
                 or MutationErrorKind.SchemaMismatch or MutationErrorKind.NotWritable);
             if (IsMutationStale(generation, table))
             {

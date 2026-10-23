@@ -460,3 +460,13 @@ test("correlated rejection retains validation and consumes only its request", ()
   } }));
   assert.equal(capture().error?.code, "CAPTURE_TERMINAL_IDENTITY_MISMATCH");
 });
+
+test("optional boolean notSubmitted keeps a correlated rejection consumable", () => {
+  for (const notSubmitted of [true, false, "true"]) {
+    const { harness } = install("table.updateCellRequested");
+    harness.webview.postMessage(editRequest({ requestId: "owned" }));
+    harness.dispatch({ ...rejection({ notSubmitted }), requestId: "owned" });
+    assert.equal(capture().error?.code, typeof notSubmitted === "boolean"
+      ? "TABLE_MUTATION_REJECTED" : "CAPTURE_TERMINAL_IDENTITY_MISMATCH");
+  }
+});

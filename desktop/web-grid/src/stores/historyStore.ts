@@ -89,9 +89,20 @@ export const useHistoryStore = defineStore("history", () => {
     return () => generation === captured;
   }
 
-  function beginAction(): void {
-    actionGeneration += 1;
+  function beginAction(): () => void {
+    const previousRedo = redoStack.value;
+    const historyGeneration = generation;
+    const action = ++actionGeneration;
     redoStack.value = [];
+    const clearedRedo = redoStack.value;
+    return () => {
+      if (historyGeneration === generation && action === actionGeneration
+        && redoStack.value === clearedRedo && clearedRedo.length === 0) {
+        redoStack.value = previousRedo;
+        // A proven zero-submission attempt must not invalidate an already pending undo.
+        actionGeneration -= 1;
+      }
+    };
   }
 
   function push(entry: HistoryEntry, preserveRedo = false): void {
@@ -114,7 +125,7 @@ export const useHistoryStore = defineStore("history", () => {
     const entry = undoStack.value.pop();
     if (!entry) return;
     const startGeneration = generation;
-    const startActionGeneration = actionGeneration;
+    const startActionGeneration = ++actionGeneration;
     busy.value = true;
     try {
       await entry.undo();
@@ -139,7 +150,7 @@ export const useHistoryStore = defineStore("history", () => {
     if (!entry) return;
     if (!entry.redo) return;
     const startGeneration = generation;
-    const startActionGeneration = actionGeneration;
+    const startActionGeneration = ++actionGeneration;
     busy.value = true;
     try {
       await entry.redo();

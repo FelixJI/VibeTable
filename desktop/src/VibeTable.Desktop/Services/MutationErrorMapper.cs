@@ -21,7 +21,8 @@ public readonly record struct MutationError(
     IReadOnlyDictionary<string, object?>? CurrentRow = null,
     IReadOnlyList<object>? ConflictingRowKeys = null,
     IReadOnlyDictionary<string, string>? FieldErrors = null,
-    string? Code = null);
+    string? Code = null,
+    bool NotSubmitted = false);
 
 public enum MutationErrorKind
 {
@@ -48,9 +49,11 @@ public sealed class TableEditConflictException : Exception
 }
 
 // Only gateway checks completed before Apply may use this definite rejection.
-internal sealed class TableMutationPreflightException(MutationErrorKind kind, string message) : InvalidOperationException(message)
+internal sealed class TableMutationPreflightException : InvalidOperationException
 {
-    internal MutationErrorKind Kind { get; } = kind;
+    internal TableMutationPreflightException(MutationErrorKind kind, string message) : base(message) => Kind = kind;
+    internal TableMutationPreflightException(Exception original) : base(original.Message, original) { }
+    internal MutationErrorKind Kind { get; } = MutationErrorKind.Unknown;
 }
 
 /// <summary>
@@ -102,14 +105,17 @@ public static class MutationErrorMapper
 
         if (exception is TableMutationPreflightException preflight)
         {
-            return new MutationError(preflight.Kind, preflight.Message);
+            return preflight.InnerException is Exception original
+                ? Map(original) with { NotSubmitted = true }
+                : new MutationError(preflight.Kind, preflight.Message, NotSubmitted: true);
         }
 
         if (exception is TableEditConflictException conflict)
         {
             return new MutationError(
                 MutationErrorKind.EditConflict,
-                conflict.Message);
+                conflict.Message,
+                NotSubmitted: true);
         }
 
         if (exception is RpcRemoteException remote)
@@ -152,7 +158,8 @@ public static class MutationErrorMapper
 
     private static string? ReadString(JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -164,7 +171,8 @@ public static class MutationErrorMapper
     private static IReadOnlyDictionary<string, object?>? ReadDict(
         JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -190,7 +198,8 @@ public static class MutationErrorMapper
 
     private static IReadOnlyList<object>? ReadKeyList(JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }
@@ -211,7 +220,8 @@ public static class MutationErrorMapper
     private static IReadOnlyDictionary<string, string>? ReadFieldErrors(
         JsonElement? data, string key)
     {
-        if (data is null || !data.Value.TryGetProperty(key, out var element))
+        if (data is null || data.Value.ValueKind != JsonValueKind.Object
+            || !data.Value.TryGetProperty(key, out var element))
         {
             return null;
         }

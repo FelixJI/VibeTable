@@ -111,6 +111,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string? expectedDigest = null)
     {
         string stage = "preflight";
+        bool submitted = false;
         try
         {
             string recordId = MutationRowId(rowKey);
@@ -141,7 +142,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                         ["expectedDigest"] = digestGuard,
                     },
                 },
-                token).ConfigureAwait(false);
+                token, () => submitted = true).ConfigureAwait(false);
             stage = "readback";
             var rows = await AwaitWriteOutcomeAsync(() => ReadRowsInternalAsync(
                 table,
@@ -226,6 +227,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             {
                 // Diagnostics must never replace the original edit failure.
             }
+            if (!submitted && exception is not TableMutationPreflightException and not TableEditConflictException)
+                throw new TableMutationPreflightException(exception);
             throw;
         }
     }
@@ -236,67 +239,75 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string schemaRevision,
         CancellationToken token)
     {
-        JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
-        if (!string.Equals(
-            RequiredString(schema, "schemaRevision"),
-            schemaRevision,
-            StringComparison.Ordinal))
+        bool submitted = false;
+        try
         {
-            throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
-        }
-        string recordId = values.TryGetValue("id", out object? requestedId)
-            ? RowId(requestedId!)
-            : Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..15];
-        if (!IsPocketBaseRecordId(recordId))
-        {
-            throw new TableMutationPreflightException(MutationErrorKind.Validation, "The requested record id is invalid.");
-        }
-        var writable = schema.GetProperty("fields")
-            .EnumerateArray()
-            .Where(field => !FieldReadOnly(schema, field))
-            .Select(field => FieldIdentityString(field, "physicalName"))
-            .ToHashSet(StringComparer.Ordinal);
-        var sanitizedValues = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach ((string name, object? value) in values)
-        {
-            if (name is "id" or "rowKey" or "__vibetableDigest" or "__vibetableRelationLabels")
+            JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
+            if (!string.Equals(
+                RequiredString(schema, "schemaRevision"),
+                schemaRevision,
+                StringComparison.Ordinal))
             {
-                continue;
+                throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
             }
-            if (!writable.Contains(name))
+            string recordId = values.TryGetValue("id", out object? requestedId)
+                ? RowId(requestedId!)
+                : Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..15];
+            if (!IsPocketBaseRecordId(recordId))
             {
-                throw new TableMutationPreflightException(MutationErrorKind.Validation,
-                    $"Insert contains unknown or read-only field '{name}'.");
+                throw new TableMutationPreflightException(MutationErrorKind.Validation, "The requested record id is invalid.");
             }
-            sanitizedValues[name] = value;
-        }
-        JsonElement receipt = await ApplyAsync(
-            table,
-            schemaRevision,
-            new object[]
+            var writable = schema.GetProperty("fields")
+                .EnumerateArray()
+                .Where(field => !FieldReadOnly(schema, field))
+                .Select(field => FieldIdentityString(field, "physicalName"))
+                .ToHashSet(StringComparer.Ordinal);
+            var sanitizedValues = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach ((string name, object? value) in values)
             {
-                new Dictionary<string, object?>
+                if (name is "id" or "rowKey" or "__vibetableDigest" or "__vibetableRelationLabels")
                 {
-                    ["kind"] = "insert",
-                    ["recordId"] = recordId,
-                    ["values"] = sanitizedValues,
+                    continue;
+                }
+                if (!writable.Contains(name))
+                {
+                    throw new TableMutationPreflightException(MutationErrorKind.Validation,
+                        $"Insert contains unknown or read-only field '{name}'.");
+                }
+                sanitizedValues[name] = value;
+            }
+            JsonElement receipt = await ApplyAsync(
+                table,
+                schemaRevision,
+                new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "insert",
+                        ["recordId"] = recordId,
+                        ["values"] = sanitizedValues,
+                    },
                 },
-            },
-            token).ConfigureAwait(false);
-        var rows = await AwaitWriteOutcomeAsync(() => ReadRowsInternalAsync(
-            table,
-            new[] { recordId },
-            schemaRevision,
-            token)).ConfigureAwait(false);
-        if (rows.Count != 1)
-        {
-            throw new InvalidOperationException("PocketBase omitted the inserted row.");
+                token, () => submitted = true).ConfigureAwait(false);
+            var rows = await AwaitWriteOutcomeAsync(() => ReadRowsInternalAsync(
+                table,
+                new[] { recordId },
+                schemaRevision,
+                token)).ConfigureAwait(false);
+            if (rows.Count != 1)
+            {
+                throw new InvalidOperationException("PocketBase omitted the inserted row.");
+            }
+            RequireCommittedReadback(receipt, recordId, "insert", rows[0]);
+            return new InsertRowResult(
+                recordId,
+                rows[0],
+                Revision(schemaRevision, receipt));
         }
-        RequireCommittedReadback(receipt, recordId, "insert", rows[0]);
-        return new InsertRowResult(
-            recordId,
-            rows[0],
-            Revision(schemaRevision, receipt));
+        catch (Exception exception) when (!submitted && exception is not TableMutationPreflightException)
+        {
+            throw new TableMutationPreflightException(exception);
+        }
     }
 
     public async Task<DeleteRowsResult> DeleteRowsAsync(
@@ -305,37 +316,45 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string schemaRevision,
         CancellationToken token)
     {
-        JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
-        if (!string.Equals(
-            RequiredString(schema, "schemaRevision"),
-            schemaRevision,
-            StringComparison.Ordinal))
+        bool submitted = false;
+        try
         {
-            throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
-        }
-        string operationKind = ArchiveOperationKind(schema);
-        object[] operations = rows.Select(row =>
-        {
-            if (!IsProductDigest(row.ExpectedDigest))
+            JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
+            if (!string.Equals(
+                RequiredString(schema, "schemaRevision"),
+                schemaRevision,
+                StringComparison.Ordinal))
             {
-                throw new TableMutationPreflightException(MutationErrorKind.Validation,
-                    "Delete requires the authoritative row digest.");
+                throw new TableMutationPreflightException(MutationErrorKind.SchemaMismatch, "The table schema changed.");
             }
-            return (object)new Dictionary<string, object?>
+            string operationKind = ArchiveOperationKind(schema);
+            object[] operations = rows.Select(row =>
             {
-                ["kind"] = operationKind,
-                ["recordId"] = MutationRowId(row.RowKey),
-                ["expectedDigest"] = row.ExpectedDigest,
-            };
-        }).ToArray();
-        JsonElement receipt = await ApplyAsync(
-            table,
-            schemaRevision,
-            operations,
-            token).ConfigureAwait(false);
-        return new DeleteRowsResult(
-            rows.Select(row => row.RowKey).ToArray(),
-            Revision(schemaRevision, receipt));
+                if (!IsProductDigest(row.ExpectedDigest))
+                {
+                    throw new TableMutationPreflightException(MutationErrorKind.Validation,
+                        "Delete requires the authoritative row digest.");
+                }
+                return (object)new Dictionary<string, object?>
+                {
+                    ["kind"] = operationKind,
+                    ["recordId"] = MutationRowId(row.RowKey),
+                    ["expectedDigest"] = row.ExpectedDigest,
+                };
+            }).ToArray();
+            JsonElement receipt = await ApplyAsync(
+                table,
+                schemaRevision,
+                operations,
+                token, () => submitted = true).ConfigureAwait(false);
+            return new DeleteRowsResult(
+                rows.Select(row => row.RowKey).ToArray(),
+                Revision(schemaRevision, receipt));
+        }
+        catch (Exception exception) when (!submitted && exception is not TableMutationPreflightException)
+        {
+            throw new TableMutationPreflightException(exception);
+        }
     }
 
     public async Task<ReadRowsResult> ReadRowsAsync(
@@ -734,7 +753,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string table,
         string schemaRevision,
         IReadOnlyList<object> operations,
-        CancellationToken token)
+        CancellationToken token,
+        Action onSubmitting)
     {
         string requestId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         var request = new Dictionary<string, object?>
@@ -754,9 +774,9 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             ["expectedRevision"] = null,
             ["expectedDigest"] = null,
         };
-        return await AwaitWriteOutcomeAsync(() => _product.ApplyMutationAsync(
-            JsonSerializer.SerializeToElement(request, JsonOptions),
-            token)).ConfigureAwait(false);
+        JsonElement payload = JsonSerializer.SerializeToElement(request, JsonOptions);
+        onSubmitting();
+        return await AwaitWriteOutcomeAsync(() => _product.ApplyMutationAsync(payload, token)).ConfigureAwait(false);
     }
 
     private static async Task<T> AwaitWriteOutcomeAsync<T>(Func<Task<T>> operation)

@@ -1,3 +1,4 @@
+import type { MutationErrorPayload } from "@/contracts";
 import { describe, expect, it } from "vitest";
 import { WorkspaceV2RequestError } from "./workspaceV2HostAdapter";
 import {
@@ -13,6 +14,12 @@ import {
 } from "./notificationPolicy";
 
 describe("notificationPolicy", () => {
+  it("review10 a proven preflight unknown uses safe generic rejection copy", () => {
+    const error = { kind: "unknown", notSubmitted: true, message: "private host detail" };
+    const message = mutationRejectionMessage(error as MutationErrorPayload);
+    expect(message).not.toContain("尚未确认"); expect(message).not.toContain("private host detail");
+  });
+
   it("keeps an unknown write outcome distinct from a confirmed rejection", () => {
     const message = mutationRejectionMessage({ kind: "unknown", message: "private host detail" });
     expect(message).toContain("尚未确认");

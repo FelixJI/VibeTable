@@ -908,6 +908,12 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
 
     const type = typeCandidate as string;
 
+    if (type === "table.editRejected" && isPlainObject(payload)
+      && Object.hasOwn(payload, "notSubmitted") && typeof payload.notSubmitted !== "boolean") {
+      onDiagnostic({ kind: "malformed", reason: "mutation notSubmitted must be a boolean when present", raw });
+      return;
+    }
+
     // --- Whitelist filter -------------------------------------------------
     if (!HOST_EVENT_TYPES.has(type as HostMessageType)) {
       onDiagnostic({
