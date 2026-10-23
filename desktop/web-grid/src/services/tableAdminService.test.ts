@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { createHostBridge } from "@/bridge/hostBridge";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableAdminService } from "./tableAdminService";
 
@@ -488,5 +490,188 @@ describe("tableAdminService lifecycle ownership", () => {
     expect(harness.notify).not.toHaveBeenCalled();
     expect(admin.phase).toBe("creating");
     expect(ui.createModalOpen).toBe(false);
+  });
+});
+
+describe("tableAdminService workspace/session retirement", () => {
+  const workspaceA = "11111111-1111-4111-8111-111111111111";
+  const workspaceB = "22222222-2222-4222-8222-222222222222";
+
+  function sessionBridgeHarness(): {
+    posted: Array<{ type: string; requestId: string; payload?: unknown }>;
+    reply: (requestId: string, payload: unknown) => void;
+    fail: (requestId: string, message: string) => void;
+  } {
+    const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
+    let listener: ((event: { data: unknown }) => void) | null = null;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `admin-session-r${++sequence}`,
+      webview: {
+        addEventListener: (_: string, fn: (event: { data: unknown }) => void) => { listener = fn; },
+        removeEventListener: () => { listener = null; },
+        postMessage: (message: unknown) => { posted.push(message as { type: string; requestId: string }); },
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    return {
+      posted,
+      reply: (requestId, payload) => listener?.({
+        data: { type: "database.collectionsChanged", requestId, payload },
+      }),
+      fail: (requestId, message) => listener?.({
+        data: { type: "operation.failed", requestId, payload: { message, code: "X" } },
+      }),
+    };
+  }
+
+  function applySession(workspaceId: string, sessionEpoch: number): void {
+    useWorkspaceSessionStore().applySession({
+      contractVersion: "2.0",
+      workspaceId,
+      sessionEpoch,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+  }
+
+  function openSessionA(): void {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([workspaceA, workspaceB].map((workspaceId, index) => ({
+      contractVersion: "2.0" as const,
+      workspaceId,
+      displayName: `Workspace ${index + 1}`,
+      selectedRoot: `D:\\Workspace-${index + 1}`,
+      activityRoot: null,
+      storageKind: "fixed" as const,
+      coordinationStrength: "strong" as const,
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy" as const,
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    })));
+    applySession(workspaceA, 1);
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("retires an already-resolved create continuation when the session rotates before it resumes", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const created = vi.fn();
+    const service = useTableAdminService();
+    service.init(created);
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.setCollections([{ collection: "tbl_old", metadata: {} }]);
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    // The reply resolves first; the session rotates synchronously before the
+    // awaiting continuation resumes.
+    harness.reply(request.requestId, {
+      tables: ["tbl_old", "tbl_new"],
+      displayNames: { tbl_old: "旧表", tbl_new: "订单" },
+      createdTableId: "tbl_new",
+    });
+    applySession(workspaceB, 2);
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_old"]);
+    expect(admin.phase).toBe("submitting");
+    expect(ui.createModalOpen).toBe(true);
+    expect(created).not.toHaveBeenCalled();
+  });
+
+  it("retires a create continuation whose failure arrives after the session rotated", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const service = useTableAdminService();
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    applySession(workspaceB, 2);
+    harness.fail(request.requestId, "host rejected the create");
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.phase).toBe("submitting");
+    expect(admin.error).toBeNull();
+    expect(ui.createModalOpen).toBe(true);
+  });
+
+  it("retires a delete continuation whose reply arrives after the session rotated", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const service = useTableAdminService();
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.setCollections([{ collection: "tbl_orders", metadata: {} }]);
+    ui.openDelete("tbl_orders");
+
+    const pending = service.deleteTable("tbl_orders");
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.deleteRequested")!;
+    applySession(workspaceB, 2);
+    harness.reply(request.requestId, {
+      tables: [],
+      displayNames: {},
+      deletedTableId: "tbl_orders",
+    });
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_orders"]);
+    expect(admin.phase).toBe("deleting");
+    expect(ui.deleteModalOpen).toBe(true);
+  });
+
+  it("keeps the normal create flow while the session stays on one workspace and epoch", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const created = vi.fn();
+    const service = useTableAdminService();
+    service.init((tableId) => { created(tableId); });
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    harness.reply(request.requestId, {
+      tables: ["tbl_new"],
+      displayNames: { tbl_new: "订单" },
+      createdTableId: "tbl_new",
+    });
+    await pending;
+
+    expect(admin.phase).toBe("idle");
+    expect(ui.createModalOpen).toBe(false);
+    expect(created).toHaveBeenCalledWith("tbl_new");
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_new"]);
   });
 });

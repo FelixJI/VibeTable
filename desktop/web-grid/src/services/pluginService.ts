@@ -108,7 +108,7 @@ export function usePluginService(): PluginService {
       store.applyInteraction(snapshot, envelope.revision);
     } else if (envelope.eventType === "plugin.catalog.changed" && isPluginSnapshot(snapshot)) {
       // SSE can replay an old installation; only a current authority read may replace it.
-      store.refreshCatalog(list);
+      store.refreshCatalog(refreshableCatalogRead());
     }
   }
 
@@ -171,6 +171,23 @@ export function usePluginService(): PluginService {
     }
   }
 
+  /**
+   * The store's coalesced refresh may run its reader microtask after this
+   * instance retired; bind the reader to the owner that queued it so a
+   * retired owner neither executes its read nor surfaces its failure. The
+   * shared store keeps serving live instances unchanged.
+   */
+  function refreshableCatalogRead(): () => Promise<readonly PluginSnapshot[]> {
+    const requestLifecycle = lifecycleRevision;
+    return () => {
+      if (lifecycleRevision !== requestLifecycle) return Promise.resolve([]);
+      return list().catch((error: unknown) => {
+        if (lifecycleRevision !== requestLifecycle) return [];
+        throw error;
+      });
+    };
+  }
+
   async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
     // dispose() retires this instance's in-flight catalog reads even while the
     // shared project context is unchanged; without the lifecycle guard a
@@ -197,6 +214,7 @@ export function usePluginService(): PluginService {
   }
 
   async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
+    const requestLifecycle = lifecycleRevision;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const sequence = store.beginCatalogRead();
@@ -209,7 +227,10 @@ export function usePluginService(): PluginService {
       return result;
     } finally {
       // A consumed notification may have settled before this write; read authority in either order.
-      if (currentContext()) store.refreshCatalog(list);
+      // A retired owner must not queue (and thereby invalidate) a refresh either.
+      if (lifecycleRevision === requestLifecycle && currentContext()) {
+        store.refreshCatalog(refreshableCatalogRead());
+      }
     }
   }
 

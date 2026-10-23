@@ -1,6 +1,7 @@
 import { useHostBridge } from "./bridgeContext";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { CollectionSummary } from "@/stores/workspaceStore";
 import type {
   CollectionsChangedPayload,
@@ -62,6 +63,7 @@ export function useTableAdminService(): {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
   const ui = useUiStore();
+  const session = useWorkspaceSessionStore();
   const unsubscribe: Array<() => void> = [];
   let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
   let operationSequence = 0;
@@ -100,10 +102,26 @@ export function useTableAdminService(): {
     store.setCollections(collections);
   }
 
+  /**
+   * A create/delete reply belongs to the workspace/session that submitted
+   * it. After a switch the new session owns the admin flow, so a late
+   * terminal only retires locally: the host may still have committed, and
+   * we never claim a rollback or resend.
+   */
+  function ownsSession(): () => boolean {
+    const workspaceId = session.activeWorkspaceId;
+    const epoch = session.sessionEpoch;
+    const transitioning = session.isTransitioning;
+    return () => session.activeWorkspaceId === workspaceId
+      && session.sessionEpoch === epoch
+      && session.isTransitioning === transitioning;
+  }
+
   async function createTable(): Promise<void> {
     if (disposed || !store.canSubmit) return;
     store.beginSubmit();
     const sequence = ++operationSequence;
+    const sessionIsCurrent = ownsSession();
     const displayName = store.form.name.trim();
     const existingIds = new Set(
       store.collections.map((item) => item.collection),
@@ -114,7 +132,7 @@ export function useTableAdminService(): {
       const changed = await bridge.request("tableAdmin.createRequested", {
         displayName,
       }) as CollectionsChangedPayload;
-      if (sequence !== operationSequence || store.phase !== "submitting") return;
+      if (sequence !== operationSequence || store.phase !== "submitting" || !sessionIsCurrent()) return;
       applyCollectionsChanged(changed);
       const createdTableId = changed.createdTableId;
       if (!createdTableId
@@ -127,7 +145,7 @@ export function useTableAdminService(): {
       ui.closeCreate();
       void createdCallback?.(createdTableId);
     } catch (error) {
-      if (sequence !== operationSequence || store.phase !== "submitting") return;
+      if (sequence !== operationSequence || store.phase !== "submitting" || !sessionIsCurrent()) return;
       const mapped = error as Error & { readonly path?: string };
       store.fail(mapped.message || "创建数据表失败。");
     }
@@ -137,13 +155,14 @@ export function useTableAdminService(): {
     if (disposed) return;
     store.requestDelete(name);
     const sequence = ++operationSequence;
+    const sessionIsCurrent = ownsSession();
     try {
       // Wire contract is { collection }, NOT { name }.
       const changed = await bridge.request(
         "tableAdmin.deleteRequested",
         { collection: name },
       ) as CollectionsChangedPayload;
-      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      if (sequence !== operationSequence || store.phase !== "deleting" || !sessionIsCurrent()) return;
       applyCollectionsChanged(changed);
       if (changed.deletedTableId !== name || changed.tables.includes(name)) {
         throw new Error("主机返回的集合目录仍包含待删除数据表。");
@@ -151,7 +170,7 @@ export function useTableAdminService(): {
       store.succeed();
       ui.closeDelete();
     } catch (error) {
-      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      if (sequence !== operationSequence || store.phase !== "deleting" || !sessionIsCurrent()) return;
       const mapped = error as Error;
       store.fail(mapped.message || "删除数据表失败。");
     }

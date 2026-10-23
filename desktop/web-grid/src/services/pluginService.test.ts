@@ -1404,6 +1404,7 @@ describe("pluginService lifecycle retirement", () => {
     posted: Array<{ type: string; requestId: string; payload?: unknown }>;
     reply: (requestId: string, snapshots: PluginSnapshot[]) => void;
     fail: (requestId: string) => void;
+    event: (value: PluginSnapshot) => void;
   } {
     const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
@@ -1424,6 +1425,16 @@ describe("pluginService lifecycle retirement", () => {
         listener?.({ data: { type: "plugin.catalog.list", requestId, payload: snapshots } }),
       fail: (requestId) => listener?.({
         data: { type: "operation.failed", requestId, payload: { message: "host list failed", code: "X" } },
+      }),
+      event: (value) => listener?.({
+        data: { type: "plugin.catalog.changed", payload: {
+          contract: "vibetable.plugin-event.v1",
+          eventType: "plugin.catalog.changed",
+          projectKey: value.projectKey,
+          entityId: value.pluginId,
+          revision: value.revision,
+          snapshot: value,
+        } },
       }),
     };
   }
@@ -1481,6 +1492,43 @@ describe("pluginService lifecycle retirement", () => {
 
     reply(retiredRequest.requestId, [retiredSnapshot]);
     await flushPromises();
+    expect(usePluginStore().plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.clean"]);
+  });
+
+  it("does not surface a retired owner's refresh failure through the store refresh loop", async () => {
+    const { posted, fail, event } = deferredCatalogBridge();
+    const service = usePluginService();
+    service.init();
+    event(snapshot); // queues and starts the coalesced refresh microtask
+    await Promise.resolve(); // the store loop invokes the reader and posts the read
+    const request = posted.find((item) => item.type === "plugin.catalog.list")!;
+
+    service.dispose();
+    fail(request.requestId);
+
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(usePluginStore().lastError).toBeNull();
+    expect(usePluginStore().plugins).toEqual([]);
+  });
+
+  it("never executes a refresh reader queued by a disposed owner", async () => {
+    const { posted, reply, event } = deferredCatalogBridge();
+    const retired = usePluginService();
+    retired.init();
+    event(snapshot); // queues the refresh microtask
+    retired.dispose(); // synchronously, before the microtask runs
+
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(posted.filter((item) => item.type === "plugin.catalog.list")).toEqual([]);
+
+    // A replacement owner keeps refreshing normally on the same store.
+    const live = usePluginService();
+    live.init();
+    event(snapshot);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    const liveRequest = posted.find((item) => item.type === "plugin.catalog.list")!;
+    reply(liveRequest.requestId, [snapshot]);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
     expect(usePluginStore().plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.clean"]);
   });
 });
