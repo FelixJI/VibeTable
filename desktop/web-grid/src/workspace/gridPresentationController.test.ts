@@ -47,7 +47,7 @@ function fixture(runtime?: DataSourceViewGrid) {
   const controller = lifetime.run(() => createPresetViewController({ workspace, table, query, ui, presets,
     grid: { current: ref(grid) }, presentation: { identity, service: { read, save } },
     service: { listPresets, savePreset, deletePreset: async () => {} },
-    executeQuery, refreshLookups: vi.fn(), reportError: vi.fn(), defaultCompensationError: () => new Error("compensation"),
+    executeQuery, refreshLookups: vi.fn(), reportError: vi.fn(), defaultChangeIncompleteError: (cause: unknown) => new Error("default change incomplete", { cause }),
   }))!;
   workspace.selectTable("orders");
   table.schema = ["title", "status"].map(name => ({ name, title: name, dataType: "text", editable: false, nullable: true }));

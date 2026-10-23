@@ -1403,6 +1403,9 @@ export interface VersionSaveResult {
   readonly saved: string;
   readonly changeSetId: string;
   readonly revisionId: string;
+  readonly metadataRevision: string;
+  readonly status: "applied";
+  readonly emittedEvents: readonly string[];
 }
 
 export interface VersionPromoteResult {

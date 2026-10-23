@@ -64,6 +64,71 @@ describe("named revision UI intent", () => {
 });
 
 
+it("rejects a wrong-identity version.create receipt without follow-up writes", async () => {
+  const session = useWorkspaceSessionStore();
+  session.configureCapabilities(["workspace.session.v2"]);
+  const opened = { contractVersion: "2.0" as const, workspaceId: "11111111-1111-4111-8111-111111111111",
+    sessionEpoch: 1, state: "openedWritable" as const, openMode: "writable" as const,
+    writable: true, provisional: false, phase: "idle" as const, errorCode: null };
+  session.setWorkspaces([{ contractVersion: "2.0", workspaceId: opened.workspaceId,
+    displayName: "A", selectedRoot: "D:\\A", activityRoot: null, storageKind: "fixed",
+    coordinationStrength: "strong", lastOpenedAt: null, lastKnownHealth: "healthy",
+    lastSnapshotAt: null, lastSyncAt: null, pendingSync: false }]);
+  session.applySession({ ...opened, state: "openedProvisional" });
+  const posted: Array<{ type: string; requestId?: string; payload?: unknown }> = [];
+  let createReply!: (value: unknown) => void;
+  const bridge = createHostBridge({ webview: {
+    postMessage: (message: unknown) => {
+      const m = message as { type: string; requestId?: string; payload?: unknown };
+      posted.push(m);
+      if (m.type === "version.list") {
+        queueMicrotask(() => bridgeEmit({ type: "version.list", requestId: m.requestId, payload: { collection: "orders", itemId: "row1", versions: [] } }));
+      }
+      if (m.type === "version.create") {
+        createReply = (value: unknown) => bridgeEmit({ type: "version.create", requestId: m.requestId, payload: value });
+      }
+    },
+    addEventListener: (_: string, listener: (event: { data: unknown }) => void) => { bridgeListener = listener; },
+    removeEventListener: () => {},
+  } });
+  let bridgeListener!: (event: { data: unknown }) => void;
+  let bridgeEmit!: (message: unknown) => void;
+  bridgeEmit = (message: unknown) => bridgeListener({ data: message });
+  bridge.start(); setHostBridgeForTesting(bridge);
+  const lifetime = effectScope();
+  const workspace = useWorkspaceStore(); workspace.selectTable("orders");
+  const history = useRevisionHistoryStore();
+  const scope = computed(() => history.panelOpen && history.scope === "row" && history.itemId && workspace.currentTable
+    ? { collection: workspace.currentTable, itemId: history.itemId } : null);
+  const revisions = lifetime.run(() => useNamedRevisions(scope, useContentVersionService(), async () => {}))!;
+  try {
+    history.open({ scope: "row", itemId: "row1" });
+    await nextTick(); await settle();
+    const baselineLists = posted.filter(m => m.type === "version.list").length;
+
+    revisions.state.name = "发布";
+    const creating = revisions.dispatch("create");
+    await nextTick(); await settle();
+    // Structurally legal receipt with a wrong derived id: the create must be
+    // rejected, so no version is upserted and no follow-up list reload runs.
+    createReply({
+      id: "00000000-0000-5000-8000-000000000000", key: "发布", name: "发布",
+      outdated: false, mainHash: "hash-1", revision: "rev-1",
+      changeSetId: "metadata-change", emittedEvents: ["metadata-event"],
+    });
+    await creating;
+    await settle();
+
+    expect(revisions.state.versions).toEqual([]);
+    expect(revisions.state.selectedId).toBe("");
+    expect(revisions.state.error).toContain("version.create");
+    expect(posted.filter(m => m.type === "version.create")).toHaveLength(1);
+    expect(posted.filter(m => m.type === "version.list")).toHaveLength(baselineLists);
+  } finally {
+    lifetime.stop(); bridge.stop(); setHostBridgeForTesting(null);
+  }
+});
+
 it("never posts the old epoch while the real history reset retains a row selection", async () => {
   const session = useWorkspaceSessionStore();
   session.configureCapabilities(["workspace.session.v2"]);

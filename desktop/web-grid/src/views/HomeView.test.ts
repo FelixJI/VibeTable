@@ -108,7 +108,7 @@ describe("HomeView", () => {
   });
 
   it("shows the shared holiday and adjusted-workday markers", async () => {
-    setHostBridgeForTesting({ request: vi.fn(async (type, payload) => type === "settings.readWorkCalendar" ? { overrides: [], revision: "" } : { ...payload, revision: "saved" }) } as unknown as HostBridge);
+    setHostBridgeForTesting({ request: vi.fn(async (type, payload) => type === "settings.readWorkCalendar" ? { overrides: [], revision: "" } : { ...payload, status: "applied", changeSetId: "change-1", emittedEvents: [], revision: "saved" }) } as unknown as HostBridge);
     useWorkspaceStore().phase = "opened";
     useWorkspaceSessionStore().activeWorkspaceId = "calendar-workspace";
     useWorkspaceSessionStore().sessionState = "openedWritable";

@@ -829,7 +829,7 @@ const presetViewController = createPresetViewController({
   },
   refreshLookups: () => { void authoritativeLookups.refresh(); },
   reportError: error => message.error(error instanceof Error ? error.message : String(error)),
-  defaultCompensationError: () => new Error(t("views.defaultCompensationFailed")),
+  defaultChangeIncompleteError: cause => new Error(t("views.defaultChangeIncomplete"), { cause }),
 });
 provide(GRID_PRESENTATION_KEY, {
   restoreGrid: () => presetViewController.restoreGrid(),

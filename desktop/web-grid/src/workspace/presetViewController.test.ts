@@ -4,6 +4,11 @@ import { effectScope, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PresetEntry, PresetsResult } from "@/contracts";
+import type { HostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { usePresetVersionService } from "@/services/presetVersionService";
+import { ProductRpcError, ProductRpcProtocolError } from "@/services/productRpcResult";
+import { BridgeOperationError, BridgeRequestRetiredError, BridgeTimeoutError } from "@/bridge/hostBridge";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -58,7 +63,7 @@ function dependencies(service: PresetViewDependencies["service"]) {
     executeQuery: vi.fn(),
     refreshLookups: vi.fn(),
     reportError: vi.fn(),
-    defaultCompensationError: () => new Error("default compensation failed"),
+    defaultChangeIncompleteError: (cause: unknown) => new Error("default change incomplete", { cause }),
   };
 }
 
@@ -152,7 +157,7 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
-  it("默认视图降级失败时撤销刚完成的提升并重新加载权威列表", async () => {
+  it("默认视图降级失败时停止补偿并保留核实提示直到显式重载", async () => {
     const first = preset("first", "orders", true);
     const second = preset("second", "orders");
     const saves: Array<{
@@ -173,7 +178,9 @@ describe("presetViewController", () => {
       const id = typeof target === "object" && target !== null && "id" in target
         ? String(target.id)
         : typeof target === "string" ? target : null;
-      if (id === first.id && !view.isDefault) throw new Error("demotion failed");
+      if (id === first.id && !view.isDefault) {
+        throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
+      }
       return {
         ...(id === first.id ? first : second),
         collection,
@@ -199,12 +206,56 @@ describe("presetViewController", () => {
     expect(saves).toEqual([
       { target: { id: "second", revision: "revision-second" }, isDefault: true },
       { target: { id: "first", revision: "revision-first" }, isDefault: false },
-      { target: { id: "second", revision: "second-saved-1" }, isDefault: false },
     ]);
+    expect(listPresets).toHaveBeenCalledTimes(1);
+    expect(deps.presets.error).toContain("default change incomplete");
+    // The promotion of `second` is a definite committed fact and stays; the
+    // hint stays visible until the user explicitly reloads.
+    expect(deps.presets.presets.find(item => item.id === "second")?.view.isDefault).toBe(true);
+    await controller.dispatch({ type: "view.reload" });
     expect(listPresets).toHaveBeenCalledTimes(2);
-    expect(deps.presets.presets.find(item => item.id === "first")?.view.isDefault).toBe(true);
-    expect(deps.presets.activePresetId).toBe("first");
     scope.stop();
+  });
+
+  it("首写回执与请求 view 不符时不发降级旧默认的第二写", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const posted: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    // Real service over a recording bridge: the first preset.save receipt is
+    // structurally legal but demotes the promoted default in its view echo.
+    const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
+      posted.push({ type, payload });
+      if (type === "preset.list") return { collection: "orders", presets: [current, target] };
+      if (type === "preset.save") {
+        return {
+          id: (payload.presetId as string | null) ?? "p-new", collection: "orders",
+          name: String(payload.name), scope: "system",
+          view: { ...(payload.view as object), isDefault: false },
+          userId: null, revision: "rev-new", changeSetId: "change-1", emittedEvents: [],
+        };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    try {
+      const deps = dependencies(usePresetVersionService());
+      const scope = effectScope();
+      const controller = scope.run(() => createPresetViewController(deps))!;
+
+      deps.workspace.selectTable("orders");
+      await flushPromises();
+
+      await controller.dispatch({ type: "view.setDefault", view: target });
+
+      // The service rejects the contradictory view echo, so the controller
+      // stops before demoting the old default: exactly one save was posted.
+      expect(posted.filter(item => item.type === "preset.save")).toHaveLength(1);
+      expect(deps.presets.presets.find(item => item.id === "current")?.view.isDefault).toBe(true);
+      expect(deps.presets.error).toBeTruthy();
+      scope.stop();
+    } finally {
+      setHostBridgeForTesting(null);
+    }
   });
 
   it("切换视图时等待当前视图保存完成后再激活目标视图", async () => {
@@ -237,6 +288,85 @@ describe("presetViewController", () => {
       { id: "current", revision: "revision-current" },
     );
     expect(deps.presets.activePresetId).toBe("target");
+    scope.stop();
+  });
+
+  it.each([
+    ["unverifiable reply", () => new ProductRpcProtocolError(
+      "invalid-success-payload",
+      'Product RPC "preset.save" replied with a success value that violates its DTO contract; the request outcome is unknown. Re-read the authoritative state instead of retrying.')],
+    ["bridge timeout", () => new BridgeTimeoutError("preset.save", "req-1", 10_000)],
+    ["bridge retirement", () => new BridgeRequestRetiredError()],
+    ["operation.failed after dispatch", () => new BridgeOperationError({ message: "backend unavailable", code: "BACKEND_UNAVAILABLE" })],
+    ["unexpected transport failure", () => new Error("connection reset")],
+    ["unrecognized domain failure", () => new ProductRpcError("preset_storage_failed", "", "storage failed", null, false)],
+  ] as const)("默认切换第二写结果未知（%s）时停止补偿写并保留核实提示", async (_label, makeFailure) => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const listPresets = vi.fn(async () => ({ collection: "orders", presets: [current, target] }));
+    const savePreset = vi.fn(async (_collection: string, _name: string, _view: unknown, target2: { id: string } | null) => {
+      if (target2?.id === "target") {
+        return { ...target, view: { ...target.view, isDefault: true }, revision: "revision-target-default" };
+      }
+      throw makeFailure();
+    });
+    const service: PresetServicePort = {
+      listPresets, savePreset: savePreset as unknown as PresetServicePort["savePreset"],
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    const listCallsAfterLoad = listPresets.mock.calls.length;
+
+    await controller.dispatch({ type: "view.setDefault", view: target });
+
+    // Two writes only: target→default, current→non-default. No blind third
+    // compensating write may follow an unverifiable reply.
+    expect(savePreset).toHaveBeenCalledTimes(2);
+    expect(listPresets.mock.calls.length).toBe(listCallsAfterLoad);
+    expect(deps.presets.error).toContain("default change incomplete");
+
+    // The verification hint survives until the user explicitly reloads.
+    await controller.dispatch({ type: "view.reload" });
+    expect(listPresets.mock.calls.length).toBeGreaterThan(listCallsAfterLoad);
+    scope.stop();
+  });
+
+  it("另一进程已降级旧默认（preset_edit_conflict）时也不目动补偿", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const listPresets = vi.fn(async () => ({ collection: "orders", presets: [current, target] }));
+    const savePreset = vi.fn(async (_collection: string, _name: string, view: unknown, target2: { id: string } | null) => {
+      if (target2?.id === "target") {
+        return { ...target, view: { ...(view as object) }, revision: "revision-target-default" };
+      }
+      // Another process already demoted the old default: the CAS rejects our
+      // stale demotion, but that does not prove the old default is still set.
+      throw new ProductRpcError("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", null, false);
+    });
+    const service: PresetServicePort = {
+      listPresets, savePreset: savePreset as unknown as PresetServicePort["savePreset"],
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    const listCallsAfterLoad = listPresets.mock.calls.length;
+
+    await controller.dispatch({ type: "view.setDefault", view: target });
+
+    // No third write: compensating B back to non-default could leave both
+    // views non-default when another process already demoted A.
+    expect(savePreset).toHaveBeenCalledTimes(2);
+    expect(listPresets.mock.calls.length).toBe(listCallsAfterLoad);
+    expect(deps.presets.error).toContain("default change incomplete");
     scope.stop();
   });
 

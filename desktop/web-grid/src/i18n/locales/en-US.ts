@@ -50,7 +50,7 @@ export const messages: Record<string, string> = {
   "views.action.delete": "Delete view",
   "views.action.reload": "Reload authoritative view",
   "views.deleteConfirm": "Delete “{name}”? Data records are not deleted.",
-  "views.defaultCompensationFailed": "Updating the default view failed and automatic compensation did not complete. Refresh the views before retrying.",
+  "views.defaultChangeIncomplete": "The new default view was saved, but the previous default's state is unconfirmed. Reload before retrying.",
   "views.dialog.create": "Create view",
   "views.dialog.duplicate": "Duplicate view",
   "views.dialog.rename": "Rename view",

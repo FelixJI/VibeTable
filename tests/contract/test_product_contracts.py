@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from backend.contracts.schema_v2 import SchemaSnapshotV2
 
 ROOT = Path(__file__).parents[2]
@@ -100,6 +102,56 @@ def test_product_rpc_catalog_is_independent_of_application_version() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("oracle_name", "case_name"),
+    [
+        ("preset-python-oracle.json", "delete-repeated-public-request"),
+        ("content-version-python-oracle.json", "delete-binds-revision-operation"),
+        ("content-version-python-oracle.json", "save-preserves-name-key-via-real-adapter"),
+        ("content-version-python-oracle.json", "promote-restores-audit-reference"),
+    ],
+)
+def test_rpc_catalog_accepts_stable_producer_receipts(oracle_name: str, case_name: str) -> None:
+    oracle = _load(CONTRACT_ROOT / oracle_name)
+    sample = next(case for case in oracle["cases"] if case["name"] == case_name)
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == sample["method"])
+    result = sample["responses"][0]["result"]
+    schema = case["resultSchema"]
+    root = schema if "$defs" in schema else _load(SCHEMA_PATH)
+    _validate(result, schema, root, sample["method"])
+    if sample["method"] == "version.promote":
+        result["result"]["newRevisionId"] = None
+        _validate(result, schema, root, sample["method"])
+
+
+@pytest.mark.parametrize("missing", ["newRevisionId", "item"])
+def test_rpc_catalog_rejects_truncated_restore_receipts(missing: str) -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == "version.promote")
+    result = case["success"]["result"]
+    result["result"].pop(missing)
+    with pytest.raises(SchemaMismatchError, match=missing):
+        _validate(result, case["resultSchema"], _load(SCHEMA_PATH))
+
+
+@pytest.mark.parametrize("method", ["preset.delete", "version.delete", "version.save"])
+def test_rpc_catalog_rejects_unapplied_write_receipts(method: str) -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == method)
+    result = case["success"]["result"]
+    result["status"] = "rejected"
+    with pytest.raises(SchemaMismatchError, match="status"):
+        _validate(result, case["resultSchema"], _load(SCHEMA_PATH))
+
+
+def test_rpc_catalog_promote_example_preserves_restore_identity() -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == "version.promote")
+    result = case["success"]["result"]
+    assert result["restoredToRevision"] == result["result"]["restoredToRevision"]
 
 
 def test_schema_rpc_result_logical_types_are_closed_string_enums() -> None:

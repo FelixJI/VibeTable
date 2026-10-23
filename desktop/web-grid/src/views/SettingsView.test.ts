@@ -33,7 +33,7 @@ describe("SettingsView", () => {
     };
     backupRequest.mockImplementation(async (type: string, payload: unknown) => {
       if (type === "settings.readWorkCalendar") return { overrides: [], revision: "" };
-      if (type === "settings.commitWorkCalendar") return { ...(payload as object), revision: "confirmed" };
+      if (type === "settings.commitWorkCalendar") return { ...(payload as object), status: "applied", changeSetId: "change-1", emittedEvents: [], revision: "confirmed" };
       if (type === "appPreferences.get") return appPreferences;
       if (type === "appPreferences.update") {
         appPreferences = { ...appPreferences, ...(payload as object) };
