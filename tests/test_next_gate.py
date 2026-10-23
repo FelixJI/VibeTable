@@ -1876,7 +1876,10 @@ def test_product_e2e_evidence_copies_only_the_latest_passed_report(
         for path in expected_destination.rglob("*")
         if path.is_file()
     ]
-    assert copied_files == [Path("product-e2e-report.json")]
+    assert set(copied_files) == {
+        Path("product-e2e-report.json"),
+        Path(scenario_id) / f"{scenario_id}.png",
+    }
     assert not (tmp_path / "destination" / older_run.name).exists()
 
 
@@ -3791,6 +3794,9 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
 
 
 SCENARIO_SCREENSHOTS = {
+    "07-attachment-history": ("07-named-comparison.png", "07-named-revisions.png"),
+    "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),
+    "32-shared-work-calendar": ("32-shared-work-calendar.png",),
     "49-plugin-application-security": (
         "48-native-dark.png",
         "48-native-scaled.png",

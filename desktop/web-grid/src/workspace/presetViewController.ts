@@ -31,6 +31,11 @@ type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 type PresetService = ReturnType<typeof usePresetVersionService>;
 
+interface PersistOutcome {
+  readonly saved: PresetEntry | null;
+  readonly failure?: unknown;
+}
+
 type PresetStorePort = Pick<PresetStore,
   | "presets" | "activePresetId" | "loading" | "dirty"
   | "begin" | "receivePresets" | "activatePreset" | "upsertPreset"
@@ -124,7 +129,8 @@ export interface PresetViewDependencies {
   readonly executeQuery: (table: string, query: TableQuery) => void;
   readonly refreshLookups: () => void;
   readonly reportError: (error: unknown) => void;
-  readonly defaultCompensationError: () => Error;
+  /** Localized "default change incomplete" notice; `cause` keeps the original failure for diagnostics. */
+  readonly defaultChangeIncompleteError: (cause: unknown) => Error;
 }
 
 export function createPresetViewController(
@@ -329,26 +335,35 @@ export function createPresetViewController(
     }
   }
 
+  async function persistTracked(
+    collection: string,
+    name: string,
+    view: PresetView,
+    target: Pick<PresetEntry, "id" | "revision"> | null = null,
+  ): Promise<PersistOutcome> {
+    if (dependencies.workspace.currentTable !== collection) return { saved: null };
+    const generation = loadGeneration;
+    dependencies.presets.begin();
+    try {
+      const saved = await dependencies.service.savePreset(collection, name, view, target);
+      if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return { saved: null };
+      dependencies.presets.upsertPreset(saved);
+      return { saved };
+    } catch (error) {
+      if (generation === loadGeneration && dependencies.workspace.currentTable === collection) {
+        dependencies.presets.fail(error);
+      }
+      return { saved: null, failure: error };
+    }
+  }
+
   async function persist(
     collection: string,
     name: string,
     view: PresetView,
     target: Pick<PresetEntry, "id" | "revision"> | null = null,
   ): Promise<PresetEntry | null> {
-    if (dependencies.workspace.currentTable !== collection) return null;
-    const generation = loadGeneration;
-    dependencies.presets.begin();
-    try {
-      const saved = await dependencies.service.savePreset(collection, name, view, target);
-      if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return null;
-      dependencies.presets.upsertPreset(saved);
-      return saved;
-    } catch (error) {
-      if (generation === loadGeneration && dependencies.workspace.currentTable === collection) {
-        dependencies.presets.fail(error);
-      }
-      return null;
-    }
+    return (await persistTracked(collection, name, view, target)).saved;
   }
 
   function saveTarget(view: PresetEntry): Pick<PresetEntry, "id" | "revision"> {
@@ -381,29 +396,27 @@ export function createPresetViewController(
     const source = view.id === dependencies.presets.activePresetId
       ? captureCurrent(true)
       : { ...view.view, isDefault: true };
-    const saved = await persist(view.collection, view.name, source, saveTarget(view));
-    if (!saved || !stillCurrent()) return;
+    const saved = await persistTracked(view.collection, view.name, source, saveTarget(view));
+    if (!saved.saved || !stillCurrent()) return;
     if (previous) {
-      const demoted = await persist(previous.collection, previous.name, {
+      const demoted = await persistTracked(previous.collection, previous.name, {
         ...previous.view,
         isDefault: false,
       }, saveTarget(previous));
       if (!stillCurrent()) return;
-      if (!demoted && dependencies.workspace.currentTable === view.collection) {
-        const compensated = await persist(view.collection, view.name, {
-          ...source,
-          isDefault: false,
-        }, saveTarget(saved));
-        if (!stillCurrent()) return;
-        if (!compensated) {
-          dependencies.presets.fail(dependencies.defaultCompensationError());
-          return;
+      if (!demoted.saved) {
+        // No automatic compensation: a failed demotion (even a definite CAS
+        // rejection — another process may already have demoted the old
+        // default) never proves the authoritative default state, and a third
+        // write could leave both views non-default. The committed promotion
+        // stays; surface the localized notice until an explicit reload.
+        if (demoted.failure !== undefined) {
+          dependencies.presets.fail(dependencies.defaultChangeIncompleteError(demoted.failure));
         }
-        await loadCollection(view.collection);
         return;
       }
     }
-    dependencies.presets.activatePreset(saved.id);
+    dependencies.presets.activatePreset(saved.saved.id);
   }
 
   watch(

@@ -50,7 +50,7 @@ export const messages: Record<string, string> = {
   "views.action.delete": "删除视图",
   "views.action.reload": "重新加载权威视图",
   "views.deleteConfirm": "删除视图“{name}”？数据记录不会被删除。",
-  "views.defaultCompensationFailed": "默认视图更新失败，且自动补偿未完成。请刷新视图后重试。",
+  "views.defaultChangeIncomplete": "新默认视图已保存，旧默认视图状态未确认；请重新加载后再试。",
   "views.dialog.create": "新建视图",
   "views.dialog.duplicate": "复制视图",
   "views.dialog.rename": "重命名视图",
