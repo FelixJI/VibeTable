@@ -1561,6 +1561,7 @@ def persist_product_e2e_evidence(
         scenario_id = item["scenario"]
         scenario_evidence = {
             "02-all-field-schema": (
+                "02-edit-undo-redo.png",
                 "02-number-display-fixed.png",
                 "02-number-display-currency.png",
                 "02-number-display-percent.png",
