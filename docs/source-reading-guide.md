@@ -116,10 +116,10 @@ rg -n 'schema\.getTable' desktop backend contracts tests
 
 ### 第三步：路由到 Go sidecar
 
-- `desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs` 把 `schema.getTable` 交给 `HostProductRpcInvoker`，经宿主私有 loopback HTTP 调用 Go sidecar。
-- `sidecar/internal/app/schema_product_rpc.go` 注册 `schema.getTable` 并校验 `tableId` 参数闭集；组装点见 `sidecar/internal/app/app.go`。
-- `sidecar/internal/app/field_routes.go` 组装表结构与字段域，`sidecar/internal/schemaexecution/table.go` 从 PocketBase 读取并组装表结构快照。
-- `backend/contracts/product_rpc.py` 仍定义 Python BFF 侧的同名参数闭集；`schema.getTable` 的现行执行 owner 是 Go sidecar（GO_AUTHORITY，见 `contracts/v2/product-runtime-ownership-inventory.json` 的 `rpc.schema-get-table`）。
+- `desktop/src/VibeTable.Desktop/Services/WorkspaceRequestDispatcher.cs` 将 Product RPC 交给 `ProductDataRequestController.cs`；其 `DispatchProductAsync` 校验参数与会话后，选择 `GoSidecar` 路由并调用 `IProductSidecarRpcForwarder`。
+- `desktop/src/VibeTable.Desktop/Services/ProductSidecarHttpGateway.cs` 通过私有 loopback HTTP 的 `api/vibetable/v2/product/rpc` 转发请求，并核对响应的 requestId 与 wire scope。
+- `sidecar/internal/app/schema_product_rpc.go` 注册 `schema.getTable`、校验 `tableId` 参数闭集，并直接调用 `schemaexecution.Describe`；注册组装点见 `sidecar/internal/app/app.go`。
+- `sidecar/internal/schemaexecution/table.go` 从 PocketBase 读取并组装表结构快照。执行 owner 见 `contracts/v2/product-runtime-ownership-inventory.json` 的 `rpc.schema-get-table`（GO_AUTHORITY）。
 
 这一链路的关键结论是：宿主做 typed routing，schema 读取由 Go sidecar 完成，PocketBase 是唯一数据权威，任何栈都不绕过它直接写 SQLite。
 
