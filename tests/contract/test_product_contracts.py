@@ -137,6 +137,16 @@ def test_rpc_catalog_rejects_truncated_restore_receipts(missing: str) -> None:
         _validate(result, case["resultSchema"], _load(SCHEMA_PATH))
 
 
+@pytest.mark.parametrize("method", ["preset.delete", "version.delete", "version.save"])
+def test_rpc_catalog_rejects_unapplied_write_receipts(method: str) -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    case = next(case for case in catalog["rpcCases"] if case["method"] == method)
+    result = case["success"]["result"]
+    result["status"] = "rejected"
+    with pytest.raises(SchemaMismatchError, match="status"):
+        _validate(result, case["resultSchema"], _load(SCHEMA_PATH))
+
+
 def test_rpc_catalog_promote_example_preserves_restore_identity() -> None:
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
     case = next(case for case in catalog["rpcCases"] if case["method"] == "version.promote")

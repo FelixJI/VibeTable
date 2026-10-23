@@ -92,6 +92,27 @@ describe("presetVersionService", () => {
 
   afterEach(() => setHostBridgeForTesting(null));
 
+  it.each([null, { id: "p1", revision: "rev-p1" }])(
+    "accepts the exact authored name echoed for target %s",
+    async (target) => {
+      await expect(usePresetVersionService().savePreset("orders", " 我的视图 🌍 ", authoredView, target))
+        .resolves.toMatchObject({ name: " 我的视图 🌍 " });
+    },
+  );
+
+  it.each([null, { id: "p1", revision: "rev-p1" }])(
+    "rejects a complete save receipt for a different name with target %s",
+    async (target) => {
+      const producer = respond;
+      respond = (type, payload) => ({
+        ...(producer(type, payload) as object), name: "Other view",
+      });
+      await expect(usePresetVersionService().savePreset("orders", "My view", authoredView, target))
+        .rejects.toMatchObject({ name: "ProductRpcProtocolError", reason: "invalid-success-payload" });
+      expect(requests).toHaveLength(1);
+    },
+  );
+
   it("attaches a fresh operationId to every write command", async () => {
     const service = usePresetVersionService();
     const view = {

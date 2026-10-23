@@ -144,7 +144,7 @@ function decodePresetView(value: unknown): PresetView | null {
  */
 export function decodePresetEntry(
   value: unknown,
-  expected: { readonly collection: string; readonly presetId?: string } | null,
+  expected: { readonly collection: string; readonly presetId?: string; readonly name?: string } | null,
   options: { readonly writeReceipt?: boolean } = {},
 ): PresetEntry | null {
   if (!isPlainObject(value)) return null;
@@ -160,6 +160,7 @@ export function decodePresetEntry(
   if (expected) {
     if (value.collection !== expected.collection) return null;
     if (expected.presetId !== undefined && value.id !== expected.presetId) return null;
+    if (expected.name !== undefined && value.name !== expected.name) return null;
   }
   return value as unknown as PresetEntry;
 }

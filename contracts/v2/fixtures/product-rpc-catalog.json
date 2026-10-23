@@ -16809,7 +16809,7 @@
             }
           },
           "status": {
-            "type": "string"
+            "const": "applied"
           }
         }
       },
@@ -27002,7 +27002,7 @@
             }
           },
           "status": {
-            "type": "string"
+            "const": "applied"
           }
         }
       },
@@ -27306,7 +27306,7 @@
             "type": "string"
           },
           "status": {
-            "type": "string"
+            "const": "applied"
           }
         }
       },

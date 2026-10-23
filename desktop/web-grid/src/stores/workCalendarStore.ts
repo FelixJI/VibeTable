@@ -14,6 +14,8 @@ function isCalendarResult(value: unknown): value is CalendarResult {
   // Reject malformed authority results; do not silently sanitize them to an empty calendar.
   return !!value && typeof value === "object" && !Array.isArray(value)
     && Array.isArray((value as { overrides?: unknown }).overrides)
+    // Match Go MaxWorkCalendarOverrides before copying or normalizing the authority result.
+    && (value as CalendarResult).overrides.length <= 3660
     && typeof (value as { revision?: unknown }).revision === "string"
     && JSON.stringify(sanitizeOverrides((value as CalendarResult).overrides))
       === JSON.stringify((value as CalendarResult).overrides);

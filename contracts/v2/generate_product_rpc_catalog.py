@@ -995,6 +995,11 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         ),
     }
+    for method in ("preset.delete", "version.delete", "version.save"):
+        schema = specs[method].schema
+        assert schema is not None
+        properties = typing.cast(dict[str, object], schema["properties"])
+        properties["status"] = {"const": "applied"}
     return specs
 
 

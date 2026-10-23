@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useWorkCalendarStore, WORK_CALENDAR_STORAGE_KEY } from "./workCalendarStore";
 import { useWorkspaceSessionStore } from "./workspaceSessionStore";
+import { formatDateKey, type WorkCalendarOverride } from "@/calendar/workCalendar";
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/services/bridgeContext", () => ({ useHostBridge: () => ({ request }) }));
@@ -179,6 +180,35 @@ describe("workCalendarStore", () => {
     await store.load();
     expect(store.status).toBe("ready");
     expect(request).toHaveBeenCalledExactlyOnceWith("settings.readWorkCalendar", {});
+  });
+
+  it.each(["read", "commit"])("enforces the producer override limit on %s results", async (method) => {
+    const overrides: WorkCalendarOverride[] = Array.from({ length: 3661 }, (_, index) => ({
+      date: formatDateKey(new Date(2026, 0, index + 1)), kind: "holiday", name: "",
+    }));
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    const accepted = overrides.slice(0, 3660);
+    request.mockResolvedValueOnce({ overrides: accepted, revision: "current" });
+    await store.load();
+    expect(store.status).toBe("ready");
+    expect(store.overrideCount).toBe(3660);
+    store.setOverride(accepted[0]!.date, "workday", "unsaved");
+    const draft = store.draft.map(item => ({ ...item }));
+    request.mockClear();
+    request.mockResolvedValueOnce({
+      status: "applied", changeSetId: "change-1", emittedEvents: [],
+      overrides, revision: "invalid",
+    });
+    if (method === "read") await store.load();
+    else await store.save();
+    expect(store.status).toBe("error");
+    expect(store.error).toContain(method === "read" ? "settings.readWorkCalendar" : "settings.commitWorkCalendar");
+    expect(store.overrides).toEqual(accepted);
+    expect(store.draft).toEqual(draft);
+    expect(store.revision).toBe("current");
+    await store.save();
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("waits for database.opened and reads only the completed workspace epoch", async () => {

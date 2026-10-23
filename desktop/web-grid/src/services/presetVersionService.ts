@@ -39,7 +39,7 @@ export function usePresetVersionService() {
         expectedRevision: target?.revision ?? null,
         operationId: operationId(),
       }),
-      value => decodePresetEntry(value, { collection, presetId: target?.id }, { writeReceipt: true }),
+      value => decodePresetEntry(value, { collection, presetId: target?.id, name }, { writeReceipt: true }),
       "preset.save",
     );
   }
