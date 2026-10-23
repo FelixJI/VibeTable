@@ -15,7 +15,7 @@ from backend.contracts.plugin import (
     PluginPackageRevision,
     PluginPrivateSetting,
 )
-from backend.infrastructure.plugin_store import InMemoryPluginStore
+from tests.backend.plugin_store_fixture import InMemoryPluginStore
 
 
 def _manifest(*, version: str = "1.0.0") -> PluginManifest:

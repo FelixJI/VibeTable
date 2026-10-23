@@ -10,8 +10,8 @@ import pytest
 
 from backend.application.plugin_registry import PluginRegistryError
 from backend.contracts.plugin import PluginManifest, PluginPackageRevision, PluginPrivateSetting
-from backend.infrastructure.plugin_store import InMemoryPluginStore
 from tests.backend.application.test_plugin_platform_service import _service, _write_plugin
+from tests.backend.plugin_store_fixture import InMemoryPluginStore
 
 
 def _make_legacy(source: Path, *, worker_entry: bool) -> PluginManifest:

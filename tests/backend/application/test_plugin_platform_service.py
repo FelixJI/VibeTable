@@ -17,7 +17,8 @@ from backend.contracts.plugin import (
     PluginSnapshot,
 )
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
-from backend.infrastructure.plugin_store import InMemoryPluginStore, PluginStoreConflictError
+from backend.infrastructure.plugin_store import PluginStoreConflictError
+from tests.backend.plugin_store_fixture import InMemoryPluginStore
 
 
 def _write_plugin(root: Path, *, version: str = "1.0.0") -> None:
