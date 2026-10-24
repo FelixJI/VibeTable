@@ -4,7 +4,7 @@
 
 ## 当前 CI 分片
 
-`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程及 S48–S52 插件应用与能力服务块；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程及 S48–S53 插件应用、能力服务与记录管理块；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
 
 分片调整依据为：
 
@@ -20,15 +20,33 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@5a825a21c9fe6697909c25d00975fe62b6469fb9`
-- GitHub run：[main CI 38337858898](https://github.com/FelixJI/VibeTable/actions/runs/38337858898)
+- source SHA：`GitHub/main@e53670040da719af6de1e8c6736c7c0f08e3d5e7`
+- GitHub run：[main CI 40074440901](https://github.com/FelixJI/VibeTable/actions/runs/40074440901)
 - 报告契约：`contractVersion=2.0`
-- 结果：45/45 passed、0 failed、0 skipped。
-- 当前 manifest gap：7（`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`、`52-plugin-capability-services`、`53-record-manager`）。
+- 结果：52/52 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：5（`01-offline-first-start`、`11-plugin-mutation`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`46-dashboard-native-output`）。
+- 当前 manifest changed：无。
 
-这些同 ID 场景现已覆盖无业务 Worker 启动、原生插件执行、旧插件与布局退役保全及插件替代验证；本节历史样本不证明当前语义通过。
+同一 main 候选的 data-io 10 场、file-io 13 场与 resilience 29 场精确、不重复覆盖当前 manifest 的全部 52 个场景，三份原始产品报告均通过、零失败、零跳过。三个产品 lane 报告对同一 source 与同一候选 `VibeTable-v0.5.3-win-x64.zip`（271 个文件）的 commit、sourceHash、候选与资产绑定核验一致，产品 stage 与同 lane 其余 stage 返回码均为零，packageAudit 与四组件 freshness 通过。三个产品 stage 实际用时约 1183.5 秒、1162.0 秒与 1236.9 秒，均在 1800 秒预算内。报告内部路径分别为 `lane-evidence/data-io/20261024T075228Z/product-e2e-report.json`、`lane-evidence/file-io/20261024T075040Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261024T075717Z/product-e2e-report.json`。
+
+该 run 最新 attempt 的 15 个 job 全部 success（含全部严格 required）；此前一次 attempt 的 core job 曾以约 2 秒超时失败，根因未确认，其余产品分片在该次 attempt 中成功且原始 artifacts 原样保留。因此本节产品证据真实有效，但不把该 run 的尝试历史写成全程零失败。
+
+关联 CD 40084369117 整体成功：publish job 与 Stage release 均 success，而 Verify closed product E2E evidence、两项 provenance/SBOM attestation 与 Publish and reconcile release 均为 skipped；本节是普通 main 主干样本，不代表正式发布。候选名中的 0.5.3 是 e5367004 主干时点版本，PR #516 在该基线上推进 0.5.4；本节证据归属 main 主干样本，不等于 0.5.4 发布候选已通过完整资格。发版 PR #516 head 上 closed-evidence 检查此前以 exit 1 失败，原因是当前证据节仍绑定下方 5a8 历史样本、相对 52 场 manifest 的 gap 与 changed 非空；此处按真实主干报告闭合差距，发布资格仍由同候选 lane 聚合门禁强制，证据文档侧只核对一致性与真实性（见[质量门禁](quality-gates.md#cd)）。
+
+覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`、`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`、`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`、`46-dashboard-native-output`、`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`、`52-plugin-capability-services`、`53-record-manager`。
+
+## 前一完整样本 2026-10-13（5a8，历史）
+
+- source SHA：`5a825a21c9fe6697909c25d00975fe62b6469fb9`
+- GitHub run：main CI 38337858898
+- 报告契约：2.0
+- 结果：45 场全部通过、零失败、零跳过。
+- 后续 manifest gap：7（`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`、`52-plugin-capability-services`、`53-record-manager`）。
+- 后续 manifest surplus：无。
+- 后续 manifest changed：5（`01-offline-first-start`、`11-plugin-mutation`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`46-dashboard-native-output`）。
+
+相对该样本，gap 的 7 个场景与 changed 的 5 个同 ID 新语义已由当前证据节的真实主干样本覆盖；本历史样本不证明当前语义通过。
 
 同一 main 候选的 data-io 13 场与 resilience 32 场精确、不重复覆盖该 source SHA 对应 manifest 的全部场景；新增无 Worker 页面、应用、能力服务与记录管理场景47–53尚未包含在这份历史运行证据中。两份原始产品报告均通过，六 lane 报告的 commit/source/candidate/资产绑定一致、所有 stage 返回码为零，聚合 required 成功。报告内部路径分别为 `lane-evidence/data-io/20261013T030351Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261013T030528Z/product-e2e-report.json`。
 

@@ -9,18 +9,20 @@ VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue
 | 阶段 | 覆盖 |
 |---|---|
 | `bootstrap` | 锁定 Python、Node、Go 与 .NET 依赖及项目所需工具 |
-| `quality` | 版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、四个 Node 项目、Go format/vet/test/build、.NET tests |
+| `quality` | 版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、六个 Node 项目、Go format/vet/test/build、.NET tests |
 | `e2e` | 执行 `pr-e2e`，构建真实包并运行 `release.smoke` 产品场景与工作台资格检查 |
 | `release_build` | 构建真实 Windows x64 离线发布包及 identity/checksum/SBOM |
 | `release_smoke` | 并行执行 `qa/next.py --lane` 后聚合，覆盖 Go race、sidecar、升级/故障注入、WPF/WebView2 产品 E2E、包契约和最终只读 smoke |
 
-CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号陈旧运行可以取消，`main` 运行使用唯一 run id，绝不互相取消。PR 会完整执行 release build/smoke，但不会上传正式候选；只有 `main` push 会把与 source SHA 绑定的固定名 `release-candidate` 保留 14 天。完整矩阵以严格分支保护要求的 `required` check 为权威。
+CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号陈旧运行可以取消，`main` 运行使用唯一 run id，绝不互相取消。PR 会完整执行 release build/smoke，但不会上传正式候选；只有 `main` push 会把与 source SHA 绑定的固定名 `release-candidate` 保留 14 天。完整矩阵以严格分支保护要求的 `required` check 为权威；此设计参考 GitHub 官方文档（[status checks](https://docs.github.com/en/pull-requests/reference/status-checks) 与 [workflow artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts)）。
 
 本地改动先运行最小相关测试；涉及 PocketBase migration、mutation kernel、WPF/WebView2 生命周期、打包布局、升级、发布 identity、权限边界或原生文件能力时，合并前还应本地执行 `uv run python qa/next.py --ci --json-report build/qa/report.json`，并保留 QA 证据。
 
 ## CD
 
-发起或刷新版本 PR 前，先依据成功 `main` CI 的两份原始产品 E2E 报告和六 lane 报告核对 source、候选绑定及 manifest 的完整、不重复覆盖，再更新[唯一当前证据](e2e-performance.md#当前产品-e2e-证据)，运行 `uv run python scripts/automation_project.py release-evidence`。新增或变更场景后的旧样本可以在普通 CI 中诚实保留 gap/changed，但版本 PR 要求 gap、surplus、changed 全部闭合；不能只清空差距声明或重跑旧提交。证据修订合入 `main` 后，再通过既有 CD prepare 入口刷新版本 PR。
+发布资格以当前候选的 lane 聚合门禁为权威：`qa/release_eligibility.py` 的聚合强制同一候选的七个 lane 报告（core、race-a、race-b、resilience、data-io、file-io、release）齐全、全部 stage 返回码为零、commit/artifactHashes/sourceHash/releaseCandidate 与当前候选一致，三个产品 E2E 分片（`product-e2e`、`product-e2e-data-io`、`product-e2e-file-io`）对当前 manifest 精确、不重复覆盖，smoke 必须携带 required-passed 的 WebView2 证据；聚合成功后才会定稿 main 候选，CD 只发布触发它的同 source 候选，真实 run 成功以 CI 的 required 状态为准。
+
+版本 PR 质量段与 CD 发布前运行的 `uv run python scripts/automation_project.py release-evidence` 只核对[当前证据](e2e-performance.md#当前产品-e2e-证据)文档的一致性与真实性：source SHA、run、契约版本、结果与 manifest 引用必须相互一致，历史样本可以诚实保留 gap/changed，不要求文档差距为零，但谎报闭合或伪造覆盖仍会失败；该检查只比对文档元数据、可追溯 source 与差距声明，不访问 GitHub 验证 run 成功与否。生成器的 `--require-closed-evidence` 保留为可显式调用的严格审计选项。新增或变更场景后，建议尽快用成功主干样本刷新当前证据，不能只清空差距声明或重跑旧提交。
 
 `.github/workflows/cd.yml` 有两个入口，但不重建候选：
 

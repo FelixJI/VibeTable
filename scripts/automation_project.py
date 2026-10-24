@@ -690,7 +690,6 @@ def verify_release_evidence() -> None:
         sys.executable,
         "scripts/generate_product_e2e_capability_index.py",
         "--check",
-        "--require-closed-evidence",
     )
 
 
