@@ -1,53 +1,22 @@
 import { useHostBridge } from "./bridgeContext";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
-import type { CollectionSummary } from "@/stores/workspaceStore";
-import type {
-  CollectionsChangedPayload,
-  DatabaseOpenedPayload,
-} from "@/contracts";
-
-/**
- * Translate the wire-level `database.opened` payload (separate `tables`/
- * `views` lists) into the store's `CollectionSummary[]` shape. Mirrors
- * `workspaceService.toCollections` — both stores maintain their own view of
- * the collection list (see the duplication note in the task-9 report).
- */
-function toCollections(
-  payload: DatabaseOpenedPayload,
-): readonly CollectionSummary[] {
-  const tables = payload.tables.map((t) => ({
-    collection: t,
-    metadata: {},
-  }));
-  const views = payload.views.map((v) => ({
-    collection: v,
-    metadata: { kind: "view" } as const,
-  }));
-  return [...tables, ...views];
-}
-
-/**
- * Translate a `database.collectionsChanged` payload (carrying `tables` and
- * optional `capabilityHashes`) into `CollectionSummary[]`.
- */
-function toCollectionsFromChanged(
-  payload: CollectionsChangedPayload,
-): readonly CollectionSummary[] {
-  const hashes = payload.capabilityHashes ?? {};
-  return payload.tables.map((t) => ({
-    collection: t,
-    metadata: t in hashes ? { capabilityHash: hashes[t] } : {},
-  }));
-}
+import { collectionsFromChanged } from "./collectionsProjection";
+import type { CollectionsChangedPayload } from "@/contracts";
 
 /**
  * tableAdminService wires `tableAdminStore` to the host bridge:
- *   - inbound `database.opened` / `database.collectionsChanged` populate the
- *     store's collection list (the sidebar reads this to list tables),
  *   - outbound `tableAdmin.createRequested` / `tableAdmin.deleteRequested` /
- *     `admin.openRequested` carry the user's create/delete/open-admin intent.
+ *     `admin.openRequested` carry the user's create/delete/open-admin intent,
+ *   - the correlated create/delete replies are projected into the single
+ *     shared catalog in `workspaceStore` through the same pure mapping the
+ *     subscription owner (`workspaceService`) uses (#509).
+ *
+ * This service deliberately does NOT subscribe to `database.opened` or
+ * `database.collectionsChanged`: the workspace service owns those broadcasts,
+ * and the admin store keeps only the form/submission state it needs.
  *
  * Table creation carries only a display-name intent. The host assigns the
  * opaque table identity and creates an empty base table; the unified Schema
@@ -62,28 +31,20 @@ export function useTableAdminService(): {
 } {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
+  const workspace = useWorkspaceStore();
   const ui = useUiStore();
   const session = useWorkspaceSessionStore();
-  const unsubscribe: Array<() => void> = [];
   let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
   let operationSequence = 0;
-  let initialized = false;
   let disposed = false;
 
   function init(
     onTableCreated?: (tableId: string) => void | Promise<void>,
   ): void {
-    // A repeated init only refreshes the callback; re-subscribing would
-    // duplicate the broadcast consumers (bridge.on appends Set entries).
+    // A repeated init only refreshes the callback; there is no broadcast
+    // subscription to duplicate (the workspace service owns the catalog).
     if (disposed) return;
     createdCallback = onTableCreated;
-    if (initialized) return;
-    initialized = true;
-    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
-      const collections = toCollections(payload);
-      store.setCollections(collections);
-    }));
-    unsubscribe.push(bridge.on("database.collectionsChanged", applyCollectionsChanged));
   }
 
   function dispose(): void {
@@ -91,15 +52,23 @@ export function useTableAdminService(): {
     disposed = true;
     // Bumping operationSequence retires continuations already awaiting a
     // host reply, so a late response cannot settle the shared store, close
-    // the modal, or fire the retired createdCallback for a newer owner.
+    // the modal, write the shared catalog, or fire the retired
+    // createdCallback for a newer owner.
     operationSequence += 1;
-    for (const stop of unsubscribe.splice(0)) stop();
     createdCallback = undefined;
   }
 
-  function applyCollectionsChanged(payload: CollectionsChangedPayload): void {
-    const collections = toCollectionsFromChanged(payload);
-    store.setCollections(collections);
+  /**
+   * Project a correlated create/delete reply into the shared workspace
+   * catalog. The reply carries a full authoritative snapshot, so response and
+   * the following broadcast converge through the identical projection; the
+   * store keeps its array identity when the content did not change.
+   */
+  function applyCatalog(changed: CollectionsChangedPayload): void {
+    workspace.setCollections(
+      collectionsFromChanged(changed),
+      changed.displayNames,
+    );
   }
 
   /**
@@ -123,8 +92,10 @@ export function useTableAdminService(): {
     const sequence = ++operationSequence;
     const sessionIsCurrent = ownsSession();
     const displayName = store.form.name.trim();
+    // The single shared catalog is the only readable collection source; the
+    // snapshot is taken synchronously at submit time.
     const existingIds = new Set(
-      store.collections.map((item) => item.collection),
+      workspace.collections.map((item) => item.collection),
     );
     try {
       // Table lifecycle is host-owned. The renderer submits one closed intent
@@ -133,7 +104,7 @@ export function useTableAdminService(): {
         displayName,
       }) as CollectionsChangedPayload;
       if (sequence !== operationSequence || store.phase !== "submitting" || !sessionIsCurrent()) return;
-      applyCollectionsChanged(changed);
+      applyCatalog(changed);
       const createdTableId = changed.createdTableId;
       if (!createdTableId
         || existingIds.has(createdTableId)
@@ -163,7 +134,7 @@ export function useTableAdminService(): {
         { collection: name },
       ) as CollectionsChangedPayload;
       if (sequence !== operationSequence || store.phase !== "deleting" || !sessionIsCurrent()) return;
-      applyCollectionsChanged(changed);
+      applyCatalog(changed);
       if (changed.deletedTableId !== name || changed.tables.includes(name)) {
         throw new Error("主机返回的集合目录仍包含待删除数据表。");
       }

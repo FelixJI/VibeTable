@@ -4,8 +4,8 @@ using VibeTable.Infrastructure.Backend;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
-/// Owns product workspace projection startup, duplicate-open exclusion, cached
-/// bootstrap state, and table notification presentation. Runtime composition
+/// Owns product workspace projection startup, duplicate-open exclusion, and
+/// table notification presentation. Runtime composition
 /// only tells it when bindings may have changed.
 /// </summary>
 internal sealed class ProductWorkspaceController : IDisposable
@@ -15,6 +15,7 @@ internal sealed class ProductWorkspaceController : IDisposable
     private readonly WorkspaceSessionManager _sessions;
     private readonly IDatabasePicker _databasePicker;
     private readonly TableWorkspaceService _workspace;
+    private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly Func<bool> _isRendererReady;
     private readonly Func<bool> _isClosing;
     private readonly Func<bool> _hasProductGateway;
@@ -31,7 +32,6 @@ internal sealed class ProductWorkspaceController : IDisposable
     private readonly bool _ownsAuthority;
     private readonly PluginProjectContextBindingRegistry _databaseOpens;
     private readonly bool _ownsDatabaseOpens;
-    private CachedOpen? _snapshot;
     private Task? _openWorker;
     private PluginProjectContextOpenStart? _queuedOpen;
     private PluginProjectContextBinding? _activeOpen;
@@ -59,13 +59,15 @@ internal sealed class ProductWorkspaceController : IDisposable
         Func<PluginProjectContext?>? pluginContext = null,
         Func<bool>? workspaceExpected = null,
         ProductAuthorityEpoch? authority = null,
-        PluginProjectContextBindingRegistry? databaseOpens = null)
+        PluginProjectContextBindingRegistry? databaseOpens = null,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _databasePicker = databasePicker ?? throw new ArgumentNullException(nameof(databasePicker));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _sessionEnvelopeFilter = sessionEnvelopeFilter;
         _isRendererReady = isRendererReady
             ?? throw new ArgumentNullException(nameof(isRendererReady));
         _isClosing = isClosing ?? throw new ArgumentNullException(nameof(isClosing));
@@ -91,8 +93,6 @@ internal sealed class ProductWorkspaceController : IDisposable
         if (_ownsDatabaseOpens)
             _databaseOpens.SetAfterAuthorityTransition(_pluginContext());
     }
-
-    public void ResetBinding() => _snapshot = null;
 
     public void OpenWhenReady()
     {
@@ -194,6 +194,7 @@ internal sealed class ProductWorkspaceController : IDisposable
         PluginProjectContextBinding? binding = request.Binding;
         _terminals.PostRetiredCancellations(request.RetiredOpenIds, "superseded");
         if (binding is null) return;
+        CancellationToken openToken = binding.SessionToken;
         bool attempted = false;
         for (int attempt = 1; attempt <= OpenRetryLimit; attempt += 1)
         {
@@ -210,65 +211,71 @@ internal sealed class ProductWorkspaceController : IDisposable
                     if (source is not null)
                     {
                         if (!_databaseOpens.IsCurrent(binding)) return;
-                        DatabaseOpenResult result = _snapshot is { } cached
-                            && cached.Source == source
-                            && cached.AuthorityGeneration == binding.ContextGeneration
-                                ? cached.Result
-                                : await _workspace.PrepareDatabaseOpenAsync(
-                                    source,
-                                    binding.SessionToken).ConfigureAwait(false);
-                        if (_isClosing() || Volatile.Read(ref _disposed) != 0)
-                            return;
-                        if (!_databaseOpens.IsCurrent(binding)) return;
-                        object projection = ProductDatabaseOpenedProjection.Create(
-                            result,
-                            binding.Context,
-                            new
-                            {
-                                id = "local-user",
-                                displayName = "本地用户",
-                            },
-                            _hostVersion);
-                        try
+                        // #509: no catalog result cache — every actual open
+                        // reads the authoritative catalog. The read, the
+                        // discovery admission commit/rollback, and the opened
+                        // terminal enqueue run inside one exclusive catalog
+                        // turn so an older open cannot overwrite a newer
+                        // catalog snapshot.
+                        Func<Func<bool>, bool> emitGate = _databaseOpens.CaptureOpenedEmissionGate(
+                            binding, _sessionEnvelopeFilter, out WorkspaceRequestEpochLease? observer);
+                        using var epochObserver = observer;
+                        using var readLifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                            binding.SessionToken, observer?.CancellationToken ?? CancellationToken.None);
+                        openToken = readLifetime.Token;
+                        if (!emitGate(() => true)) return;
+                        DatabaseOpenResult result;
+                        using (TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn())
                         {
-                            bool completed = _databaseOpens.TryComplete(binding, () =>
-                            {
-                                using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
-                                    _workspace,
-                                    source,
-                                    result);
-                                commit.Enqueue(() =>
+                            await turn.EnterAsync(openToken).ConfigureAwait(false);
+                            result = await _workspace.PrepareDatabaseOpenAsync(
+                                source, openToken, emitGate).ConfigureAwait(false);
+                            if (_isClosing() || Volatile.Read(ref _disposed) != 0)
+                                return;
+                            if (!_databaseOpens.IsCurrent(binding)) return;
+                            object projection = ProductDatabaseOpenedProjection.Create(
+                                result,
+                                binding.Context,
+                                new
                                 {
-                                    _reply.PostNotification("database.opened", projection);
-                                    _snapshot = new CachedOpen(
-                                        source,
-                                        binding.ContextGeneration,
-                                        result);
-                                });
-                            });
-                            if (!completed) return;
-                        }
-                        catch (Exception exception)
-                        {
-                            _trace(
-                                "Product workspace success terminal failed; " +
-                                $"exception={exception.GetType().Name}");
-                            _databaseOpens.TryComplete(binding, () =>
+                                    id = "local-user",
+                                    displayName = "本地用户",
+                                },
+                                _hostVersion);
+                            try
                             {
-                                _reply.PostOperationFailed(
-                                    null,
-                                    "本地工作区启动失败，请重试。",
-                                    "PRODUCT_WORKSPACE_OPEN_FAILED");
-                            });
+                                bool completed = _databaseOpens.TryComplete(binding, () => emitGate(() =>
+                                {
+                                    using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
+                                        _workspace, source, result);
+                                    commit.Enqueue(() =>
+                                        _reply.TryPostResponse("database.opened", null, projection, emitGate));
+                                    return true;
+                                }));
+                                if (!completed) return;
+                            }
+                            catch (Exception exception)
+                            {
+                                _trace(
+                                    "Product workspace success terminal failed; " +
+                                    $"exception={exception.GetType().Name}");
+                                _databaseOpens.TryComplete(binding, () =>
+                                {
+                                    _reply.PostOperationFailed(
+                                        null,
+                                        "本地工作区启动失败，请重试。",
+                                        "PRODUCT_WORKSPACE_OPEN_FAILED");
+                                });
+                            }
+                            return;
                         }
-                        return;
                     }
                     _trace(
                         $"Product workspace source unresolved yet; " +
                         $"attempt={attempt}");
                 }
                 catch (OperationCanceledException)
-                    when (binding.SessionToken.IsCancellationRequested)
+                    when (openToken.IsCancellationRequested)
                 {
                     return;
                 }
@@ -315,11 +322,6 @@ internal sealed class ProductWorkspaceController : IDisposable
         if (_ownsDatabaseOpens) _databaseOpens.Dispose();
         if (_ownsAuthority) _authority.Dispose();
     }
-
-    private sealed record CachedOpen(
-        string Source,
-        long AuthorityGeneration,
-        DatabaseOpenResult Result);
 
 }
 

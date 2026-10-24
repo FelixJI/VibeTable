@@ -6,6 +6,8 @@ using Microsoft.Web.WebView2.Wpf;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Desktop.ViewModels;
+using VibeTable.Infrastructure.Rpc;
+using VibeTable.Infrastructure.Backend;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -71,6 +73,12 @@ public sealed class ProductWebViewBridgeGenerationTests
             return _window!.Dispatcher.Invoke(() => new WebView2())
                 ?? throw new InvalidOperationException("replacement control creation failed");
         }
+
+        internal Task DispatchAsync(Action action, CancellationToken token)
+            => _window!.Dispatcher.InvokeAsync(action, DispatcherPriority.Normal, token).Task;
+
+        internal void UseDispatcherQueue()
+            => Bridge.UiEmission = action => _window!.Dispatcher.BeginInvoke(action);
 
         public void PumpQueued()
         {
@@ -181,6 +189,229 @@ public sealed class ProductWebViewBridgeGenerationTests
         }
     }
 
+    [TestMethod]
+    [DataRow("current")]
+    [DataRow("authority")]
+    [DataRow("epoch")]
+    [DataRow("drain-resume")]
+    [DataRow("renderer")]
+    public async Task OpenedCatalogKeepsItsAdmissionAfterTerminalReleaseUntilTheRealQueuePump(string transition)
+    {
+        var (manager, filter, root) = await PluginRequestDispatcherTests.OpenRetirementSessionAsync();
+        try
+        {
+            using var harness = new StaBridge();
+            using var authority = new ProductAuthorityEpoch();
+            using var opens = new PluginProjectContextBindingRegistry(authority);
+            PluginProjectContext context = PluginProjectContext.FromSession(manager.Current)!;
+            authority.Transition(context);
+            opens.SetAfterAuthorityTransition(context);
+            var gateway = new FakeTableRpcGateway();
+            gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(["orders"], [], TestDisplayNames.For("orders"));
+            var workspace = new TableWorkspaceService(gateway);
+            var controller = new WorkspaceTableRequestController(workspace, new FakeDatabasePicker("db"),
+                harness.Bridge, () => null, pluginBindings: opens, sessionEnvelopeFilter: filter);
+            await controller.DispatchAsync(new RoutedWebRequest("database.openRequested", null,
+                JsonSerializer.SerializeToElement(new { openId = "queued-open" }), ""));
+            Assert.HasCount(1, harness.Queued, "the logical open has completed and released before the pump");
+            if (transition == "authority")
+            {
+                authority.Transition(context);
+                opens.SetAfterAuthorityTransition(context);
+            }
+            else if (transition == "epoch") await manager.CloseAsync("retire-queued-catalog");
+            else if (transition == "drain-resume")
+            {
+                Guid id = manager.Current.WorkspaceId!.Value;
+                ulong epoch = manager.Current.SessionEpoch;
+                await filter.DrainAsync(id, epoch, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+                filter.Resume(id, epoch);
+            }
+            else if (transition == "renderer") harness.Bridge.SealForRendererRecovery();
+            harness.PumpQueued();
+            if (transition is "current" or "renderer")
+                Assert.HasCount(1, harness.Commits);
+            else
+                Assert.IsEmpty(harness.Commits, "a terminal's released operation token cannot revive its retired admission");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            filter.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+    [TestMethod]
+    [DataRow("create", "current")]
+    [DataRow("create", "epoch")]
+    [DataRow("create", "drain-resume")]
+    [DataRow("create", "renderer")]
+    [DataRow("delete", "current")]
+    [DataRow("delete", "epoch")]
+    [DataRow("delete", "drain-resume")]
+    [DataRow("delete", "renderer")]
+    public async Task TableAdminCatalogResponsesAndCompanionBroadcastsKeepTheirRealPumpScope(string operation, string transition)
+    {
+        var (manager, filter, root) = await PluginRequestDispatcherTests.OpenRetirementSessionAsync();
+        try
+        {
+            using var harness = new StaBridge();
+            var tables = new FakeTableRpcGateway
+            {
+                ListTablesResult = new TableSummary(["tbl_created"], ["view_recent"],
+                    new Dictionary<string, string> { ["tbl_created"] = "Orders", ["view_recent"] = "Recent" }),
+            };
+            await using var client = new JsonRpcClient(new WorkspaceTableRequestControllerTests.SchemaCaptureTransport());
+            using var gateway = new JsonRpcProductDataGateway(client);
+            var workspace = new TableWorkspaceService(tables);
+            var controller = new WorkspaceTableRequestController(workspace, new FakeDatabasePicker("db"), harness.Bridge,
+                () => gateway, NoDatabaseOpenRoute.Instance, sessionEnvelopeFilter: filter);
+            await controller.DispatchAsync(new RoutedWebRequest($"tableAdmin.{operation}Requested", "queued-admin",
+                JsonSerializer.SerializeToElement(operation == "create"
+                    ? (object)new { displayName = "Orders" } : new { collection = "tbl_orders" }), "",
+                new WorkspaceWireScope
+                {
+                    Scope = "workspace", WorkspaceId = manager.Current.WorkspaceId!.Value,
+                    SessionEpoch = manager.Current.SessionEpoch, OperationId = Guid.NewGuid(), Sequence = 1,
+                }));
+            Assert.HasCount(2, harness.Queued, "both the correlated receipt and its broadcast must use the real queue");
+            if (transition == "epoch") await manager.CloseAsync("retire-admin");
+            else if (transition == "drain-resume")
+            {
+                Guid id = manager.Current.WorkspaceId!.Value;
+                ulong epoch = manager.Current.SessionEpoch;
+                await filter.DrainAsync(id, epoch, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+                filter.Resume(id, epoch);
+            }
+            else if (transition == "renderer") harness.Bridge.SealForRendererRecovery();
+            harness.PumpQueued();
+            if (transition is "current" or "renderer") Assert.HasCount(2, harness.Commits);
+            else Assert.IsEmpty(harness.Commits);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            filter.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CatalogTurnsOrderOrdinaryEnqueuesAndRealtimePostsOnTheActualDispatcher(bool realtimeFirst)
+    {
+        using var harness = new StaBridge();
+        harness.UseDispatcherQueue();
+        var order = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        harness.Bridge.EmissionCommitted += _ => order.Enqueue("admin");
+        var tables = new FakeTableRpcGateway
+        {
+            ListTablesResult = new TableSummary(["tbl_created"], [], TestDisplayNames.For("tbl_created")),
+        };
+        var workspace = new TableWorkspaceService(tables);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivery = new ProductRealtimeDelivery(async (action, token) =>
+        {
+            dispatched.TrySetResult();
+            if (realtimeFirst) await release.Task.WaitAsync(token);
+            await harness.DispatchAsync(action, token);
+        }, () => true, (_, _) => order.Enqueue("realtime"));
+        delivery.SetReady(RendererReadyPhase.Business);
+        async Task Refresh()
+        {
+            using var turn = workspace.BeginCatalogTurn();
+            await turn.EnterAsync(CancellationToken.None);
+            await delivery.PostAsync(0, post =>
+            {
+                workspace.UpdateKnownCatalog(tables.ListTablesResult);
+                post("database.collectionsChanged", new { });
+                return true;
+            }, CancellationToken.None);
+        }
+        await using var client = new JsonRpcClient(new WorkspaceTableRequestControllerTests.SchemaCaptureTransport());
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var controller = new WorkspaceTableRequestController(workspace, new FakeDatabasePicker("db"), harness.Bridge,
+            () => gateway, NoDatabaseOpenRoute.Instance);
+        Task? refresh = realtimeFirst ? Refresh() : null;
+        if (realtimeFirst) await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task create = controller.DispatchAsync(new RoutedWebRequest("tableAdmin.createRequested", "ordered-create",
+            JsonSerializer.SerializeToElement(new { displayName = "Orders" }), ""));
+        if (realtimeFirst)
+        {
+            Assert.IsFalse(create.IsCompleted);
+            release.TrySetResult();
+        }
+        await create.WaitAsync(TimeSpan.FromSeconds(2));
+        refresh ??= Refresh();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+        await harness.DispatchAsync(() => { }, CancellationToken.None);
+        CollectionAssert.AreEqual(realtimeFirst
+            ? new[] { "realtime", "admin", "admin" } : new[] { "admin", "admin", "realtime" }, order.ToArray());
+    }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OpenedNonCooperativeReadRetiresOnDrainBeforeAuthorityNotificationAndCannotRevive(bool hostDriven)
+    {
+        var (manager, filter, root) = await PluginRequestDispatcherTests.OpenRetirementSessionAsync();
+        var raw = new TaskCompletionSource<DatabaseOpenResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            using var authority = new ProductAuthorityEpoch();
+            using var opens = new PluginProjectContextBindingRegistry(authority);
+            PluginProjectContext context = PluginProjectContext.FromSession(manager.Current)!;
+            authority.Transition(context);
+            opens.SetAfterAuthorityTransition(context);
+            var tables = new FakeTableRpcGateway
+            {
+                OpenDatabaseWithTokenOverride = (_, _) => { entered.TrySetResult(); return raw.Task; },
+            };
+            var workspace = new TableWorkspaceService(tables);
+            var sink = new FakeWebReplySink();
+            var renderer = new WorkspaceTableRequestController(workspace, new FakeDatabasePicker("db"), sink,
+                () => null, pluginBindings: opens, sessionEnvelopeFilter: filter);
+            await using var runtime = new ProductionWorkspaceRuntimeFactory(
+                () => throw new InvalidOperationException("unused runtime"), () => new BackendLaunchOptions { Command = "unused" });
+            using var host = new ProductWorkspaceController(sink, runtime, manager, new FakeDatabasePicker("db"), workspace,
+                () => true, () => false, () => true, _ => { }, "test", guards: () => true,
+                pluginContext: () => context, workspaceExpected: () => true, authority: authority,
+                databaseOpens: opens, sessionEnvelopeFilter: filter);
+            Task pending = hostDriven ? host.SuperviseOpenAsync() : renderer.DispatchAsync(new RoutedWebRequest(
+                "database.openRequested", null, JsonSerializer.SerializeToElement(new { openId = "old-open" }), ""));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            try
+            {
+                Guid id = manager.Current.WorkspaceId!.Value;
+                ulong epoch = manager.Current.SessionEpoch;
+                await filter.DrainAsync(id, epoch, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+                filter.Resume(id, epoch);
+                await pending.WaitAsync(TimeSpan.FromSeconds(2));
+                Assert.IsFalse(raw.Task.IsCompleted, "local retirement must not wait for the non-cooperative transport");
+                tables.OpenDatabaseWithTokenOverride = (_, _) => Task.FromResult(
+                    new DatabaseOpenResult(["fresh"], [], TestDisplayNames.For("fresh")));
+                if (hostDriven) await host.SuperviseOpenAsync().WaitAsync(TimeSpan.FromSeconds(2));
+                else await renderer.DispatchAsync(new RoutedWebRequest("database.openRequested", null,
+                    JsonSerializer.SerializeToElement(new { openId = "fresh-open" }), "")).WaitAsync(TimeSpan.FromSeconds(2));
+                raw.TrySetResult(new DatabaseOpenResult(["stale"], [], TestDisplayNames.For("stale")));
+                var opened = sink.Replies.Where(reply => reply.Type == "database.opened").ToArray();
+                Assert.HasCount(1, opened);
+                Assert.AreEqual("fresh", JsonSerializer.SerializeToElement(opened[0].Payload).GetProperty("tables")[0].GetString());
+            }
+            finally
+            {
+                raw.TrySetResult(new DatabaseOpenResult(["stale"], [], TestDisplayNames.For("stale")));
+                await pending.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            filter.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
     [TestMethod]
     public void ControlReplacementAndRecoverySealRetireTheRendererGeneration()
     {

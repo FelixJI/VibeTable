@@ -614,6 +614,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (requestId is null) PostNotification(type, payload);
         }
 
         public void PostOperationFailed(
@@ -642,6 +643,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (requestId is null) PostNotification(type, payload);
         }
 
         public void PostOperationFailed(
@@ -671,6 +673,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (requestId is null) PostNotification(type, payload);
         }
 
         public void PostOperationFailed(

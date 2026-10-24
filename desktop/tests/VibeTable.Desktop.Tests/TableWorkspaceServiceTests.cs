@@ -638,11 +638,11 @@ public sealed class TableWorkspaceServiceTests
     // -----------------------------------------------------------------------
 
     [TestMethod]
-    public async Task UpdateKnownTables_ReplacesCache_AndAllowsSelectOfNewName()
+    public async Task UpdateKnownCatalog_CommitsTheCacheInsideACatalogTurn()
     {
-        // Open seeds the cache with "old". A subsequent UpdateKnownTables swaps
-        // the cache to a fresh list, so selecting a name that was NOT in the
-        // open result but IS in the update succeeds.
+        // Open seeds the cache with "old". A catalog-turn commit swaps the
+        // cache to a fresh list, so selecting a name that was NOT in the open
+        // result but IS in the committed summary succeeds.
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["db"] =
             new DatabaseOpenResult(
@@ -655,24 +655,31 @@ public sealed class TableWorkspaceServiceTests
         var service = new TableWorkspaceService(gateway);
         await service.OpenDatabaseAsync("db");
 
-        // Before the update, "fresh" is unknown.
+        // Before the commit, "fresh" is unknown.
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await service.SelectTableAsync("fresh"));
 
-        service.UpdateKnownTables(new[] { "fresh" });
+        using (TableWorkspaceService.CatalogTurn turn = service.BeginCatalogTurn())
+        {
+            await turn.EnterAsync(CancellationToken.None);
+            service.UpdateKnownCatalog(new TableSummary(
+                new[] { "fresh" },
+                Array.Empty<string>(),
+                TestDisplayNames.For("fresh")));
+        }
 
-        // After the update, "fresh" is known and "old" is not.
+        // After the commit, "fresh" is known and "old" is not.
         await service.SelectTableAsync("fresh");
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await service.SelectTableAsync("old"));
     }
 
     [TestMethod]
-    public async Task UpdateKnownTables_FiltersSystemTables_Defensively()
+    public async Task UpdateKnownCatalog_FiltersSystemTables_Defensively()
     {
-        // Even if a caller hands in system-prefixed names, they must NOT become
-        // selectable — product-owned vibetable_* metadata never belongs in
-        // the user-table cache.
+        // Even if a summary carries system-prefixed names, they must NOT
+        // become selectable — product-owned vibetable_* metadata never
+        // belongs in the user-table cache.
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["db"] =
             new DatabaseOpenResult(
@@ -682,12 +689,73 @@ public sealed class TableWorkspaceServiceTests
         var service = new TableWorkspaceService(gateway);
         await service.OpenDatabaseAsync("db");
 
-        service.UpdateKnownTables(new[] { "real", "vibetable_settings" });
+        using (TableWorkspaceService.CatalogTurn turn = service.BeginCatalogTurn())
+        {
+            await turn.EnterAsync(CancellationToken.None);
+            service.UpdateKnownCatalog(new TableSummary(
+                new[] { "real", "vibetable_settings" },
+                Array.Empty<string>(),
+                TestDisplayNames.For("real", "vibetable_settings")));
+        }
         gateway.SelectionProjectionResults["real"] = Projection("real");
 
         await service.SelectTableAsync("real"); // user table: OK
         await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await service.SelectTableAsync("vibetable_settings"));
+    }
+
+    [TestMethod]
+    public async Task CatalogTurn_GrantsPermitsInFifoOrderAndCanceledWaitersDoNotOvertake()
+    {
+        var service = new TableWorkspaceService(new FakeTableRpcGateway());
+        var first = service.BeginCatalogTurn();
+        await first.EnterAsync(CancellationToken.None);
+        using var cancelledSource = new CancellationTokenSource();
+        TableWorkspaceService.CatalogTurn cancelled = service.BeginCatalogTurn();
+        Task<bool> cancelledEntry = cancelled.EnterAsync(cancelledSource.Token);
+        TableWorkspaceService.CatalogTurn third = service.BeginCatalogTurn();
+        Task<bool> thirdEntry = third.EnterAsync(CancellationToken.None);
+        await Task.Yield();
+
+        cancelledSource.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => cancelledEntry);
+        Assert.IsFalse(thirdEntry.IsCompleted, "the successor must not overtake");
+
+        first.Dispose();
+        // The cancelled turn keeps its queue slot until the predecessor
+        // completes; only then may the third turn enter.
+        Assert.IsTrue(await thirdEntry.WaitAsync(TimeSpan.FromSeconds(5)));
+        third.Dispose();
+    }
+
+    [TestMethod]
+    public async Task CatalogTurn_DisposedBeforePermitReleasesTheLatePermitWithoutContinuing()
+    {
+        var service = new TableWorkspaceService(new FakeTableRpcGateway());
+        var first = service.BeginCatalogTurn();
+        await first.EnterAsync(CancellationToken.None);
+        TableWorkspaceService.CatalogTurn abandoned = service.BeginCatalogTurn();
+        Task<bool> abandonedEntry = abandoned.EnterAsync(CancellationToken.None);
+        await Task.Yield();
+        Assert.IsFalse(abandonedEntry.IsCompleted);
+
+        // The caller gives up while still waiting for its permit (no token
+        // cancellation involved — pure dispose-before-permit).
+        abandoned.Dispose();
+        Assert.IsFalse(abandonedEntry.IsCompleted,
+            "the abandoned waiter only settles once the gate grants its permit");
+
+        // A successor queued behind the abandoned turn must not be blocked:
+        // when the holder releases, the abandoned entry receives its late
+        // permit, releases it immediately, and the successor proceeds.
+        TableWorkspaceService.CatalogTurn next = service.BeginCatalogTurn();
+        Task<bool> nextEntry = next.EnterAsync(CancellationToken.None);
+        first.Dispose();
+        Assert.IsTrue(await nextEntry.WaitAsync(TimeSpan.FromSeconds(5)));
+        next.Dispose();
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => abandonedEntry);
     }
 
     [TestMethod]

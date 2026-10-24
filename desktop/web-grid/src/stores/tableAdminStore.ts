@@ -1,7 +1,6 @@
 import { computed, reactive, ref } from "vue";
 import { defineStore } from "pinia";
 import { validateTableName } from "@/services/tableAdminValidation";
-import type { CollectionSummary } from "@/stores/workspaceStore";
 
 export type TableAdminPhase =
   | "idle"
@@ -10,9 +9,13 @@ export type TableAdminPhase =
   | "deleting"
   | "failed";
 
+/**
+ * Owns only the create/delete form and submission state. The collections
+ * catalog itself lives in `workspaceStore` (#509): this store no longer keeps
+ * a second, independently updated copy that can drift from the sidebar.
+ */
 export const useTableAdminStore = defineStore("tableAdmin", () => {
   const phase = ref<TableAdminPhase>("idle");
-  const collections = ref<readonly CollectionSummary[]>([]);
   const pendingDelete = ref<string | null>(null);
   const error = ref<string | null>(null);
   const form = reactive({ name: "" });
@@ -20,10 +23,6 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
   const canSubmit = computed(() =>
     (phase.value === "creating" || phase.value === "failed")
     && validateTableName(form.name) === null);
-
-  function setCollections(values: readonly CollectionSummary[]): void {
-    collections.value = values;
-  }
 
   function openCreate(): void {
     phase.value = "creating";
@@ -62,12 +61,10 @@ export const useTableAdminStore = defineStore("tableAdmin", () => {
 
   return {
     phase,
-    collections,
     pendingDelete,
     error,
     form,
     canSubmit,
-    setCollections,
     openCreate,
     beginSubmit,
     requestDelete,

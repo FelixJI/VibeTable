@@ -63,4 +63,52 @@ describe("workspaceStore", () => {
     expect(s.displayNames).toEqual({});
     expect(s.currentTable).toBeNull();
   });
+
+  it("keeps the catalog array reference when an identical catalog is rewritten", () => {
+    const s = useWorkspaceStore();
+    s.setOpened(
+      [{ collection: "orders", metadata: {} }, { collection: "v_recent", metadata: { kind: "view" } }],
+      { orders: "订单", v_recent: "近期" },
+    );
+    const reference = s.collections;
+    const names = s.displayNames;
+    s.setCollections(
+      [{ collection: "orders", metadata: {} }, { collection: "v_recent", metadata: { kind: "view" } }],
+      { orders: "订单", v_recent: "近期" },
+    );
+    expect(s.collections).toBe(reference);
+    expect(s.displayNames).toBe(names);
+  });
+
+  it("treats absent metadata and an empty metadata object as the same catalog", () => {
+    const s = useWorkspaceStore();
+    s.setCollections([{ collection: "orders" }], {});
+    const reference = s.collections;
+    s.setCollections([{ collection: "orders", metadata: {} }], {});
+    expect(s.collections).toBe(reference);
+  });
+
+  it("replaces the catalog reference when content actually changes", () => {
+    const s = useWorkspaceStore();
+    s.setCollections([{ collection: "orders" }], { orders: "订单" });
+    const reference = s.collections;
+    s.setCollections(
+      [{ collection: "orders" }, { collection: "users" }],
+      { orders: "订单", users: "用户" },
+    );
+    expect(s.collections).not.toBe(reference);
+    expect(s.collections.map((item) => item.collection)).toEqual(["orders", "users"]);
+    expect(s.displayNames).toEqual({ orders: "订单", users: "用户" });
+  });
+
+  it("keeps phase transitions on an equal-content reopen without replacing the catalog", () => {
+    const s = useWorkspaceStore();
+    s.setOpened([{ collection: "orders" }], { orders: "订单" });
+    const reference = s.collections;
+    s.setFailed("transient");
+    s.setOpened([{ collection: "orders", metadata: {} }], { orders: "订单" });
+    expect(s.phase).toBe("opened");
+    expect(s.lastError).toBeNull();
+    expect(s.collections).toBe(reference);
+  });
 });

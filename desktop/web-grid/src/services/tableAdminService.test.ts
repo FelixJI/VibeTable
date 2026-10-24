@@ -5,8 +5,10 @@ import type { HostBridge } from "@/bridge/hostBridge";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableAdminService } from "./tableAdminService";
+import { useWorkspaceService } from "./workspaceService";
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -159,11 +161,13 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     }>();
     harness.request.mockImplementationOnce(() => response.promise);
     setHostBridgeForTesting(harness.bridge);
+    useWorkspaceService().init();
     const opened: string[] = [];
     const service = useTableAdminService();
     service.init((tableId) => { opened.push(tableId); });
     const admin = useTableAdminStore();
     const ui = useUiStore();
+    const workspace = useWorkspaceStore();
     admin.openCreate();
     ui.openCreate();
     admin.form.name = "订单";
@@ -183,6 +187,9 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     expect(admin.phase).toBe("submitting");
     expect(ui.createModalOpen).toBe(true);
     expect(opened).toEqual([]);
+    // The broadcasts did land in the single shared catalog (subscription
+    // owner), yet they never settle the correlated create request.
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["tbl_unrelated"]);
 
     response.resolve({
       tables: ["tbl_unrelated", "tbl_created"],
@@ -235,10 +242,8 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     const opened: string[] = [];
     const service = useTableAdminService();
     service.init((tableId) => { opened.push(tableId); });
-    harness.emit("database.collectionsChanged", {
-      tables: ["tbl_existing"],
-      displayNames: { tbl_existing: "订单" },
-    });
+    const workspace = useWorkspaceStore();
+    workspace.setCollections([{ collection: "tbl_existing", metadata: {} }], { tbl_existing: "订单" });
     const admin = useTableAdminStore();
     admin.openCreate();
     admin.form.name = "订单";
@@ -290,9 +295,9 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     service.init();
     const admin = useTableAdminStore();
     const ui = useUiStore();
-    admin.setCollections([
+    useWorkspaceStore().setCollections([
       { collection: "tbl_orders", metadata: {} },
-    ]);
+    ], { tbl_orders: "订单" });
     ui.openDelete("tbl_orders");
 
     const pending = service.deleteTable("tbl_orders");
@@ -322,33 +327,31 @@ describe("tableAdminService lifecycle ownership", () => {
     setActivePinia(createPinia());
   });
 
-  it("subscribes each broadcast once across repeated init on the same instance", () => {
+  it("adds no catalog subscription of its own across repeated init", () => {
     const harness = bridgeHarness();
     setHostBridgeForTesting(harness.bridge);
-    const admin = useTableAdminStore();
     const service = useTableAdminService();
     service.init();
     service.init();
-    const setCollections = vi.spyOn(admin, "setCollections");
+    const workspace = useWorkspaceStore();
 
+    // The workspace service owns the catalog broadcasts; emitting them with
+    // only the admin service initialized must leave the shared catalog
+    // untouched (no second writer, even across repeated init).
     harness.emit("database.collectionsChanged", {
       tables: ["tbl_a"],
       displayNames: { tbl_a: "A" },
     });
-
-    expect(setCollections).toHaveBeenCalledTimes(1);
-    setCollections.mockClear();
-
     harness.emit("database.opened", {
       tables: ["tbl_a"],
       views: [],
       displayNames: {},
     });
 
-    expect(setCollections).toHaveBeenCalledTimes(1);
+    expect(workspace.collections).toEqual([]);
   });
 
-  it("stops consuming broadcasts after dispose and never re-subscribes (idempotent dispose)", () => {
+  it("never consumes broadcasts after dispose and never revives a disposed instance", () => {
     const harness = bridgeHarness();
     setHostBridgeForTesting(harness.bridge);
     const opened: string[] = [];
@@ -357,7 +360,7 @@ describe("tableAdminService lifecycle ownership", () => {
     service.dispose();
     service.dispose();
     service.init((tableId) => { opened.push(`revived:${tableId}`); });
-    const admin = useTableAdminStore();
+    const workspace = useWorkspaceStore();
 
     harness.emit("database.collectionsChanged", {
       tables: ["tbl_retired"],
@@ -369,28 +372,8 @@ describe("tableAdminService lifecycle ownership", () => {
       displayNames: {},
     });
 
-    expect(admin.collections).toEqual([]);
+    expect(workspace.collections).toEqual([]);
     expect(opened).toEqual([]);
-  });
-
-  it("lets only a replacement instance consume broadcasts once after the old owner is disposed", () => {
-    const harness = bridgeHarness();
-    setHostBridgeForTesting(harness.bridge);
-    const admin = useTableAdminStore();
-    const retired = useTableAdminService();
-    retired.init();
-    retired.dispose();
-    const live = useTableAdminService();
-    live.init();
-    const setCollections = vi.spyOn(admin, "setCollections");
-
-    harness.emit("database.collectionsChanged", {
-      tables: ["tbl_live"],
-      displayNames: { tbl_live: "Live" },
-    });
-
-    expect(setCollections).toHaveBeenCalledTimes(1);
-    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_live"]);
   });
 
   it("retires a pending create continuation without touching the shared owner or created callback", async () => {
@@ -428,7 +411,7 @@ describe("tableAdminService lifecycle ownership", () => {
     expect(admin.phase).toBe("submitting");
     expect(ui.createModalOpen).toBe(true);
     expect(opened).toEqual([]);
-    expect(admin.collections).toEqual([]);
+    expect(useWorkspaceStore().collections).toEqual([]);
   });
 
   it("ignores an already-resolved create continuation that resumes only after dispose", async () => {
@@ -469,7 +452,7 @@ describe("tableAdminService lifecycle ownership", () => {
     expect(admin.phase).toBe("creating");
     expect(ui.createModalOpen).toBe(true);
     expect(opened).toEqual([]);
-    expect(admin.collections).toEqual([]);
+    expect(useWorkspaceStore().collections).toEqual([]);
   });
 
   it("ignores public operations from a disposed instance", async () => {
@@ -573,7 +556,10 @@ describe("tableAdminService workspace/session retirement", () => {
     service.init(created);
     const admin = useTableAdminStore();
     const ui = useUiStore();
-    admin.setCollections([{ collection: "tbl_old", metadata: {} }]);
+    useWorkspaceStore().setCollections(
+      [{ collection: "tbl_old", metadata: {} }],
+      { tbl_old: "旧表" },
+    );
     admin.openCreate();
     ui.openCreate();
     admin.form.name = "订单";
@@ -592,7 +578,7 @@ describe("tableAdminService workspace/session retirement", () => {
     await pending;
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
 
-    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_old"]);
+    expect(useWorkspaceStore().collections.map((item) => item.collection)).toEqual(["tbl_old"]);
     expect(admin.phase).toBe("submitting");
     expect(ui.createModalOpen).toBe(true);
     expect(created).not.toHaveBeenCalled();
@@ -627,7 +613,10 @@ describe("tableAdminService workspace/session retirement", () => {
     const service = useTableAdminService();
     const admin = useTableAdminStore();
     const ui = useUiStore();
-    admin.setCollections([{ collection: "tbl_orders", metadata: {} }]);
+    useWorkspaceStore().setCollections(
+      [{ collection: "tbl_orders", metadata: {} }],
+      { tbl_orders: "订单" },
+    );
     ui.openDelete("tbl_orders");
 
     const pending = service.deleteTable("tbl_orders");
@@ -642,7 +631,7 @@ describe("tableAdminService workspace/session retirement", () => {
     await pending;
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
 
-    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_orders"]);
+    expect(useWorkspaceStore().collections.map((item) => item.collection)).toEqual(["tbl_orders"]);
     expect(admin.phase).toBe("deleting");
     expect(ui.deleteModalOpen).toBe(true);
   });
@@ -672,6 +661,141 @@ describe("tableAdminService workspace/session retirement", () => {
     expect(admin.phase).toBe("idle");
     expect(ui.createModalOpen).toBe(false);
     expect(created).toHaveBeenCalledWith("tbl_new");
-    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_new"]);
+    expect(useWorkspaceStore().collections.map((item) => item.collection)).toEqual(["tbl_new"]);
+  });
+});
+
+describe("tableAdminService catalog convergence (#509)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("projects the correlated create response into the shared workspace catalog with views intact", async () => {
+    const harness = bridgeHarness();
+    harness.request.mockResolvedValueOnce({
+      tables: ["tbl_existing", "tbl_created"],
+      views: ["view_recent"],
+      displayNames: { tbl_existing: "订单", tbl_created: "新表", view_recent: "近期订单" },
+      capabilityHashes: { tbl_created: "cap-table", view_recent: "cap-view" },
+      createdTableId: "tbl_created",
+    });
+    setHostBridgeForTesting(harness.bridge);
+    const service = useTableAdminService();
+    service.init();
+    const admin = useTableAdminStore();
+    const workspace = useWorkspaceStore();
+    workspace.setCollections([{ collection: "tbl_existing", metadata: {} }], { tbl_existing: "订单" });
+    admin.openCreate();
+    admin.form.name = "新表";
+
+    await service.createTable();
+
+    expect(workspace.collections).toEqual([
+      { collection: "tbl_existing", metadata: {} },
+      { collection: "tbl_created", metadata: { capabilityHash: "cap-table" } },
+      { collection: "view_recent", metadata: { kind: "view", capabilityHash: "cap-view" } },
+    ]);
+    expect(workspace.displayNames).toEqual({
+      tbl_existing: "订单",
+      tbl_created: "新表",
+      view_recent: "近期订单",
+    });
+  });
+
+  it("projects the correlated delete response into the shared workspace catalog", async () => {
+    const harness = bridgeHarness();
+    harness.request.mockResolvedValueOnce({
+      tables: ["tbl_remaining"],
+      views: [],
+      displayNames: { tbl_remaining: "剩余" },
+      deletedTableId: "tbl_orders",
+    });
+    setHostBridgeForTesting(harness.bridge);
+    const service = useTableAdminService();
+    const workspace = useWorkspaceStore();
+    workspace.setCollections(
+      [{ collection: "tbl_orders" }, { collection: "tbl_remaining" }],
+      { tbl_orders: "订单", tbl_remaining: "剩余" },
+    );
+
+    await service.deleteTable("tbl_orders");
+
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["tbl_remaining"]);
+    expect(workspace.displayNames).toEqual({ tbl_remaining: "剩余" });
+  });
+
+  it("keeps the response-applied catalog reference when the duplicate broadcast replays identical content", async () => {
+    const harness = bridgeHarness();
+    const catalog = {
+      tables: ["tbl_opaque", "tbl_created"],
+      views: ["view_recent"],
+      displayNames: { tbl_opaque: "订单", tbl_created: "新表", view_recent: "近期订单" },
+      capabilityHashes: { view_recent: "cap-view" },
+    };
+    harness.request.mockResolvedValueOnce({ ...catalog, createdTableId: "tbl_created" });
+    setHostBridgeForTesting(harness.bridge);
+    const opened: string[] = [];
+    useWorkspaceService().init();
+    const service = useTableAdminService();
+    service.init((tableId) => { opened.push(tableId); });
+    const admin = useTableAdminStore();
+    const workspace = useWorkspaceStore();
+    admin.openCreate();
+    admin.form.name = "新表";
+
+    await service.createTable();
+    const afterResponse = workspace.collections;
+    const namesAfterResponse = workspace.displayNames;
+
+    harness.emit("database.collectionsChanged", catalog);
+
+    expect(workspace.collections).toBe(afterResponse);
+    expect(workspace.displayNames).toBe(namesAfterResponse);
+    expect(opened).toEqual(["tbl_created"]);
+  });
+
+  it("holds a pending create through a broadcast-first interleave and settles exactly once on the response", async () => {
+    const harness = bridgeHarness();
+    const response = deferred<{
+      tables: string[];
+      displayNames: Record<string, string>;
+      createdTableId: string;
+    }>();
+    harness.request.mockImplementationOnce(() => response.promise);
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceService().init();
+    const opened: string[] = [];
+    const service = useTableAdminService();
+    service.init((tableId) => { opened.push(tableId); });
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    const workspace = useWorkspaceStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "新表";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    harness.emit("database.collectionsChanged", {
+      tables: ["tbl_imported"],
+      displayNames: { tbl_imported: "导入" },
+    });
+
+    expect(admin.phase).toBe("submitting");
+    expect(ui.createModalOpen).toBe(true);
+    expect(opened).toEqual([]);
+
+    response.resolve({
+      tables: ["tbl_imported", "tbl_created"],
+      displayNames: { tbl_imported: "导入", tbl_created: "新表" },
+      createdTableId: "tbl_created",
+    });
+    await pending;
+
+    expect(admin.phase).toBe("idle");
+    expect(ui.createModalOpen).toBe(false);
+    expect(opened).toEqual(["tbl_created"]);
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["tbl_imported", "tbl_created"]);
   });
 });

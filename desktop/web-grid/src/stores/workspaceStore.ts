@@ -14,6 +14,40 @@ export interface CollectionSummary {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+/** Absent metadata and an empty metadata bag are the same catalog entry. */
+function sameMetadata(
+  a: Readonly<Record<string, unknown>> | undefined,
+  b: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  if (a === b) return true;
+  const left = a ?? {};
+  const right = b ?? {};
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+/** Semantic catalog equality — no hash or serialized identity is introduced. */
+function sameCollections(
+  a: readonly CollectionSummary[],
+  b: readonly CollectionSummary[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((item, index) =>
+    item.collection === b[index].collection && sameMetadata(item.metadata, b[index].metadata));
+}
+
+function sameDisplayNames(
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean {
+  if (a === b) return true;
+  const leftKeys = Object.keys(a);
+  if (leftKeys.length !== Object.keys(b).length) return false;
+  return leftKeys.every((key) => Object.is(a[key], b[key]));
+}
+
 export const useWorkspaceStore = defineStore("workspace", () => {
   const phase = ref<WorkspacePhase>("idle");
   let phaseBeforeOpen: WorkspacePhase = "idle";
@@ -38,8 +72,14 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     cols: readonly CollectionSummary[],
     names: Readonly<Record<string, string>>,
   ): void {
-    collections.value = cols;
-    displayNames.value = names;
+    // An equal-content catalog keeps its array identity so reference-based
+    // stale guards (e.g. field-settings async reads) are not retired by a
+    // duplicate projection of the same host snapshot.
+    if (!sameCollections(collections.value, cols)
+      || !sameDisplayNames(displayNames.value, names)) {
+      collections.value = cols;
+      displayNames.value = names;
+    }
     phase.value = "opened";
     lastError.value = null;
   }
@@ -48,6 +88,8 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     cols: readonly CollectionSummary[],
     names: Readonly<Record<string, string>>,
   ): void {
+    if (sameCollections(collections.value, cols)
+      && sameDisplayNames(displayNames.value, names)) return;
     collections.value = cols;
     displayNames.value = names;
   }

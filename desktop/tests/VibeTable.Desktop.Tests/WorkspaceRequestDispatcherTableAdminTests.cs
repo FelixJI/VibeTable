@@ -144,6 +144,69 @@ public sealed class WorkspaceTableRequestControllerTests
     }
 
     [TestMethod]
+    [DataRow("tableAdmin.createRequested")]
+    [DataRow("tableAdmin.deleteRequested")]
+    public async Task TableAdminRejectsAStaleEpochBeforeLookingUpTheGateway(string type)
+    {
+        var (manager, filter, root) = await PluginRequestDispatcherTests.OpenRetirementSessionAsync();
+        try
+        {
+            int lookups = 0;
+            var sink = new FakeWebReplySink();
+            var controller = new WorkspaceTableRequestController(new TableWorkspaceService(new FakeTableRpcGateway()),
+                new FakeDatabasePicker("db"), sink, () => { lookups++; return null; },
+                NoDatabaseOpenRoute.Instance, sessionEnvelopeFilter: filter);
+            await controller.DispatchAsync(new RoutedWebRequest(type, "stale-catalog",
+                JsonSerializer.SerializeToElement(type == "tableAdmin.createRequested"
+                    ? (object)new { displayName = "Orders" } : new { collection = "tbl_orders" }), "",
+                new WorkspaceWireScope
+                {
+                    Scope = "workspace", WorkspaceId = manager.Current.WorkspaceId!.Value,
+                    SessionEpoch = manager.Current.SessionEpoch + 1, OperationId = Guid.NewGuid(), Sequence = 1,
+                }));
+            Assert.AreEqual(0, lookups);
+            Assert.HasCount(1, sink.Replies);
+            StringAssert.Contains(JsonSerializer.Serialize(sink.Replies[0].Payload), "BAD_WORKSPACE_SCOPE");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            filter.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task CreateTableNativeDeadlineIncludesTheCatalogWaitAndLeavesNoPermitBehind()
+    {
+        var time = new ManualTimeProvider();
+        int reads = 0;
+        var tables = new FakeTableRpcGateway
+        {
+            ListTablesOverride = _ => { reads++; return Task.FromResult(new TableSummary([], [], TestDisplayNames.For())); },
+        };
+        var workspace = new TableWorkspaceService(tables);
+        using var holder = workspace.BeginCatalogTurn();
+        await holder.EnterAsync(CancellationToken.None);
+        var sink = new FakeWebReplySink();
+        await using var client = new JsonRpcClient(new SchemaCaptureTransport());
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var controller = new WorkspaceTableRequestController(workspace, new FakeDatabasePicker("db"), sink,
+            () => gateway, NoDatabaseOpenRoute.Instance, schemaLifecycleTimeout: TimeSpan.FromSeconds(5), timeProvider: time);
+        Task create = controller.DispatchAsync(new RoutedWebRequest("tableAdmin.createRequested", "wait-timeout",
+            JsonSerializer.SerializeToElement(new { displayName = "Orders" }), ""));
+        await time.WaitForScheduledTimersAsync(1).WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromSeconds(5));
+        await create.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(0, reads);
+        Assert.HasCount(1, sink.Replies);
+        StringAssert.Contains(JsonSerializer.Serialize(sink.Replies[0].Payload), "SCHEMA_LIFECYCLE_TIMEOUT");
+        holder.Dispose();
+        using var next = workspace.BeginCatalogTurn();
+        await next.EnterAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.HasCount(1, sink.Replies);
+    }
+    [TestMethod]
     public async Task CreateTable_TimesOutTheWholeLifecycleAndSuppressesLateRefresh()
     {
         var time = new ManualTimeProvider();
@@ -426,7 +489,7 @@ public sealed class WorkspaceTableRequestControllerTests
         Assert.IsFalse(WorkspaceTableRequestController.Handles("rpc.invoke"));
     }
 
-    private sealed class SchemaCaptureTransport : IJsonLineTransport
+    internal sealed class SchemaCaptureTransport : IJsonLineTransport
     {
         internal sealed record Call(string Method, JsonElement Parameters);
 
@@ -469,6 +532,17 @@ public sealed class WorkspaceTableRequestControllerTests
                     tableId = "tbl_created",
                     displayName = parameters.GetProperty("displayName").GetString(),
                     schemaRevision = "schema_0001",
+                }),
+                "schema.getTable" => JsonSerializer.SerializeToElement(new
+                {
+                    contract = "vibetable.schema.v2", tableId = parameters.GetProperty("tableId").GetString(),
+                    displayName = "Orders", kind = "base", schemaRevision = "schema_1", dataRevision = 0,
+                    archivePolicy = new { mode = "none", fieldId = (string?)null, archivedValue = (string?)null },
+                    fields = Array.Empty<object>(), capabilities = Array.Empty<object>(),
+                }),
+                "schema.delete" => JsonSerializer.SerializeToElement(new
+                {
+                    deleted = true, tableId = parameters.GetProperty("tableId").GetString(),
                 }),
                 _ => throw new InvalidOperationException(
                     $"Unexpected RPC method: {method}"),

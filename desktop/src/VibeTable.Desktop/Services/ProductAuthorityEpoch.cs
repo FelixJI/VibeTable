@@ -55,6 +55,14 @@ public sealed class ProductAuthorityEpoch : IDisposable
         }
     }
 
+    internal bool TryUseCurrent(ProductAuthoritySnapshot snapshot, Func<bool> action)
+    {
+        lock (_gate)
+            return !_disposed && _current.Generation == snapshot.Generation
+                && _current.Context == snapshot.Context && !_current.Source.IsCancellationRequested
+                && action();
+    }
+
     internal bool TryAcquire(
         ProductAuthoritySnapshot expected,
         out ProductAuthorityOperationLease? lease)

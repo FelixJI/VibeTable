@@ -376,6 +376,33 @@ describe("workspaceService display names", () => {
 
     expect(pluginStore.projectRevision).toBe("workspace-r8");
   });
+
+  it("does not replace the catalog reference when an identical collectionsChanged replays", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    const workspace = useWorkspaceStore();
+    const pluginStore = usePluginStore();
+    pluginStore.setProjectContext("local:workspace-a", "workspace-r7");
+    const payload = {
+      tables: ["orders"],
+      views: ["recent_orders"],
+      displayNames: { orders: "订单", recent_orders: "近期订单" },
+      capabilityHashes: { recent_orders: "view-capability" },
+      projectRevision: "workspace-r8",
+    };
+
+    emit("database.collectionsChanged", payload);
+    const afterFirst = workspace.collections;
+    const namesAfterFirst = workspace.displayNames;
+
+    emit("database.collectionsChanged", { ...payload, projectRevision: "workspace-r9" });
+
+    expect(workspace.collections).toBe(afterFirst);
+    expect(workspace.displayNames).toBe(namesAfterFirst);
+    // Side effects of the broadcast still run on the replayed event.
+    expect(pluginStore.projectRevision).toBe("workspace-r9");
+  });
 });
 
 describe("workspaceService lifecycle ownership", () => {

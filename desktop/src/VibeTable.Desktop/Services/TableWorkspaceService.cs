@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
@@ -67,6 +68,15 @@ public sealed class TableWorkspaceService
     private readonly TimeSpan _selectionRecoveryTimeout;
     private readonly TimeProvider _timeProvider;
     private readonly object _databaseGate = new();
+    /// <summary>
+    /// Catalog-wide async exclusion gate (#509). Every production catalog
+    /// lifecycle — authoritative read, cache commit/rollback, and publish
+    /// enqueue/actual emission — runs inside one <see cref="CatalogTurn"/> so
+    /// an older reader can never overwrite a newer catalog snapshot. Only
+    /// catalog projection is serialized here; persistent mutations and source
+    /// import transactions stay outside the gate.
+    /// </summary>
+    private readonly AsyncFifoGate _catalogGate = new();
 
     /// <summary>
     /// The RPC gateway, exposed so the B2 paste dispatcher handlers can call
@@ -125,10 +135,13 @@ public sealed class TableWorkspaceService
     /// <summary>
     /// Opens the configured source identified by <paramref name="path"/> and
     /// caches the advertised collection names so <see cref="SelectTableAsync"/>
-    /// can enforce the "known name" invariant.
+    /// can enforce the "known name" invariant. The read and the admission
+    /// commit run inside one catalog turn.
     /// </summary>
     public async Task<DatabaseOpenResult> OpenDatabaseAsync(string path)
     {
+        using CatalogTurn turn = BeginCatalogTurn();
+        await turn.EnterAsync(CancellationToken.None).ConfigureAwait(true);
         DatabaseOpenResult result = await PrepareDatabaseOpenAsync(
             path, CancellationToken.None).ConfigureAwait(true);
         using DatabaseOpenAdmission admission = BeginDatabaseOpenAdmission(path, result);
@@ -136,9 +149,109 @@ public sealed class TableWorkspaceService
         return result;
     }
 
+    /// <summary>
+    /// Begin one exclusive catalog turn. The caller holds the returned turn
+    /// across its authoritative read, the cache commit/rollback, and the
+    /// publish enqueue/actual emission, then disposes it.
+    /// </summary>
+    internal CatalogTurn BeginCatalogTurn() => new(_catalogGate);
+
+    /// <summary>
+    /// One admission ticket on the catalog FIFO gate. Waiting consumes the
+    /// caller's own cancellation/budget; a turn disposed before its permit is
+    /// granted releases the late permit immediately and never continues.
+    /// </summary>
+    internal sealed class CatalogTurn(AsyncFifoGate gate) : IDisposable
+    {
+        private readonly object _state = new();
+        private AsyncFifoGate.Lease? _permit;
+        private Task<AsyncFifoGate.Lease>? _entry;
+        private bool _disposed;
+
+        /// <summary>
+        /// Waits for this turn's FIFO permit. Returns <c>true</c> once the
+        /// permit is held; throws <see cref="OperationCanceledException"/> if
+        /// the wait was cancelled or the turn was disposed first.
+        /// </summary>
+        public async Task<bool> EnterAsync(CancellationToken token)
+        {
+            Task<AsyncFifoGate.Lease> entry;
+            lock (_state)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(CatalogTurn));
+                if (_permit is not null || _entry is not null)
+                    throw new InvalidOperationException(
+                        "The catalog turn already holds its permit.");
+                entry = gate.EnterAsync(token).AsTask();
+                _entry = entry;
+            }
+            try
+            {
+                AsyncFifoGate.Lease permit = await entry.ConfigureAwait(false);
+                lock (_state)
+                {
+                    if (_disposed)
+                    {
+                        // Dispose won the race: release the late permit and
+                        // never let the abandoned caller continue.
+                        permit.Dispose();
+                        throw new OperationCanceledException(token);
+                    }
+                    _permit = permit;
+                }
+                return true;
+            }
+            finally
+            {
+                lock (_state) _entry = null;
+            }
+        }
+
+        public void Dispose()
+        {
+            Task<AsyncFifoGate.Lease>? entry;
+            lock (_state)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                entry = _entry;
+                _permit?.Dispose();
+                _permit = null;
+            }
+            if (entry is not null)
+            {
+                // If the abandoned entry still obtains a permit afterwards, it
+                // must be released immediately; the gate self-heals otherwise.
+                _ = ReleaseLateEntryAsync(entry);
+            }
+        }
+
+        private static async Task ReleaseLateEntryAsync(Task<AsyncFifoGate.Lease> entry)
+        {
+            try
+            {
+                (await entry.ConfigureAwait(false)).Dispose();
+            }
+            catch
+            {
+                // The abandoned entry cancelled or faulted; nothing to release.
+            }
+        }
+    }
+
+    internal static async Task<T> ReadCatalogAsync<T>(
+        Func<CancellationToken, Task<T>> read, CancellationToken token)
+    {
+        RecoveryWait<T> result = await RunOwnedAsync(read, token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        return result.Value!;
+    }
+
     internal async Task<DatabaseOpenResult> PrepareDatabaseOpenAsync(
         string path,
-        CancellationToken token)
+        CancellationToken token,
+        Func<Func<bool>, bool>? prepareState = null)
     {
         if (path is null)
         {
@@ -150,10 +263,21 @@ public sealed class TableWorkspaceService
                 "Source identifier must be a non-empty string.", nameof(path));
         }
 
-        // Cancel any in-flight table fetch before switching databases.
-        CancelSelection();
-
-        var result = await _gateway.OpenDatabaseAsync(path, token)
+        token.ThrowIfCancellationRequested();
+        CancellationTokenSource? previousSelection = null;
+        bool DetachSelection()
+        {
+            token.ThrowIfCancellationRequested();
+            previousSelection = Interlocked.Exchange(ref _selectCts, null);
+            return true;
+        }
+        if (prepareState is null) DetachSelection();
+        else if (!prepareState(DetachSelection)) throw new OperationCanceledException(token);
+        // Cancellation callbacks and gateway startup can take the runtime lock;
+        // only the selection pointer exchange belongs under the scope gate.
+        CancelSelection(previousSelection);
+        token.ThrowIfCancellationRequested();
+        var result = await ReadCatalogAsync(t => _gateway.OpenDatabaseAsync(path, t), token)
             .ConfigureAwait(true);
         token.ThrowIfCancellationRequested();
         return result;
@@ -216,46 +340,29 @@ public sealed class TableWorkspaceService
         IReadOnlyList<string> Views);
 
     /// <summary>
-    /// Replaces the cached known-tables list with <paramref name="tables"/>. Use
-    /// this from collection-mutation flows (create/delete/reconcile) that have
-    /// ALREADY re-listed collections: it swaps the cache without a second RPC
-    /// round-trip. The list is filtered through
-    /// <see cref="FilterUserTables"/> defensively so product metadata names
-    /// cannot accidentally widen the selectable set. Views are reset because
-    /// normalized schema mutations currently expose base tables only.
+    /// Swaps the cached known catalog with <paramref name="summary"/>. Callers
+    /// MUST already hold a catalog turn: this is the cache-commit step of a
+    /// read-publish lifecycle serialized on the catalog gate (#509).
     /// </summary>
-    /// <remarks>
-    /// This is the fix for the "create-then-open throws ArgumentException" bug:
-    /// without it, <see cref="SelectTableAsync"/> validated new tables against a
-    /// stale cache populated only by <see cref="OpenDatabaseAsync"/> (once per
-    /// session). Mutation handlers re-listed collections for the web sidebar but
-    /// never refreshed this cache.
-    /// </remarks>
-    public void UpdateKnownTables(IReadOnlyList<string> tables)
-    {
-        var filtered = FilterUserTables(tables);
-        Volatile.Write(ref _knownTables, filtered);
-        Volatile.Write(ref _knownViews, Array.Empty<string>());
-    }
-
-    /// <summary>
-    /// Standalone cache refresh: re-queries the gateway's collection list and
-    /// swaps the known-tables cache. Used after normalized schema changes when
-    /// the cache needs refreshing without necessarily re-posting
-    /// <c>database.collectionsChanged</c>. On cancellation the cache is left
-    /// untouched.
-    /// </summary>
-    public async Task RefreshKnownTablesAsync(CancellationToken token)
-    {
-        var summary = await _gateway.ListTablesAsync(token).ConfigureAwait(true);
-        UpdateKnownCatalog(summary);
-    }
-
     internal void UpdateKnownCatalog(TableSummary summary)
     {
         var filtered = FilterUserTables(summary.Tables);
         Volatile.Write(ref _knownTables, filtered);
         Volatile.Write(ref _knownViews, summary.Views);
+    }
+
+    /// <summary>
+    /// Standalone cache refresh: re-queries the gateway's collection list and
+    /// swaps the known-tables cache inside one catalog turn. On cancellation
+    /// the cache is left untouched.
+    /// </summary>
+    public async Task RefreshKnownTablesAsync(CancellationToken token)
+    {
+        using CatalogTurn turn = BeginCatalogTurn();
+        await turn.EnterAsync(token).ConfigureAwait(true);
+        var summary = await ReadCatalogAsync(_gateway.ListTablesAsync, token).ConfigureAwait(true);
+        token.ThrowIfCancellationRequested();
+        UpdateKnownCatalog(summary);
     }
 
     /// <summary>
@@ -921,8 +1028,10 @@ public sealed class TableWorkspaceService
     }
 
     private void CancelSelection()
+        => CancelSelection(Interlocked.Exchange(ref _selectCts, null));
+
+    private static void CancelSelection(CancellationTokenSource? existing)
     {
-        var existing = System.Threading.Interlocked.Exchange(ref _selectCts, null);
         if (existing is not null)
         {
             try { existing.Cancel(); } catch { /* best-effort */ }

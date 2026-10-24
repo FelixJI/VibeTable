@@ -2003,6 +2003,253 @@ async function scenario02(page, recorder, _network, runtime) {
         isDeepStrictEqual(item.payload.definition, savedComputedDefinitions[index].payload.definition)),
     { reopenedComputedValues, reopenedComputedDefinitions, reopenedComputedSession });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-reopened.png"), fullPage: true });
+
+  // 真实 UI 删除数据表路径（#509 AC4 缺口）：独立合成一张空表，只验证
+  // 删除生命周期本身：确认前取消保持表、确认后关联响应与无 requestId
+  // 广播都移除该表、剩余 table/view/displayNames 与删除前权威目录一致、
+  // 真实重开后在新活动 session 下删除持久且剩余表可选。
+  const deletableName = "E2E Delete Journey QA";
+  const sameIdSet = (left, right) => Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && [...left].sort().join("\u0000") === [...right].sort().join("\u0000");
+  const sidebarRows = async () => page
+    .locator('[data-testid="sidebar-table-list"] .table-row')
+    .evaluateAll(rows => rows.map(row => ({
+      name: row.querySelector('[data-testid="sidebar-table-name"]')?.textContent?.trim() ?? "",
+      id: row.querySelector("small")?.textContent?.trim() ?? "",
+    })));
+  const deleteRow = (displayName) => page
+    .locator('[data-testid="sidebar-table-list"] .table-row')
+    .filter({ has: page.getByTestId("sidebar-table-name").filter({ hasText: displayName }) });
+
+  // 权威目录基线：建表本身产生的无 requestId 广播携带完整权威目录
+  // （tables/views/displayNames 分类），作为删除前对照，而非仅 sidebar DOM。
+  await page.evaluate(installTableDeleteCatalogLogInPage,
+    { inboundTypes: ["database.collectionsChanged"] });
+  let deletableId;
+  let beforeCatalog;
+  try {
+    deletableId = await createEmptyTable(page, deletableName);
+    await closeFieldSettingsDrawer(page);
+    await page.waitForFunction((tableId) => {
+      const log = window.__e2eTableDeleteCatalogLog;
+      return Boolean(log && log.inbound.some(message =>
+        message.type === "database.collectionsChanged"
+        && message.requestId == null
+        && Array.isArray(message.payload?.tables)
+        && message.payload.tables.includes(tableId)));
+    }, deletableId, { timeout: 30_000 });
+    const createObservation = await page.evaluate(readTableDeleteCatalogLogInPage);
+    const createBroadcasts = createObservation.inbound.filter(message =>
+      message.type === "database.collectionsChanged" && message.requestId == null);
+    beforeCatalog = createBroadcasts[createBroadcasts.length - 1]?.payload;
+  } finally {
+    await page.evaluate(releaseTableDeleteCatalogLogInPage);
+  }
+  const beforeTables = beforeCatalog?.tables;
+  const beforeViews = beforeCatalog?.views;
+  const beforeDisplayNames = beforeCatalog?.displayNames;
+  const baselineRows = await sidebarRows();
+  const baselineWithoutDeletable = baselineRows.filter(row => row.id !== deletableId);
+  if (!Array.isArray(beforeTables) || !beforeTables.includes(deletableId)
+    || !Array.isArray(beforeViews) || !beforeDisplayNames
+    || typeof beforeDisplayNames !== "object"
+    || !baselineRows.some(row => row.id === deletableId)
+    || baselineWithoutDeletable.length === 0) {
+    throw new Error(`delete journey baseline is invalid: ${JSON.stringify({
+      beforeCatalog, baselineRows, deletableId })}`);
+  }
+  const remainingBeforeIds = [...beforeTables, ...beforeViews]
+    .filter(id => id !== deletableId);
+
+  // 取消路径：真实点击侧栏删除与取消按钮，不得发出任何删除请求。
+  await page.evaluate(installTableDeleteCatalogLogInPage,
+    { inboundTypes: ["database.collectionsChanged"],
+      outboundTypes: ["tableAdmin.deleteRequested"] });
+  let cancelObservation;
+  try {
+    await deleteRow(deletableName).hover();
+    await deleteRow(deletableName).getByTestId("sidebar-request-delete").click();
+    await page.getByTestId("delete-confirm-cancel").click();
+    await page.getByTestId("delete-confirm-ok").waitFor({ state: "hidden", timeout: 10_000 });
+    cancelObservation = await page.evaluate(readTableDeleteCatalogLogInPage);
+  } finally {
+    await page.evaluate(releaseTableDeleteCatalogLogInPage);
+  }
+  recorder.check("02 delete dialog cancel keeps the table without any delete request",
+    cancelObservation.outbound.length === 0
+      && cancelObservation.inbound.length === 0
+      && JSON.stringify(await sidebarRows()) === JSON.stringify(baselineRows),
+    { cancelObservation, baselineRows });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-table-delete-cancelled.png"),
+    fullPage: true,
+  });
+
+  // 确认路径：等待与 UI 唯一删除请求 requestId 匹配的关联响应，以及至少
+  // 一条无 requestId 目录广播；两者的 tables 数组必须真实存在且不含删表，
+  // 关联响应携带正确 deletedTableId。不把不相关事件当作本次广播。
+  await page.evaluate(installTableDeleteCatalogLogInPage,
+    { inboundTypes: ["database.collectionsChanged"],
+      outboundTypes: ["tableAdmin.deleteRequested"] });
+  let deleteObservation;
+  try {
+    await deleteRow(deletableName).hover();
+    await deleteRow(deletableName).getByTestId("sidebar-request-delete").click();
+    await page.getByTestId("delete-confirm-ok").click();
+    await page.waitForFunction((tableId) => {
+      const log = window.__e2eTableDeleteCatalogLog;
+      if (!log) return false;
+      const request = log.outbound
+        .find(message => message.type === "tableAdmin.deleteRequested");
+      if (!request || typeof request.requestId !== "string") return false;
+      const correlated = log.inbound.find(message =>
+        message.type === "database.collectionsChanged"
+        && message.requestId === request.requestId);
+      if (!correlated || correlated.payload?.deletedTableId !== tableId
+        || !Array.isArray(correlated.payload?.tables)
+        || correlated.payload.tables.includes(tableId)) return false;
+      return log.inbound.some(message =>
+        message.type === "database.collectionsChanged"
+        && message.requestId == null
+        && Array.isArray(message.payload?.tables)
+        && !message.payload.tables.includes(tableId));
+    }, deletableId, { timeout: 30_000 });
+    await deleteRow(deletableName).waitFor({ state: "detached", timeout: 10_000 });
+    deleteObservation = await page.evaluate(readTableDeleteCatalogLogInPage);
+  } finally {
+    await page.evaluate(releaseTableDeleteCatalogLogInPage);
+  }
+  const deleteRequests = deleteObservation.outbound
+    .filter(message => message.type === "tableAdmin.deleteRequested");
+  const correlatedResponse = deleteObservation.inbound.find(message =>
+    message.type === "database.collectionsChanged"
+    && typeof message.requestId === "string"
+    && message.requestId === deleteRequests[0]?.requestId);
+  const catalogBroadcasts = deleteObservation.inbound.filter(message =>
+    message.type === "database.collectionsChanged" && message.requestId == null);
+  const deleteBroadcast = catalogBroadcasts[catalogBroadcasts.length - 1];
+  const afterCatalog = deleteBroadcast?.payload;
+  recorder.check("02 confirmed UI delete returns one correlated removal response and one uncorrelated catalog broadcast",
+    deleteRequests.length === 1
+      && typeof deleteRequests[0].requestId === "string"
+      && deleteRequests[0].requestId.length > 0
+      && deleteRequests[0].payload?.collection === deletableId
+      && correlatedResponse != null
+      && correlatedResponse.payload?.deletedTableId === deletableId
+      && Array.isArray(correlatedResponse.payload?.tables)
+      && !correlatedResponse.payload.tables.includes(deletableId)
+      && deleteBroadcast != null
+      && Array.isArray(afterCatalog?.tables)
+      && !("deletedTableId" in afterCatalog)
+      && !afterCatalog.tables.includes(deletableId),
+    { deleteRequests, correlatedResponse, deleteBroadcast });
+  recorder.check(
+    "02 delete removes exactly the target table while the authoritative views list and display names stay unchanged",
+    afterCatalog != null
+      && sameIdSet(afterCatalog.tables,
+        beforeTables.filter(id => id !== deletableId))
+      && sameIdSet(afterCatalog.views, beforeViews)
+      && typeof afterCatalog.displayNames === "object"
+      && afterCatalog.displayNames !== null
+      && !Object.hasOwn(afterCatalog.displayNames, deletableId)
+      && remainingBeforeIds
+        .every(id => afterCatalog.displayNames[id] === beforeDisplayNames[id])
+      && JSON.stringify(await sidebarRows()) === JSON.stringify(baselineWithoutDeletable),
+    {
+      beforeCatalog,
+      afterCatalog,
+      fixtureViewCount: beforeViews.length,
+      baselineWithoutDeletable,
+    });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-table-deleted.png"),
+    fullPage: true,
+  });
+
+  // 闭合 bridge 的权威读：已删除表不可查，剩余表仍可读。
+  const deletedProbe = await rawBridgeRequest(page, "query.page", {
+    tableId: deletableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const survivorProbe = await rawBridgeRequest(page, "query.page", {
+    tableId: target.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("02 the deleted table is no longer queryable while the survivor stays readable",
+    deletedProbe.type === "query.page"
+      && deletedProbe.payload?.error?.code === "query.table.not_found"
+      && deletedProbe.payload.error.path === "table"
+      && deletedProbe.payload.error.retryable === false
+      && !Array.isArray(deletedProbe.payload.rows)
+      && survivorProbe.type === "query.page"
+      && !survivorProbe.payload?.error
+      && Array.isArray(survivorProbe.payload?.rows),
+    { deletedProbe, survivorProbe });
+
+  // 真实重开：同一 workspace UUID 的新活动 session 下删除持久且剩余表可选。
+  const deleteSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const deleteClose = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
+  recorder.check("02 delete journey closes the actual workspace through the UI",
+    deleteClose.result?.state === "closed", { deleteClose });
+  await page.evaluate(installTableDeleteCatalogLogInPage,
+    { inboundTypes: ["database.opened"] });
+  let reopenObservation;
+  let deleteReopenBootstrap;
+  try {
+    await beginWritableWorkspaceBootstrapCapture(page, deleteSession.sessionEpoch, "workspace.open");
+    await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+    deleteReopenBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+    await page.getByTestId("nav-tables").click();
+    await page.getByTestId("sidebar-new-table").waitFor();
+    await page.waitForFunction(() => Boolean(window.__e2eTableDeleteCatalogLog?.inbound
+      .some(message => message.type === "database.opened")), null, { timeout: 30_000 });
+    reopenObservation = await page.evaluate(readTableDeleteCatalogLogInPage);
+  } finally {
+    await page.evaluate(releaseTableDeleteCatalogLogInPage);
+  }
+  const reopenedOpened = reopenObservation.inbound
+    .find(message => message.type === "database.opened");
+  const openedCatalog = reopenedOpened?.payload;
+  const reopenRows = await sidebarRows();
+  const deleteReopenSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  recorder.check(
+    "02 workspace reopen on the fresh active session keeps the UI deletion durable in the authoritative catalog",
+    deleteReopenBootstrap.payload?.session?.workspaceId === deleteSession.workspaceId
+      && deleteReopenSession.workspaceId === deleteSession.workspaceId
+      && deleteReopenSession.sessionEpoch > deleteSession.sessionEpoch
+      && deleteReopenBootstrap.payload.session.sessionEpoch === deleteReopenSession.sessionEpoch
+      && openedCatalog != null
+      && Array.isArray(openedCatalog.tables)
+      && Array.isArray(openedCatalog.views)
+      && !openedCatalog.tables.includes(deletableId)
+      && !openedCatalog.views.includes(deletableId)
+      && !Object.hasOwn(openedCatalog.displayNames ?? {}, deletableId)
+      && sameIdSet(openedCatalog.tables, afterCatalog.tables)
+      && sameIdSet(openedCatalog.views, beforeViews)
+      && remainingBeforeIds
+        .every(id => openedCatalog.displayNames?.[id] === beforeDisplayNames[id])
+      && sameIdSet(reopenRows.map(row => row.id),
+        [...afterCatalog.tables, ...beforeViews]),
+    {
+      deleteReopenBootstrap,
+      deleteReopenSession,
+      deleteSession,
+      openedCatalog,
+      reopenRows,
+    });
+  await selectTable(page, "E2E Relation Target V2");
+  const activeRowIds = await page
+    .locator('[data-testid="sidebar-table-list"] .table-item--active')
+    .evaluateAll(rows => rows.map(row => row.querySelector("small")?.textContent?.trim()));
+  recorder.check("02 a remaining table stays selectable through the real sidebar after reopen",
+    activeRowIds.includes(target.tableId), { activeRowIds });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-table-delete-reopened.png"),
+    fullPage: true,
+  });
   return;
 }
 
@@ -2315,6 +2562,69 @@ async function beginBridgeMessageCapture(page, responseTypes) {
 
 async function beginWorkspaceV2MethodCapture(page, method) {
   await page.evaluate(installWorkspaceV2MethodTerminalCaptureInPage, method);
+}
+
+// 真实 UI 删除数据表流程的追加式观察通道：记录入站目录广播
+// （database.collectionsChanged / database.opened）与出站
+// tableAdmin.deleteRequested。与 __vibetableE2EBridgeCapture 的单消息捕获
+// 互不冲突：只追加记录，不改写任何消息。install 幂等替换旧实例；
+// 调用方必须在 finally 中 release，失败也不留全局 monkeypatch。
+function installTableDeleteCatalogLogInPage(configuration) {
+  const webview = window.chrome?.webview;
+  const previous = window.__e2eTableDeleteCatalogLog;
+  if (previous) {
+    window.__e2eTableDeleteCatalogLog = null;
+    webview?.removeEventListener("message", previous.handler);
+    if (webview && webview.postMessage === previous.wrapper) {
+      webview.postMessage = previous.original;
+    }
+  }
+  const log = {
+    inboundTypes: configuration.inboundTypes,
+    outboundTypes: configuration.outboundTypes ?? [],
+    inbound: [],
+    outbound: [],
+  };
+  log.handler = (event) => {
+    let message = event.data;
+    if (typeof message === "string") {
+      try { message = JSON.parse(message); } catch { return; }
+    }
+    if (message && log.inboundTypes.includes(message.type)) {
+      log.inbound.push(message);
+    }
+  };
+  log.wrapper = function (message) {
+    let value = message;
+    if (typeof value === "string") {
+      try { value = JSON.parse(value); } catch { value = null; }
+    }
+    if (value && log.outboundTypes.includes(value.type)) {
+      log.outbound.push(structuredClone(value));
+    }
+    return log.original.apply(this, arguments);
+  };
+  log.original = webview.postMessage;
+  webview.addEventListener("message", log.handler);
+  webview.postMessage = log.wrapper;
+  window.__e2eTableDeleteCatalogLog = log;
+}
+
+function readTableDeleteCatalogLogInPage() {
+  const log = window.__e2eTableDeleteCatalogLog;
+  if (!log) return { inbound: [], outbound: [] };
+  return { inbound: log.inbound, outbound: log.outbound };
+}
+
+function releaseTableDeleteCatalogLogInPage() {
+  const log = window.__e2eTableDeleteCatalogLog;
+  if (!log) return;
+  window.__e2eTableDeleteCatalogLog = null;
+  const webview = window.chrome?.webview;
+  webview?.removeEventListener("message", log.handler);
+  if (webview && webview.postMessage === log.wrapper) {
+    webview.postMessage = log.original;
+  }
 }
 
 async function beginWritableWorkspaceBootstrapCapture(
