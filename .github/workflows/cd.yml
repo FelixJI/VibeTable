@@ -80,7 +80,7 @@ jobs:
           python scripts/automation.py release stage
           --candidate-dir build/automation/release-candidate
           --source-sha '${{ github.event.workflow_run.head_sha }}'
-      - name: Verify closed product E2E evidence
+      - name: Verify product E2E evidence document consistency
         if: steps.stage.outputs.publish == 'true'
         run: uv run --frozen python scripts/automation_project.py release-evidence
       - name: Attest release provenance

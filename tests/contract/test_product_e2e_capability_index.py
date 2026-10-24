@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from qa.product_scenario_manifest import Scenario
+from scripts import automation_project
 from scripts import generate_product_e2e_capability_index as capability_index
 from tests.e2e.product_e2e_runner import write_aggregate
 
@@ -421,6 +423,67 @@ def test_evidence_document_contract_rejects_fabricated_verified_growth() -> None
     )
 
     assert any("source manifest" in error for error in errors)
+
+
+def test_release_evidence_entry_accepts_honest_history_and_rejects_false_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verified = _evidence_scenarios()
+    scenarios = [
+        verified[0],
+        replace(verified[1], requirement="新验收语义。"),
+        Scenario(
+            id="03-added",
+            title="新增场景",
+            requirement="旧 source SHA 尚未验证该场景。",
+            capabilities=("example.added",),
+        ),
+    ]
+    honest = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    honest[canonical_path] = (
+        honest[canonical_path]
+        .replace(
+            "- 当前 manifest gap：无。",
+            "- 当前 manifest gap：1（`03-added`）。",
+        )
+        .replace(
+            "- 当前 manifest changed：无。",
+            "- 当前 manifest changed：1（`02-second`）。",
+        )
+    )
+    state = {"documents": honest}
+
+    def check_repository(*, require_closed: bool = False) -> list[str]:
+        return capability_index.check_product_e2e_evidence_documents(
+            state["documents"],
+            scenarios,
+            report_contract_version=capability_index.PRODUCT_E2E_REPORT_CONTRACT_VERSION,
+            verified_scenarios=verified,
+            require_closed=require_closed,
+        )
+
+    monkeypatch.setattr(capability_index, "check_generated", lambda *args, **kwargs: [])
+    monkeypatch.setattr(capability_index, "check_repository_product_e2e_evidence", check_repository)
+
+    def run_generator(*command: str, **_kwargs: object) -> None:
+        status = capability_index.main(list(command[2:]))
+        if status != 0:
+            raise subprocess.CalledProcessError(status, command)
+
+    monkeypatch.setattr(automation_project, "_run", run_generator)
+
+    # 新入口：诚实历史 gap/changed 通过文档一致性检查；若入口重新带上
+    # --require-closed-evidence（旧实现），这里会抛 CalledProcessError。
+    automation_project.verify_release_evidence()
+
+    # 同一文档在旧门禁旗标下必须失败，证明上一断言不是虚设。
+    assert capability_index.main(["--check", "--require-closed-evidence"]) != 0
+
+    # 谎报闭合（仍声明无。）：新入口同样拒绝。
+    state["documents"] = _evidence_documents()
+    with pytest.raises(subprocess.CalledProcessError):
+        automation_project.verify_release_evidence()
 
 
 def test_evidence_document_contract_rejects_same_id_semantic_rewrite() -> None:

@@ -637,7 +637,6 @@ def test_candidate_prepare_checks_release_evidence_before_deferring_quality(
                 automation_project.sys.executable,
                 "scripts/generate_product_e2e_capability_index.py",
                 "--check",
-                "--require-closed-evidence",
             )
         ]
         if requires_evidence
@@ -1145,18 +1144,18 @@ def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     assert "token:" not in checkout
 
 
-def test_publish_requires_closed_product_e2e_evidence_after_staging() -> None:
+def test_publish_verifies_product_e2e_evidence_documents_after_staging() -> None:
     workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
     after_stage = workflow.split("- name: Stage release", maxsplit=1)[1]
-    closed_evidence = after_stage.split("- name: Verify closed product E2E evidence", maxsplit=1)[
-        1
-    ].split("- name: Attest release provenance", maxsplit=1)[0]
+    evidence_documents = after_stage.split(
+        "- name: Verify product E2E evidence document consistency", maxsplit=1
+    )[1].split("- name: Attest release provenance", maxsplit=1)[0]
 
-    assert "if: steps.stage.outputs.publish == 'true'" in closed_evidence
+    assert "if: steps.stage.outputs.publish == 'true'" in evidence_documents
     assert (
         "uv run --frozen python scripts/automation_project.py release-evidence"
-    ) in closed_evidence
-    assert "generate_product_e2e_capability_index.py" not in closed_evidence
+    ) in evidence_documents
+    assert "generate_product_e2e_capability_index.py" not in evidence_documents
 
 
 def test_release_evidence_delegates_through_the_managed_project_interpreter(
@@ -1175,7 +1174,6 @@ def test_release_evidence_delegates_through_the_managed_project_interpreter(
             automation_project.sys.executable,
             "scripts/generate_product_e2e_capability_index.py",
             "--check",
-            "--require-closed-evidence",
         )
     ]
 
