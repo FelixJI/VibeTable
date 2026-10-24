@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.PocketBase;
+using VibeTable.Infrastructure.Rpc;
 using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Tests;
@@ -69,6 +70,52 @@ public sealed class ProductRealtimeSessionTests
         Assert.HasCount(0, fixture.Posted);
     }
 
+    [TestMethod]
+    [DataRow("epoch")]
+    [DataRow("renderer")]
+    [DataRow("generation")]
+    [DataRow("caller")]
+    public async Task ExplicitCatalogRefreshRetiresANonCooperativeReadAndReleasesItsTurn(string retired)
+    {
+        var workspace = new TableWorkspaceService(new FakeTableRpcGateway());
+        await using var fixture = await Fixture.OpenAsync(workspace: workspace);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        fixture.Http.CatalogReadEntered = NewSignal();
+        fixture.Http.CatalogReadRelease = NewSignal();
+        using var caller = new CancellationTokenSource();
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, caller.Token);
+        await fixture.Http.CatalogReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            if (retired == "epoch")
+            {
+                var session = fixture.Sessions.Current;
+                await fixture.Leases.DrainAsync(session.WorkspaceId!.Value, session.SessionEpoch,
+                    CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            else if (retired == "renderer") fixture.Delivery.Retire();
+            else if (retired == "generation")
+            {
+                fixture.Snapshot = null;
+                fixture.Authority.SetCurrent(null);
+            }
+            else caller.Cancel();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(fixture.Http.CatalogReadRelease.Task.IsCompleted);
+            using var successor = workspace.BeginCatalogTurn();
+            await successor.EnterAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsEmpty(fixture.Posted);
+            Assert.IsFalse(fixture.Failures.Reader.TryRead(out _));
+        }
+        finally
+        {
+            caller.Cancel();
+            fixture.Http.CatalogReadRelease.TrySetResult();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
     [TestMethod]
     public async Task ExplicitCatalogReadFailureReportsSeparateSafeProjectionFailure()
     {
@@ -679,6 +726,226 @@ public sealed class ProductRealtimeSessionTests
         return new(HttpStatusCode.OK) { Content = content };
     }
 
+    [TestMethod]
+    public async Task CatalogOrdering_ImportRefreshWaitsForAnOlderPausedCreateRefresh()
+    {
+        var tableGateway = new FakeTableRpcGateway();
+        tableGateway.DatabaseOpenResults["db"] = new DatabaseOpenResult([], [], TestDisplayNames.For());
+        tableGateway.SelectionProjectionResults["fresh-table"] = new TableSelectionProjection(
+            new TablePage("fresh-table", [], [], 0, 500, 0, "remote"),
+            new EditSchemaResult("fresh-table", "schema_0001", "id", true, false, []));
+        var workspace = new TableWorkspaceService(tableGateway);
+        await workspace.OpenDatabaseAsync("db");
+        await using var fixture = await Fixture.OpenAsync(
+            applyCatalog: workspace.UpdateKnownCatalog, workspace: workspace);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+
+        // The renderer create pauses its catalog refresh read: it observed the
+        // catalog BEFORE the source import committed.
+        var createRead = new TaskCompletionSource<TableSummary>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int createReads = 0;
+        tableGateway.ListTablesOverride = _ =>
+        {
+            Interlocked.Increment(ref createReads);
+            return createRead.Task;
+        };
+        var sink = new FakeWebReplySink();
+        await using var createClient = new JsonRpcClient(new SchemaCreateTransport());
+        using var createGateway = new JsonRpcProductDataGateway(createClient);
+        var controller = new WorkspaceTableRequestController(
+            workspace, new FakeDatabasePicker("db"), sink, () => createGateway,
+            NoDatabaseOpenRoute.Instance);
+        Task create = controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.createRequested", "create-1",
+            JsonSerializer.SerializeToElement(new { displayName = "订单" }), string.Empty));
+        while (Volatile.Read(ref createReads) == 0) await Task.Yield();
+
+        // The import refresh competes for the same catalog. It must not start
+        // its authoritative read until the paused create turn publishes.
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        for (int i = 0; i < 50 && fixture.Http.CatalogReads == 0; i++)
+            await Task.Delay(10);
+        Assert.AreEqual(0, fixture.Http.CatalogReads,
+            "the import refresh read must wait for the paused create turn");
+
+        // The create turn resumes with its older snapshot and publishes first.
+        createRead.TrySetResult(new TableSummary(
+            ["tbl_created"], [], TestDisplayNames.For("tbl_created")));
+        await create.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(2, sink.Replies.Where(reply =>
+            reply.Type == "database.collectionsChanged").ToArray());
+
+        // Only now may the queued refresh read and publish the newer catalog.
+        Action importPost = await fixture.NextPost();
+        importPost();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(await workspace.SelectTableAsync("fresh-table"),
+            "the newest catalog must win after both entries settled");
+        string createResponse = JsonSerializer.Serialize(sink.Replies
+            .Single(reply => reply.RequestId == "create-1").Payload);
+        StringAssert.Contains(createResponse, "tbl_created");
+    }
+
+    [TestMethod]
+    public async Task CatalogOrdering_CreateRefreshWaitsForAHeldImportRefreshPublish()
+    {
+        var tableGateway = new FakeTableRpcGateway();
+        tableGateway.DatabaseOpenResults["db"] = new DatabaseOpenResult([], [], TestDisplayNames.For());
+        tableGateway.SelectionProjectionResults["fresh-table"] = new TableSelectionProjection(
+            new TablePage("fresh-table", [], [], 0, 500, 0, "remote"),
+            new EditSchemaResult("fresh-table", "schema_0001", "id", true, false, []));
+        tableGateway.SelectionProjectionResults["tbl_created"] = new TableSelectionProjection(
+            new TablePage("tbl_created", [], [], 0, 500, 0, "remote"),
+            new EditSchemaResult("tbl_created", "schema_0001", "id", true, false, []));
+        var workspace = new TableWorkspaceService(tableGateway);
+        await workspace.OpenDatabaseAsync("db");
+        await using var fixture = await Fixture.OpenAsync(
+            applyCatalog: workspace.UpdateKnownCatalog, workspace: workspace);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+
+        // The import refresh reads the newer catalog but its renderer publish
+        // is held at the delivery pump.
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        Action importPost = await fixture.NextPost();
+
+        // The create must not read while the import publish is still in flight.
+        var createRead = new TaskCompletionSource<TableSummary>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int createReads = 0;
+        tableGateway.ListTablesOverride = _ =>
+        {
+            Interlocked.Increment(ref createReads);
+            return createRead.Task;
+        };
+        var sink = new FakeWebReplySink();
+        await using var createClient = new JsonRpcClient(new SchemaCreateTransport());
+        using var createGateway = new JsonRpcProductDataGateway(createClient);
+        var controller = new WorkspaceTableRequestController(
+            workspace, new FakeDatabasePicker("db"), sink, () => createGateway,
+            NoDatabaseOpenRoute.Instance);
+        Task create = controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.createRequested", "create-2",
+            JsonSerializer.SerializeToElement(new { displayName = "订单" }), string.Empty));
+        for (int i = 0; i < 50 && Volatile.Read(ref createReads) == 0; i++)
+            await Task.Delay(10);
+        Assert.AreEqual(0, createReads,
+            "the create refresh read must wait for the import publish turn");
+
+        importPost();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The create turn now reads the authoritative post-import catalog.
+        createRead.TrySetResult(new TableSummary(
+            ["fresh-table", "tbl_created"], ["fresh-view"],
+            new Dictionary<string, string>
+            {
+                ["fresh-table"] = "Fresh",
+                ["fresh-view"] = "Fresh view",
+                ["tbl_created"] = "订单",
+            }));
+        await create.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(await workspace.SelectTableAsync("fresh-table"));
+        Assert.IsTrue(await workspace.SelectTableAsync("tbl_created"),
+            "the reverse order must keep the create selection");
+    }
+
+    [TestMethod]
+    public async Task CatalogOrdering_RecoveredRefreshWaitsForAnOlderPausedCreateRefresh()
+    {
+        var tableGateway = new FakeTableRpcGateway();
+        tableGateway.DatabaseOpenResults["db"] = new DatabaseOpenResult([], [], TestDisplayNames.For());
+        tableGateway.SelectionProjectionResults["fresh-table"] = new TableSelectionProjection(
+            new TablePage("fresh-table", [], [], 0, 500, 0, "remote"),
+            new EditSchemaResult("fresh-table", "schema_0001", "id", true, false, []));
+        var workspace = new TableWorkspaceService(tableGateway);
+        await workspace.OpenDatabaseAsync("db");
+        await using var fixture = await Fixture.OpenAsync(
+            applyCatalog: workspace.UpdateKnownCatalog, workspace: workspace);
+
+        // The renderer create pauses its catalog refresh read first.
+        var createRead = new TaskCompletionSource<TableSummary>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int createReads = 0;
+        tableGateway.ListTablesOverride = _ =>
+        {
+            Interlocked.Increment(ref createReads);
+            return createRead.Task;
+        };
+        var sink = new FakeWebReplySink();
+        await using var createClient = new JsonRpcClient(new SchemaCreateTransport());
+        using var createGateway = new JsonRpcProductDataGateway(createClient);
+        var controller = new WorkspaceTableRequestController(
+            workspace, new FakeDatabasePicker("db"), sink, () => createGateway,
+            NoDatabaseOpenRoute.Instance);
+        Task create = controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.createRequested", "create-3",
+            JsonSerializer.SerializeToElement(new { displayName = "订单" }), string.Empty));
+        while (Volatile.Read(ref createReads) == 0) await Task.Yield();
+
+        // The SSE reconnect recovery competes for the same catalog.
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        Assert.IsNull(await fixture.NextConnection());
+        for (int i = 0; i < 50 && fixture.Http.CatalogReads == 0; i++)
+            await Task.Delay(10);
+        Assert.AreEqual(0, fixture.Http.CatalogReads,
+            "the recovered catalog read must wait for the paused create turn");
+
+        createRead.TrySetResult(new TableSummary(
+            ["tbl_created"], [], TestDisplayNames.For("tbl_created")));
+        await create.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Action recoveredPost = await fixture.NextPost();
+        recoveredPost();
+        await fixture.Delayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(await workspace.SelectTableAsync("fresh-table"),
+            "the recovered refresh must land after the create turn");
+        CollectionAssert.AreEqual(new[] { "database.collectionsChanged", "realtime.recovered" },
+            fixture.Posted.Select(item => item.Topic).ToArray());
+    }
+
+    private sealed class SchemaCreateTransport : IJsonLineTransport
+    {
+        private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
+
+        public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
+            => _incoming.Reader.ReadAsync(cancellationToken).AsTask();
+
+        public Task WriteAsync(string line, CancellationToken cancellationToken)
+        {
+            using var request = JsonDocument.Parse(line);
+            string id = request.RootElement.GetProperty("id").GetString()!;
+            string method = request.RootElement.GetProperty("method").GetString()!;
+            Assert.AreEqual("schema.table.create", method);
+            JsonElement parameters = request.RootElement.GetProperty("params").Clone();
+            JsonElement result = JsonSerializer.SerializeToElement(new
+            {
+                contract = "vibetable.schema.v2",
+                operationId = parameters.GetProperty("operationId").GetString(),
+                tableId = "tbl_created",
+                displayName = parameters.GetProperty("displayName").GetString(),
+                schemaRevision = "schema_0001",
+            });
+            _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+            {
+                jsonrpc = "2.0",
+                id,
+                result,
+            }));
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            _incoming.Writer.TryComplete();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class SubscriptionClient : IDisposable, IWebReplySink
     {
         internal readonly PluginSurfaceSessionManager Surfaces = new();
@@ -795,7 +1062,8 @@ public sealed class ProductRealtimeSessionTests
         internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false,
             Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null,
             Action<TableSummary>? applyCatalog = null,
-            Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null)
+            Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null,
+            TableWorkspaceService? workspace = null)
         {
             var fixture = new Fixture();
             var registry = new WorkspaceRegistry(fixture._root);
@@ -843,7 +1111,8 @@ public sealed class ProductRealtimeSessionTests
                 {
                     fixture.Delayed.TrySetResult();
                     await fixture.ResumeDelay.Task.WaitAsync(token);
-                }, projectPluginCatalog, observePluginData);
+                }, projectPluginCatalog, observePluginData,
+                workspace is null ? null : workspace.BeginCatalogTurn);
             return fixture;
         }
 
@@ -882,6 +1151,8 @@ public sealed class ProductRealtimeSessionTests
         internal Channel<string?> Connections { get; } = Channel.CreateUnbounded<string?>();
         internal int CatalogReads { get; private set; }
         internal bool CatalogFailure { get; set; }
+        internal TaskCompletionSource? CatalogReadEntered;
+        internal TaskCompletionSource? CatalogReadRelease;
         internal List<TestSseStream> Streams { get; } = [];
         internal Queue<HttpResponseMessage> StreamReplies { get; } = new();
 
@@ -912,6 +1183,8 @@ public sealed class ProductRealtimeSessionTests
             using JsonDocument call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
             Assert.AreEqual("schema.list", call.RootElement.GetProperty("method").GetString());
             CatalogReads++;
+            CatalogReadEntered?.TrySetResult();
+            if (CatalogReadRelease is { } release) await release.Task;
             if (CatalogFailure) return Reply(new
             {
                 jsonrpc = "2.0", id = call.RootElement.GetProperty("id"), wire = call.RootElement.GetProperty("wire"),

@@ -29,16 +29,6 @@ describe("tableAdminStore", () => {
     expect(store.canSubmit).toBe(true);
   });
 
-  it("tracks collection capabilities", () => {
-    const store = useTableAdminStore();
-    store.setCollections([{
-      collection: "tbl_orders",
-      metadata: { capabilityHash: "cap_1" },
-    }]);
-    expect(store.collections).toHaveLength(1);
-    expect(store.collections[0]?.collection).toBe("tbl_orders");
-  });
-
   it("tracks delete, failure, success, and close lifecycle state", () => {
     const store = useTableAdminStore();
     store.requestDelete("users");

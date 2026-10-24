@@ -198,6 +198,34 @@ public sealed class PluginProjectContextBindingRegistry : IDisposable
                 .ToArray());
     }
 
+    // A completed open releases its operation CTS; its queued terminal still
+    // belongs to the captured authority and permanently retired epoch token.
+    internal Func<Func<bool>, bool> CaptureOpenedEmissionGate(
+        PluginProjectContextBinding binding, WorkspaceSessionEnvelopeFilter? sessions,
+        out WorkspaceRequestEpochLease? observer)
+    {
+        observer = null;
+        ProductAuthoritySnapshot snapshot;
+        lock (_gate)
+        {
+            if (!TryGetCurrentLocked(binding, out OpenOperation operation)) return _ => false;
+            snapshot = operation.AuthorityLease.Snapshot;
+        }
+        if (sessions is not null)
+        {
+            var session = sessions.Current;
+            if (session.WorkspaceId is not Guid workspaceId
+                || binding.Context.ProjectKey != $"local:{workspaceId:N}"
+                || binding.Context.SessionGeneration != session.SessionEpoch
+                || !sessions.TryCaptureHost(workspaceId, session.SessionEpoch, Guid.NewGuid(), out observer)
+                || observer is null) return _ => false;
+        }
+        WorkspaceRequestEpochLease? captured = observer;
+        return post => _authority.TryUseCurrent(snapshot,
+            () => !binding.SessionToken.IsCancellationRequested
+                && (captured is null ? post() : sessions!.TryUseCurrent(captured, post)));
+    }
+
     public bool TryComplete(PluginProjectContextBinding binding, Action completion)
     {
         ArgumentNullException.ThrowIfNull(completion);

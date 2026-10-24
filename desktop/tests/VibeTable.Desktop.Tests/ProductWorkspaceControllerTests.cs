@@ -315,7 +315,8 @@ public sealed class ProductWorkspaceControllerTests
 
         Task host = fixture.Controller.SuperviseOpenAsync();
         await hostStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await renderer.DispatchAsyncForTesting(OpenRequest("renderer-latest"));
+        await renderer.DispatchAsyncForTesting(OpenRequest("renderer-latest")).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(pendingHost.Task.IsCompleted);
         pendingHost.SetResult(OpenResult());
         await host;
 
@@ -354,7 +355,8 @@ public sealed class ProductWorkspaceControllerTests
         Task rendererOpen = renderer.DispatchAsyncForTesting(
             OpenRequest("renderer-pending"));
         await rendererStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Controller.SuperviseOpenAsync();
+        await fixture.Controller.SuperviseOpenAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(pendingRenderer.Task.IsCompleted);
         pendingRenderer.SetResult(new DatabaseOpenResult(
             ["renderer_records"], [], TestDisplayNames.For("renderer_records")));
         await rendererOpen;
@@ -449,6 +451,7 @@ public sealed class ProductWorkspaceControllerTests
         await rendererStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         fixture.Controller.OpenWhenReady();
         await sink.FirstOpened.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(pendingRenderer.Task.IsCompleted);
         pendingRenderer.TrySetResult(new DatabaseOpenResult(
             ["renderer_records"], [], TestDisplayNames.For("renderer_records")));
         await rendererOpen;
@@ -460,6 +463,40 @@ public sealed class ProductWorkspaceControllerTests
         Assert.IsTrue(fixture.Traces.Any(trace => trace.Contains(
             "Database open cancellation terminal failed",
             StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ReopenRereadsTheAuthoritativeCatalogInsteadOfReusingTheOpenCache()
+    {
+        using var fixture = new Fixture();
+        fixture.Gateway.DatabaseOpenResults["local://workspace/test"] =
+            new DatabaseOpenResult(["stale_records"], [], TestDisplayNames.For("stale_records"));
+        await fixture.Controller.SuperviseOpenAsync();
+        Assert.AreEqual(1, fixture.Gateway.OpenDatabaseCalls.Count);
+
+        // A newer catalog lifecycle commits while the workspace stays open.
+        fixture.Gateway.DatabaseOpenResults["local://workspace/test"] =
+            new DatabaseOpenResult(["fresh_records"], [], TestDisplayNames.For("fresh_records"));
+        fixture.Gateway.ListTablesResult = new TableSummary(
+            ["fresh_records"], [], TestDisplayNames.For("fresh_records"));
+        fixture.Gateway.SelectionProjectionResults["fresh_records"] = Projection("fresh_records");
+        await fixture.Workspace.RefreshKnownTablesAsync(CancellationToken.None);
+        await fixture.Workspace.SelectTableAsync("fresh_records");
+
+        // A same-authority reopen must read the authoritative catalog again —
+        // the retired open-result cache must never resurface a stale catalog.
+        await fixture.Controller.SuperviseOpenAsync();
+
+        Assert.AreEqual(
+            2,
+            fixture.Gateway.OpenDatabaseCalls.Count,
+            "reopen must not reuse the cached open result");
+        Assert.AreEqual(
+            2,
+            fixture.Reply.Replies.Count(reply => reply.Type == "database.opened"));
+        string latest = JsonSerializer.Serialize(
+            fixture.Reply.Replies.Last(reply => reply.Type == "database.opened").Payload);
+        StringAssert.Contains(latest, "fresh_records");
     }
 
     [TestMethod]
@@ -505,6 +542,8 @@ public sealed class ProductWorkspaceControllerTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (type == "database.opened" && requestId is null)
+                throw new InvalidOperationException("synthetic opened sink failure");
         }
 
         public void PostOperationFailed(
@@ -538,6 +577,11 @@ public sealed class ProductWorkspaceControllerTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (type == "database.opened" && requestId is null)
+            {
+                OpenedCount += 1;
+                FirstOpened.TrySetResult();
+            }
         }
 
         public void PostOperationFailed(
@@ -592,6 +636,8 @@ public sealed class ProductWorkspaceControllerTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (type == "database.opened" && requestId is null)
+                DatabaseDuringOpened = currentDatabase();
         }
 
         public void PostOperationFailed(

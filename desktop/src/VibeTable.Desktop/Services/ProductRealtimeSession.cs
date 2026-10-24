@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
@@ -20,6 +21,13 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
     private readonly Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? _observePluginData;
     private readonly HttpMessageHandler? _handler;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    /// <summary>
+    /// Catalog turn source shared with every other catalog lifecycle (#509).
+    /// Defaults to a session-local gate when no shared source is wired so an
+    /// unwired construction still serializes its own catalog work.
+    /// </summary>
+    private readonly Func<TableWorkspaceService.CatalogTurn> _beginCatalogTurn;
+    private readonly AsyncFifoGate _localCatalogGate = new();
     private Binding? _requested;
     private Scope? _scope;
     private string? _bookmark;
@@ -35,7 +43,8 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         HttpMessageHandler? handler = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null,
-        Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null)
+        Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null,
+        Func<TableWorkspaceService.CatalogTurn>? beginCatalogTurn = null)
     {
         _authority = authority;
         _capture = capture;
@@ -48,11 +57,15 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         _observePluginData = observePluginData;
         _handler = handler;
         _delay = delay ?? Task.Delay;
+        _beginCatalogTurn = beginCatalogTurn ?? BeginLocalCatalogTurn;
         authority.CurrentChanged += Refresh;
         sessions.Changed += OnSessionChanged;
         delivery.Changed += Refresh;
         Refresh();
     }
+
+    private TableWorkspaceService.CatalogTurn BeginLocalCatalogTurn()
+        => new(_localCatalogGate);
 
     private void OnSessionChanged(object? sender, WorkspaceSessionChangedEventArgs args) => Refresh();
 
@@ -66,10 +79,22 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         using (var call = CancellationTokenSource.CreateLinkedTokenSource(token, lease.CancellationToken))
         {
             bool Current(Func<bool> action) => TryUseBinding(binding, lease, call.Token, action);
+            void RetireBindingRead()
+            {
+                if (Current(() => true)) return;
+                try { call.Cancel(); }
+                catch (ObjectDisposedException) { } // An event captured before unsubscribe may finish after disposal.
+            }
+            _authority.CurrentChanged += RetireBindingRead;
+            _delivery.Changed += RetireBindingRead;
             using var catalog = new ProductRealtimeCatalog(snapshot, Current, _handler);
             try
             {
-                TableSummary summary = await catalog.ReadAsync(lease, call.Token).ConfigureAwait(false);
+                RetireBindingRead();
+                using TableWorkspaceService.CatalogTurn turn = _beginCatalogTurn();
+                await turn.EnterAsync(call.Token).ConfigureAwait(false);
+                TableSummary summary = await TableWorkspaceService.ReadCatalogAsync(
+                    t => catalog.ReadAsync(lease, t), call.Token).ConfigureAwait(false);
                 await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
                 {
                     _applyCatalog(summary);
@@ -78,26 +103,28 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                     return true;
                 }), call.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (lease.CancellationToken.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (call.IsCancellationRequested) { }
             catch (Exception error)
             {
                 _failed("source_import.catalog_refresh_failed:" + error.GetType().Name);
                 if (call.IsCancellationRequested) return;
-                // Preserve the committed migration. Only the current renderer
-                // may receive this independent projection failure.
                 await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
+                {
+                    post("operation.failed", new
                     {
-                        post("operation.failed", new
-                        {
-                            operation = "source_import.catalog", code = "source_import.catalog_refresh_failed",
-                            message = "目标表已保存，但目录刷新失败；重新打开工作区后可查看。",
-                        });
-                        return true;
-                    }), call.Token).ConfigureAwait(false);
+                        operation = "source_import.catalog", code = "source_import.catalog_refresh_failed",
+                        message = "目标表已保存，但目录刷新失败；重新打开工作区后可查看。",
+                    });
+                    return true;
+                }), call.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _authority.CurrentChanged -= RetireBindingRead;
+                _delivery.Changed -= RetireBindingRead;
             }
         }
     }
-
     private bool TryUseBinding(Binding binding, WorkspaceRequestEpochLease lease,
         CancellationToken token, Func<bool> action)
         => _authority.TryUseCurrent(binding.Snapshot, () =>
@@ -206,8 +233,22 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                         {
                             reading = false;
                             ProductRealtimeFrame frame = reader.Current;
-                            TableSummary? summary = frame.Topic == "realtime.recovered"
-                                ? await catalog.ReadAsync(lease, token).ConfigureAwait(false) : null;
+                            // #509: the reconnect recovery's catalog read, cache
+                            // commit, and the frame post (which carries
+                            // database.collectionsChanged plus the bookmark
+                            // commit) run inside one exclusive catalog turn.
+                            // Ordinary frames never touch the catalog and stay
+                            // off the gate entirely.
+                            using TableWorkspaceService.CatalogTurn? turn =
+                                frame.Topic == "realtime.recovered" ? _beginCatalogTurn() : null;
+                            if (turn is not null)
+                            {
+                                await turn.EnterAsync(token).ConfigureAwait(false);
+                            }
+                            TableSummary? summary = turn is not null
+                                ? await TableWorkspaceService.ReadCatalogAsync(
+                                    t => catalog.ReadAsync(lease, t), token).ConfigureAwait(false)
+                                : null;
                             posting = true;
                             bool posted = await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
                             {

@@ -2,46 +2,13 @@ import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { usePluginStore } from "@/stores/pluginStore";
 import { usePluginService } from "./pluginService";
-import type { CollectionSummary } from "@/stores/workspaceStore";
-import type { CollectionsChangedPayload, DatabaseOpenedPayload } from "@/contracts";
+import { collectionsFromChanged, collectionsFromOpened } from "./collectionsProjection";
+import type { DatabaseOpenedPayload } from "@/contracts";
 
-/**
- * Translate the wire-level `database.opened` payload (which carries separate
- * `tables`/`views` string lists) into the workspace's `CollectionSummary[]`
- * shape. The metadata bag is left empty here; capability metadata is layered
- * in later via `database.collectionsChanged`.
- */
-function toCollections(payload: DatabaseOpenedPayload): readonly CollectionSummary[] {
-  const tables = payload.tables.map((t) => ({
-    collection: t,
-    metadata: {},
-  }));
-  const views = payload.views.map((v) => ({
-    collection: v,
-    metadata: { kind: "view" } as const,
-  }));
-  return [...tables, ...views];
-}
-
-/**
- * Translate a `database.collectionsChanged` payload into `CollectionSummary[]`,
- * preserving capability hashes when the host includes them.
- */
-function toCollectionsFromChanged(
-  payload: CollectionsChangedPayload,
-): readonly CollectionSummary[] {
-  const hashes = payload.capabilityHashes ?? {};
-  const tables = payload.tables.map((t) => ({
-    collection: t,
-    metadata:
-      t in hashes ? { capabilityHash: hashes[t] } : {},
-  }));
-  const views = (payload.views ?? []).map((view) => ({
-    collection: view,
-    metadata: { kind: "view", ...(view in hashes ? { capabilityHash: hashes[view] } : {}) },
-  }));
-  return [...tables, ...views];
-}
+// The wire -> `CollectionSummary[]` projection for both `database.opened` and
+// `database.collectionsChanged` lives in `collectionsProjection.ts`; this
+// service is its only subscription owner (#508) and writes the single shared
+// catalog in `workspaceStore` (#509).
 
 /** Subscribe to inbound host events for the workspace. Call once at app boot. */
 export function useWorkspaceService(): {
@@ -69,7 +36,7 @@ export function useWorkspaceService(): {
     unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       const terminal = takeOpenTerminal(payload.openId);
       if (!terminal) return;
-      store.setOpened(toCollections(payload), payload.displayNames);
+      store.setOpened(collectionsFromOpened(payload), payload.displayNames);
       if (payload.projectKey?.trim()) {
         pluginService.openProjectContext(
           payload.projectKey.trim(),
@@ -98,7 +65,7 @@ export function useWorkspaceService(): {
     }));
     unsubscribe.push(bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(
-        toCollectionsFromChanged(payload),
+        collectionsFromChanged(payload),
         payload.displayNames,
       );
       if (payload.projectRevision?.trim()) {

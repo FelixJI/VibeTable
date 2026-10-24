@@ -198,6 +198,7 @@ public sealed class WorkspaceTableRequestController
             return;
         }
         PluginProjectContextBinding? binding = start.Binding;
+        CancellationToken openToken = binding?.SessionToken ?? CancellationToken.None;
         try
         {
             _terminals.PostRetiredCancellations(start.RetiredOpenIds, "superseded");
@@ -212,26 +213,46 @@ public sealed class WorkspaceTableRequestController
                 PostDatabaseOpenCancelledIfOwned(binding, "source-selection-cancelled");
                 return;
             }
-            DatabaseOpenResult result = await _workspace.PrepareDatabaseOpenAsync(
-                path, binding.SessionToken).ConfigureAwait(false);
-            object projection = ProductDatabaseOpenedProjection.Create(
-                result,
-                binding.Context,
-                binding.OpenId);
-            bool completed = _pluginBindings.TryComplete(binding, () =>
+            Func<Func<bool>, bool> emitGate = _pluginBindings.CaptureOpenedEmissionGate(
+                binding, _sessionEnvelopeFilter, out WorkspaceRequestEpochLease? observer);
+            using var epochObserver = observer;
+            using var readLifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                binding.SessionToken, observer?.CancellationToken ?? CancellationToken.None);
+            openToken = readLifetime.Token;
+            if (!emitGate(() => true)) return;
+            // The catalog read, the discovery admission commit/rollback, and the
+            // opened terminal enqueue run inside one exclusive catalog turn so
+            // an older open cannot overwrite a newer catalog snapshot (#509).
+            using (TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn())
             {
-                using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
-                    _workspace, path, result);
-                commit.Enqueue(() =>
-                    _reply.PostNotification("database.opened", projection));
-            });
-            if (!completed)
-            {
-                PostDatabaseOpenCancelledIfOwned(binding, "project-context-changed");
+                await turn.EnterAsync(openToken).ConfigureAwait(false);
+                Task<DatabaseOpenResult>? read = null;
+                if (!emitGate(() =>
+                {
+                    read = _workspace.PrepareDatabaseOpenAsync(path, openToken);
+                    return true;
+                })) return;
+                DatabaseOpenResult result = await read!.ConfigureAwait(false);
+                object projection = ProductDatabaseOpenedProjection.Create(
+                    result,
+                    binding.Context,
+                    binding.OpenId);
+                bool completed = _pluginBindings.TryComplete(binding, () => emitGate(() =>
+                {
+                    using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
+                        _workspace, path, result);
+                    commit.Enqueue(() =>
+                        _reply.TryPostResponse("database.opened", null, projection, emitGate));
+                    return true;
+                }));
+                if (!completed)
+                {
+                    PostDatabaseOpenCancelledIfOwned(binding, "project-context-changed");
+                }
             }
         }
         catch (OperationCanceledException)
-            when (binding is not null && binding.SessionToken.IsCancellationRequested)
+            when (binding is not null && openToken.IsCancellationRequested)
         {
             PostDatabaseOpenCancelledIfOwned(binding, "project-context-changed");
         }
@@ -662,66 +683,88 @@ public sealed class WorkspaceTableRequestController
             Reject(request, "创建数据表的请求无效。");
             return;
         }
-        IProductDataRpcGateway? gateway = RequireProductGateway(request);
-        if (gateway is null)
+        WorkspaceRequestEpochLease? lease = CaptureTableAdminEpoch(request);
+        if (_sessionEnvelopeFilter is not null && lease is null)
+        {
             return;
-        CancellationToken sessionToken = _sessionToken();
-        try
+        }
+        using (lease)
         {
-            using var budget = SchemaLifecycleBudget.Begin(
-                _schemaLifecycleTimeout,
-                sessionToken,
-                _timeProvider);
-            JsonElement applied = await budget.RunAsync(
-                SchemaLifecycleStage.Apply,
-                token => gateway.CreateTableAsync(
-                    JsonSerializer.SerializeToElement(new
-                    {
-                        displayName,
-                        operationId = "table-create-" + Guid.NewGuid().ToString("N"),
-                        actor = new { id = "desktop-host", kind = "host" },
-                    }),
-                    token)).ConfigureAwait(false);
-            if (applied.ValueKind != JsonValueKind.Object
-                || !applied.TryGetProperty("tableId", out JsonElement tableId)
-                || tableId.ValueKind != JsonValueKind.String
-                || string.IsNullOrWhiteSpace(tableId.GetString()))
+            IProductDataRpcGateway? gateway = RequireProductGateway(request);
+            if (gateway is null) return;
+            CancellationToken lifecycleToken = LinkLifecycleToken(lease, out IDisposable linked);
+            using (linked)
             {
-                throw new InvalidOperationException(
-                    "SchemaCore create returned no table identity.");
+                Func<Func<bool>, bool>? emitGate = CaptureEpochEmitGate(lease);
+                try
+                {
+                    using var budget = SchemaLifecycleBudget.Begin(
+                        _schemaLifecycleTimeout,
+                        lifecycleToken,
+                        _timeProvider);
+                    JsonElement applied = await budget.RunAsync(
+                        SchemaLifecycleStage.Apply,
+                        token => gateway.CreateTableAsync(
+                            JsonSerializer.SerializeToElement(new
+                            {
+                                displayName,
+                                operationId = "table-create-" + Guid.NewGuid().ToString("N"),
+                                actor = new { id = "desktop-host", kind = "host" },
+                            }),
+                            token)).ConfigureAwait(false);
+                    if (applied.ValueKind != JsonValueKind.Object
+                        || !applied.TryGetProperty("tableId", out JsonElement tableId)
+                        || tableId.ValueKind != JsonValueKind.String
+                        || string.IsNullOrWhiteSpace(tableId.GetString()))
+                    {
+                        throw new InvalidOperationException(
+                            "SchemaCore create returned no table identity.");
+                    }
+                    // #509: the catalog refresh read, the cache commit, and the
+                    // response/broadcast enqueue share one exclusive catalog
+                    // turn, serialized against every other catalog lifecycle.
+                    using TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn();
+                    await budget.RunAsync(
+                        SchemaLifecycleStage.Refresh,
+                        token => turn.EnterAsync(token)).ConfigureAwait(false);
+                    TableSummary summary = await budget.RunAsync(
+                        SchemaLifecycleStage.Refresh,
+                        token => LoadCollectionListAsync(token)).ConfigureAwait(false);
+                    budget.Complete(SchemaLifecycleStage.Refresh);
+                    PublishCollectionList(
+                        request.RequestId,
+                        summary,
+                        createdTableId: tableId.GetString(),
+                        emitGate: emitGate);
+                }
+                catch (SchemaLifecycleTimeoutException)
+                {
+                    TraceFailure("table.create", "SCHEMA_LIFECYCLE_TIMEOUT");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "数据表操作超时，完成状态尚未确认。",
+                        "SCHEMA_LIFECYCLE_TIMEOUT",
+                        emitGate);
+                }
+                catch (OperationCanceledException) when (lifecycleToken.IsCancellationRequested)
+                {
+                    TraceFailure("table.create", "SCHEMA_LIFECYCLE_CANCELLED");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "工作区已关闭，数据表操作已取消。",
+                        "SCHEMA_LIFECYCLE_CANCELLED",
+                        emitGate);
+                }
+                catch (Exception)
+                {
+                    TraceFailure("table.create", "TABLE_CREATE_FAILED");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "创建数据表失败。",
+                        "SCHEMA_APPLY_FAILED",
+                        emitGate);
+                }
             }
-            TableSummary summary = await budget.RunAsync(
-                SchemaLifecycleStage.Refresh,
-                token => LoadCollectionListAsync(token)).ConfigureAwait(false);
-            budget.Complete(SchemaLifecycleStage.Refresh);
-            PublishCollectionList(
-                request.RequestId,
-                summary,
-                createdTableId: tableId.GetString());
-        }
-        catch (SchemaLifecycleTimeoutException)
-        {
-            TraceFailure("table.create", "SCHEMA_LIFECYCLE_TIMEOUT");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "数据表操作超时，完成状态尚未确认。",
-                "SCHEMA_LIFECYCLE_TIMEOUT");
-        }
-        catch (OperationCanceledException) when (sessionToken.IsCancellationRequested)
-        {
-            TraceFailure("table.create", "SCHEMA_LIFECYCLE_CANCELLED");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "工作区已关闭，数据表操作已取消。",
-                "SCHEMA_LIFECYCLE_CANCELLED");
-        }
-        catch (Exception)
-        {
-            TraceFailure("table.create", "TABLE_CREATE_FAILED");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "创建数据表失败。",
-                "SCHEMA_APPLY_FAILED");
         }
     }
 
@@ -735,71 +778,143 @@ public sealed class WorkspaceTableRequestController
             Reject(request, "缺少表名。");
             return;
         }
-        IProductDataRpcGateway? gateway = RequireProductGateway(request);
-        if (gateway is null)
+        WorkspaceRequestEpochLease? lease = CaptureTableAdminEpoch(request);
+        if (_sessionEnvelopeFilter is not null && lease is null)
+        {
             return;
-        CancellationToken sessionToken = _sessionToken();
-        try
-        {
-            using var budget = SchemaLifecycleBudget.Begin(
-                _schemaLifecycleTimeout,
-                sessionToken,
-                _timeProvider);
-            JsonElement schema = await budget.RunAsync(
-                SchemaLifecycleStage.Inspect,
-                token => gateway.GetTableSchemaAsync(
-                    JsonSerializer.SerializeToElement(new { tableId = collection }),
-                    token)).ConfigureAwait(false);
-            string? revision = GetString(schema, "schemaRevision");
-            if (string.IsNullOrWhiteSpace(revision))
-                throw new InvalidOperationException("结构版本不可用。");
-            await budget.RunAsync(
-                SchemaLifecycleStage.Apply,
-                token => gateway.DeleteSchemaAsync(
-                    JsonSerializer.SerializeToElement(new
-                    {
-                        tableId = collection,
-                        expectedRevision = revision,
-                    }),
-                    token)).ConfigureAwait(false);
-            TableSummary summary = await budget.RunAsync(
-                SchemaLifecycleStage.Refresh,
-                token => LoadCollectionListAsync(token)).ConfigureAwait(false);
-            budget.Complete(SchemaLifecycleStage.Refresh);
-            PublishCollectionList(
-                request.RequestId,
-                summary,
-                deletedTableId: collection);
         }
-        catch (RpcRemoteException exception) when (exception.Code == -32602)
+        using (lease)
         {
-            Reject(request, "删除数据表的请求无效。");
-        }
-        catch (SchemaLifecycleTimeoutException)
-        {
-            TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_TIMEOUT");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "数据表操作超时，完成状态尚未确认。",
-                "SCHEMA_LIFECYCLE_TIMEOUT");
-        }
-        catch (OperationCanceledException) when (sessionToken.IsCancellationRequested)
-        {
-            TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_CANCELLED");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "工作区已关闭，数据表操作已取消。",
-                "SCHEMA_LIFECYCLE_CANCELLED");
-        }
-        catch (Exception)
-        {
-            TraceFailure("schema.delete", "SCHEMA_DELETE_FAILED");
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "删除数据表失败。",
-                "SCHEMA_DELETE_FAILED");
+            IProductDataRpcGateway? gateway = RequireProductGateway(request);
+            if (gateway is null) return;
+            CancellationToken lifecycleToken = LinkLifecycleToken(lease, out IDisposable linked);
+            using (linked)
+            {
+                Func<Func<bool>, bool>? emitGate = CaptureEpochEmitGate(lease);
+                try
+                {
+                    using var budget = SchemaLifecycleBudget.Begin(
+                        _schemaLifecycleTimeout,
+                        lifecycleToken,
+                        _timeProvider);
+                    JsonElement schema = await budget.RunAsync(
+                        SchemaLifecycleStage.Inspect,
+                        token => gateway.GetTableSchemaAsync(
+                            JsonSerializer.SerializeToElement(new { tableId = collection }),
+                            token)).ConfigureAwait(false);
+                    string? revision = GetString(schema, "schemaRevision");
+                    if (string.IsNullOrWhiteSpace(revision))
+                        throw new InvalidOperationException("结构版本不可用。");
+                    await budget.RunAsync(
+                        SchemaLifecycleStage.Apply,
+                        token => gateway.DeleteSchemaAsync(
+                            JsonSerializer.SerializeToElement(new
+                            {
+                                tableId = collection,
+                                expectedRevision = revision,
+                            }),
+                            token)).ConfigureAwait(false);
+                    // #509: delete shares the same exclusive catalog turn for
+                    // its refresh read, cache commit, and publications.
+                    using TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn();
+                    await budget.RunAsync(
+                        SchemaLifecycleStage.Refresh,
+                        token => turn.EnterAsync(token)).ConfigureAwait(false);
+                    TableSummary summary = await budget.RunAsync(
+                        SchemaLifecycleStage.Refresh,
+                        token => LoadCollectionListAsync(token)).ConfigureAwait(false);
+                    budget.Complete(SchemaLifecycleStage.Refresh);
+                    PublishCollectionList(
+                        request.RequestId,
+                        summary,
+                        deletedTableId: collection,
+                        emitGate: emitGate);
+                }
+                catch (RpcRemoteException exception) when (exception.Code == -32602)
+                {
+                    PostGuardedLifecycleFailure(request, "删除数据表的请求无效。", "BAD_PAYLOAD", emitGate);
+                }
+                catch (SchemaLifecycleTimeoutException)
+                {
+                    TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_TIMEOUT");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "数据表操作超时，完成状态尚未确认。",
+                        "SCHEMA_LIFECYCLE_TIMEOUT",
+                        emitGate);
+                }
+                catch (OperationCanceledException) when (lifecycleToken.IsCancellationRequested)
+                {
+                    TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_CANCELLED");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "工作区已关闭，数据表操作已取消。",
+                        "SCHEMA_LIFECYCLE_CANCELLED",
+                        emitGate);
+                }
+                catch (Exception)
+                {
+                    TraceFailure("schema.delete", "SCHEMA_DELETE_FAILED");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "删除数据表失败。",
+                        "SCHEMA_DELETE_FAILED",
+                        emitGate);
+                }
+            }
         }
     }
+
+    /// <summary>
+    /// Captures the workspace epoch identity/token for a tableAdmin lifecycle
+    /// (#509). The gate wait, read, cache commit, and actual emission all bind
+    /// to the captured scope; a stale scope fails closed before any gateway
+    /// I/O, mirroring the mutation dispatch contract.
+    /// </summary>
+    private WorkspaceRequestEpochLease? CaptureTableAdminEpoch(RoutedWebRequest request)
+    {
+        if (_sessionEnvelopeFilter is null) return null;
+        if (_sessionEnvelopeFilter.TryCapture(request.Scope, out WorkspaceRequestEpochLease? lease))
+            return lease;
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "Workspace write belongs to a stale session.",
+            "BAD_WORKSPACE_SCOPE");
+        return null;
+    }
+
+    private CancellationToken LinkLifecycleToken(
+        WorkspaceRequestEpochLease? lease,
+        out IDisposable linked)
+    {
+        CancellationToken windowToken = _sessionToken();
+        if (lease is null)
+        {
+            linked = null!;
+            return windowToken;
+        }
+        CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(
+            windowToken, lease.CancellationToken);
+        linked = source;
+        return source.Token;
+    }
+
+    private Func<Func<bool>, bool>? CaptureEpochEmitGate(WorkspaceRequestEpochLease? lease)
+        => lease is null || _sessionEnvelopeFilter is null
+            ? null
+            : post => _sessionEnvelopeFilter.TryUseCurrent(lease, post);
+
+    private void PostGuardedLifecycleFailure(
+        RoutedWebRequest request,
+        string message,
+        string code,
+        Func<Func<bool>, bool>? emitGate)
+        => _reply.TryPostOperationFailed(
+            request.RequestId,
+            message,
+            code,
+            request.Type,
+            emitGate: emitGate);
 
     private async Task<TableSummary> LoadCollectionListAsync(
         CancellationToken cancellationToken)
@@ -826,40 +941,49 @@ public sealed class WorkspaceTableRequestController
         string? requestId,
         TableSummary summary,
         string? createdTableId = null,
-        string? deletedTableId = null)
+        string? deletedTableId = null,
+        Func<Func<bool>, bool>? emitGate = null)
     {
-        _workspace.UpdateKnownCatalog(summary);
-        var broadcast = new
+        void Commit()
         {
-            tables = summary.Tables,
-            views = summary.Views,
-            displayNames = summary.DisplayNames,
-        };
-        if (requestId is not null)
-        {
-            object response = createdTableId is not null
-                ? new
-                {
-                    tables = summary.Tables,
-                    views = summary.Views,
-                    displayNames = summary.DisplayNames,
-                    createdTableId,
-                }
-                : deletedTableId is not null
+            // Called with the catalog turn held: the cache commit and both
+            // publications cannot be re-ordered against another catalog turn.
+            _workspace.UpdateKnownCatalog(summary);
+            var broadcast = new
+            {
+                tables = summary.Tables,
+                views = summary.Views,
+                displayNames = summary.DisplayNames,
+            };
+            if (requestId is not null)
+            {
+                object response = createdTableId is not null
                     ? new
                     {
                         tables = summary.Tables,
                         views = summary.Views,
                         displayNames = summary.DisplayNames,
-                        deletedTableId,
+                        createdTableId,
                     }
-                    : broadcast;
-            _reply.PostResponse(
-                "database.collectionsChanged",
-                requestId,
-                response);
+                    : deletedTableId is not null
+                        ? new
+                        {
+                            tables = summary.Tables,
+                            views = summary.Views,
+                            displayNames = summary.DisplayNames,
+                            deletedTableId,
+                        }
+                        : broadcast;
+                _reply.TryPostResponse(
+                    "database.collectionsChanged",
+                    requestId,
+                    response,
+                    emitGate);
+            }
+            _reply.TryPostResponse("database.collectionsChanged", null, broadcast, emitGate);
         }
-        _reply.PostNotification("database.collectionsChanged", broadcast);
+        if (emitGate is null) Commit();
+        else emitGate(() => { Commit(); return true; });
     }
 
     private IProductDataRpcGateway? RequireProductGateway(

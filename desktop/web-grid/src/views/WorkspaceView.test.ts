@@ -4990,6 +4990,122 @@ describe("WorkspaceView", () => {
     });
   });
 
+  describe("table catalog convergence (#509)", () => {
+    it("creates, selects, and opens field settings from the correlated response before any broadcast", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+      useUiStore().navigate("tables");
+      mountView();
+      await flushPromises();
+
+      document.body.querySelector<HTMLElement>("[data-testid='sidebar-new-table']")!.click();
+      await flushPromises();
+      useTableAdminStore().form.name = "订单";
+      // The submit button's disabled binding needs a tick to catch up with
+      // the store write before the click.
+      await flushPromises();
+      document.body.querySelector<HTMLElement>("[data-testid='create-table-submit']")!.click();
+      await flushPromises();
+
+      const create = posted.find((item) => item.type === "tableAdmin.createRequested")!;
+      expect(create.payload).toEqual({ displayName: "订单" });
+
+      // Response-first: the correlated reply alone must land the new table
+      // (and any views) in the single catalog before the broadcast repeats.
+      emit({
+        type: "database.collectionsChanged",
+        requestId: create.requestId,
+        payload: {
+          tables: ["orders", "tbl_new"],
+          views: ["view_recent"],
+          displayNames: { orders: "Orders", tbl_new: "订单", view_recent: "近期订单" },
+          capabilityHashes: { view_recent: "view-capability" },
+          createdTableId: "tbl_new",
+        },
+      });
+      await flushPromises();
+
+      expect(workspace.collections).toEqual([
+        { collection: "orders", metadata: {} },
+        { collection: "tbl_new", metadata: {} },
+        { collection: "view_recent", metadata: { kind: "view", capabilityHash: "view-capability" } },
+      ]);
+      expect(workspace.currentTable).toBe("tbl_new");
+      expect(useUiStore().createModalOpen).toBe(false);
+      // The composition-root created callback ran against the valid catalog.
+      expect(posted.some((item) => item.type === "field.settings.describe"
+        && (item.payload as { tableId?: string }).tableId === "tbl_new")).toBe(true);
+
+      // The host's duplicate broadcast (same payload, no requestId) must not
+      // re-run the callback or churn the catalog reference.
+      const describes = posted.filter((item) => item.type === "field.settings.describe").length;
+      const catalogAfterResponse = workspace.collections;
+      emit({
+        type: "database.collectionsChanged",
+        payload: {
+          tables: ["orders", "tbl_new"],
+          views: ["view_recent"],
+          displayNames: { orders: "Orders", tbl_new: "订单", view_recent: "近期订单" },
+          capabilityHashes: { view_recent: "view-capability" },
+        },
+      });
+      await flushPromises();
+
+      expect(workspace.collections).toBe(catalogAfterResponse);
+      expect(posted.filter((item) => item.type === "field.settings.describe")).toHaveLength(describes);
+      expect(workspace.currentTable).toBe("tbl_new");
+    });
+
+    it("deletes through the correlated response and updates the single catalog once", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const workspace = useWorkspaceStore();
+      workspace.setOpened(
+        [{ collection: "orders" }, { collection: "users" }],
+        { orders: "Orders", users: "Users" },
+      );
+      const ui = useUiStore();
+      ui.openDelete("orders");
+      mountView();
+      await flushPromises();
+
+      document.body.querySelector<HTMLElement>("[data-testid='delete-confirm-ok']")!.click();
+      await flushPromises();
+
+      const del = posted.find((item) => item.type === "tableAdmin.deleteRequested")!;
+      emit({
+        type: "database.collectionsChanged",
+        requestId: del.requestId,
+        payload: {
+          tables: ["users"],
+          displayNames: { users: "Users" },
+          deletedTableId: "orders",
+        },
+      });
+      await flushPromises();
+
+      expect(workspace.collections.map((item) => item.collection)).toEqual(["users"]);
+      expect(workspace.displayNames).toEqual({ users: "Users" });
+      expect(ui.deleteModalOpen).toBe(false);
+      expect(useTableAdminStore().phase).toBe("idle");
+
+      const catalogAfterResponse = workspace.collections;
+      emit({
+        type: "database.collectionsChanged",
+        payload: {
+          tables: ["users"],
+          displayNames: { users: "Users" },
+        },
+      });
+      await flushPromises();
+
+      expect(workspace.collections).toBe(catalogAfterResponse);
+      expect(ui.deleteModalOpen).toBe(false);
+    });
+  });
+
   describe("business consumer lifecycle across remounts", () => {
     it("lets only the current view consume one collectionsChanged after mount-unmount-mount on one bridge and pinia", async () => {
       const { bridge, emit, posted } = makeRecordingBridge();
@@ -5009,8 +5125,6 @@ describe("WorkspaceView", () => {
       mountView();
       await flushPromises();
 
-      const admin = useTableAdminStore();
-      const adminSetCollections = vi.spyOn(admin, "setCollections");
       const workspaceSetCollections = vi.spyOn(workspace, "setCollections");
       emit({
         type: "database.collectionsChanged",
@@ -5018,9 +5132,7 @@ describe("WorkspaceView", () => {
       });
       await flushPromises();
 
-      expect(adminSetCollections).toHaveBeenCalledTimes(1);
       expect(workspaceSetCollections).toHaveBeenCalledTimes(1);
-      expect(admin.collections.map((item) => item.collection)).toEqual(["orders", "tbl_new"]);
       expect(workspace.collections.map((item) => item.collection)).toEqual(["orders", "tbl_new"]);
     });
 
@@ -5061,8 +5173,6 @@ describe("WorkspaceView", () => {
       first.unmount();
       mountedViews.splice(mountedViews.indexOf(first), 1);
 
-      const admin = useTableAdminStore();
-      const adminSetCollections = vi.spyOn(admin, "setCollections");
       const workspaceSetCollections = vi.spyOn(workspace, "setCollections");
       emit({
         type: "database.collectionsChanged",
@@ -5070,9 +5180,7 @@ describe("WorkspaceView", () => {
       });
       await flushPromises();
 
-      expect(adminSetCollections).not.toHaveBeenCalled();
       expect(workspaceSetCollections).not.toHaveBeenCalled();
-      expect(admin.collections).toEqual([]);
       expect(workspace.collections.map((item) => item.collection)).toEqual(["orders"]);
 
       mountView();
@@ -5082,7 +5190,7 @@ describe("WorkspaceView", () => {
         payload: { tables: ["tbl_live"], displayNames: { tbl_live: "Live" } },
       });
       await flushPromises();
-      expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_live"]);
+      expect(workspace.collections.map((item) => item.collection)).toEqual(["tbl_live"]);
     });
 
     it("commits one real edit through the remounted owner with balanced bridge subscriptions", async () => {

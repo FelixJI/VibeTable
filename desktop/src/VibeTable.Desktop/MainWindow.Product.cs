@@ -404,7 +404,8 @@ public partial class MainWindow : Window
             typeof(MainWindow).Assembly.GetName().Version?.ToString()
                 ?? "unknown",
             authority: productAuthority,
-            databaseOpens: _databaseOpens);
+            databaseOpens: _databaseOpens,
+            sessionEnvelopeFilter: _workspaceSessionFilter);
         productWorkspace = _productWorkspace;
         _workspace.Notification += _productWorkspace.OnNotification;
         _dispatcher = new WorkspaceRequestDispatcher(
@@ -427,7 +428,8 @@ public partial class MainWindow : Window
             _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
             _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
             projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent,
-            observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate));
+            observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate),
+            beginCatalogTurn: _workspace.BeginCatalogTurn);
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
@@ -816,7 +818,6 @@ public partial class MainWindow : Window
             PluginProjectContext.FromSession(_workspaceSessions.Current),
             _session.Token);
 
-        _productWorkspace.ResetBinding();
         if (_router.IsReady
             && Volatile.Read(ref _rendererBootstrapCompleted) != 0
             && Volatile.Read(ref _updateHealthProbeInProgress) == 0)
@@ -969,7 +970,6 @@ public partial class MainWindow : Window
             _pluginGateway = null;
             _documentWorkspace?.Dispose();
             _documentWorkspace = null;
-            _productWorkspace.ResetBinding();
         });
     }
 
