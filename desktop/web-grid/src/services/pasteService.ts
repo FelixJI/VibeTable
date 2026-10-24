@@ -13,6 +13,7 @@ export function usePasteService() {
   let onApplied: ((result: ApplyPasteResult) => void) | undefined;
   let previewSequence = 0;
   let applying = false;
+  let disposed = false;
   let retireApplying: (() => void) | undefined;
   const scope = useMutationScope(() => {
     retireApplying?.();
@@ -23,11 +24,21 @@ export function usePasteService() {
   });
 
   function init(handler?: (result: ApplyPasteResult) => void): void {
+    // Dispose is permanent: init can never re-arm a retired owner's callback.
+    if (disposed) return;
     onApplied = handler ?? onApplied;
   }
 
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // scope.dispose keeps #506 retirement semantics for an in-flight apply.
+    scope.dispose();
+    onApplied = undefined;
+  }
+
   function preview(payload: PreviewPasteRequestedPayload): void {
-    if (applying) return;
+    if (disposed || applying) return;
     const sequence = ++previewSequence;
     const isCurrent = scope.capture();
     if (!isCurrent()) return;
@@ -39,7 +50,7 @@ export function usePasteService() {
   }
 
   function apply(payload: ApplyPasteInput): void {
-    if (applying) return;
+    if (disposed || applying) return;
     if (history.writeUncertain) {
       store.setError("粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
       return;
@@ -113,7 +124,7 @@ export function usePasteService() {
     });
   }
 
-  return { init, preview, apply, dispose: scope.dispose };
+  return { init, preview, apply, dispose };
 }
 
 export interface ApplyPasteInput {

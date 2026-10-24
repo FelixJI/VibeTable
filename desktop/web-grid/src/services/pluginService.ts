@@ -18,6 +18,7 @@ import { useHostBridge } from "./bridgeContext";
 import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 import { useUiStore } from "@/stores/uiStore";
 import { usePluginStore } from "@/stores/pluginStore";
+import type { CatalogReadReceipt } from "@/stores/pluginStore";
 import {
   PluginInstallPlanLease,
   PluginInstallPlanStaleError,
@@ -108,7 +109,7 @@ export function usePluginService(): PluginService {
       store.applyInteraction(snapshot, envelope.revision);
     } else if (envelope.eventType === "plugin.catalog.changed" && isPluginSnapshot(snapshot)) {
       // SSE can replay an old installation; only a current authority read may replace it.
-      store.refreshCatalog(list);
+      store.refreshCatalog(list, catalogOwnerIsCurrent());
     }
   }
 
@@ -139,7 +140,7 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean; readonly onErrorClassified?: (classification: "visible" | "hidden-retired" | "hidden-stale") => void } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
@@ -156,40 +157,95 @@ export function usePluginService(): PluginService {
       // the next project context; the scope/reset lifecycle settles it. The
       // local retirement of a draining workspace read is not a current user
       // failure either. Everything else keeps its original visibility.
-      if (isCurrentContext() && !(error instanceof BridgeRequestRetiredError)) {
-        if (options.isErrorCurrent && !options.isErrorCurrent()) {
-          if (errorPolicy === "foreground") store.finishBusy();
-          throw error;
-        }
+      // onErrorClassified freezes that decision synchronously at the same
+      // point it is made: "hidden-retired" is a bounded local retirement,
+      // never reclassified later into a visible failure or a spin.
+      const locallyRetired = error instanceof BridgeRequestRetiredError;
+      const contextCurrent = isCurrentContext() && !locallyRetired;
+      if (contextCurrent && options.isErrorCurrent && !options.isErrorCurrent()) {
+        if (errorPolicy === "foreground") store.finishBusy();
+        options.onErrorClassified?.("hidden-stale");
+        throw error;
+      }
+      if (contextCurrent) {
         if (errorPolicy === "foreground") {
           store.fail(error);
         } else {
           store.failIfNoError(error);
         }
+        options.onErrorClassified?.("visible");
+        throw error;
       }
+      options.onErrorClassified?.(locallyRetired ? "hidden-retired" : "hidden-stale");
       throw error;
     }
   }
 
+  /**
+   * Owner-current predicate for the store's catalog refresh queue, captured
+   * when the notification is queued; dispose() invalidates only this
+   * instance's predicate and never the shared queue.
+   */
+  function catalogOwnerIsCurrent(): () => boolean {
+    const requestLifecycle = lifecycleRevision;
+    return () => lifecycleRevision === requestLifecycle;
+  }
+
   async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
+    const requestLifecycle = lifecycleRevision;
+    const isInstanceCurrent = () => lifecycleRevision === requestLifecycle;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
-    const sequence = store.beginCatalogRead();
-    const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
-      "plugin.catalog.list",
-      { projectKey },
-      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence), isErrorCurrent },
-    );
-    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation
-      || !store.isCurrentCatalogRead(sequence)) return snapshots;
-    store.replaceCatalog(projectKey, snapshots);
-    return snapshots;
+    // The observed read lets the store scheduler yield to this newer activity;
+    // its terminal is frozen below with the same classification call's error
+    // policy uses to decide visibility.
+    const receipt = store.beginObservedCatalogRead(isInstanceCurrent);
+    const sequence = receipt.sequence;
+    const coversCurrentActivity = () => isInstanceCurrent() && store.projectKey === projectKey
+      && store.projectContextGeneration === generation && store.isCurrentCatalogRead(sequence);
+    let settled = false;
+    const settleOnce = (outcome: Exclude<CatalogReadReceipt["settled"], false>) => {
+      if (settled) return;
+      settled = true;
+      store.settleObservedCatalogRead(receipt, outcome);
+    };
+    try {
+      const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
+        "plugin.catalog.list",
+        { projectKey },
+        {
+          errorPolicy: "background",
+          isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
+          isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
+          // Freeze the receipt at the exact synchronous point call decides
+          // the error's classification; a later dispose must not reclassify
+          // a shown failure, and a hidden local retirement settles bounded
+          // instead of spinning as an endless superseded read.
+          onErrorClassified: classification => settleOnce(
+            classification === "visible" ? "failed-current"
+              : classification === "hidden-retired" ? "locally-retired"
+              : isInstanceCurrent() ? "superseded" : "retired"),
+        },
+      );
+      const current = coversCurrentActivity();
+      if (current) {
+        store.replaceCatalog(projectKey, snapshots);
+      }
+      settleOnce(current ? "projected" : isInstanceCurrent() ? "superseded" : "retired");
+      return snapshots;
+    } catch (error) {
+      settleOnce(coversCurrentActivity() ? "failed-current"
+        : isInstanceCurrent() ? "superseded" : "retired");
+      throw error;
+    }
   }
 
   async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
+    const requestLifecycle = lifecycleRevision;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
-    const sequence = store.beginCatalogRead();
+    const barrier = store.beginCatalogWriteBarrier();
+    const sequence = barrier.sequence;
     const currentContext = () => store.projectKey === projectKey && store.projectContextGeneration === generation;
     try {
       const result = await request();
@@ -198,8 +254,13 @@ export function usePluginService(): PluginService {
       }
       return result;
     } finally {
-      // A consumed notification may have settled before this write; read authority in either order.
-      if (currentContext()) store.refreshCatalog(list);
+      // The write terminal releases only its own barrier token and performs
+      // the normal refresh; the write itself never re-sends. A stale token
+      // (generation switched) is inert in the store.
+      store.endCatalogWriteBarrier(barrier);
+      if (lifecycleRevision === requestLifecycle && currentContext()) {
+        store.refreshCatalog(list, catalogOwnerIsCurrent());
+      }
     }
   }
 

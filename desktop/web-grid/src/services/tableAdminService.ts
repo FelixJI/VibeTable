@@ -1,6 +1,7 @@
 import { useHostBridge } from "./bridgeContext";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { CollectionSummary } from "@/stores/workspaceStore";
 import type {
   CollectionsChangedPayload,
@@ -54,6 +55,7 @@ function toCollectionsFromChanged(
  */
 export function useTableAdminService(): {
   init: (onTableCreated?: (tableId: string) => void | Promise<void>) => void;
+  dispose: () => void;
   createTable: () => Promise<void>;
   deleteTable: (name: string) => Promise<void>;
   openAdmin: () => void;
@@ -61,18 +63,38 @@ export function useTableAdminService(): {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
   const ui = useUiStore();
+  const session = useWorkspaceSessionStore();
+  const unsubscribe: Array<() => void> = [];
   let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
   let operationSequence = 0;
+  let initialized = false;
+  let disposed = false;
 
   function init(
     onTableCreated?: (tableId: string) => void | Promise<void>,
   ): void {
+    // A repeated init only refreshes the callback; re-subscribing would
+    // duplicate the broadcast consumers (bridge.on appends Set entries).
+    if (disposed) return;
     createdCallback = onTableCreated;
-    bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+    if (initialized) return;
+    initialized = true;
+    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       const collections = toCollections(payload);
       store.setCollections(collections);
-    });
-    bridge.on("database.collectionsChanged", applyCollectionsChanged);
+    }));
+    unsubscribe.push(bridge.on("database.collectionsChanged", applyCollectionsChanged));
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // Bumping operationSequence retires continuations already awaiting a
+    // host reply, so a late response cannot settle the shared store, close
+    // the modal, or fire the retired createdCallback for a newer owner.
+    operationSequence += 1;
+    for (const stop of unsubscribe.splice(0)) stop();
+    createdCallback = undefined;
   }
 
   function applyCollectionsChanged(payload: CollectionsChangedPayload): void {
@@ -80,10 +102,26 @@ export function useTableAdminService(): {
     store.setCollections(collections);
   }
 
+  /**
+   * A create/delete reply belongs to the workspace/session that submitted
+   * it. After a switch the new session owns the admin flow, so a late
+   * terminal only retires locally: the host may still have committed, and
+   * we never claim a rollback or resend.
+   */
+  function ownsSession(): () => boolean {
+    const workspaceId = session.activeWorkspaceId;
+    const epoch = session.sessionEpoch;
+    const transitioning = session.isTransitioning;
+    return () => session.activeWorkspaceId === workspaceId
+      && session.sessionEpoch === epoch
+      && session.isTransitioning === transitioning;
+  }
+
   async function createTable(): Promise<void> {
-    if (!store.canSubmit) return;
+    if (disposed || !store.canSubmit) return;
     store.beginSubmit();
     const sequence = ++operationSequence;
+    const sessionIsCurrent = ownsSession();
     const displayName = store.form.name.trim();
     const existingIds = new Set(
       store.collections.map((item) => item.collection),
@@ -94,7 +132,7 @@ export function useTableAdminService(): {
       const changed = await bridge.request("tableAdmin.createRequested", {
         displayName,
       }) as CollectionsChangedPayload;
-      if (sequence !== operationSequence || store.phase !== "submitting") return;
+      if (sequence !== operationSequence || store.phase !== "submitting" || !sessionIsCurrent()) return;
       applyCollectionsChanged(changed);
       const createdTableId = changed.createdTableId;
       if (!createdTableId
@@ -107,22 +145,24 @@ export function useTableAdminService(): {
       ui.closeCreate();
       void createdCallback?.(createdTableId);
     } catch (error) {
-      if (sequence !== operationSequence || store.phase !== "submitting") return;
+      if (sequence !== operationSequence || store.phase !== "submitting" || !sessionIsCurrent()) return;
       const mapped = error as Error & { readonly path?: string };
       store.fail(mapped.message || "创建数据表失败。");
     }
   }
 
   async function deleteTable(name: string): Promise<void> {
+    if (disposed) return;
     store.requestDelete(name);
     const sequence = ++operationSequence;
+    const sessionIsCurrent = ownsSession();
     try {
       // Wire contract is { collection }, NOT { name }.
       const changed = await bridge.request(
         "tableAdmin.deleteRequested",
         { collection: name },
       ) as CollectionsChangedPayload;
-      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      if (sequence !== operationSequence || store.phase !== "deleting" || !sessionIsCurrent()) return;
       applyCollectionsChanged(changed);
       if (changed.deletedTableId !== name || changed.tables.includes(name)) {
         throw new Error("主机返回的集合目录仍包含待删除数据表。");
@@ -130,13 +170,14 @@ export function useTableAdminService(): {
       store.succeed();
       ui.closeDelete();
     } catch (error) {
-      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      if (sequence !== operationSequence || store.phase !== "deleting" || !sessionIsCurrent()) return;
       const mapped = error as Error;
       store.fail(mapped.message || "删除数据表失败。");
     }
   }
 
   function openAdmin(): void {
+    if (disposed) return;
     bridge.notify("admin.openRequested", {
       floatingButtonEnabled: ui.adminFloatingButton,
       confirmClose: ui.adminConfirmClose,
@@ -144,5 +185,5 @@ export function useTableAdminService(): {
     });
   }
 
-  return { init, createTable, deleteTable, openAdmin };
+  return { init, dispose, createTable, deleteTable, openAdmin };
 }

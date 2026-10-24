@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
@@ -375,5 +375,169 @@ describe("workspaceService display names", () => {
     });
 
     expect(pluginStore.projectRevision).toBe("workspace-r8");
+  });
+});
+
+describe("workspaceService lifecycle ownership", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("does not duplicate broadcast subscriptions when init runs twice", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    service.init();
+    const workspace = useWorkspaceStore();
+    const setCollections = vi.spyOn(workspace, "setCollections");
+
+    emit("database.collectionsChanged", {
+      tables: ["orders"],
+      displayNames: { orders: "Orders" },
+    });
+
+    expect(setCollections).toHaveBeenCalledTimes(1);
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["orders"]);
+  });
+
+  it("stops projecting host broadcasts after dispose (idempotent, non-revivable)", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    service.dispose();
+    service.dispose();
+    service.init();
+    const workspace = useWorkspaceStore();
+    const pluginStore = usePluginStore();
+    pluginStore.setProjectContext("local:workspace-a", "workspace-r7");
+
+    emit("database.opened", { tables: ["late"], views: [], displayNames: { late: "Late" } });
+    emit("database.collectionsChanged", { tables: ["late"], displayNames: { late: "Late" } });
+    emit("database.openCancelled", { openId: "irrelevant", reason: "retired" });
+    emit("operation.failed", {
+      operation: "database.openRequested",
+      operationId: "irrelevant",
+      code: "WORKSPACE_ERROR",
+      message: "Workspace operation failed.",
+    });
+    emit("plugin.projectContext.unavailable", { reason: "retired" });
+
+    expect(workspace.phase).toBe("idle");
+    expect(workspace.collections).toEqual([]);
+    expect(workspace.displayNames).toEqual({});
+    // The retired instance's plugin-context listener is released too.
+    expect(pluginStore.projectContextReady).toBe(true);
+    expect(pluginStore.projectKey).toBe("local:workspace-a");
+  });
+
+  it("retires a pending renderer open locally without claiming the host cancelled it", async () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    const workspace = useWorkspaceStore();
+
+    const pending = service.openDatabase();
+    const openId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    service.dispose();
+
+    // Local retirement only finishes the waiter; it never asserts the host
+    // skipped an open that may already have been performed remotely.
+    await expect(pending).resolves.toBe("not-opened");
+    expect(workspace.phase).toBe("opening");
+
+    emit("database.opened", {
+      openId,
+      tables: ["late"],
+      views: [],
+      displayNames: { late: "Late" },
+    });
+
+    expect(workspace.collections).toEqual([]);
+    expect(workspace.phase).toBe("opening");
+  });
+
+  it("refuses new opens from a disposed instance and lets the replacement own the bridge", async () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const dead = useWorkspaceService();
+    dead.init();
+    dead.dispose();
+
+    await expect(dead.openDatabase()).resolves.toBe("not-opened");
+    expect(posted.filter((message) => (message as { type?: string }).type === "database.openRequested")).toEqual([]);
+
+    const live = useWorkspaceService();
+    live.init();
+    const setCollections = vi.spyOn(workspace, "setCollections");
+    emit("database.collectionsChanged", {
+      tables: ["orders"],
+      displayNames: { orders: "Orders" },
+    });
+
+    expect(setCollections).toHaveBeenCalledTimes(1);
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["orders"]);
+  });
+
+  it("retires its private plugin catalog reads on dispose; a replacement owner refreshes normally", async () => {
+    // A local shim that can answer correlated plugin.catalog.list requests
+    // after an arbitrary delay (makeShimBridge.emit cannot carry requestId).
+    const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
+    let listener: ((event: { data: unknown }) => void) | null = null;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `ws-plugin-r${++sequence}`,
+      webview: {
+        addEventListener: (_: string, fn: (event: { data: unknown }) => void) => { listener = fn; },
+        removeEventListener: () => { listener = null; },
+        postMessage: (message: unknown) => { posted.push(message as { type: string; requestId: string }); },
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const emitHost = (type: string, payload: Record<string, unknown>) =>
+      listener?.({ data: JSON.stringify({ type, payload }) });
+    const replyPluginList = (requestId: string, plugins: Array<{ pluginId: string; revision: number }>) =>
+      listener?.({ data: JSON.stringify({
+        type: "plugin.catalog.list", requestId, payload: plugins,
+      }) });
+    const failPluginList = (requestId: string) =>
+      listener?.({ data: JSON.stringify({
+        type: "operation.failed", requestId,
+        payload: { message: "host list failed", code: "X" },
+      }) });
+    const pluginStore = usePluginStore();
+
+    const service = useWorkspaceService();
+    service.init();
+    emitHost("database.opened", {
+      tables: [], views: [], displayNames: {},
+      projectKey: "local:ws-a", projectRevision: "ws-r1",
+    });
+    emitHost("database.collectionsChanged", { tables: [], displayNames: {} });
+    const reads = posted.filter((message) => message.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+
+    service.dispose();
+    // The retired owner's late success and failure must not write the shared
+    // plugin store a replacement owner now consumes.
+    replyPluginList(reads[0]!.requestId, [{ pluginId: "com.acme.retired", revision: 2 }]);
+    failPluginList(reads[1]!.requestId);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(pluginStore.plugins).toEqual([]);
+    expect(pluginStore.lastError).toBeNull();
+
+    const live = useWorkspaceService();
+    live.init();
+    emitHost("database.opened", {
+      tables: [], views: [], displayNames: {},
+      projectKey: "local:ws-b", projectRevision: "ws-r2",
+    });
+    const liveRead = posted.filter((message) => message.type === "plugin.catalog.list").at(-1)!;
+    replyPluginList(liveRead.requestId, [{ pluginId: "com.acme.live", revision: 1 }]);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(pluginStore.plugins.map((plugin) => plugin.pluginId)).toEqual(["com.acme.live"]);
   });
 });

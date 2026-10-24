@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { createHostBridge } from "@/bridge/hostBridge";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useTableAdminService } from "./tableAdminService";
 
@@ -26,7 +28,10 @@ function bridgeHarness(): {
   request: ReturnType<typeof vi.fn>;
   emit: (type: string, payload: unknown) => void;
 } {
-  const handlers = new Map<string, (payload: any) => void>();
+  // Mirror hostBridge's real Set semantics: multiple legal consumers may
+  // subscribe to the same event type, and every subscription is dispatched.
+  // A Map keyed by type would silently mask duplicate subscriptions.
+  const handlers = new Map<string, Set<(payload: any) => void>>();
   const notify = vi.fn();
   const request = vi.fn(async () => ({
     tables: ["tbl_opaque"],
@@ -39,13 +44,20 @@ function bridgeHarness(): {
       notify,
       request,
       on: vi.fn((type: string, handler: (payload: any) => void) => {
-        handlers.set(type, handler);
-        return () => handlers.delete(type);
+        let set = handlers.get(type);
+        if (!set) {
+          set = new Set();
+          handlers.set(type, set);
+        }
+        set.add(handler);
+        return () => { set.delete(handler); };
       }),
     } as unknown as HostBridge,
     notify,
     request,
-    emit: (type, payload) => handlers.get(type)?.(payload),
+    emit: (type, payload) => {
+      for (const handler of handlers.get(type) ?? []) handler(payload);
+    },
   };
 }
 
@@ -302,5 +314,364 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     expect(admin.phase).toBe("failed");
     expect(admin.error).toBe("table is protected");
     expect(ui.deleteModalOpen).toBe(true);
+  });
+});
+
+describe("tableAdminService lifecycle ownership", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("subscribes each broadcast once across repeated init on the same instance", () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    const admin = useTableAdminStore();
+    const service = useTableAdminService();
+    service.init();
+    service.init();
+    const setCollections = vi.spyOn(admin, "setCollections");
+
+    harness.emit("database.collectionsChanged", {
+      tables: ["tbl_a"],
+      displayNames: { tbl_a: "A" },
+    });
+
+    expect(setCollections).toHaveBeenCalledTimes(1);
+    setCollections.mockClear();
+
+    harness.emit("database.opened", {
+      tables: ["tbl_a"],
+      views: [],
+      displayNames: {},
+    });
+
+    expect(setCollections).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops consuming broadcasts after dispose and never re-subscribes (idempotent dispose)", () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    const opened: string[] = [];
+    const service = useTableAdminService();
+    service.init((tableId) => { opened.push(tableId); });
+    service.dispose();
+    service.dispose();
+    service.init((tableId) => { opened.push(`revived:${tableId}`); });
+    const admin = useTableAdminStore();
+
+    harness.emit("database.collectionsChanged", {
+      tables: ["tbl_retired"],
+      displayNames: {},
+    });
+    harness.emit("database.opened", {
+      tables: ["tbl_retired"],
+      views: [],
+      displayNames: {},
+    });
+
+    expect(admin.collections).toEqual([]);
+    expect(opened).toEqual([]);
+  });
+
+  it("lets only a replacement instance consume broadcasts once after the old owner is disposed", () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    const admin = useTableAdminStore();
+    const retired = useTableAdminService();
+    retired.init();
+    retired.dispose();
+    const live = useTableAdminService();
+    live.init();
+    const setCollections = vi.spyOn(admin, "setCollections");
+
+    harness.emit("database.collectionsChanged", {
+      tables: ["tbl_live"],
+      displayNames: { tbl_live: "Live" },
+    });
+
+    expect(setCollections).toHaveBeenCalledTimes(1);
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_live"]);
+  });
+
+  it("retires a pending create continuation without touching the shared owner or created callback", async () => {
+    const harness = bridgeHarness();
+    const response = deferred<{
+      tables: string[];
+      displayNames: Record<string, string>;
+      createdTableId: string;
+    }>();
+    harness.request.mockImplementationOnce(() => response.promise);
+    setHostBridgeForTesting(harness.bridge);
+    const opened: string[] = [];
+    const service = useTableAdminService();
+    service.init((tableId) => { opened.push(tableId); });
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    expect(admin.phase).toBe("submitting");
+    service.dispose();
+
+    response.resolve({
+      tables: ["tbl_created"],
+      displayNames: { tbl_created: "订单" },
+      createdTableId: "tbl_created",
+    });
+    await pending;
+
+    // The disposed instance's continuation must not settle the shared store,
+    // close the modal on behalf of a new owner, or fire the retired callback.
+    expect(admin.phase).toBe("submitting");
+    expect(ui.createModalOpen).toBe(true);
+    expect(opened).toEqual([]);
+    expect(admin.collections).toEqual([]);
+  });
+
+  it("ignores an already-resolved create continuation that resumes only after dispose", async () => {
+    const harness = bridgeHarness();
+    const response = deferred<{
+      tables: string[];
+      displayNames: Record<string, string>;
+      createdTableId: string;
+    }>();
+    harness.request.mockImplementationOnce(() => response.promise);
+    setHostBridgeForTesting(harness.bridge);
+    const opened: string[] = [];
+    const service = useTableAdminService();
+    service.init((tableId) => { opened.push(tableId); });
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    // The response is resolved but its awaiting continuation has not resumed
+    // yet; dispose must retire that resumption, not just unsent requests.
+    response.resolve({
+      tables: ["tbl_created"],
+      displayNames: { tbl_created: "订单" },
+      createdTableId: "tbl_created",
+    });
+    service.dispose();
+    // A replacement owner takes over the shared store and modal immediately.
+    admin.openCreate();
+    ui.openCreate();
+
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.phase).toBe("creating");
+    expect(ui.createModalOpen).toBe(true);
+    expect(opened).toEqual([]);
+    expect(admin.collections).toEqual([]);
+  });
+
+  it("ignores public operations from a disposed instance", async () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    const service = useTableAdminService();
+    service.dispose();
+    admin.openCreate();
+    admin.form.name = "订单";
+
+    await service.createTable();
+    await service.deleteTable("tbl_orders");
+    service.openAdmin();
+
+    expect(harness.request).not.toHaveBeenCalled();
+    expect(harness.notify).not.toHaveBeenCalled();
+    expect(admin.phase).toBe("creating");
+    expect(ui.createModalOpen).toBe(false);
+  });
+});
+
+describe("tableAdminService workspace/session retirement", () => {
+  const workspaceA = "11111111-1111-4111-8111-111111111111";
+  const workspaceB = "22222222-2222-4222-8222-222222222222";
+
+  function sessionBridgeHarness(): {
+    posted: Array<{ type: string; requestId: string; payload?: unknown }>;
+    reply: (requestId: string, payload: unknown) => void;
+    fail: (requestId: string, message: string) => void;
+  } {
+    const posted: Array<{ type: string; requestId: string; payload?: unknown }> = [];
+    let listener: ((event: { data: unknown }) => void) | null = null;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `admin-session-r${++sequence}`,
+      webview: {
+        addEventListener: (_: string, fn: (event: { data: unknown }) => void) => { listener = fn; },
+        removeEventListener: () => { listener = null; },
+        postMessage: (message: unknown) => { posted.push(message as { type: string; requestId: string }); },
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    return {
+      posted,
+      reply: (requestId, payload) => listener?.({
+        data: { type: "database.collectionsChanged", requestId, payload },
+      }),
+      fail: (requestId, message) => listener?.({
+        data: { type: "operation.failed", requestId, payload: { message, code: "X" } },
+      }),
+    };
+  }
+
+  function applySession(workspaceId: string, sessionEpoch: number): void {
+    useWorkspaceSessionStore().applySession({
+      contractVersion: "2.0",
+      workspaceId,
+      sessionEpoch,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+  }
+
+  function openSessionA(): void {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([workspaceA, workspaceB].map((workspaceId, index) => ({
+      contractVersion: "2.0" as const,
+      workspaceId,
+      displayName: `Workspace ${index + 1}`,
+      selectedRoot: `D:\\Workspace-${index + 1}`,
+      activityRoot: null,
+      storageKind: "fixed" as const,
+      coordinationStrength: "strong" as const,
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy" as const,
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    })));
+    applySession(workspaceA, 1);
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("retires an already-resolved create continuation when the session rotates before it resumes", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const created = vi.fn();
+    const service = useTableAdminService();
+    service.init(created);
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.setCollections([{ collection: "tbl_old", metadata: {} }]);
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    // The reply resolves first; the session rotates synchronously before the
+    // awaiting continuation resumes.
+    harness.reply(request.requestId, {
+      tables: ["tbl_old", "tbl_new"],
+      displayNames: { tbl_old: "旧表", tbl_new: "订单" },
+      createdTableId: "tbl_new",
+    });
+    applySession(workspaceB, 2);
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_old"]);
+    expect(admin.phase).toBe("submitting");
+    expect(ui.createModalOpen).toBe(true);
+    expect(created).not.toHaveBeenCalled();
+  });
+
+  it("retires a create continuation whose failure arrives after the session rotated", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const service = useTableAdminService();
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    applySession(workspaceB, 2);
+    harness.fail(request.requestId, "host rejected the create");
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.phase).toBe("submitting");
+    expect(admin.error).toBeNull();
+    expect(ui.createModalOpen).toBe(true);
+  });
+
+  it("retires a delete continuation whose reply arrives after the session rotated", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const service = useTableAdminService();
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.setCollections([{ collection: "tbl_orders", metadata: {} }]);
+    ui.openDelete("tbl_orders");
+
+    const pending = service.deleteTable("tbl_orders");
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.deleteRequested")!;
+    applySession(workspaceB, 2);
+    harness.reply(request.requestId, {
+      tables: [],
+      displayNames: {},
+      deletedTableId: "tbl_orders",
+    });
+    await pending;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_orders"]);
+    expect(admin.phase).toBe("deleting");
+    expect(ui.deleteModalOpen).toBe(true);
+  });
+
+  it("keeps the normal create flow while the session stays on one workspace and epoch", async () => {
+    const harness = sessionBridgeHarness();
+    openSessionA();
+    const created = vi.fn();
+    const service = useTableAdminService();
+    service.init((tableId) => { created(tableId); });
+    const admin = useTableAdminStore();
+    const ui = useUiStore();
+    admin.openCreate();
+    ui.openCreate();
+    admin.form.name = "订单";
+
+    const pending = service.createTable();
+    await Promise.resolve();
+    const request = harness.posted.find((item) => item.type === "tableAdmin.createRequested")!;
+    harness.reply(request.requestId, {
+      tables: ["tbl_new"],
+      displayNames: { tbl_new: "订单" },
+      createdTableId: "tbl_new",
+    });
+    await pending;
+
+    expect(admin.phase).toBe("idle");
+    expect(ui.createModalOpen).toBe(false);
+    expect(created).toHaveBeenCalledWith("tbl_new");
+    expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_new"]);
   });
 });

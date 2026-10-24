@@ -4989,4 +4989,171 @@ describe("WorkspaceView", () => {
       document.body.removeChild(input);
     });
   });
+
+  describe("business consumer lifecycle across remounts", () => {
+    it("lets only the current view consume one collectionsChanged after mount-unmount-mount on one bridge and pinia", async () => {
+      const { bridge, emit, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      configureWorkspaceEpochPair();
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+
+      const first = mountView();
+      await flushPromises();
+      expect(posted.some((message) => message.type === "app.ready"
+        && (message.payload as { phase?: string }).phase === "business")).toBe(true);
+      first.unmount();
+      mountedViews.splice(mountedViews.indexOf(first), 1);
+
+      mountView();
+      await flushPromises();
+
+      const admin = useTableAdminStore();
+      const adminSetCollections = vi.spyOn(admin, "setCollections");
+      const workspaceSetCollections = vi.spyOn(workspace, "setCollections");
+      emit({
+        type: "database.collectionsChanged",
+        payload: { tables: ["orders", "tbl_new"], displayNames: { orders: "Orders", tbl_new: "New" } },
+      });
+      await flushPromises();
+
+      expect(adminSetCollections).toHaveBeenCalledTimes(1);
+      expect(workspaceSetCollections).toHaveBeenCalledTimes(1);
+      expect(admin.collections.map((item) => item.collection)).toEqual(["orders", "tbl_new"]);
+      expect(workspace.collections.map((item) => item.collection)).toEqual(["orders", "tbl_new"]);
+    });
+
+    it("routes operation.failed to the table store once after mount-unmount-mount", async () => {
+      const { bridge, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      configureWorkspaceEpochPair();
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+
+      const first = mountView();
+      await flushPromises();
+      first.unmount();
+      mountedViews.splice(mountedViews.indexOf(first), 1);
+      mountView();
+      await flushPromises();
+
+      const table = useTableStore();
+      const setError = vi.spyOn(table, "setError");
+      emit({ type: "operation.failed", payload: { message: "only the current owner may route me", code: "X" } });
+      await flushPromises();
+
+      expect(setError).toHaveBeenCalledTimes(1);
+      expect(table.error).toBe("only the current owner may route me");
+    });
+
+    it("projects no catalog broadcast between unmount and remount", async () => {
+      const { bridge, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      configureWorkspaceEpochPair();
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+
+      const first = mountView();
+      await flushPromises();
+      first.unmount();
+      mountedViews.splice(mountedViews.indexOf(first), 1);
+
+      const admin = useTableAdminStore();
+      const adminSetCollections = vi.spyOn(admin, "setCollections");
+      const workspaceSetCollections = vi.spyOn(workspace, "setCollections");
+      emit({
+        type: "database.collectionsChanged",
+        payload: { tables: ["tbl_retired"], displayNames: { tbl_retired: "Retired" } },
+      });
+      await flushPromises();
+
+      expect(adminSetCollections).not.toHaveBeenCalled();
+      expect(workspaceSetCollections).not.toHaveBeenCalled();
+      expect(admin.collections).toEqual([]);
+      expect(workspace.collections.map((item) => item.collection)).toEqual(["orders"]);
+
+      mountView();
+      await flushPromises();
+      emit({
+        type: "database.collectionsChanged",
+        payload: { tables: ["tbl_live"], displayNames: { tbl_live: "Live" } },
+      });
+      await flushPromises();
+      expect(admin.collections.map((item) => item.collection)).toEqual(["tbl_live"]);
+    });
+
+    it("commits one real edit through the remounted owner with balanced bridge subscriptions", async () => {
+      const { bridge, emit, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      // Keep the real Set semantics and observe registration/unregistration
+      // balance instead of replacing handlers with a Map.
+      const realOn = bridge.on.bind(bridge);
+      let activeSubscriptions = 0;
+      let registered = 0;
+      let released = 0;
+      vi.spyOn(bridge, "on").mockImplementation(((type: never, handler: never) => {
+        registered += 1;
+        activeSubscriptions += 1;
+        const stop = realOn(type, handler);
+        return () => {
+          released += 1;
+          activeSubscriptions -= 1;
+          stop();
+        };
+      }) as typeof bridge.on);
+
+      configureWorkspaceEpochPair();
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+      const table = useTableStore();
+      table.setEditSchema(
+        [{ name: "name", storageName: "name", dataType: "text", editable: true,
+          nullable: true, primaryKey: false, editor: { kind: "text" }, validation: [] }],
+        { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 },
+      );
+
+      const first = mountView();
+      await flushPromises();
+      const baselineActive = activeSubscriptions;
+      const baselineRegistered = registered;
+      expect(baselineActive).toBeGreaterThan(0);
+
+      first.unmount();
+      mountedViews.splice(mountedViews.indexOf(first), 1);
+      expect(activeSubscriptions).toBe(0);
+      expect(released).toBe(baselineRegistered);
+
+      const second = mountView();
+      await flushPromises();
+      expect(activeSubscriptions).toBe(baselineActive);
+      expect(registered - baselineRegistered).toBe(baselineActive);
+
+      // One real edit through the surviving owner's UI seam.
+      const applyCellEdit = vi.spyOn(table, "applyCellEdit");
+      second.findComponent(GridHost).props("onCellEdited")!(1, "name", "old", "new", null);
+      await flushPromises();
+      const updates = posted.filter((message) => message.type === "table.updateCellRequested");
+      expect(updates).toHaveLength(1);
+
+      emit({
+        type: "table.editCommitted",
+        requestId: updates[0]!.requestId,
+        payload: {
+          rowKey: 1, column: "name", storedValue: "new",
+          currentRow: { rowKey: 1, name: "new", __vibetableDigest: `sha256:${"b".repeat(64)}` },
+          revision: { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 2 },
+        },
+      });
+      await flushPromises();
+
+      expect(applyCellEdit).toHaveBeenCalledTimes(1);
+      expect(useHistoryStore().undoStackSize).toBe(1);
+      expect(useHistoryStore().writeUncertain).toBe(false);
+      expect(activeSubscriptions).toBe(baselineActive);
+    });
+  });
 });

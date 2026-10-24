@@ -176,3 +176,63 @@ describe("errorRouter", () => {
     expect(table.error).toBeNull();
   });
 });
+
+describe("errorRouter lifecycle ownership", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => setHostBridgeForTesting(null));
+
+  it("subscribes once across repeated init", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const router = useErrorRouter();
+    router.init();
+    router.init();
+    const setError = vi.spyOn(table, "setError");
+
+    emit("operation.failed", { message: "load failed", code: "X" });
+
+    expect(setError).toHaveBeenCalledTimes(1);
+    expect(table.error).toBe("load failed");
+  });
+
+  it("stops routing after dispose and lets only the replacement owner consume once", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const retiredFailure = vi.fn();
+    const retired = useErrorRouter({ onRealtimeFailure: retiredFailure });
+    retired.init();
+    retired.dispose();
+    retired.dispose();
+    retired.init();
+    const setError = vi.spyOn(table, "setError");
+
+    emit("operation.failed", { message: "retired message", code: "X" });
+    emit("operation.failed", {
+      operation: "realtime.stream",
+      code: "realtime.stopped",
+      message: "Realtime stopped.",
+    });
+
+    expect(setError).not.toHaveBeenCalled();
+    expect(table.error).toBeNull();
+    expect(retiredFailure).not.toHaveBeenCalled();
+
+    const liveFailure = vi.fn();
+    const live = useErrorRouter({ onRealtimeFailure: liveFailure });
+    live.init();
+
+    emit("operation.failed", { message: "live message", code: "X" });
+    emit("operation.failed", {
+      operation: "realtime.stream",
+      code: "realtime.stopped",
+      message: "Realtime stopped.",
+    });
+
+    expect(setError).toHaveBeenCalledTimes(1);
+    expect(table.error).toBe("live message");
+    expect(retiredFailure).not.toHaveBeenCalled();
+    expect(liveFailure).toHaveBeenCalledTimes(1);
+  });
+});

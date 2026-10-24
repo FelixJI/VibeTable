@@ -915,7 +915,9 @@ function onOpenPluginApp(key: string): void {
 // #482 native host chrome: the always-reachable WPF row steers the trusted
 // shell without any plugin involvement. 停止插件 retires every surface token
 // host-side, so the web only has to leave plugin views and refresh entries.
-hostBridge.on("host.pluginChrome", payload => {
+// The unsubscribe is retained so unmount releases this view-instance handler;
+// bridge.on appends Set entries, so remounts would otherwise stack consumers.
+const stopPluginChrome = hostBridge.on("host.pluginChrome", payload => {
   const action = payload.action;
   if (action !== "stopped" && action !== "returnPlatform" && action !== "manage") return;
   plugins.closeAction();
@@ -1065,9 +1067,10 @@ function initializeBusinessConsumers(): void {
     return;
   }
   businessConsumersInitialized = true;
-  // Subscribe each service to its inbound host events. Idempotent across
-  // strict-mode double-mount in dev because each bridge.on replaces prior
-  // handlers for the same key (see hostBridge).
+  // Subscribe each service to its inbound host events. bridge.on APPENDS a
+  // Set entry per subscription (multiple legal consumers may coexist), so
+  // every business service here is released in onBeforeUnmount and a
+  // repeated init on the same instance cannot duplicate its handlers.
   workspaceService.init();
   tableService.init(onRealtimeRecovered);
   // This listener retires only a local in-flight recovery receipt. The table
@@ -1162,9 +1165,13 @@ onBeforeUnmount(() => {
   retireRendererRecovery();
   stopRecoveryDataInvalidation?.();
   stopRecoveryDataInvalidation = null;
+  stopPluginChrome();
   unregisterWorkspaceEpochReset();
   mutationService.dispose();
   pasteService.dispose();
+  workspaceService.dispose();
+  tableAdminService.dispose();
+  errorRouter.dispose();
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.dispose();

@@ -32,6 +32,7 @@ export function useMutationService() {
   };
   const cellStates = shallowReactive(new Map<string, CellState>());
   let cellSequence = 0;
+  let disposed = false;
   const rowRevisions = new Map<number | string, number>();
   let projectionRevision = table.revision;
   let refreshFloor = table.revision?.dataRevision ?? -1;
@@ -49,8 +50,20 @@ export function useMutationService() {
     onEditRejected?: (error: MutationErrorPayload) => void,
     onRowInserted?: (result: InsertRowResult) => void,
   ): void {
+    // Dispose is permanent: init can never re-arm a retired owner's callbacks.
+    if (disposed) return;
     editRejectedHandler = onEditRejected ?? editRejectedHandler;
     rowInsertedHandler = onRowInserted ?? rowInsertedHandler;
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // scope.dispose keeps #506 retirement semantics: an in-flight write stays
+    // unknown; local disposal never claims a remote rollback.
+    scope.dispose();
+    editRejectedHandler = undefined;
+    rowInsertedHandler = undefined;
   }
 
   function report(error: MutationErrorPayload): void {
@@ -342,6 +355,7 @@ export function useMutationService() {
     rowKey: number | string, column: string, oldValue: unknown, newValue: unknown,
     expectedDigest: string | null = null,
   ): void {
+    if (disposed) return;
     if (history.writeUncertain) {
       // Restore only the visible value before this blocked UI edit, never a guessed authority value.
       table.rollbackCellEdit(rowKey, column, oldValue);
@@ -407,7 +421,7 @@ export function useMutationService() {
   }
 
   function insertRow(values: Readonly<Record<string, unknown>>): void {
-    if (!canInsertRow()) return;
+    if (disposed || !canInsertRow()) return;
     const isCurrent = scope.capture();
     const tableId = ws.currentTable ?? "";
     const historyIsCurrent = history.captureGeneration();
@@ -422,7 +436,7 @@ export function useMutationService() {
   }
 
   function deleteRows(rows: readonly DeleteRowReqItem[]): void {
-    if (history.writeUncertain) return;
+    if (disposed || history.writeUncertain) return;
     const tableId = ws.currentTable ?? "";
     const isCurrent = scope.capture();
     const snapshot = table.snapshotRows(rows.map((row) => row.rowKey));
@@ -469,6 +483,7 @@ export function useMutationService() {
   }
 
   function recordPasteResult(r: ApplyPasteResult): void {
+    if (disposed) return;
     if (r.collection !== ws.currentTable || (r.createdRowKeys.length === 0 && r.updatedRowKeys.length === 0)) return;
     const isCurrent = scope.capture();
     const revision = table.revision;
@@ -486,7 +501,9 @@ export function useMutationService() {
 
   return {
     init, updateCell, canInsertRow, insertRow, deleteRows, recordPasteResult,
-    performUndo: () => history.undo(), performRedo: () => history.redo(), dispose: scope.dispose,
+    performUndo: () => { if (disposed) return; return history.undo(); },
+    performRedo: () => { if (disposed) return; return history.redo(); },
+    dispose,
   };
 }
 
