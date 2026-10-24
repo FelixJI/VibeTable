@@ -116,3 +116,24 @@ test("a scenario failure inside try still restores the bridge in finally", () =>
   assert.equal(sandbox.bridge.webview.postMessage, original);
   assert.equal(sandbox.bridge.listeners.size, 0);
 });
+
+test("deleted-table reads require the real query.page not-found error and a readable survivor", () => {
+  const start = source.indexOf('  recorder.check("02 the deleted table is no longer queryable');
+  const end = source.indexOf('\n  // 真实重开', start);
+  assert.ok(start >= 0 && end > start, "the product probe assertion must exist");
+  const probeAssertion = source.slice(start, end);
+  const check = (deletedProbe, survivorProbe = { type: "query.page", payload: { rows: [] } }) =>
+    vm.runInNewContext(probeAssertion, {
+      deletedProbe, survivorProbe,
+      recorder: { check: (name, passed) => assert.equal(passed, true, name) },
+    });
+  const notFound = {
+    type: "query.page",
+    payload: { error: { code: "query.table.not_found", path: "table", retryable: false } },
+  };
+  check(notFound);
+  assert.throws(() => check({ type: "operation.failed", payload: {} }));
+  assert.throws(() => check({ type: "query.page", payload: { rows: [] } }));
+  assert.throws(() => check({ type: "query.page", payload: { error: { code: "query.timeout" } } }));
+  assert.throws(() => check(notFound, { type: "query.page", payload: { error: { code: "query.table.not_found" } } }));
+});

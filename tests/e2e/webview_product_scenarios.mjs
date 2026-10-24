@@ -2174,12 +2174,14 @@ async function scenario02(page, recorder, _network, runtime) {
   const survivorProbe = await rawBridgeRequest(page, "query.page", {
     tableId: target.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
-  if (deletedProbe.type === "operation.failed") {
-    await acknowledgeExpectedBridgeFailure(page, deletedProbe);
-  }
   recorder.check("02 the deleted table is no longer queryable while the survivor stays readable",
-    deletedProbe.type === "operation.failed"
+    deletedProbe.type === "query.page"
+      && deletedProbe.payload?.error?.code === "query.table.not_found"
+      && deletedProbe.payload.error.path === "table"
+      && deletedProbe.payload.error.retryable === false
+      && !Array.isArray(deletedProbe.payload.rows)
       && survivorProbe.type === "query.page"
+      && !survivorProbe.payload?.error
       && Array.isArray(survivorProbe.payload?.rows),
     { deletedProbe, survivorProbe });
 
