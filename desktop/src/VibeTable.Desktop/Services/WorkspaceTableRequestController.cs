@@ -226,13 +226,8 @@ public sealed class WorkspaceTableRequestController
             using (TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn())
             {
                 await turn.EnterAsync(openToken).ConfigureAwait(false);
-                Task<DatabaseOpenResult>? read = null;
-                if (!emitGate(() =>
-                {
-                    read = _workspace.PrepareDatabaseOpenAsync(path, openToken);
-                    return true;
-                })) return;
-                DatabaseOpenResult result = await read!.ConfigureAwait(false);
+                DatabaseOpenResult result = await _workspace.PrepareDatabaseOpenAsync(
+                    path, openToken, emitGate).ConfigureAwait(false);
                 object projection = ProductDatabaseOpenedProjection.Create(
                     result,
                     binding.Context,

@@ -228,13 +228,8 @@ internal sealed class ProductWorkspaceController : IDisposable
                         using (TableWorkspaceService.CatalogTurn turn = _workspace.BeginCatalogTurn())
                         {
                             await turn.EnterAsync(openToken).ConfigureAwait(false);
-                            Task<DatabaseOpenResult>? read = null;
-                            if (!emitGate(() =>
-                            {
-                                read = _workspace.PrepareDatabaseOpenAsync(source, openToken);
-                                return true;
-                            })) return;
-                            result = await read!.ConfigureAwait(false);
+                            result = await _workspace.PrepareDatabaseOpenAsync(
+                                source, openToken, emitGate).ConfigureAwait(false);
                             if (_isClosing() || Volatile.Read(ref _disposed) != 0)
                                 return;
                             if (!_databaseOpens.IsCurrent(binding)) return;

@@ -250,7 +250,8 @@ public sealed class TableWorkspaceService
 
     internal async Task<DatabaseOpenResult> PrepareDatabaseOpenAsync(
         string path,
-        CancellationToken token)
+        CancellationToken token,
+        Func<Func<bool>, bool>? prepareState = null)
     {
         if (path is null)
         {
@@ -263,9 +264,19 @@ public sealed class TableWorkspaceService
         }
 
         token.ThrowIfCancellationRequested();
-        // Cancel any in-flight table fetch before switching databases.
-        CancelSelection();
-
+        CancellationTokenSource? previousSelection = null;
+        bool DetachSelection()
+        {
+            token.ThrowIfCancellationRequested();
+            previousSelection = Interlocked.Exchange(ref _selectCts, null);
+            return true;
+        }
+        if (prepareState is null) DetachSelection();
+        else if (!prepareState(DetachSelection)) throw new OperationCanceledException(token);
+        // Cancellation callbacks and gateway startup can take the runtime lock;
+        // only the selection pointer exchange belongs under the scope gate.
+        CancelSelection(previousSelection);
+        token.ThrowIfCancellationRequested();
         var result = await ReadCatalogAsync(t => _gateway.OpenDatabaseAsync(path, t), token)
             .ConfigureAwait(true);
         token.ThrowIfCancellationRequested();
@@ -1017,8 +1028,10 @@ public sealed class TableWorkspaceService
     }
 
     private void CancelSelection()
+        => CancelSelection(Interlocked.Exchange(ref _selectCts, null));
+
+    private static void CancelSelection(CancellationTokenSource? existing)
     {
-        var existing = System.Threading.Interlocked.Exchange(ref _selectCts, null);
         if (existing is not null)
         {
             try { existing.Cancel(); } catch { /* best-effort */ }
