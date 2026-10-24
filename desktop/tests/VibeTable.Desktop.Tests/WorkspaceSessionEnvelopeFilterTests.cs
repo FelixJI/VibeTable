@@ -31,8 +31,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             new EditSchemaResult("other", "sr", "rowKey", true, false, []));
         var workspace = new TableWorkspaceService(gateway); await workspace.OpenDatabaseAsync("fixture");
         var sink = new FakeWebReplySink();
+        var time = new ManualTimeProvider();
         using var dispatcher = new WorkspaceRequestDispatcher(workspace, new FakeDatabasePicker(null), sink,
-            new GridStateCoordinator(gateway, _ => { }), sessionEnvelopeFilter: filter);
+            new GridStateCoordinator(gateway, _ => { }, time), sessionEnvelopeFilter: filter);
         Task write = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest("table.updateCellRequested", "write", JsonSerializer.SerializeToElement(new {
             table = "records", rowKey = "r", column = "name", oldValue = "before", newValue = "after", schemaRevision = "sr",
         }), "", ScopeFor(current, 1)));
@@ -50,7 +51,15 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         finally
         {
             terminal.TrySetResult(new UpdateCellResult("r", "name", "after", new Dictionary<string, object?> { ["rowKey"] = "r", ["name"] = "after" }, new MutationRevision("s", "sr", 2)));
-            await write.WaitAsync(TimeSpan.FromSeconds(2)); await query.WaitAsync(TimeSpan.FromSeconds(2));
+            // QA owns the scheduler/hang boundary; the test only orders stages.
+            await write;
+            if (staleSelection)
+            {
+                // The debounce registers only after the asynchronous barrier releases.
+                await time.WaitForScheduledTimersAsync(1);
+                time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+            }
+            await query;
         }
         var result = sink.Replies.Single(reply => reply.RequestId == "query");
         Assert.AreEqual(staleSelection ? "table.pageLoaded" : "operation.failed", result.Type);

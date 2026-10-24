@@ -322,8 +322,8 @@ export async function exerciseApplicationWorkspaceIsolation(page, recorder, runt
 export async function verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers, state) {
   const { rawBridgeRequest, switchWorkspaceByName, selectTable } = helpers;
   const other = state.crossWorkspace;
-  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  const opened = await switchWorkspaceByName(page, "E2E Plugin Scope Isolation", session.sessionEpoch);
+  // Prefer the authoritative sessions already returned by switches; the diagnostics snapshot may stay null.
+  const opened = await switchWorkspaceByName(page, "E2E Plugin Scope Isolation", state.sessionEpoch);
   recorder.check("lifecycle isolation reopens the same second workspace", opened.payload.session.workspaceId === other.workspaceId);
   const installed = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: other.projectKey })).payload.find(item => item.pluginId === A);
   recorder.check("upgrading and uninstalling the original workspace cannot change the other installation",
@@ -338,8 +338,7 @@ export async function verifyOtherWorkspaceAfterLifecycle(page, recorder, helpers
   recorder.check("other workspace still has a usable plugin with its own unchanged settings and business rows",
     context.projectKey === other.projectKey && context.collection === other.tableId && privateValue === "workspace-b"
       && JSON.stringify(rows) === JSON.stringify(other.rows), { context, rows });
-  const current = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", current.sessionEpoch);
+  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", opened.payload.session.sessionEpoch);
   recorder.check("post-lifecycle return restores the original workspace", returned.payload.session.workspaceId === state.workspaceId);
   await page.getByTestId("nav-tables").click(); await selectTable(page, "Application Tasks");
   const catalog = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload;
@@ -357,6 +356,8 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     recorder.check("normal cold Host reopens the same application workspace at a fresh epoch",
       switched.result?.workspaceId === state.workspaceId && switched.result.sessionEpoch > state.sessionEpoch,
       { switched: switched.result, state });
+    // A missed auto-open bootstrap leaves the diagnostics snapshot null; keep the authoritative switch epoch.
+    state = { ...state, sessionEpoch: switched.result.sessionEpoch };
     await page.getByTestId("nav-tables").click();
     await selectTable(page, "Application Tasks");
   } else {
