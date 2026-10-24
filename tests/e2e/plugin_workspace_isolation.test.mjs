@@ -66,7 +66,8 @@ async function harness(options = {}) {
   const activate = workspace => { for (const item of frames) item.detached = true; active = workspace; epoch++; };
   const session = () => ({ workspaceId: active.workspaceId, sessionEpoch: epoch });
   const locator = { locator() { return this; }, first() { return this; }, async fill(name) { assert.equal(name, second.name); }, async waitFor() {}, async click() {} };
-  const page = { async evaluate() { return session(); }, getByTestId(id) {
+  let diagnosticsDropped = false;
+  const page = { async evaluate() { return diagnosticsDropped ? null : session(); }, getByTestId(id) {
     if (id === "workspace-center") return { getByRole() { return { async waitFor() {}, async click() { assert.ok(capture, "bind activation capture before opening"); activate(second); opened = true; } }; } };
     return locator;
   } };
@@ -92,7 +93,8 @@ async function harness(options = {}) {
   const recorder = { check(name, passed) { assert.ok(passed, name); checks.push(name); } };
   return { first, second, stores, checks, events, fileReads, released, readControl, controlsDir,
     async seed() { return seed(page, recorder, { controlsDir }, helpers, first, originalFrame); },
-    async verify(crossWorkspace) { stores.get(first).entries = [installed(first, B)]; return verify(page, recorder, helpers, { ...first, crossWorkspace }); },
+    dropDiagnostics: () => { diagnosticsDropped = true; },
+    async verify(crossWorkspace) { stores.get(first).entries = [installed(first, B)]; return verify(page, recorder, helpers, { ...first, sessionEpoch: epoch, crossWorkspace }); },
     async cleanup() {
       for (const name of ["attachment-replacement-source.txt", "48-workspace-a-private.txt", "48-workspace-b-private.txt"]) await fs.unlink(path.join(controlsDir, name));
       assert.equal(path.dirname(path.resolve(controlsDir)), path.resolve(buildRoot));
@@ -115,6 +117,16 @@ test("same-plugin workspace acceptance returns and persists the other authority 
     assert.equal(h.stores.get(h.first).value, "plugin-a");
     assert.equal(h.stores.get(h.second).value, "workspace-b");
     assert.equal(await fs.readFile(h.readControl, "utf8"), "original controls\n");
+    await h.verify(JSON.parse(JSON.stringify(seeded.crossWorkspace)));
+    assert.ok(h.checks.some(name => name.includes("explicit uninstall and the second plugin")));
+  } finally { await h.cleanup(); }
+});
+
+test("post-uninstall verification relies on authoritative switch sessions when the diagnostics snapshot missed the resume bootstrap", async () => {
+  const h = await harness();
+  try {
+    const seeded = await h.seed();
+    h.dropDiagnostics();
     await h.verify(JSON.parse(JSON.stringify(seeded.crossWorkspace)));
     assert.ok(h.checks.some(name => name.includes("explicit uninstall and the second plugin")));
   } finally { await h.cleanup(); }
