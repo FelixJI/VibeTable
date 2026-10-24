@@ -394,11 +394,92 @@ def test_ci_downloads_lane_reports_and_evidence_at_the_automation_root() -> None
     assert "merge-multiple: true" in download_step
 
 
+_CANDIDATE_HANDOFF_TRANSIENT_FAILURE = (
+    "error downloading ci-candidate-handoff: error writing zip archive: "
+    "read tcp 10.1.0.16:50821->20.209.226.1:443: wsarecv: "
+    "An existing connection was forcibly closed by the remote host."
+)
+_CANDIDATE_HANDOFF_PERMANENT_FAILURE = (
+    "error downloading ci-candidate-handoff: HTTP 404: artifact not found"
+)
+_CANDIDATE_HANDOFF_DISK_FULL_FAILURE = (
+    "error downloading ci-candidate-handoff: error writing zip archive: write "
+    "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\gh123456\\1\\artifact.zip: "
+    "There is not enough space on the disk."
+)
+_CANDIDATE_HANDOFF_EXTRACTION_FAILURE = (
+    "error downloading ci-candidate-handoff: error extracting zip archive: unexpected EOF"
+)
+
+
 @pytest.mark.parametrize("job_name", ["shard", "required"])
-@pytest.mark.parametrize("download_exit", [0, 23])
+@pytest.mark.parametrize(
+    (
+        "failures",
+        "failure_message",
+        "failure_exit",
+        "expected_exit",
+        "expected_calls",
+        "expected_sleeps",
+    ),
+    [
+        pytest.param(0, "", 0, 0, 1, 0, id="success"),
+        pytest.param(
+            1,
+            _CANDIDATE_HANDOFF_TRANSIENT_FAILURE,
+            1,
+            0,
+            2,
+            1,
+            id="transient-then-success",
+        ),
+        pytest.param(
+            3,
+            _CANDIDATE_HANDOFF_TRANSIENT_FAILURE,
+            1,
+            1,
+            3,
+            2,
+            id="transient-exhausted",
+        ),
+        pytest.param(
+            1,
+            _CANDIDATE_HANDOFF_PERMANENT_FAILURE,
+            23,
+            23,
+            1,
+            0,
+            id="permanent-not-found",
+        ),
+        pytest.param(1, "", 23, 23, 1, 0, id="permanent-silent"),
+        pytest.param(
+            1,
+            _CANDIDATE_HANDOFF_DISK_FULL_FAILURE,
+            1,
+            1,
+            1,
+            0,
+            id="permanent-disk-full",
+        ),
+        pytest.param(
+            1,
+            _CANDIDATE_HANDOFF_EXTRACTION_FAILURE,
+            1,
+            1,
+            1,
+            0,
+            id="permanent-extraction",
+        ),
+    ],
+)
 def test_ci_candidate_download_binds_current_run_and_propagates_failure(
     job_name: str,
-    download_exit: int,
+    failures: int,
+    failure_message: str,
+    failure_exit: int,
+    expected_exit: int,
+    expected_calls: int,
+    expected_sleeps: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -420,14 +501,35 @@ def test_ci_candidate_download_binds_current_run_and_propagates_failure(
     executable = sys.executable.replace("'", "''")
     shell = shutil.which("pwsh")
     assert shell is not None, "candidate handoff requires PowerShell Core"
-    # The fake CLI tests shell failure propagation, not HTTP or ZIP integrity.
+    # The fake CLI tests shell failure propagation and the bounded transient
+    # transport retry, not HTTP or ZIP integrity. GitHub runners execute pwsh
+    # steps with ErrorActionPreference set to Stop.
+    failure_call = (
+        f"import sys; sys.stderr.write({failure_message!r}); sys.exit({failure_exit})"
+        if failure_message
+        else f"import sys; sys.exit({failure_exit})"
+    )
     script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$script:ghFailures = {failures}\n"
+        "function Start-Sleep {\n"
+        "  param([int]$Seconds)\n"
+        '  Write-Output "start-sleep:$Seconds"\n'
+        "}\n"
         "function gh {\n"
-        "Write-Output ($args | ConvertTo-Json -Compress)\n"
-        f"& '{executable}' -c 'import sys; sys.exit({download_exit})'\n"
+        "  Write-Output ($args | ConvertTo-Json -Compress)\n"
+        "  if ($script:ghFailures -gt 0) {\n"
+        "    $script:ghFailures = $script:ghFailures - 1\n"
+        f"    & '{executable}' -c \"{failure_call}\"\n"
+        "  } else {\n"
+        f"    & '{executable}' -c 'import sys; sys.exit(0)'\n"
+        "  }\n"
         "}\n"
         f"{command}\n"
-        "Write-Output 'candidate-consumer-reached'\n"
+        "if ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) { $code = $LASTEXITCODE }"
+        " else { $code = 0 }\n"
+        "if ($code -eq 0) { Write-Output 'candidate-consumer-reached' }\n"
+        "exit $code\n"
     )
     result = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -436,20 +538,28 @@ def test_ci_candidate_download_binds_current_run_and_propagates_failure(
         check=False,
         timeout=15,
     )
-    assert result.returncode == download_exit, result.stderr
+    assert result.returncode == expected_exit, result.stderr
     output = result.stdout.splitlines()
-    assert json.loads(output[0]) == [
-        "run",
-        "download",
-        "123456",
-        "--repo",
-        "owner/repository",
-        "--name",
-        "ci-candidate-handoff",
-        "--dir",
-        ".",
-    ]
-    assert ("candidate-consumer-reached" in output) is (download_exit == 0)
+    binding = json.dumps(
+        [
+            "run",
+            "download",
+            "123456",
+            "--repo",
+            "owner/repository",
+            "--name",
+            "ci-candidate-handoff",
+            "--dir",
+            ".",
+        ],
+        separators=(",", ":"),
+    )
+    assert binding in output
+    assert output.count(binding) == expected_calls, result.stdout
+    assert [line for line in output if line.startswith("start-sleep:")] == [
+        "start-sleep:5"
+    ] * expected_sleeps, result.stdout
+    assert ("candidate-consumer-reached" in output) is (expected_exit == 0)
 
 
 def test_candidate_prepare_bootstraps_release_and_replacement_plugin_dependencies(

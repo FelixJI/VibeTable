@@ -212,8 +212,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh run download "$env:GITHUB_RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name ci-candidate-handoff --dir .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; ; $attempt++) {
+            $output = gh run download "$env:GITHUB_RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name ci-candidate-handoff --dir . 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host $output
+            if ($code -eq 0) { break }
+            $transient = $output -match '(?m)^error downloading ci-candidate-handoff: error writing zip archive: .*(forcibly closed|connection reset|connection aborted|unexpected EOF)'
+            if (-not $transient -or $attempt -ge $maxAttempts) { exit $code }
+            Write-Host "transient candidate handoff interruption (attempt $attempt of $maxAttempts); retrying the same run artifact"
+            Start-Sleep -Seconds 5
+          }
       - name: Verify immutable candidate lane
         env:
           GH_TOKEN: ${{ github.token }}
@@ -293,8 +303,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh run download "$env:GITHUB_RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name ci-candidate-handoff --dir .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; ; $attempt++) {
+            $output = gh run download "$env:GITHUB_RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name ci-candidate-handoff --dir . 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host $output
+            if ($code -eq 0) { break }
+            $transient = $output -match '(?m)^error downloading ci-candidate-handoff: error writing zip archive: .*(forcibly closed|connection reset|connection aborted|unexpected EOF)'
+            if (-not $transient -or $attempt -ge $maxAttempts) { exit $code }
+            Write-Host "transient candidate handoff interruption (attempt $attempt of $maxAttempts); retrying the same run artifact"
+            Start-Sleep -Seconds 5
+          }
       - name: Download lane evidence
         if: needs.plan.outputs.sharded == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
