@@ -133,14 +133,9 @@ export async function createFirstTable(page) {
     throw new Error(`host did not expose an opaque first table identity: ${tableId}`);
   }
   await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
-  const confirmation = page.waitForEvent("dialog", { timeout: 2_000 })
-    .then(async (dialog) => {
-      await dialog.accept();
-      return dialog.message();
-    })
-    .catch(() => null);
   await page.getByTestId("field-close-button").click();
-  await confirmation;
+  const discard = page.getByTestId("field-close-confirm-discard");
+  if (await discard.isVisible()) await discard.click();
   await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
   await activateCreatedTable(page, row, tableId);
   return tableId;

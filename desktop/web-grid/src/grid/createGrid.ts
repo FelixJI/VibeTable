@@ -35,6 +35,7 @@ import type {
 } from "@/contracts";
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
+import { isRowIdColumn } from "./gridState";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
 import { formatFormulaDisplayValue, formulaStateLabel } from "./computedValueDisplay";
 import { formatFieldDisplay, enumDisplayParts, progressDisplay } from "./commonFieldDisplay";
@@ -51,27 +52,29 @@ export const ROW_NUMBER_FIELD = "__vt_row_number";
 /**
  * Preserve a readable scan width for each product field family. Tabulator's
  * `fitColumns` layout respects these floors and exposes horizontal scrolling
- * once the combined minimum width exceeds the viewport.
+ * once the combined minimum width exceeds the viewport. 新建列的默认宽度
+ * 同样取家族紧凑值，避免 fitColumns 把少量字段拉伸铺满视口；用户拖宽后
+ * 的宽度由视图持久化覆盖，优先于该默认值。
  */
 function columnMinWidth(column: ColumnSchema): number {
-  if (column.kind === "attachment") return 190;
-  if (column.kind === "relation" || column.kind === "lookup") return 170;
+  if (column.kind === "attachment") return 170;
+  if (column.kind === "relation" || column.kind === "lookup") return 150;
   switch (column.dataType) {
     case "boolean":
-      return 100;
+      return 84;
     case "integer":
     case "decimal":
     case "time":
-      return 120;
+      return 104;
     case "date":
-      return 132;
+      return 116;
     case "datetime":
-      return 180;
+      return 156;
     case "json":
-      return 190;
+      return 168;
     case "text":
     default:
-      return 160;
+      return 136;
   }
 }
 
@@ -109,7 +112,9 @@ export interface GridColumnDefinition {
   /** Tabulator editor params (e.g. `{ min, max }`, `{ values, autocomplete }`). */
   readonly editorParams?: Record<string, unknown>;
   readonly width?: number;
+  readonly widthGrow?: number;
   readonly minWidth?: number;
+  readonly visible?: boolean;
   readonly frozen?: boolean;
   readonly headerSort?: boolean;
   readonly headerFilter?: boolean | string;
@@ -341,6 +346,8 @@ function toColumnDef(
     title: col.title,
     editable: false,
     dataType: col.dataType,
+    width: columnMinWidth(col),
+    widthGrow: 0,
     minWidth: columnMinWidth(col),
     headerFilter: "input",
     headerFilterPlaceholder: t("grid.filter.placeholder"),
@@ -350,6 +357,8 @@ function toColumnDef(
       },
     },
     ...(col.nullable !== undefined ? { nullable: col.nullable } : {}),
+    // 行 ID 默认隐藏：保持与视图默认可见列一致，可由视图重新显示。
+    ...(isRowIdColumn(col) ? { visible: false } : {}),
   };
 
   if (col.kind === "attachment") {
@@ -853,6 +862,109 @@ export function buildOptions(
 }
 
 /**
+ * 可打印字符键入即进入当前选中单元格的编辑（电子表格习惯）：
+ * 修饰键（Ctrl/Meta/Alt）组合、空格与多字符功能键不触发；
+ * IME 发起的首个键入（key="Process"）也会进入编辑并让组合输入在
+ * 编辑器内继续。双击、F2 等既有编辑入口与导航快捷键保持不变。
+ */
+export function shouldStartCellEditOnKey(event: {
+  readonly key: string;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly altKey: boolean;
+  readonly isComposing?: boolean;
+}): boolean {
+  // 组合输入进行中不拦截：目标已是输入框，交由原生编辑路径。
+  if (event.isComposing) return false;
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  // Windows IME 发起组合的首个 keydown；进入编辑后组合在编辑器中继续。
+  if (event.key === "Process") return true;
+  return event.key.length === 1 && event.key !== " ";
+}
+
+/** 只有支持文本选区的控件才能安全地移动插入点；用允许列表避免新类型误抛 InvalidStateError。 */
+const SELECTION_INPUT_TYPES = new Set([
+  "text", "search", "url", "tel", "password", "",
+]);
+function supportsSelection(
+  element: HTMLInputElement | HTMLTextAreaElement,
+): boolean {
+  if (element instanceof HTMLTextAreaElement) return true;
+  if (!(element instanceof HTMLInputElement)) return false;
+  return SELECTION_INPUT_TYPES.has(element.type);
+}
+
+/**
+ * 键入启动编辑后，把焦点同步移到编辑控件并建立“替换”语义：
+ * 不 preventDefault、不注入键入字符，原始 keydown 的默认动作（原生插入 /
+ * IME 组合）会落到新聚焦的编辑器里，负号、小数开头和中文组合输入都由
+ * 浏览器原生处理。
+ * - text/textarea：全选旧值，首键替换（type-over）。
+ * - number：Chromium 不支持全选，改为先清空旧值（合法空串，不手写
+ *   '-'/'.'），首键由原生默认动作插入，避免旧值与新键入拼成非法数字
+ *   被浏览器清空。
+ */
+export function activateEditorForKeyStroke(
+  element: HTMLInputElement | HTMLTextAreaElement,
+): void {
+  element.focus();
+  if (supportsSelection(element)) {
+    element.select();
+  } else if (element instanceof HTMLInputElement && element.type === "number") {
+    element.value = "";
+  }
+}
+
+interface EditableCellComponent {
+  edit(force?: boolean): boolean | void;
+  getElement?(): HTMLElement;
+}
+
+/** 取当前活动选区左上角可编辑单元格；无选区或不可编辑时返回 null。 */
+function activeEditableCell(grid: TabulatorFull): EditableCellComponent | null {
+  const runtime = grid as unknown as {
+    getRanges?: () => Array<{
+      getRows?: () => Array<{ getCell?: (field: string) => unknown }>;
+      getColumns?: () => Array<{ getField: () => string }>;
+    }>;
+  };
+  const range = runtime.getRanges?.().at(-1);
+  const rows = range?.getRows?.() ?? [];
+  const columns = range?.getColumns?.() ?? [];
+  if (rows.length === 0 || columns.length === 0) return null;
+  const cell = rows[0]!.getCell?.(columns[0]!.getField()) as EditableCellComponent | undefined;
+  return cell && typeof cell.edit === "function" ? cell : null;
+}
+
+function bindTypeToStartEdit(grid: TabulatorFull, element: HTMLElement): void {
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (!shouldStartCellEditOnKey(event)) return;
+    const target = event.target;
+    if (target instanceof HTMLElement
+      && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+      return;
+    }
+    const cell = activeEditableCell(grid);
+    if (!cell) return;
+    // 不传 force：Tabulator 的 edit(force) 会绕过 editable 回调
+    // （busy/只读列的动态禁用），无 force 时只读单元格返回 false，不进入编辑。
+    if (cell.edit() === false) return;
+    // 不 preventDefault、不注入字符：聚焦编辑器后，原始 keydown 的默认
+    // 动作（原生插入/IME 组合）落到编辑器里，负号与小数开头由浏览器处理。
+    const editor = cell.getElement?.().querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      "input, textarea",
+    );
+    if (editor && !editor.readOnly && !editor.disabled) {
+      activateEditorForKeyStroke(editor);
+    }
+  };
+  element.addEventListener("keydown", onKeyDown);
+  (grid as unknown as {
+    on?: (event: string, handler: () => void) => void;
+  }).on?.("tableDestroyed", () => element.removeEventListener("keydown", onKeyDown));
+}
+
+/**
  * Instantiate a Tabulator grid on `element` using the options derived from
  * `page`. Returns the instance (caller owns lifecycle/teardown).
  *
@@ -873,6 +985,10 @@ export function createGrid(
   // Cast: our minimal ambient TabulatorOptions is intentionally permissive;
   // Tabulator's real options object is far larger than Phase A needs.
   const grid = new TabulatorFull(element, options);
+  const host = typeof element === "string"
+    ? (grid as unknown as { element?: HTMLElement }).element
+    : element;
+  if (host) bindTypeToStartEdit(grid, host);
   const editHandlers = buildEditEventHandlers(
     opts?.editSchema,
     opts?.onCellEdited,

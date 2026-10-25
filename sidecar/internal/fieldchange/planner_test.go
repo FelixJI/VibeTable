@@ -3,6 +3,7 @@ package fieldchange_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ type sourceStub struct {
 	revisions        fieldchange.Revisions
 	revisionsByTable map[string]fieldchange.Revisions
 	fields           map[string]v2.FieldDefinition
+	tableFields      map[string][]v2.FieldDefinition
 }
 
 type impactPreflightStub struct {
@@ -101,6 +103,14 @@ func (source sourceStub) Field(
 	}
 	result := field
 	return &result, nil
+}
+
+func (source sourceStub) Fields(
+	_ context.Context,
+	tableID string,
+	_ bool,
+) ([]v2.FieldDefinition, error) {
+	return source.tableFields[tableID], nil
 }
 
 func TestCreatePlanAllocatesAndFreezesEveryIdentityAcrossRetry(t *testing.T) {
@@ -165,6 +175,137 @@ func TestDisplayRenameKeepsIdentityAndIsClassifiedWithoutMigration(t *testing.T)
 		len(plan.Classes) != 1 || plan.Classes[0] != v2.ClassDisplay ||
 		plan.CreatesMigration {
 		t.Fatalf("rename plan = %#v", plan)
+	}
+}
+
+func TestPlanRejectsDuplicateActiveFieldDisplayName(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalNumber)
+	sibling := definitionFor(v2.LogicalText)
+	sibling.Identity.FieldID = "fld_01JSIBLING1"
+	sibling.Identity.PhysicalName = "f_01jsibling1"
+	sibling.Identity.ProviderFieldID = "pb_01JSIBLING1"
+	sibling.DisplayName = "数量"
+	stub := sourceStub{
+		revisions: fieldchange.Revisions{Schema: "schema_2"},
+		fields: map[string]v2.FieldDefinition{
+			existing.Identity.FieldID: existing,
+		},
+		tableFields: map[string][]v2.FieldDefinition{"tbl_orders": {existing, sibling}},
+	}
+
+	// Creating a third field with the sibling's active name is rejected.
+	createDraft := draftFor(v2.LogicalNumber)
+	createDraft.DisplayName = " 数量 "
+	planner := fieldchange.NewPlanner(stub, nil, nil, nil)
+	_, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: "tbl_orders",
+		ExpectedSchemaRev: "schema_2", Draft: &createDraft,
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	var productErr *fieldchange.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" ||
+		productErr.Path != "draft.displayName" {
+		t.Fatalf("duplicate create error = %#v", err)
+	}
+
+	// Renaming an existing field onto the sibling's name is rejected too.
+	renameDraft := draftFrom(existing)
+	renameDraft.DisplayName = "数量"
+	_, err = planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders", FieldID: existing.Identity.FieldID,
+		ExpectedSchemaRev: "schema_2", Draft: &renameDraft,
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" {
+		t.Fatalf("duplicate rename error = %#v", err)
+	}
+
+	// Keeping the field's own name never trips the check against itself;
+	// the draft still carries a real (help-text) change so it is not a no-op.
+	ownDraft := draftFrom(existing)
+	ownDraft.Help = "新的帮助文案"
+	if _, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders", FieldID: existing.Identity.FieldID,
+		ExpectedSchemaRev: "schema_2", Draft: &ownDraft,
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	}); err != nil {
+		t.Fatalf("own-name update rejected: %v", err)
+	}
+
+	// A retired sibling frees its name for active use; restore of a retired
+	// field colliding with an active name stays rejected.
+	retired := sibling
+	retired.Lifecycle = v2.Lifecycle{State: v2.LifecycleRetired, RetiredAt: &[]string{"2026-10-01T00:00:00Z"}[0]}
+	stub.tableFields = map[string][]v2.FieldDefinition{"tbl_orders": {existing, retired}}
+	retirePlanner := fieldchange.NewPlanner(stub, nil, nil, nil)
+	recreateDraft := draftFor(v2.LogicalNumber)
+	recreateDraft.DisplayName = "数量"
+	if _, err := retirePlanner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: "tbl_orders",
+		ExpectedSchemaRev: "schema_2", Draft: &recreateDraft,
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	}); err != nil {
+		t.Fatalf("retired name reuse rejected: %v", err)
+	}
+}
+
+func TestHistoricalDuplicateNamesAllowUnrelatedChangesAndIncrementalRepair(t *testing.T) {
+	t.Parallel()
+	fields := make([]v2.FieldDefinition, 4)
+	byID := map[string]v2.FieldDefinition{}
+	for index := range fields {
+		field := definitionFor(v2.LogicalText)
+		field.Identity.FieldID = fmt.Sprintf("fld_historical_%d", index)
+		field.Identity.PhysicalName = fmt.Sprintf("f_historical_%d", index)
+		field.Value.Presence.PhysicalName = "__vt_has_" + field.Identity.PhysicalName
+		field.DisplayName = "历史重名"
+		if index == 3 {
+			field.DisplayName = "其他字段"
+		}
+		fields[index] = field
+		byID[field.Identity.FieldID] = field
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisions: fieldchange.Revisions{Schema: "schema_2"}, fields: byID,
+		tableFields: map[string][]v2.FieldDefinition{"tbl_orders": fields},
+	}, nil, nil, nil)
+	for _, test := range []struct {
+		name   string
+		action v2.ChangeAction
+		index  int
+		nameTo string
+		reject bool
+	}{
+		{"unrelated edit", v2.ActionUpdate, 3, "其他字段", false},
+		{"duplicate help edit", v2.ActionUpdate, 0, "历史重名", false},
+		{"unique creation", v2.ActionCreate, 3, "新字段", false},
+		{"rename one of three", v2.ActionUpdate, 0, "修复后的名称", false},
+		{"retire one of three", v2.ActionRetire, 0, "历史重名", false},
+		{"new duplicate", v2.ActionCreate, 3, "历史重名", true},
+		{"rename into duplicates", v2.ActionUpdate, 3, "历史重名", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			draft := draftFrom(fields[test.index])
+			draft.DisplayName = test.nameTo
+			draft.Help = "更新说明"
+			intent := v2.FieldChangeIntent{
+				Action: test.action, TableID: "tbl_orders", ExpectedSchemaRev: "schema_2",
+				Actor: v2.Actor{ID: "user_local", Kind: "user"}, Draft: &draft,
+			}
+			if test.action != v2.ActionCreate {
+				intent.FieldID = fields[test.index].Identity.FieldID
+			}
+			_, err := planner.Plan(context.Background(), intent)
+			if test.reject {
+				var productErr *fieldchange.ProductError
+				if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" {
+					t.Fatalf("new conflict error = %#v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("historical conflict blocks operation: %v", err)
+			}
+		})
 	}
 }
 
@@ -244,6 +385,107 @@ func TestUsedSelectOptionDeletionRequiresResolutionAndCreatesMigration(t *testin
 		plan.After.Value.Presence.ProviderFieldID ==
 			existing.Value.Presence.ProviderFieldID {
 		t.Fatalf("select option deletion plan = %#v", plan)
+	}
+}
+
+func TestSelfReferencingPairNamesAreCheckedOnTheFinalFieldSet(t *testing.T) {
+	t.Parallel()
+	relationDraft := func(name string) v2.FieldDraft {
+		draft := draftFor(v2.LogicalRelation)
+		draft.DisplayName = name
+		draft.Relation = &v2.RelationSpec{
+			TargetTableID: "tbl_orders", Cardinality: "many",
+			DeletePolicy: "setNull", DisplayField: "fld_order_number",
+		}
+		return draft
+	}
+	storedForward := definitionFor(v2.LogicalRelation)
+	storedForward.DisplayName = "客户"
+	storedForward.Identity.FieldID = "fld_orders_customer"
+	storedForward.Identity.PhysicalName = "f_orders_customer"
+	storedForward.Identity.ProviderFieldID = "pb_orders_customer"
+	storedForward.Value.Presence.PhysicalName = "__vt_has_f_orders_customer"
+	storedForward.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_orders", Cardinality: "many", DeletePolicy: "setNull",
+		DisplayField: "fld_order_number", PairID: "relp_self", ReciprocalFieldID: "fld_orders_tasks",
+	}
+	storedReciprocal := definitionFor(v2.LogicalRelation)
+	storedReciprocal.DisplayName = "订单"
+	storedReciprocal.Identity.FieldID = "fld_orders_tasks"
+	storedReciprocal.Identity.PhysicalName = "f_orders_tasks"
+	storedReciprocal.Identity.ProviderFieldID = "pb_orders_tasks"
+	storedReciprocal.Value.Presence.PhysicalName = "__vt_has_f_orders_tasks"
+	storedReciprocal.Relation = &v2.RelationSpec{
+		TargetTableID: "tbl_orders", Cardinality: "many", DeletePolicy: "setNull",
+		DisplayField: "fld_order_number", PairID: "relp_self", ReciprocalFieldID: "fld_orders_customer",
+	}
+	stub := sourceStub{
+		revisions: fieldchange.Revisions{Schema: "schema_2"},
+		fields: map[string]v2.FieldDefinition{
+			storedForward.Identity.FieldID:    storedForward,
+			storedReciprocal.Identity.FieldID: storedReciprocal,
+		},
+		tableFields: map[string][]v2.FieldDefinition{"tbl_orders": {storedForward, storedReciprocal}},
+	}
+	planner := fieldchange.NewPlanner(stub, nil, nil, nil)
+
+	// 1. Creating a self-referencing pair where both new fields share one
+	// name is rejected: the two in-plan names must be compared too.
+	createDraft := relationDraft("同名")
+	_, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: "tbl_orders", ExpectedSchemaRev: "schema_2",
+		Draft: &createDraft,
+		RelationPair: &v2.RelationPairDraft{
+			ReciprocalDisplayName: "同名", ReciprocalCardinality: "many",
+			SourceDisplayFieldID: "fld_order_number",
+		},
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	var productErr *fieldchange.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" {
+		t.Fatalf("same-named self-pair create error = %#v", err)
+	}
+
+	// 2. Patching the pair while keeping the reciprocal's own name must not
+	// judge the reciprocal as a duplicate of itself.
+	policy := "restrict"
+	_, err = planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: storedForward.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		RelationPairPatch: &v2.RelationPairPatch{DeletePolicy: &policy},
+		Actor:             v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatalf("unchanged reciprocal name falsely rejected: %#v", err)
+	}
+
+	// 3. Swapping the two ends' names inside one plan stays legal: the final
+	// set contains each name exactly once.
+	forwardName := "订单"
+	reciprocalName := "客户"
+	_, err = planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: storedForward.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		RelationPairPatch: &v2.RelationPairPatch{
+			SourceDisplayName: &forwardName, ReciprocalDisplayName: &reciprocalName,
+		},
+		Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatalf("legal pair name swap rejected: %#v", err)
+	}
+
+	// 4. Patching the reciprocal onto the forward field's new name without
+	// moving the forward name away is still a real duplicate.
+	bothUsed := "客户"
+	_, err = planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: storedForward.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		RelationPairPatch: &v2.RelationPairPatch{ReciprocalDisplayName: &bothUsed},
+		Actor:             v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" {
+		t.Fatalf("real self-pair duplicate accepted: %#v", err)
 	}
 }
 
@@ -426,6 +668,93 @@ func TestConstraintPlanFreezesCurrentDataRevision(t *testing.T) {
 		plan.Intent.ExpectedDataRevision == nil ||
 		*plan.Intent.ExpectedDataRevision != 41 {
 		t.Fatalf("data revision was not frozen: %#v", plan)
+	}
+}
+
+func TestAutoNumberReformatUpdateFreezesDataRevisionBeforePlanCache(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalAutoNumber)
+	existing.AutoNumber = &v2.AutoNumberSpec{Prefix: "HT-", Start: 1, Width: 6}
+	reformat := draftFrom(existing)
+	reformat.AutoNumber = &v2.AutoNumberSpec{Prefix: "VG-", Start: 1, Width: 6}
+	store := fieldchange.NewMemoryPlanStore()
+	intent := v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &reformat, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	}
+	first, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, store, nil,
+	).Plan(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExpectedDataRevision == nil || *first.ExpectedDataRevision != 7 ||
+		first.Intent.ExpectedDataRevision == nil || *first.Intent.ExpectedDataRevision != 7 {
+		t.Fatalf("reformat preview did not freeze the data revision: %#v", first)
+	}
+	// 行增删后同一 intent 不得复用旧 cache（旧记录集）：预览必须拿到冻结
+	// 新数据版本的新计划。
+	second, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 8},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, store, nil,
+	).Plan(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.PlanID == first.PlanID || second.ExpectedDataRevision == nil ||
+		*second.ExpectedDataRevision != 8 {
+		t.Fatalf("stale reformat plan reused after a data revision change: %#v / %#v", first, second)
+	}
+}
+
+func TestDisplayRenameKeepsDataRevisionOpen(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalText)
+	rename := draftFrom(existing)
+	rename.DisplayName = "字段改名"
+	plan, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, fieldchange.NewMemoryPlanStore(), nil,
+	).Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &rename, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ExpectedDataRevision != nil {
+		t.Fatalf("display rename must not gate on the data revision: %#v", plan)
+	}
+}
+
+func TestAutoNumberReformatPreflightSourceErrorsPropagate(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalAutoNumber)
+	existing.AutoNumber = &v2.AutoNumberSpec{Prefix: "HT-", Start: 1, Width: 6}
+	reformat := draftFrom(existing)
+	reformat.AutoNumber = &v2.AutoNumberSpec{Prefix: "VG-", Start: 1, Width: 6}
+	_, err := fieldchange.NewPlanner(
+		sourceStub{revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7}},
+		impactPreflight{}, fieldchange.NewMemoryPlanStore(), nil,
+	).Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &reformat, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if !errors.Is(err, fieldchange.ErrFieldNotFound) {
+		t.Fatalf("missing field error = %#v", err)
 	}
 }
 

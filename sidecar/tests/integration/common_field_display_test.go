@@ -81,6 +81,9 @@ func TestProgressDisplayAndRatingPreflightKeepRawValues(t *testing.T) {
 	draft.Display.Preset, draft.Display.ProgressStart, draft.Display.ProgressTarget = "rating", nil, nil
 	draft.Storage.Options.OnlyInt = true
 	draft.Constraints.Range.Min, draft.Constraints.Range.Max = 0, 5
+	// Duplicate active display names are rejected now; the rating field is a
+	// distinct sibling, not a same-named recreation.
+	draft.DisplayName = "Rating"
 	blocked, err := planner.Plan(ctx, v2.FieldChangeIntent{Action: v2.ActionUpdate, TableID: table.TableID, FieldID: created.Definition.Identity.FieldID, ExpectedSchemaRev: revisions.Schema, Draft: &draft, Actor: actor})
 	if err != nil {
 		t.Fatal(err)

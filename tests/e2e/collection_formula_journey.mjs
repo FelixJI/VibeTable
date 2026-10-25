@@ -21,7 +21,7 @@ export async function openCollectionLookupEditor(page, openDrawer, helpers) {
 // 不调用任何被测产品 API 推导期望。
 export async function runCollectionFormulaJourney(page, recorder, runtime, helpers) {
   const {
-    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
     applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
     selectTable, selectNValue, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
     chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
@@ -163,11 +163,12 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
       const migration = await waitForFieldMigration(page, applied.payload.migrationJobId);
       if (migration.payload?.phase !== "completed") throw new Error(JSON.stringify(migration));
     }
-    await closeFieldSettingsDrawer(page);
+    await settleFieldSettingsAfterApply(page, applied);
     return applied;
   };
   const openNewComputedFieldDrawer = async (displayName, typeValue) => {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
     await page.getByTestId("field-display-name").locator("input").fill(displayName);
     await selectNValue(page, "field-logical-type", typeValue);

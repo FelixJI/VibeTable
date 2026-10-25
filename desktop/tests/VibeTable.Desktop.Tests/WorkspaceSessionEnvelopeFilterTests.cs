@@ -67,6 +67,31 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             Assert.AreEqual("QUERY_CANCELLED", JsonSerializer.SerializeToElement(result.Payload).GetProperty("code").GetString());
     }
     [TestMethod]
+    public async Task ReserveHostSequenceForARetiredEpochThrowsTheDiagnosticsReadFailure()
+    {
+        // Reproduces the runtime-info read failure: MainWindow.Diagnostics reads
+        // the current session, then reserves a host sequence on that epoch.
+        // After close/switch retires the epoch this exact call throws and used
+        // to fail the whole diagnostics bundle (DIAGNOSTICS_BUILD_FAILED).
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("诊断", "Diagnostics");
+        WorkspaceSessionV2 opened =
+            await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        Assert.AreEqual(1UL, filter.ReserveHostSequence(
+            opened.WorkspaceId!.Value, opened.SessionEpoch));
+
+        await fixture.Manager.CloseAsync("diagnostics-regression");
+
+        try
+        {
+            filter.ReserveHostSequence(opened.WorkspaceId!.Value, opened.SessionEpoch);
+            Assert.Fail("retired epoch reservation must throw");
+        }
+        catch (InvalidOperationException) { }
+    }
+
+    [TestMethod]
     public async Task RecoveryReadLeaseRetiresDuringDrainButSentWriteKeepsItsLeaseUntilTerminal()
     {
         using var fixture = new SessionFixture();

@@ -62,7 +62,11 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 // ApplyWithCommit lets an authoritative caller persist its result in the same
 // business transaction. The callback never runs for a replayed mutation.
 func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, commit func(core.App, Receipt) error) (Receipt, error) {
-	ctx = formula.EnsureEvaluationTimeAt(ctx, kernel.now())
+	// One instant for the whole apply: the auto-number date segment, the
+	// audit envelopes and the data.changed events of one mutation can never
+	// straddle a UTC day boundary.
+	applyNow := kernel.now()
+	ctx = formula.EnsureEvaluationTimeAt(ctx, applyNow)
 	ctx = relatedcomputation.WithClockCache(ctx)
 	if err := validateRequestShape(request); err != nil {
 		return Receipt{}, err
@@ -208,7 +212,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 
 			after, applyErr := kernel.applyOperation(
 				ctx, txApp, definition, record, operation, before,
-				baseRowRevisions[recordID]+1, computedFields, numberFields,
+				baseRowRevisions[recordID]+1, computedFields, numberFields, applyNow,
 			)
 			if applyErr != nil {
 				return applyErr
@@ -245,7 +249,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			}
 			if err := saveAudit(
 				ctx, txApp, changeSetID, index+1, request, definition,
-				recordID, operation.Kind, before, after, dataRevision+1, kernel.now(),
+				recordID, operation.Kind, before, after, dataRevision+1, applyNow,
 			); err != nil {
 				return err
 			}
@@ -299,7 +303,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			if err := saveAudit(
 				ctx, txApp, changeSetID, auditSequence, relatedRequest,
 				change.definition, change.recordID, OperationUpdate,
-				change.before, change.after, relatedRevision+1, kernel.now(),
+				change.before, change.after, relatedRevision+1, applyNow,
 			); err != nil {
 				return err
 			}
@@ -315,7 +319,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 		event := DataChangedEvent{
 			ContractVersion: ContractVersion, Topic: "data.changed",
 			EventID: eventID, Sequence: nextDataRevision,
-			OccurredAt:     kernel.now().UTC().Format(time.RFC3339),
+			OccurredAt:     applyNow.UTC().Format(time.RFC3339),
 			SchemaRevision: definition.Snapshot.SchemaRevision,
 			DataRevision:   formatRevision("data", nextDataRevision),
 			ChangeSetID:    &changeSetID, TableID: request.TableID,
@@ -348,7 +352,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			relatedEvent := DataChangedEvent{
 				ContractVersion: ContractVersion, Topic: "data.changed",
 				EventID: relatedEventID, Sequence: nextRevision,
-				OccurredAt:     kernel.now().UTC().Format(time.RFC3339),
+				OccurredAt:     applyNow.UTC().Format(time.RFC3339),
 				SchemaRevision: batch.definition.Snapshot.SchemaRevision,
 				DataRevision:   formatRevision("data", nextRevision),
 				ChangeSetID:    &changeSetID, TableID: tableID,
@@ -636,6 +640,7 @@ func (kernel *Kernel) applyOperation(
 	rowRevision int64,
 	computedFields map[string]map[string]any,
 	numberFields []*autonumber.Field,
+	applyTime time.Time,
 ) (map[string]any, error) {
 	var finalizeAttachments AttachmentFinalizer
 	switch operation.Kind {
@@ -725,7 +730,7 @@ func (kernel *Kernel) applyOperation(
 	}
 	if operation.Kind == OperationInsert {
 		for _, field := range numberFields {
-			if err := field.Assign(record); err != nil {
+			if err := field.Assign(record, applyTime); err != nil {
 				return nil, mutationError("mutation.auto_number.allocation_failed", nil, err.Error(), nil, false)
 			}
 		}

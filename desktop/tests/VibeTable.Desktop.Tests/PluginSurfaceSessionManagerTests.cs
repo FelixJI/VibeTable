@@ -159,4 +159,24 @@ public sealed class PluginSurfaceSessionManagerTests
         Assert.IsFalse(manager.IsActive(first.SurfaceToken));
         Assert.IsFalse(manager.IsActive(second.SurfaceToken));
     }
+
+    [TestMethod]
+    public void MountedSurfacesRetireBeforeChangedAndIgnoreLateMounts()
+    {
+        var manager = new PluginSurfaceSessionManager();
+        var revision = PluginPackageRevision.Create(@"C:\plugins\clean", PackageHash);
+        var first = manager.Open(revision, "ui/first.html");
+        var second = manager.Open(revision, "ui/second.html");
+        var unused = manager.Open(revision, "ui/unused.html");
+        Assert.AreEqual(0, manager.MountedSurfaceCount);
+        Assert.IsTrue(manager.MarkMounted(first.SurfaceToken));
+        Assert.IsTrue(manager.MarkMounted(second.SurfaceToken));
+        Assert.AreEqual(2, manager.MountedSurfaceCount);
+        manager.Changed += () => Assert.AreEqual(1, manager.MountedSurfaceCount);
+
+        Assert.IsTrue(manager.TryAccept(new PluginSurfaceEvent(PluginContractVersions.Surface,
+            first.SurfaceToken, PluginSurfaceEvents.Close, JsonSerializer.SerializeToElement(new { })), out _));
+        Assert.IsFalse(manager.MarkMounted(first.SurfaceToken));
+        Assert.IsTrue(manager.IsActive(unused.SurfaceToken), "Unused catalog capabilities remain authorized.");
+    }
 }

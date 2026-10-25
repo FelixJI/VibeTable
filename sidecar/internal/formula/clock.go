@@ -248,8 +248,8 @@ func EvaluationIncludes(ctx context.Context, fieldID string) bool {
 
 type sourceRecalculationKey struct{}
 
-// WithSourceRecalculation is reserved for derived-cache materialization. Public
-// reads and business mutations keep rejecting stale stored computed sources.
+// WithSourceRecalculation is reserved for trusted derived-cache materialization
+// in jobs and schema rewrites. Public reads and business mutations remain strict.
 func WithSourceRecalculation(ctx context.Context) context.Context {
 	return context.WithValue(ctx, sourceRecalculationKey{}, true)
 }

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildRestorePlan,
   defaultGridState,
+  isRowIdColumn,
+  isRowIdFieldName,
   isStateConflict,
   reconcileState,
 } from "./gridState";
@@ -139,6 +141,20 @@ describe("buildRestorePlan", () => {
     );
     const plan = buildRestorePlan(reconciled);
     expect(plan.columnLayout[0]).not.toHaveProperty("width");
+  });
+});
+
+describe("row id column rule", () => {
+  it("identifies the reserved id name regardless of the host projection shape", () => {
+    // 真实宿主 ReadColumns 投影：kind=scalar；sidecar：kind=system；旧宿主无 kind。
+    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(true);
+    expect(isRowIdColumn({ name: "id", kind: "system" })).toBe(true);
+    expect(isRowIdColumn({ name: "id" })).toBe(true);
+    // 用户字段不是行 ID。
+    expect(isRowIdColumn({ name: "f_title", kind: "scalar" })).toBe(false);
+    expect(isRowIdColumn({ name: "f_title", kind: "system" })).toBe(false);
+    expect(isRowIdFieldName("id")).toBe(true);
+    expect(isRowIdFieldName("f_title")).toBe(false);
   });
 });
 

@@ -17,9 +17,11 @@ import type {
 import type { FormulaAuthorDocument } from "@/contracts/generated/workbench";
 import type { FormulaDraftDiagnostic } from "./formula/formulaDraftRequest";
 import {
+  autoNumberOrderValid,
   draftFromCapability,
   draftFromDefinition,
   draftsEqual,
+  fieldDraftIssues,
   initialDraft,
   replaceDraftType,
 } from "./model";
@@ -114,13 +116,15 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     || isPairedRelation.value
       && JSON.stringify(originalRelationPair.value) !== JSON.stringify(relationPair.value));
   const isExisting = computed(() => result.value?.definition !== null);
+  /** 前端可判定的草稿问题（名称长度/字符类型、各类型默认值限制）；空数组可预览。 */
+  const draftIssues = computed<readonly string[]>(() => fieldDraftIssues(draft.value));
   const canPlan = computed(() =>
     !!result.value
     && (action.value !== "update" || dirty.value)
     && phase.value !== "loading"
     && phase.value !== "planning"
     && phase.value !== "applying"
-    && !!draft.value?.displayName.trim()
+    && draftIssues.value.length === 0
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.targetTableId)
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
     && (draft.value?.logicalType !== "lookup" || !!draft.value.lookup?.targetFieldId)
@@ -135,6 +139,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && (draft.value?.logicalType !== "autoNumber" || !!draft.value.autoNumber
       && Array.from(draft.value.autoNumber.prefix).length <= 64
       && !/[\u0000\r\n]/.test(draft.value.autoNumber.prefix)
+      && autoNumberOrderValid(
+        (draft.value.autoNumber as { order?: readonly ("prefix" | "date" | "number")[] }).order,
+      )
       && Number.isSafeInteger(draft.value.autoNumber.start) && draft.value.autoNumber.start >= 1
       && Number.isInteger(draft.value.autoNumber.width)
       && draft.value.autoNumber.width >= 1 && draft.value.autoNumber.width <= 16)
@@ -584,7 +591,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaValidatedDocumentRevision, formulaValidating, formulaValidationError,
     formulaPreviewValue, formulaPreviewReady, formulaPreviewing,
     formulaPreviewError, formulaPreviewNote,
-    capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
+    capabilities, capability, sourceCapability, dirty, isExisting, canPlan, draftIssues,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
     restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
     setRelationSchema, failRelationCatalog,

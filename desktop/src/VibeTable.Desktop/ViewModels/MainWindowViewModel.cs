@@ -99,6 +99,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 RaisePropertyChanged(nameof(IsWebViewVisible));
                 RaisePropertyChanged(nameof(IsHostFallbackVisible));
                 RaisePropertyChanged(nameof(IsRetryVisible));
+                RaisePropertyChanged(nameof(IsPluginChromeVisible));
+                RaisePropertyChanged(nameof(IsNativeRecoveryVisible));
                 ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
                 ((RelayCommand)RecoverRendererCommand).RaiseCanExecuteChanged();
                 ((RelayCommand)StopPluginsCommand).RaiseCanExecuteChanged();
@@ -204,6 +206,43 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// <summary>Renderer-only recovery; does not restart the backend.</summary>
     public ICommand RecoverRendererCommand { get; }
 
+    private bool _pluginSurfaceActive;
+
+    /// <summary>
+    /// Whether the native plugin chrome (停止插件/返回平台/管理插件) is shown.
+    /// The host feeds this from its plugin-surface registry: the chrome only
+    /// makes sense while a plugin surface is actually open in a live renderer.
+    /// </summary>
+    public bool IsPluginChromeVisible => _pluginSurfaceActive && State == StartupState.Ready;
+
+    /// <summary>
+    /// Whether the native 恢复界面 entry is shown. Once a renderer load has
+    /// been issued the entry stays reachable — including the Ready state a
+    /// frozen renderer keeps — because a plugin DOM or hung renderer cannot
+    /// shadow the native row. It stays visible through Faulted so the
+    /// abnormal state still offers the native recovery path.
+    /// </summary>
+    public bool IsNativeRecoveryVisible => _rendererLoadStarted;
+
+    private string? _rendererRecoveryError;
+    public string? RendererRecoveryError
+    {
+        get => _rendererRecoveryError;
+        private set
+        {
+            _rendererRecoveryError = value;
+            RaisePropertyChanged(nameof(RendererRecoveryError));
+        }
+    }
+
+    /// <summary>Host-fed plugin surface activity; drives <see cref="IsPluginChromeVisible"/>.</summary>
+    public void SetPluginSurfaceActive(bool active)
+    {
+        if (_pluginSurfaceActive == active) return;
+        _pluginSurfaceActive = active;
+        RaisePropertyChanged(nameof(IsPluginChromeVisible));
+    }
+
     private bool _isRendererRecovering;
 
     /// <summary>True while a renderer-only recovery is rebuilding the WebView control.</summary>
@@ -228,6 +267,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     internal bool TryBeginRendererRecovery(bool rendererFailure = false)
     {
         if (!CanRecoverRenderer && !(rendererFailure && !IsRendererRecovering && State == StartupState.LoadingWeb)) return false;
+        RendererRecoveryError = null;
         IsRendererRecovering = true;
         DetailMessage = "正在恢复界面，请等待…";
         TransitionTo(StartupState.LoadingWeb);
@@ -253,6 +293,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// </remarks>
     public async Task StartAsync()
     {
+        RendererRecoveryError = null;
         bool rebuildRenderer = State == StartupState.Faulted && _rendererLoadStarted && _recoverRenderer is not null;
         LastStartupError = null;
         // Retry re-enters StartingBackend from Faulted; the legal-transition
@@ -272,6 +313,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         _rendererLoadStarted = true;
         TransitionTo(StartupState.LoadingWeb);
+        RaisePropertyChanged(nameof(IsNativeRecoveryVisible));
 
         // Fire-and-forget the WebView load so StartAsync returns in LoadingWeb;
         // a completion/failure here drives the final Ready / Faulted move.
@@ -325,16 +367,26 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task RunRendererRecoveryAsync(Func<string, Task>? recoverRenderer)
     {
         if (recoverRenderer is null) return;
-        if (CanRecoverRenderer)
+        if (!CanRecoverRenderer) return;
+        RendererRecoveryError = null;
+        try
         {
-            try
-            {
-                await recoverRenderer("native-recovery-command").ConfigureAwait(true);
-            }
-            catch (Exception ex)
+            await recoverRenderer("native-recovery-command").ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            // The host callback owns admission. When it failed before it
+            // admitted a recovery, FailRendererRecovery is a no-op and the
+            // click used to swallow the failure silently; surface it through
+            // the bound detail line instead, and never let the click path
+            // throw out of the command handler.
+            if (IsRendererRecovering)
             {
                 FailRendererRecovery(ex.Message);
+                return;
             }
+            DetailMessage = $"界面恢复失败：{ex.Message}（可重试完整重启，或再次恢复）";
+            RendererRecoveryError = DetailMessage;
         }
     }
 

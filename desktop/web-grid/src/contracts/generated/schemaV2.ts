@@ -163,6 +163,8 @@ export interface AutoNumberSpec {
   readonly prefix: string;
   readonly start: number;
   readonly width: number;
+  readonly dateFormat?: "yyyyMMdd" | null;
+  readonly order?: ReadonlyArray<"prefix" | "date" | "number">;
 }
 
 export interface AutoDateSpec {

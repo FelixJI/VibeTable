@@ -88,7 +88,7 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 	)
 	lkpSrc := createV2IntegrationRelation(
 		t, ctx, app, lkpTable.TableID, lkpNote.FieldID, source.TableID, minute.FieldID,
-		"Src", "Readers", "one", "clock_lookup_src",
+		"Src", "Lookup readers", "one", "clock_lookup_src",
 	)
 	lkpDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Clock")
 	lkpDraft.Lookup = &v2.LookupSpec{

@@ -1800,6 +1800,41 @@
                 "maximum": 16,
                 "minimum": 1,
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -3361,6 +3396,41 @@
                 "maximum": 16,
                 "minimum": 1,
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -5777,6 +5847,41 @@
                 "maximum": 16,
                 "minimum": 1,
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -7073,6 +7178,41 @@
                 "maximum": 16,
                 "minimum": 1,
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -18496,6 +18636,43 @@
                 "minimum": 1,
                 "title": "Width",
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Dateformat"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Order"
               }
             },
             "required": [
@@ -23299,6 +23476,41 @@
                 "maximum": 16,
                 "minimum": 1,
                 "type": "integer"
+              },
+              "dateFormat": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yyyyMMdd",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "enum": [
+                        "prefix",
+                        "date",
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [

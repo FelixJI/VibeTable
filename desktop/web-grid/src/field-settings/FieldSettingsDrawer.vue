@@ -32,6 +32,13 @@ import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import type { LookupConditionFieldOption } from "./lookup/lookupCondition";
 import { useFieldSettingsStore } from "./store";
+import {
+  AUTO_NUMBER_TOKENS,
+  autoNumberSample as buildAutoNumberSample,
+  type AutoNumberDraftSpec,
+  type AutoNumberToken,
+  FIELD_DISPLAY_NAME_MAX_LENGTH,
+} from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { formatNumberDisplay } from "@/number/numberDisplay";
@@ -65,12 +72,15 @@ const jsonDefaultText = ref("null");
 const jsonSchemaText = ref("{}");
 const jsonEditorError = ref("");
 const planCard = ref<HTMLElement | null>(null);
+const closeConfirm = ref(false);
 watch(() => store.open, (open) => {
   if (open) {
     rootTab.value = store.result?.definition?.lifecycle.state === "retired"
       ? "recycle"
       : "settings";
     settingsTab.value = "general";
+  } else {
+    closeConfirm.value = false;
   }
 });
 watch(
@@ -253,6 +263,24 @@ const formulaRelations = computed(() => (store.formulaSourceSchema?.columns ?? [
 
 function patch(patchValue: Partial<FieldDraftV2>): void {
   store.patchDraft(patchValue);
+}
+
+/** 脏状态关闭确认：真实未保存值必须由用户显式放弃，不用浏览器原生 confirm。 */
+function requestClose(): void {
+  if (store.dirty) {
+    closeConfirm.value = true;
+    return;
+  }
+  emit("close");
+}
+
+function discardAndClose(): void {
+  closeConfirm.value = false;
+  emit("close");
+}
+
+function keepEditing(): void {
+  closeConfirm.value = false;
 }
 
 function patchValue(patchValue: Partial<FieldDraftV2["value"]>): void {
@@ -473,6 +501,7 @@ function confirmationLabel(value: string): string {
   if (value === "cascade") return "目标记录删除时级联删除当前表记录";
   if (value === "backupReceipt") return "永久清除已有可验证备份";
   if (value === "fieldName") return "输入的字段名称与待清除字段一致";
+  if (value === "autoNumberReformat") return "按新规则重排已有记录编号（保留序号）";
   return value;
 }
 
@@ -650,9 +679,10 @@ function deleteSelectOption(index: number): void {
   });
 }
 
+const autoNumberPlanStep = computed(() => store.plan?.steps.find(item =>
+  item.kind === "autoNumberBackfill" || item.kind === "autoNumberReformat"));
 const autoNumberPreview = computed(() => {
-  const step = store.plan?.steps.find(item => item.kind === "autoNumberBackfill");
-  const samples = step?.details.samples;
+  const samples = autoNumberPlanStep.value?.details.samples;
   return Array.isArray(samples) ? samples.flatMap(item => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) return [];
     return typeof item.recordId === "string" && typeof item.value === "string" ? [{ recordId: item.recordId, value: item.value }] : [];
@@ -662,6 +692,75 @@ const autoNumberPreview = computed(() => {
 function patchAutoNumber(patchValue: Partial<NonNullable<FieldDraftV2["autoNumber"]>>): void {
   if (store.draft?.autoNumber) patch({ autoNumber: { ...store.draft.autoNumber, ...patchValue } });
 }
+
+/** 自动编号草稿；dateFormat/order 已进入正式 generated AutoNumberSpec 契约。 */
+const autoNumberDraft = computed(
+  () => store.draft?.autoNumber as AutoNumberDraftSpec | undefined,
+);
+const AUTO_NUMBER_TOKEN_LABELS: Record<AutoNumberToken, string> = {
+  prefix: "前缀", date: "日期", number: "序号",
+};
+/** 六种完整排列；值用逗号拼接便于 NSelect 直传。 */
+const autoNumberOrderOptions = AUTO_NUMBER_TOKENS
+  .flatMap(a => AUTO_NUMBER_TOKENS.flatMap(b => AUTO_NUMBER_TOKENS
+    .map(c => (a !== b && b !== c && a !== c ? [[a, b, c] as const] : []))))
+  .flat()
+  .map(order => ({
+    label: order.map(token => AUTO_NUMBER_TOKEN_LABELS[token]).join("-"),
+    value: order.join(","),
+  }));
+const autoNumberOrder = computed<readonly AutoNumberToken[]>(
+  () => autoNumberDraft.value?.order ?? AUTO_NUMBER_TOKENS,
+);
+const autoNumberDateEnabled = computed(() => autoNumberDraft.value?.dateFormat != null);
+function patchAutoNumberSpec(
+  patchValue: Partial<NonNullable<FieldDraftV2["autoNumber"]>>,
+): void {
+  if (!autoNumberDraft.value) return;
+  patchAutoNumber({ ...patchValue });
+}
+
+/** 按前缀、日期段与补零序号生成首个编号样例，仅用于呈现配置效果。 */
+const autoNumberSample = computed(() => {
+  const spec = autoNumberDraft.value;
+  return spec ? buildAutoNumberSample(spec) : "";
+});
+
+/**
+ * 当前草稿的值限制摘要：仅呈现草稿/能力已声明的约束，不虚构限制。
+ * 常驻显示，帮助用户在选定类型时即可看到实际生效的边界。
+ */
+const constraintSummary = computed<string[]>(() => {
+  const draft = store.draft;
+  if (!draft) return [];
+  const summary: string[] = [];
+  if (isTextual(draft.logicalType)) {
+    const { min, max } = draft.constraints.length;
+    if (typeof min === "number" && min > 0) summary.push(`最短 ${min} 字符`);
+    if (typeof max === "number" && max > 0) summary.push(`最长 ${max} 字符`);
+    if (draft.constraints.pattern.enabled && draft.constraints.pattern.value) {
+      summary.push("正则限制");
+    }
+  }
+  if (draft.logicalType === "number") {
+    if (draft.storage.options.onlyInt) summary.push("仅整数");
+    const { min, max } = draft.constraints.range;
+    if (typeof min === "number" && typeof max === "number") summary.push(`${min} ≤ 值 ≤ ${max}`);
+    else if (typeof min === "number") summary.push(`值 ≥ ${min}`);
+    else if (typeof max === "number") summary.push(`值 ≤ ${max}`);
+  }
+  if (["select", "multiSelect"].includes(draft.logicalType)) {
+    const options = draft.select?.options.filter(option => option.state === "active") ?? [];
+    summary.push(`${options.length} 个选项`);
+    const { min, max } = draft.constraints.selection;
+    if (min > 0) summary.push(`至少选 ${min}`);
+    if (typeof max === "number") summary.push(`最多选 ${max}`);
+  }
+  if (draft.logicalType === "autoNumber" && draft.autoNumber) {
+    summary.push(`前缀 ≤ 64 字符 · 补零宽度 1–16 · 序列固定不回收`);
+  }
+  return summary;
+});
 
 function typeLabel(type: LogicalTypeV2): string {
   const labels: Partial<Record<LogicalTypeV2, string>> = {
@@ -682,16 +781,14 @@ function isTextual(type: LogicalTypeV2): boolean {
 <template>
   <NDrawer
     :show="store.open"
-    :width="680"
+    :width="'min(680px, calc(100vw - 24px))'"
     placement="right"
-    @mask-click="emit('close')"
-    @esc="emit('close')"
+    @update:show="value => { if (!value) requestClose(); }"
   >
     <NDrawerContent
       class="field-settings-drawer"
       closable
       :native-scrollbar="false"
-      @close="emit('close')"
     >
       <template #header>
         <div class="drawer-heading">
@@ -716,6 +813,34 @@ function isTextual(type: LogicalTypeV2): boolean {
         <div>{{ store.error }}</div>
       </NAlert>
 
+      <NAlert
+        v-if="store.draftIssues.length"
+        type="warning"
+        :show-icon="false"
+        class="top-alert"
+        data-testid="field-draft-issues"
+      >
+        <strong>请先修正以下问题再预览变更</strong>
+        <div v-for="issue in store.draftIssues" :key="issue">· {{ issue }}</div>
+      </NAlert>
+
+      <section
+        v-if="closeConfirm"
+        class="close-confirm"
+        data-testid="field-close-confirm"
+        role="alertdialog"
+        aria-label="确认关闭字段设置"
+      >
+        <div>
+          <strong>有未保存的更改</strong>
+          <small>关闭将丢弃当前草稿中未保存的修改；已保存的字段设置不受影响。</small>
+        </div>
+        <NSpace>
+          <NButton size="small" data-testid="field-close-confirm-keep" @click="keepEditing">继续编辑</NButton>
+          <NButton size="small" type="warning" secondary data-testid="field-close-confirm-discard" @click="discardAndClose">放弃更改并关闭</NButton>
+        </NSpace>
+      </section>
+
       <RelationInspectionPanel
         v-if="store.open && store.inspectionTarget && store.phase !== 'loading'
           && (!store.result || store.result.definition?.logicalType === 'relation')"
@@ -736,11 +861,15 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <span>显示名称</span>
                 <NInput
                   :value="store.draft.displayName"
-                  maxlength="128"
+                  :maxlength="FIELD_DISPLAY_NAME_MAX_LENGTH"
+                  show-count
                   placeholder="例如：订单金额"
                   data-testid="field-display-name"
                   @update:value="patch({ displayName: $event })"
                 />
+                <small data-testid="field-display-name-hint">
+                  最多 {{ FIELD_DISPLAY_NAME_MAX_LENGTH }} 个字符，不能包含换行或控制字符；同表字段名称不可重复
+                </small>
               </label>
               <label>
                 <span>字段类型</span>
@@ -751,6 +880,10 @@ function isTextual(type: LogicalTypeV2): boolean {
                   data-testid="field-logical-type"
                   @update:value="changeType($event as LogicalTypeV2)"
                 />
+                <small v-if="constraintSummary.length" data-testid="field-constraint-summary">
+                  当前值限制：{{ constraintSummary.join(" · ") }}
+                </small>
+                <small v-else data-testid="field-constraint-summary">当前类型未启用额外值限制</small>
               </label>
               <label class="wide">
                 <span>说明</span>
@@ -838,7 +971,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                         :placeholder="store.draft.logicalType === 'date'
                           ? 'YYYY-MM-DD'
                           : store.draft.logicalType === 'dateTime'
-                            ? 'RFC3339（含时区）' : 'HH:mm:ss'"
+                            ? 'RFC3339 含秒与时区，如 2026-08-12T09:00:00Z' : 'HH:mm:ss'"
                         @update:value="patchDefault({ value: $event })"
                       />
                     </div>
@@ -1187,12 +1320,25 @@ function isTextual(type: LogicalTypeV2): boolean {
 
               <NTabPane name="advanced" tab="高级">
                 <section v-if="store.draft.autoNumber" class="settings-section" data-testid="auto-number-settings">
-                  <div class="section-title"><div><strong>业务自动编号</strong><small>由本地服务生成，只读；创建后规则固定，删除记录不回收号码</small></div></div>
+                  <div class="section-title"><div><strong>业务自动编号</strong><small>由本地服务生成，只读；序列（起始值）创建后固定，删除记录不回收号码</small></div></div>
                   <div class="two-column">
-                    <label><span>前缀</span><NInput data-testid="auto-number-prefix" :value="store.draft.autoNumber.prefix" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ prefix: $event })" /></label>
+                    <label><span>前缀</span><NInput data-testid="auto-number-prefix" :value="store.draft.autoNumber.prefix" @update:value="patchAutoNumber({ prefix: $event })" /></label>
                     <label><span>起始值（步长固定为 1）</span><NInputNumber data-testid="auto-number-start" :value="store.draft.autoNumber.start" :min="1" :max="Number.MAX_SAFE_INTEGER" :precision="0" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ start: $event ?? 1 })" /></label>
-                    <label><span>最小补零宽度</span><NInputNumber data-testid="auto-number-width" :value="store.draft.autoNumber.width" :min="1" :max="16" :precision="0" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ width: $event ?? 6 })" /></label>
+                    <label><span>最小补零宽度</span><NInputNumber data-testid="auto-number-width" :value="store.draft.autoNumber.width" :min="1" :max="16" :precision="0" @update:value="patchAutoNumber({ width: $event ?? 6 })" /></label>
+                    <label><span>编号顺序</span><NSelect
+                      data-testid="auto-number-order"
+                      :value="autoNumberOrder.join(',')"
+                      :options="autoNumberOrderOptions"
+                      @update:value="value => patchAutoNumberSpec({ order: String(value).split(',') as AutoNumberToken[] })"
+                    /></label>
+                    <label><span>创建日期（UTC，yyyyMMdd）</span><NSwitch
+                      data-testid="auto-number-date"
+                      :value="autoNumberDateEnabled"
+                      @update:value="enabled => patchAutoNumberSpec({ dateFormat: enabled ? 'yyyyMMdd' : null })"
+                    /></label>
+                    <label><span>首个编号预览</span><code class="auto-number-sample" data-testid="auto-number-sample">{{ autoNumberSample }}</code></label>
                   </div>
+                  <small>调整前缀、补零宽度、顺序或日期段会重新格式化已有编号，序号不变；预览后确认应用。</small>
                 </section>
 
 
@@ -1514,9 +1660,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div>变更后：{{ relationPlanSummary(change.after) }}</div>
                 </div>
               </template>
-              <div v-if="store.plan.after?.autoNumber && store.plan.intent.action === 'create'" data-testid="auto-number-backfill-preview">
-                <strong>按记录 ID 升序原子回填 {{ store.plan.impact.records }} 条记录</strong>
-                <p>取消不会分配编号；不会按当前网格排序编号。</p>
+              <!-- 既有编号的重格式化与新建回填都通过同一迁移计划确认；
+                   序列不变，仅格式更新。 -->
+              <div v-if="store.plan.after?.autoNumber && autoNumberPlanStep" data-testid="auto-number-backfill-preview">
+                <strong>按记录 ID 升序原子{{ store.plan.intent.action === "create" ? "回填" : "重格式化" }} {{ store.plan.impact.records }} 条记录</strong>
+                <p>取消不会改变既有编号；不会按当前网格排序编号。</p>
                 <div v-for="sample in autoNumberPreview" :key="sample.recordId">{{ sample.recordId }} → {{ sample.value }}</div>
               </div>
               <div class="impact-grid">
@@ -1588,7 +1736,7 @@ function isTextual(type: LogicalTypeV2): boolean {
           <span v-if="store.dirty" class="dirty-dot">● 有未保存更改</span>
           <span v-else>字段身份由 Sidecar 管理</span>
           <NSpace>
-            <NButton data-testid="field-close-button" @click="emit('close')">关闭</NButton>
+            <NButton data-testid="field-close-button" @click="requestClose">关闭</NButton>
             <NButton
               secondary
               :disabled="!store.canPlan"
@@ -1642,5 +1790,8 @@ label{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:650}
 .recycle-head{margin:14px 0}.recycle-item{display:flex;align-items:center;justify-content:space-between;padding:12px;margin-bottom:8px}
 .recycle-item>div{display:flex;align-items:center;gap:10px}.recycle-item span{display:flex;flex-direction:column}
 .drawer-footer{width:100%;font-size:12px;color:var(--vt-fg-muted)}.dirty-dot{color:#d97706}
+.close-confirm{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:14px;border:1px solid color-mix(in srgb,#d97706 45%,var(--vt-border));border-radius:14px;background:color-mix(in srgb,#d97706 7%,var(--vt-bg-elevated))}
+.close-confirm>div{display:flex;flex-direction:column;gap:3px}
+.auto-number-sample{font-family:Consolas,"SFMono-Regular",monospace;font-size:13px}
 @media(max-width:720px){.identity-card,.two-column{grid-template-columns:1fr}.wide{grid-column:auto}.impact-grid{grid-template-columns:1fr 1fr}.drawer-footer{align-items:flex-start;flex-direction:column}}
 </style>

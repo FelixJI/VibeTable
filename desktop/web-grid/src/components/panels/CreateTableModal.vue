@@ -27,13 +27,14 @@ defineEmits<{
         <NInput
           v-model:value="admin.form.name"
           :maxlength="128"
+          show-count
           :placeholder="t('createTable.name')"
           data-testid="create-table-name-input"
         />
       </NFormItem>
+      <p class="name-hint">表名为 1–128 个字符，支持中文、字母、数字和符号，不能包含换行或控制字符；同一工作区内不能重名。</p>
       <NAlert type="info" :show-icon="false" class="next-step">
-        数据表创建后会立即打开统一字段设置抽屉。字段身份、物理名、默认值与约束均由
-        Schema v2 计划分配，不再在建表窗口生成。
+        创建后可继续添加字段，并设置字段类型、默认值和必填等规则。
       </NAlert>
       <p v-if="admin.error" class="form-error" role="alert" data-testid="create-table-error">
         {{ admin.error }}
@@ -60,6 +61,7 @@ defineEmits<{
 </template>
 
 <style scoped>
+.name-hint { margin: 0 0 12px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.6; }
 .next-step {
   margin-top: var(--vt-space-2);
   line-height: 1.6;

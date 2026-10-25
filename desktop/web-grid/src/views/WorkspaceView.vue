@@ -34,6 +34,9 @@ import { createWorkspaceSearchNavigation } from "@/search/workspaceSearchNavigat
 import ConnectionPill from "@/components/feedback/ConnectionPill.vue";
 import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
+import FieldManagementView from "@/components/grid/FieldManagementView.vue";
+import RecordDetailsDrawer from "@/components/grid/RecordDetailsDrawer.vue";
+import InsertRowDialog from "@/components/grid/InsertRowDialog.vue";
 import ViewQueryControls from "@/components/grid/ViewQueryControls.vue";
 import ViewGroupPanel from "@/components/grid/ViewGroupPanel.vue";
 import { createTabulatorDataSourceViewSource } from "@/grid/dataSourceViewState";
@@ -184,11 +187,30 @@ const viewQuery = useViewQueryStore();
 const documentWorkspace = useDocumentWorkspaceStore();
 const workspaceSearch = useWorkspaceSearchStore();
 const contentPanelOpen = ref(false);
+const workspaceSession = useWorkspaceSessionStore();
+const fieldManagementOpen = ref(false);
+const insertDialogOpen = ref(false);
+const insertDialogBusy = ref(false);
+let insertDialogGeneration = 0;
+const detailRowKey = ref<string | number | null>(null);
+const detailRow = computed(() => tableStore.allRows.find(row => row.rowKey === detailRowKey.value) ?? null);
+watch(
+  () => [workspace.currentTable, workspaceSession.activeWorkspaceId, workspaceSession.sessionEpoch],
+  () => {
+    fieldManagementOpen.value = false;
+    detailRowKey.value = null;
+    closeInsertDialog();
+  },
+  { flush: "sync" },
+);
+function openRecordDetails(row: Record<string, unknown>): void {
+  if (typeof row.rowKey !== "string" && typeof row.rowKey !== "number") return;
+  detailRowKey.value = row.rowKey;
+}
 const contentRowKey = ref<string | number | null>(null);
 const contentRow = computed(() => tableStore.allRows.find(
   (row) => row.rowKey === contentRowKey.value,
 ) ?? null);
-const workspaceSession = useWorkspaceSessionStore();
 const workspaceProtection = useWorkspaceProtectionStore();
 const showWorkspaceCenter = ref(false);
 const workspaceSessionUi = createWorkspaceSessionUiController({
@@ -527,6 +549,9 @@ const isForegroundOverlayOpen = (): boolean =>
   || ui.shortcutsOpen
   || ui.pastePanelOpen
   || contentPanelOpen.value
+  || detailRow.value !== null
+  || fieldManagementOpen.value
+  || insertDialogOpen.value
   || admin.phase !== "idle"
   || workspaceSessionUi.activationPending.value
   || relationEditor.value.show
@@ -728,7 +753,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
 
 function openFieldManager(): void {
   if (!workspace.currentTable) return;
-  void fieldSettingsService.openCreate(workspace.currentTable, "relation");
+  fieldManagementOpen.value = true;
 }
 
 /**
@@ -945,6 +970,35 @@ const historyFieldOptions = computed(() => (tableStore.schema ?? []).map((column
 })));
 
 const insertRowDisabled = computed(() => !mutationService.canInsertRow());
+const requiredInsertColumns = computed(() => mutationService.requiredInsertColumns());
+
+function closeInsertDialog(): void {
+  insertDialogGeneration++;
+  insertDialogOpen.value = false;
+  insertDialogBusy.value = false;
+}
+
+function requestInsertRow(): void {
+  if (insertRowDisabled.value) return;
+  editRejection.value = null;
+  if (requiredInsertColumns.value.length === 0) {
+    void mutationService.insertRow({});
+    return;
+  }
+  insertDialogGeneration++;
+  insertDialogOpen.value = true;
+}
+
+async function submitInsertRow(values: Readonly<Record<string, unknown>>): Promise<void> {
+  if (insertRowDisabled.value || insertDialogBusy.value) return;
+  const generation = insertDialogGeneration;
+  insertDialogBusy.value = true;
+  editRejection.value = null;
+  const saved = await mutationService.insertRow(values);
+  if (generation !== insertDialogGeneration) return;
+  insertDialogBusy.value = false;
+  if (saved) closeInsertDialog();
+}
 
 function onHistorySelection(payload: {
   scope: "row" | "cell" | "multiple";
@@ -1451,7 +1505,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               :data-io-export-disabled="!canExportTableData"
               @select-table="onSelect"
               @refresh="refreshTable"
-              @insert-row="mutationService.insertRow({})"
+              @insert-row="requestInsertRow"
               @open-help="ui.openShortcuts"
               @open-history="openCurrentHistory"
               @open-archived-history="revisionHistoryService.open({ scope: 'archived' })"
@@ -1470,13 +1524,17 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               :active-id="presetViews.activePresetId"
               :loading="presetViews.loading"
               :dirty="presetViews.dirty"
+              :fields-active="fieldManagementOpen"
+              :workspace-key="workspaceSession.activeWorkspaceId ?? ''"
               :error="presetViews.error"
               :date-fields="dateFieldOptions"
               :title-fields="titleFieldOptions"
               :group-fields="groupFieldOptions"
               :cover-fields="coverFieldOptions"
-              @create="presetViewController.dispatch({ type: 'view.create', request: $event })"
-              @switch="presetViewController.dispatch({ type: 'view.switch', view: $event })"
+              @fields="openFieldManager"
+              @reset="fieldManagementOpen = false; presetViewController.dispatch({ type: 'view.reset' })"
+              @create="fieldManagementOpen = false; presetViewController.dispatch({ type: 'view.create', request: $event })"
+              @switch="fieldManagementOpen = false; presetViewController.dispatch({ type: 'view.switch', view: $event })"
               @save="presetViewController.dispatch({ type: 'view.save', view: $event })"
               @duplicate="(view, name) => presetViewController.dispatch({ type: 'view.duplicate', view, name })"
               @rename="(view, name) => presetViewController.dispatch({ type: 'view.rename', view, name })"
@@ -1500,7 +1558,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               </NButton>
             </section>
             <ViewQueryControls
-              v-if="workspace.currentTable"
+              v-if="workspace.currentTable && !fieldManagementOpen"
               :columns="tableStore.schema ?? []"
               :filters="viewQuery.filters"
               :groups="viewQuery.groups"
@@ -1521,7 +1579,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               @change="presetViewController.dispatch({ type: 'definition.changed', definition: $event })"
             />
             <ViewGroupPanel
-              v-if="workspace.currentTable"
+              v-if="workspace.currentTable && !fieldManagementOpen"
               :rows="tableStore.viewGroups"
               :groups="viewQuery.groups"
               :summaries="viewQuery.summaries"
@@ -1583,12 +1641,18 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             <div v-if="!workspace.currentTable" class="table-empty" data-testid="table-empty">
               <span><NIcon :size="21"><FilePlus2 /></NIcon></span>
               <h2>{{ t("table.empty.title") }}</h2>
-              <p>{{ t("table.empty.description") }}</p>
+              <p>{{ workspace.lastError ?? t("table.empty.description") }}</p>
               <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
             </div>
             <template v-else>
+              <FieldManagementView
+                v-if="fieldManagementOpen"
+                :columns="tableStore.schema ?? []"
+                @edit="workspace.currentTable && fieldSettingsService.openEdit(workspace.currentTable, $event)"
+                @create="workspace.currentTable && fieldSettingsService.openCreate(workspace.currentTable, 'text')"
+              />
               <GridHost
-                v-show="activeViewKind === 'table'"
+                v-show="activeViewKind === 'table' && !fieldManagementOpen"
                 :on-cell-edited="onCellEdited"
                 :insert-row-disabled="insertRowDisabled"
                 @selection-change="onHistorySelection"
@@ -1602,9 +1666,11 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
 				@lookup-source-page="lookupProvenance.dispatch({ type: 'sources.open', page: $event })"
                 @view-query-change="presetViewController.dispatch({ type: 'runtime.changed', query: $event })"
                 @window-boundary="tableService.loadNextWindow"
-                @insert-first-row="mutationService.insertRow({})"
+                @insert-first-row="requestInsertRow"
               />
               <RecordCalendarView
+                v-show="!fieldManagementOpen"
+                @open-record="openRecordDetails"
                 v-if="activeViewKind === 'calendar' && activePresetView"
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
@@ -1614,6 +1680,8 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
                 @intent="alternativeViewInteractionController.dispatch($event)"
               />
               <RecordTimelineView
+                v-show="!fieldManagementOpen"
+                @open-record="openRecordDetails"
                 v-else-if="activeViewKind === 'timeline' && activePresetView"
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
@@ -1623,6 +1691,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
                 @intent="alternativeViewInteractionController.dispatch($event)"
               />
               <RecordKanbanView
+                v-show="!fieldManagementOpen"
                 v-else-if="activeViewKind === 'kanban' && activePresetView"
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
@@ -1634,6 +1703,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
                 @card-move="alternativeViewInteractionController.dispatch({ type: 'kanban.card.move', ...$event })"
               />
               <RecordGalleryView
+                v-show="!fieldManagementOpen"
                 v-else-if="activeViewKind === 'gallery' && activePresetView"
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
@@ -1642,7 +1712,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
                 :relations="relationLookup.schema?.normalizedRelations ?? []"
               />
             </template>
-            <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
+            <div v-if="workspace.currentTable && tableStore.datasetReady && !fieldManagementOpen" class="table-summary" data-testid="table-summary">
               {{ t("toolbar.rowCount", { count: tableStore.rowCount }) }}
             </div>
           </main>
@@ -1704,6 +1774,24 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
         </article>
       </section>
     </section>
+    <InsertRowDialog
+      v-if="insertDialogOpen"
+      :show="insertDialogOpen"
+      :columns="requiredInsertColumns"
+      :display-columns="tableStore.schema ?? []"
+      :busy="insertDialogBusy"
+      :disabled="insertRowDisabled"
+      :error="editRejection?.message ?? null"
+      @submit="submitInsertRow"
+      @close="closeInsertDialog"
+    />
+    <RecordDetailsDrawer
+      :row="detailRow"
+      :columns="tableStore.schema ?? []"
+      :lookups="relationLookup.lookups"
+      :relations="relationLookup.schema?.normalizedRelations ?? []"
+      @close="detailRowKey = null"
+    />
     <ContentRecordPanel
       :show="contentPanelOpen"
       :table-id="workspace.currentTable ?? ''"

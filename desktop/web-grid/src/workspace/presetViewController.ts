@@ -15,13 +15,13 @@ import {
   captureDataSourceView,
   type DataSourceViewGridSource,
 } from "@/grid/dataSourceViewState";
-import { reconcileState } from "@/grid/gridState";
+import { isRowIdFieldName, reconcileState } from "@/grid/gridState";
 import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
 import type { useUiStore } from "@/stores/uiStore";
-import { cloneFilterExpressions, type useViewQueryStore } from "@/stores/viewQueryStore";
+import { cloneFilterExpressions, defaultVisibleFields, type useViewQueryStore } from "@/stores/viewQueryStore";
 import type { useWorkspaceStore } from "@/stores/workspaceStore";
 
 type PresetStore = ReturnType<typeof usePresetVersionStore>;
@@ -86,6 +86,7 @@ export type PresetViewIntent =
   | { readonly type: "group.toggle"; readonly key: string }
   | { readonly type: "view.create"; readonly request: CreatePresetViewRequest }
   | { readonly type: "view.switch"; readonly view: PresetEntry }
+  | { readonly type: "view.reset" }
   | { readonly type: "view.save"; readonly view: PresetEntry }
   | { readonly type: "view.duplicate"; readonly view: PresetEntry; readonly name: string }
   | { readonly type: "view.rename"; readonly view: PresetEntry; readonly name: string }
@@ -144,6 +145,10 @@ export function createPresetViewController(
   let initializing = true;
   let forcedRemote = false;
   let legacyCozy = false;
+  // 已知当前表字段集：schema 增量时区分新字段（默认可见，行 ID 除外）与
+  // 既有字段（保持用户显式隐藏）。在 restoreLoaded/applyView/schema watcher
+  // 同步；切表时随 currentTable watcher 清空。
+  let trackedSchemaFields = new Set<string>();
   const memoryDefaults = new Map<string, PresetView>();
   let loadGeneration = 0;
   let applying = false;
@@ -205,8 +210,36 @@ export function createPresetViewController(
     const base = activeView.value && activeKind.value !== "table"
       ? activeView.value
       : captureTable(isDefault);
+    let columns = base.columns;
+    const schemaFields = (dependencies.table.schema ?? []).map(column => column.name);
+    if (columns?.length) {
+      // 与 captureTable 同一做法按当前选择同步列可见性，并补齐当前 schema
+      // 缺失的列：新字段被显式隐藏后不得因缺席而永远被当作新增默认显示。
+      const known = new Set(columns.map(column => column.name));
+      const nextOrder = columns.length;
+      const missing = schemaFields
+        .filter(name => !known.has(name))
+        .map((name, index) => ({
+          name, order: nextOrder + index,
+          visible: dependencies.query.visibleFields.includes(name),
+          frozen: false, width: null,
+        }));
+      columns = [...columns, ...missing].map(column => ({
+        ...column,
+        visible: dependencies.query.visibleFields.includes(column.name),
+      }));
+    } else if (schemaFields.length) {
+      // 原布局为空的合法视图在 schema 已知时物化完整列（按当前选择写
+      // visible），避免本地持久空 columns 后重载把全部字段当作新增全显。
+      columns = schemaFields.map((name, order) => ({
+        name, order,
+        visible: dependencies.query.visibleFields.includes(name),
+        frozen: false, width: null,
+      }));
+    }
     return {
       ...base,
+      columns,
       filters: cloneFilterExpressions(dependencies.query.filters),
       sorts: [...dependencies.query.sorts],
       groups: [...dependencies.query.groups],
@@ -219,8 +252,11 @@ export function createPresetViewController(
   }
 
   function savePresentation(): void {
-    if (initializing || applying || pendingView.value || !dependencies.workspace.currentTable
-      || !dependencies.grid.current.value || dependencies.grid.current.value.initialized === false) return;
+    // pendingRestore 暂存期间不得把旧 grid/query 捕获成待应用视图的布局。
+    if (initializing || applying || pendingView.value || pendingRestore
+      || !dependencies.workspace.currentTable
+      || !dependencies.grid.current.value
+      || dependencies.grid.current.value.initialized === false) return;
     const view = captureCurrent();
     presentedView.value = view;
     const active = dependencies.presets.presets.find(item => item.id === dependencies.presets.activePresetId);
@@ -251,6 +287,7 @@ export function createPresetViewController(
   async function restoreLoaded(): Promise<void> {
     const schema = dependencies.table.schema;
     if (!schema || !pendingRestore) return;
+    trackedSchemaFields = new Set(schema.map(column => column.name));
     const { view: baseline, local } = pendingRestore;
     pendingRestore = null;
     const state = local ? reconcileState(local, schema) : null;
@@ -258,7 +295,7 @@ export function createPresetViewController(
       ...baseline, columns: state.columns,
       filters: cloneFilterExpressions(state.filters), sorts: [...state.sorts],
       search: state.keyword ?? "", density: state.density,
-      visibleFields: [...state.columns.filter(column => column.visible !== false).map(column => column.name), ...state.newlyAdded],
+      visibleFields: [...state.columns.filter(column => column.visible !== false).map(column => column.name), ...defaultVisibleFields(state.newlyAdded)],
     } : baseline;
     initializing = false;
     await applyView(view);
@@ -275,15 +312,45 @@ export function createPresetViewController(
   async function applyView(view: PresetView): Promise<void> {
     const collection = dependencies.workspace.currentTable;
     if (!collection) return;
+    // 带列布局的视图可能与当前 schema 脱节：用同一 reconcileState 语义
+    // 对照，已知列保持原可见性、新增列默认可见、已删列剪退；对当前
+    // schema 捕获的视图幂等。无列布局保持既有 visibleFields 语义。
+    const schema = dependencies.table.schema;
+    // beginLoad 期间完整视图也没有列布局；此时应用并保存会把保留网格
+    // 按空 visibleFields 捕获为全隐藏。所有视图等待 schema 后再应用。
+    if (!schema) {
+      pendingRestore = { view, local: null };
+      return;
+    }
+    if (view.columns?.length) {
+      const state = reconcileState({
+        columns: view.columns, sorts: [], filters: [], keyword: null,
+        density: view.density ?? "comfortable", forcedRemote: false,
+      }, schema);
+      // 已知字段以顶层 visibleFields 为权威（兼容历史保存的 columns 与顶层
+      // 不一致状态）；columns 集合用于识别新增字段补默认可见，并把
+      // columns.visible 同步为最终选择，供 applyDataSourceView 与后续保存一致。
+      const covered = new Set(state.columns.map(column => column.name));
+      const selected = new Set(view.visibleFields);
+      const visibleFields = schema
+        .map(column => column.name)
+        .filter(name => selected.has(name) || (!covered.has(name) && !isRowIdFieldName(name)));
+      view = {
+        ...view,
+        columns: state.columns.map(column => ({ ...column, visible: visibleFields.includes(column.name) })),
+        visibleFields,
+      };
+    }
+    // 应用新视图即接管最新意图：清掉可能遗留的未知 schema 暂存。
+    pendingRestore = null;
     presentedView.value = view;
     const generation = loadGeneration;
     legacyCozy = view.density === "cozy";
     if (view.density) dependencies.ui.setDensity(view.density === "cozy" ? "comfortable" : view.density);
-    dependencies.query.replace(
-      collection,
-      view,
-      (dependencies.table.schema ?? []).map(column => column.name),
-    );
+    // 应用视图即确认当前 schema 为已知基线（覆盖 view.reload 等非恢复路径）。
+    const schemaFields = (dependencies.table.schema ?? []).map(column => column.name);
+    trackedSchemaFields = new Set(schemaFields);
+    dependencies.query.replace(collection, view, schemaFields);
     if (view.kind && view.kind !== "table") {
       pendingView.value = null;
       requestAuthoritative();
@@ -308,12 +375,11 @@ export function createPresetViewController(
       if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
       dependencies.presets.receivePresets(result);
       const selected = result.presets.find(view => view.id === (requestedActiveId ?? local?.presetId))
-        ?? result.presets.find(view => view.view.isDefault)
-        ?? result.presets[0];
+        ?? (restoreLocal && local?.presetId === null ? undefined : result.presets.find(view => view.view.isDefault));
       dependencies.presets.activatePreset(selected?.id ?? null);
       const baseline = selected?.view ?? memoryDefaults.get(collection) ?? {
         kind: "table", layout: "table", columns: [], filters: [], sorts: [], search: "",
-        visibleFields: (dependencies.table.schema ?? []).map(column => column.name),
+        visibleFields: defaultVisibleFields((dependencies.table.schema ?? []).map(column => column.name)),
       };
       if (restoreLocal) forcedRemote = local?.forcedRemote ?? false;
       const matches = (local?.presetId ?? null) === (selected?.id ?? null)
@@ -422,12 +488,25 @@ export function createPresetViewController(
   watch(
     () => dependencies.table.schema,
     (columns) => {
-      if (pendingRestore) { void restoreLoaded(); return; }
+      if (pendingRestore) {
+        void restoreLoaded();
+        return;
+      }
       const collection = dependencies.workspace.currentTable;
-      if (!collection || !columns || dependencies.query.visibleFields.length > 0) return;
+      if (!collection || !columns) return;
       const fields = columns.map(column => column.name);
-      if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
-      else dependencies.query.reset(collection, fields);
+      const visible = new Set(dependencies.query.visibleFields);
+      if (trackedSchemaFields.size === 0) {
+        // 首次见到该表 schema：维持既有初始化语义。
+        if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
+        else dependencies.query.reset(collection, fields);
+      } else {
+        // 增量：新字段默认可见（行 ID 除外），既有字段保持原状（含显式
+        // 隐藏与隐藏全部），已删字段清退。
+        dependencies.query.visibleFields = fields.filter(name =>
+          visible.has(name) || (!trackedSchemaFields.has(name) && !isRowIdFieldName(name)));
+      }
+      trackedSchemaFields = new Set(fields);
     },
   );
 
@@ -453,6 +532,7 @@ export function createPresetViewController(
       presentedView.value = null;
       pendingRestore = null;
       pendingView.value = null;
+      trackedSchemaFields = new Set();
       dependencies.presets.clearPresets(collection ?? "");
       dependencies.query.reset(collection ?? "");
       void nextTick().then(() => {
@@ -547,6 +627,22 @@ export function createPresetViewController(
         return;
       case "view.save":
         return await save(intent.view);
+      case "view.reset": {
+        if (!collection || dependencies.presets.loading) return;
+        const current = dependencies.presets.presets.find(item => item.id === dependencies.presets.activePresetId);
+        if (current && dependencies.presets.dirty && !(await save(current))) return;
+        if (!stillCurrent()) return;
+        dependencies.presets.activatePreset(null);
+        const fields = (dependencies.table.schema ?? []).map(column => column.name);
+        const visible = defaultVisibleFields(fields);
+        await applyView({
+          kind: "table", layout: "table", filters: [], sorts: [], search: "",
+          groups: [], summaries: [], visibleFields: visible,
+          columns: fields.map((name, order) => ({ name, order, visible: visible.includes(name), frozen: false, width: null })),
+        });
+        if (stillCurrent()) savePresentation();
+        return;
+      }
       case "view.switch": {
         if (
           intent.view.collection !== dependencies.workspace.currentTable
@@ -570,7 +666,7 @@ export function createPresetViewController(
         const collection = dependencies.workspace.currentTable;
         if (!collection) return;
         const view: PresetView = {
-          ...captureTable(dependencies.presets.presets.length === 0),
+          ...captureTable(false),
           kind: intent.request.kind,
           layout: intent.request.kind,
           dateField: intent.request.dateField,
@@ -583,6 +679,8 @@ export function createPresetViewController(
         if (!stillCurrent()) return;
         if (saved) {
           dependencies.presets.activatePreset(saved.id);
+          await applyView(saved.view);
+          if (!stillCurrent()) return;
           savePresentation();
         }
         return;

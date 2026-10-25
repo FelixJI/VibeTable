@@ -198,9 +198,11 @@ type JSONSpec struct {
 }
 
 type AutoNumberSpec struct {
-	Prefix string `json:"prefix"`
-	Start  int64  `json:"start"`
-	Width  int64  `json:"width"`
+	Prefix     string    `json:"prefix"`
+	Start      int64     `json:"start"`
+	Width      int64     `json:"width"`
+	DateFormat *string   `json:"dateFormat,omitempty"`
+	Order      *[]string `json:"order,omitempty"`
 }
 
 type AutoDateSpec struct {

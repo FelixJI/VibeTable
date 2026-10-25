@@ -21,6 +21,25 @@ import type {
 import { headerFilterConditions } from "./viewQuery";
 import type { TabulatorSorter, TabulatorHeaderFilter } from "./queryAdapter";
 
+/** 行 ID（主键）列的物理名；与权威 SchemaSnapshot.primaryKey 一致。 */
+export const ROW_ID_COLUMN_NAME = "id";
+
+/**
+ * 行 ID 列判定：物理名 `id` 是保留的记录主键名（PocketBase 记录 ID，
+ * 用户字段不可能占用），直接按名字识别，与 defaultVisibleFields 同一规则。
+ * 保留 kind 参数仅为 ColumnSchema 调用形状兼容。
+ */
+export function isRowIdColumn(
+  column: { readonly name: string; readonly kind?: string | null },
+): boolean {
+  return isRowIdFieldName(column.name);
+}
+
+/** 仅知列名时的行 ID 判定（默认可见列列表只有列名）。 */
+export function isRowIdFieldName(name: string): boolean {
+  return name === ROW_ID_COLUMN_NAME;
+}
+
 /** A reconciled column state after pruning against the live schema. */
 export interface ReconciledGridState {
   /** Column states for columns that still exist in the schema. */

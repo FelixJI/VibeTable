@@ -18,7 +18,8 @@ public sealed record ColumnEditSchema(
     bool Nullable,
     bool PrimaryKey,
     IReadOnlyDictionary<string, object?> Editor,
-    IReadOnlyList<IReadOnlyDictionary<string, object?>> Validation);
+    IReadOnlyList<IReadOnlyDictionary<string, object?>> Validation,
+    [property: JsonPropertyName("hasDefault")] bool HasDefault = false);
 
 /// <summary>
 /// Editable schema result for a collection.

@@ -20,6 +20,8 @@ const props = defineProps<{
   activeId: string | null;
   loading: boolean;
   dirty: boolean;
+  fieldsActive?: boolean;
+  workspaceKey?: string;
   error?: string | null;
   dateFields?: readonly { label: string; value: string }[];
   titleFields?: readonly { label: string; value: string }[];
@@ -44,7 +46,45 @@ const emit = defineEmits<{
   delete: [view: PresetEntry];
   setDefault: [view: PresetEntry];
   reload: [];
+  reset: [];
+  fields: [];
 }>();
+
+const order = ref<string[]>([]);
+const draggedId = ref<string | null>(null);
+const orderKey = computed(() => `vt:view-order:${props.workspaceKey ?? ""}:${props.collection}`);
+const orderedViews = computed(() => [...props.views].sort((a, b) => {
+  const rank = (id: string) => { const index = order.value.indexOf(id); return index < 0 ? order.value.length : index; };
+  return rank(a.id) - rank(b.id);
+}));
+watch(orderKey, key => {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    order.value = Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+  } catch { order.value = []; }
+  draggedId.value = null;
+}, { immediate: true });
+function moveView(source: string, target: string): void {
+  if (props.loading || source === target) return;
+  const ids = orderedViews.value.map(view => view.id);
+  if (!ids.includes(source) || !ids.includes(target)) return;
+  const targetIndex = ids.indexOf(target);
+  ids.splice(ids.indexOf(source), 1);
+  ids.splice(targetIndex, 0, source);
+  order.value = ids;
+  try { localStorage.setItem(orderKey.value, JSON.stringify(ids)); }
+  catch { /* Preferences remain available for this session when storage is unavailable. */ }
+}
+function dropView(target: string): void {
+  if (draggedId.value) moveView(draggedId.value, target);
+  draggedId.value = null;
+}
+function moveWithKeyboard(event: KeyboardEvent, id: string): void {
+  if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  const index = orderedViews.value.findIndex(view => view.id === id);
+  const target = orderedViews.value[index + (event.key === "ArrowLeft" ? -1 : 1)];
+  if (target) { event.preventDefault(); moveView(id, target.id); }
+}
 
 const dialog = ref<"create" | "duplicate" | "rename" | "delete" | null>(null);
 const input = ref("");
@@ -137,17 +177,17 @@ function confirm(): void {
       </div>
     </NAlert>
     <nav class="data-source-view-bar" :aria-label="t('views.ariaLabel')" data-testid="data-source-view-bar">
-    <div class="view-context"><NIcon :size="15"><Table2 /></NIcon><span>{{ t("views.tableType") }}</span></div>
+    <button class="view-tab" :class="{ active: fieldsActive }" type="button" data-testid="view-fields" @click="emit('fields')"><NIcon :size="15"><Table2 /></NIcon><span>{{ t("views.tableType") }}</span></button>
     <div class="view-scroll">
-      <button v-if="views.length === 0" class="view-tab active" type="button" data-testid="view-all-records">
-        <NIcon :size="14"><Check /></NIcon>{{ t("views.allRecords") }}
+      <button class="view-tab" :class="{ active: !activeId && !fieldsActive }" :disabled="loading" type="button" data-testid="view-all-records" @click="emit('reset')">
+        <NIcon v-if="!activeId && !fieldsActive" :size="14"><Check /></NIcon>{{ t("views.allRecords") }}
       </button>
-      <div v-for="view in views" :key="view.id" class="view-tab-wrap">
-        <button class="view-tab" :class="{ active: activeId === view.id }" type="button" :disabled="loading" :data-testid="`view-tab-${view.id}`" @click="emit('switch', view)">
+      <div v-for="view in orderedViews" :key="view.id" class="view-tab-wrap" :draggable="!loading" @dragstart="draggedId = view.id" @dragend="draggedId = null" @dragover.prevent @drop.prevent="dropView(view.id)">
+        <button class="view-tab" :class="{ active: activeId === view.id && !fieldsActive }" type="button" :disabled="loading" :title="t('views.reorder')" :data-testid="`view-tab-${view.id}`" @keydown="moveWithKeyboard($event, view.id)" @click="emit('switch', view)">
           <NIcon v-if="activeId === view.id" :size="14"><Check /></NIcon>
           <span>{{ view.name }}</span>
           <NTag v-if="view.view.isDefault" size="tiny" :bordered="false">{{ t("views.default") }}</NTag>
-          <i v-if="dirty && activeId === view.id" :title="t('views.unsaved')"></i>
+          <i v-if="dirty && activeId === view.id" class="view-dirty-indicator" :title="t('views.unsaved')"></i>
         </button>
         <NDropdown trigger="click" :disabled="loading" :options="options" @select="key => menu(String(key), view)">
           <NButton quaternary size="tiny" :disabled="loading" :aria-label="t('views.actionsFor', { name: view.name })" :data-testid="`view-actions-${view.id}`"><template #icon><NIcon><MoreHorizontal /></NIcon></template></NButton>
@@ -200,11 +240,11 @@ function confirm(): void {
 .view-scroll { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
 .view-tab-wrap { display: flex; flex: 0 0 auto; align-items: center; border: 1px solid transparent; border-radius: var(--vt-radius-md); }
 .view-tab-wrap:has(.view-tab.active) { border-color: color-mix(in srgb, var(--vt-color-primary-500) 24%, var(--vt-border)); background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
-.view-tab { display: flex; height: 28px; max-width: 220px; align-items: center; gap: 5px; padding: 0 8px; overflow: hidden; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; font: inherit; font-size: var(--vt-font-caption); cursor: pointer; white-space: nowrap; }
+.view-tab { display: flex; flex: 0 0 auto; height: 28px; max-width: 220px; align-items: center; gap: 5px; padding: 0 8px; overflow: hidden; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; font: inherit; font-size: var(--vt-font-caption); cursor: pointer; white-space: nowrap; }
 .view-tab:hover { color: var(--vt-fg); background: var(--vt-bg-sunken); }
 .view-tab.active { color: var(--vt-fg-accent-strong); font-weight: 600; }
 .view-tab span { overflow: hidden; text-overflow: ellipsis; }
-.view-tab i { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
+.view-dirty-indicator { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .view-dialog-fields { display: grid; gap: 14px; }
 .view-kind-options { display: grid; grid-template-columns: repeat(5, minmax(76px, 1fr)); gap: 8px; }

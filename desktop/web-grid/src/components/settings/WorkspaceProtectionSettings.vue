@@ -42,6 +42,7 @@ import {
   canUseSnapshotExport,
   type SnapshotExportIdentity,
 } from "./snapshotExportGuard";
+import { cloneDefaultRetentionDraft } from "./retentionDefaults";
 
 export type WorkspaceProtectionAction = WorkspaceV2UiAction<
   | "snapshot.request"
@@ -151,7 +152,9 @@ watch(
       repositoryLimitBytes: next.repositoryLimitBytes,
     };
   },
-  { deep: true },
+  // 挂载时保留策略可能已由宿主水化（重新进入设置页）：草稿必须立即同步
+  // 原有策略，而不是显示空默认值并误判为已修改。
+  { deep: true, immediate: true },
 );
 watch(
   () => protection.storagePlan,
@@ -425,6 +428,12 @@ function saveRetention(): void {
       ...retentionDraft.value,
     },
   });
+}
+
+// 恢复默认只预填草稿（与 sidecar 默认策略一致），仍由用户通过既有保存
+// 流程确认提交；未确认前可再次手动调整或放弃。
+function resetRetentionDraft(): void {
+  retentionDraft.value = cloneDefaultRetentionDraft();
 }
 
 async function copyConvenientPassword(): Promise<void> {
@@ -1124,6 +1133,14 @@ function applyStoragePlan(): void {
         </NButton>
         <NButton
           size="small"
+          :disabled="!protection.retentionHydrated"
+          data-testid="retention-reset-defaults"
+          @click="resetRetentionDraft"
+        >
+          恢复默认
+        </NButton>
+        <NButton
+          size="small"
           type="primary"
           :disabled="!retentionDirty"
           data-testid="retention-save"
@@ -1296,7 +1313,7 @@ function applyStoragePlan(): void {
 .plan-summary dt { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .detail-facts dd,
 .plan-summary dd { margin: 0; color: var(--vt-fg-secondary); font-size: var(--vt-font-caption); font-weight: 550; text-align: right; }
-.detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.detail-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .audit-note { display: flex; align-items: flex-start; gap: 7px; margin: 16px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); line-height: 1.5; }
 .audit-note svg { flex: none; margin-top: 2px; color: var(--vt-color-primary-500); }
 .restore-warning { display: flex; align-items: flex-start; gap: 12px; }
@@ -1339,7 +1356,7 @@ function applyStoragePlan(): void {
 .policy-title small,
 .key-card small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .storage-path code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.size-meter { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.size-meter { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .size-meter > div { display: flex; flex-direction: column; padding: 9px; border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
 .size-meter span { color: var(--vt-fg-muted); font-size: 10px; }
 .size-meter strong { margin-top: 3px; font-size: var(--vt-font-caption); }
@@ -1352,12 +1369,13 @@ function applyStoragePlan(): void {
 .policy-control { width: min(240px, 42%); }
 .policy-card footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; }
 .policy-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 6px; }
-.retention-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 10px 16px 14px; }
+.retention-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 10px 16px 14px; }
 .retention-grid label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .retention-grid .bucket-field { grid-column: span 2; }
 .key-card { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 10px; padding: 14px 16px; }
 .plan-summary { margin: 14px 0; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); }
-@media (max-width: 960px) {
+@media (max-width: 1120px) {
+  /* settings-inner--workspace-v2 最宽 1080px：加上导航与内边距，双列时间线在 960-1100px 视口溢出。 */
   .timeline-workbench { grid-template-columns: 1fr; }
   .snapshot-timeline { border-right: 0; border-bottom: 1px solid var(--vt-border); }
   .snapshot-detail { min-height: 260px; }

@@ -2031,7 +2031,7 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert "rejectLegacyRoutes" in interface
     assert "runRecordManagerProduct" in interface
     legacy = (runner.NODE_RUNNER.parent / "legacy_layout_product.mjs").read_text(encoding="utf-8")
-    assert 'getByTestId("legacy-layout-counts")' in legacy
+    assert 'getByTestId("legacy-layout-preservation").count() === 0' in legacy
     assert "resumeLegacyLayoutProduct" in legacy
     assert "runApplicationPrint" in legacy
     assert "activateRestartedWorkspace(page, state.workspaceId)" in legacy
@@ -6227,6 +6227,22 @@ def test_file_workflow_combination_dispatches_dedicated_persistent_phases() -> N
     assert "scenario39Seed(candidate, checks, runtime)" in seed_branch
     assert 'args.scenario === "39-file-workflow-combination"' in resume_branch
     assert "scenario39Resume(candidate, checks, args.state, runtime)" in resume_branch
+
+
+def test_file_workflow_combination_supplies_calculation_chain_helpers() -> None:
+    source = Path(runner.NODE_RUNNER).read_text(encoding="utf-8")
+    seed = source.split("async function scenario39Seed(", 1)[1]
+    supplied = seed.split("const helpers = {", 1)[1].split("};", 1)[0]
+    journey = Path(runner.NODE_RUNNER).with_name("calculation_chain_journey.mjs")
+    required = (
+        journey.read_text(encoding="utf-8")
+        .split("export async function runCalculationChainJourney(", 1)[1]
+        .split("const {", 1)[1]
+        .split("} = helpers;", 1)[0]
+    )
+    required_names = {name.strip() for name in required.split(",") if name.strip()}
+    supplied_names = {name.strip() for name in supplied.split(",") if name.strip()}
+    assert required_names <= supplied_names
 
 
 def _capacity_fake_fixtures(tmp_path: Path) -> dict[str, str]:

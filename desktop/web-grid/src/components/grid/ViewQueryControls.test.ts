@@ -69,6 +69,54 @@ describe("ViewQueryControls", () => {
     });
   });
 
+  it("applies filter definitions without leaking pending visibility drafts", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: { columns, filters: [], groups: [], summaries: [], visibleFields: ["status", "amount"] },
+    });
+
+    // 先在“隐藏”面板里批量隐藏但不应用（草稿状态）。
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-hide-filtered"]')!.click();
+    await flushPromises();
+
+    // 再打开“筛选”面板并应用：不得把未应用的隐藏草稿一起提交。
+    await wrapper.get('[data-testid="view-filter-trigger"]').trigger("click");
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-filter-apply"]')!.click();
+    await flushPromises();
+
+    const change = wrapper.emitted("change")?.at(-1)?.[0] as {
+      visibleFields: string[];
+    };
+    expect(change.visibleFields).toEqual(["status", "amount"]);
+  });
+
+  it("keeps applied filters untouched when only visibility is applied", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns,
+        filters: [{ field: "status", operator: "eq", value: "open" }],
+        groups: [], summaries: [], visibleFields: ["status"],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-show-all"]')!.click();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+
+    const change = wrapper.emitted("change")?.at(-1)?.[0] as {
+      filters: Array<{ field: string }>;
+      visibleFields: string[];
+    };
+    expect(change.filters).toEqual([{ field: "status", operator: "eq", value: "open" }]);
+    expect(change.visibleFields).toEqual(["status", "amount"]);
+  });
+
   it("offers single Relation grouping and a numeric interval control", async () => {
     const relation = {
       relationId: "orders.customer", fieldRef: "customer", sourceCollection: "orders",

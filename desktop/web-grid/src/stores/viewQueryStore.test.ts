@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useViewQueryStore } from "./viewQueryStore";
+import { defaultVisibleFields, useViewQueryStore } from "./viewQueryStore";
 
 describe("viewQueryStore", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -43,7 +43,7 @@ describe("viewQueryStore", () => {
     });
   });
 
-  it("defaults visibility to every current field when a view has no saved list", () => {
+  it("defaults visibility to all non-row-id fields when a view has no saved list", () => {
     const store = useViewQueryStore();
     store.replace("orders", {
       kind: "table",
@@ -54,6 +54,24 @@ describe("viewQueryStore", () => {
       visibleFields: [],
     }, ["id", "status"]);
 
+    // 行 ID 默认隐藏，与网格列构建规则（isRowIdColumn）保持同步。
+    expect(store.visibleFields).toEqual(["status"]);
+    expect(defaultVisibleFields(["id", "status", "amount"])).toEqual(["status", "amount"]);
+  });
+
+  it("keeps the row id hidden on reset but honors a saved view that re-shows it", () => {
+    const store = useViewQueryStore();
+    store.reset("orders", ["id", "status"]);
+    expect(store.visibleFields).toEqual(["status"]);
+
+    store.replace("orders", {
+      kind: "table",
+      layout: "table",
+      filters: [],
+      sorts: [],
+      search: "",
+      visibleFields: ["id", "status"],
+    }, ["id", "status"]);
     expect(store.visibleFields).toEqual(["id", "status"]);
   });
 

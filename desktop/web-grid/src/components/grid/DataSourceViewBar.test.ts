@@ -5,6 +5,27 @@ import DataSourceViewBar from "./DataSourceViewBar.vue";
 describe("DataSourceViewBar", () => {
   afterEach(() => {
     document.body.innerHTML = "";
+    localStorage.clear();
+  });
+
+  it("reorders tabs by dragging and keeps the preference within the workspace", async () => {
+    const views = ["a", "b"].map(id => ({ id, collection: "orders", name: id, scope: "personal" as const,
+      revision: id, emittedEvents: [], view: { layout: "table", filters: [], sorts: [], search: "", visibleFields: [] } }));
+    const props = { collection: "orders", workspaceKey: "workspace-one", views, activeId: null, loading: false, dirty: false };
+    const wrapper = mount(DataSourceViewBar, { props });
+    await wrapper.findAll(".view-tab-wrap")[1]!.trigger("dragstart");
+    await wrapper.findAll(".view-tab-wrap")[0]!.trigger("drop");
+    expect(wrapper.findAll(".view-tab-wrap .view-tab").map(tab => tab.text())).toEqual(["b", "a"]);
+    wrapper.unmount();
+    const reopened = mount(DataSourceViewBar, { props });
+    expect(reopened.findAll(".view-tab-wrap .view-tab").map(tab => tab.text())).toEqual(["b", "a"]);
+    await reopened.get('[data-testid="view-tab-a"]').trigger("keydown", { key: "ArrowLeft", altKey: true });
+    expect(reopened.findAll(".view-tab-wrap .view-tab").map(tab => tab.text())).toEqual(["a", "b"]);
+    await reopened.get('[data-testid="view-tab-a"]').trigger("keydown", { key: "ArrowRight", altKey: true });
+    expect(reopened.findAll(".view-tab-wrap .view-tab").map(tab => tab.text())).toEqual(["b", "a"]);
+    await reopened.setProps({ workspaceKey: "workspace-two" });
+    expect(reopened.findAll(".view-tab-wrap .view-tab").map(tab => tab.text())).toEqual(["a", "b"]);
+    reopened.unmount();
   });
 
   it("shows the built-in default field view when no preset exists", () => {
@@ -17,7 +38,7 @@ describe("DataSourceViewBar", () => {
         dirty: false,
       },
     });
-    expect(wrapper.get('[data-testid="view-all-records"]').text()).toContain("默认字段视图");
+    expect(wrapper.get('[data-testid="view-all-records"]').text()).toContain("完整视图");
   });
 
   it("keeps a failed local draft visible until the user explicitly reloads views", async () => {
@@ -70,6 +91,10 @@ describe("DataSourceViewBar", () => {
       .toContain("本月待办");
     await tab.trigger("click");
     expect(wrapper.emitted("switch")?.[0]?.[0]).toMatchObject({ id: "view-1" });
+    await wrapper.get('[data-testid="view-all-records"]').trigger("click");
+    expect(wrapper.emitted("reset")).toHaveLength(1);
+    await wrapper.get('[data-testid="view-fields"]').trigger("click");
+    expect(wrapper.emitted("fields")).toHaveLength(1);
   });
 
   it("creates a named calendar view through the compact dialog", async () => {

@@ -70,14 +70,14 @@ describe("SettingsView", () => {
             {
               version: "0.3.0",
               title: "0.3 功能更新",
-              body: "新增安全自我更新",
+              body: "## 0.3.0\n\n### Features\n\n- **update:** 新增安全自我更新 (abc1234)",
               publishedAt: "2026-08-01T00:00:00Z",
               releaseUrl: "https://github.com/FelixJI/VibeTable/releases/tag/v0.3.0",
             },
             {
               version: "0.2.0",
               title: "0.2 稳定性更新",
-              body: "改进工作区恢复",
+              body: "### Bug Fixes\n\n- **ui:** 改进工作区恢复 (def5678)\n- **ui:** 改进工作区恢复 (def5678)",
               publishedAt: "2026-07-01T00:00:00Z",
               releaseUrl: "https://github.com/FelixJI/VibeTable/releases/tag/v0.2.0",
             },
@@ -156,6 +156,15 @@ describe("SettingsView", () => {
 
     expect(backupRequest).toHaveBeenCalledWith("diagnostics.get", {});
     expect(wrapper.text()).toContain("v0.1.0");
+    // 本地更新记录用生成器提供的顶层 version 标注当前版本，不依赖诊断成功。
+    const version = (changelog as { version?: string }).version;
+    const badge = wrapper.find('[data-testid="changelog-version"]');
+    if (version) {
+      expect(badge.exists()).toBe(true);
+      expect(badge.text()).toBe(`v${version}`);
+    } else {
+      expect(badge.exists()).toBe(false);
+    }
     const changelogPanel = wrapper.get('[data-testid="about-changelog"]');
     if (changelog.entries.length === 0) {
       expect(changelogPanel.get(".changelog-empty").text())
@@ -168,6 +177,66 @@ describe("SettingsView", () => {
       .not.toContainEqual(expect.objectContaining({
         subject: expect.stringMatching(/^(merge|合并)(:|\s)/i),
       }));
+  });
+
+  it("surfaces partial workspace diagnostics failures without claiming full availability", async () => {
+    const baseDiagnostics = {
+      bundleVersion: "1.0",
+      generatedAt: "2026-08-12T00:00:00Z",
+      operatingSystem: "Windows 11",
+      programVersion: "0.1.0",
+      dotnetVersion: "10.0.0",
+      pocketBaseVersion: "0.40.1",
+      memoryBytes: 64 * 1024 * 1024,
+      components: [{ component: "sidecar", state: "ready" }],
+      jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },
+      index: { state: "ready", generation: 2, processed: 3, total: 3, errorCode: null },
+      pendingMutationRevision: 0,
+      recentErrorCounts: [],
+      logs: [],
+    };
+    let workspaceDiagnostics: unknown = {
+      state: "failed",
+      errorCode: "workspace.diagnostics.host_error",
+    };
+    backupRequest.mockImplementation(async (type: string) => {
+      if (type === "appPreferences.get") {
+        return {
+          minimizeToTrayOnClose: false,
+          startWithWindows: false,
+          updateProxy: "direct",
+          customUpdateProxyUrl: "",
+        };
+      }
+      if (type === "diagnostics.get") {
+        return { ...baseDiagnostics, workspaceDiagnostics };
+      }
+      return { status: "restarting" };
+    });
+
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-about"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="workspace-diagnostics-failed"]').text())
+      .toContain("workspace.diagnostics.host_error");
+    expect(wrapper.find('[data-testid="workspace-diagnostics-unavailable"]').exists())
+      .toBe(false);
+
+    workspaceDiagnostics = { state: "unavailable", errorCode: null };
+    await wrapper.get(".diagnostics-heading button").trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="workspace-diagnostics-unavailable"]').text())
+      .toContain("暂无工作区诊断数据");
+    expect(wrapper.find('[data-testid="workspace-diagnostics-failed"]').exists())
+      .toBe(false);
+
+    workspaceDiagnostics = { state: "available", errorCode: null };
+    await wrapper.get(".diagnostics-heading button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="workspace-diagnostics-failed"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-diagnostics-unavailable"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("Windows 11");
   });
 
   it("selects a GitHub proxy and shows release notes between two versions", async () => {
@@ -189,11 +258,21 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(backupRequest).toHaveBeenCalledWith("update.check", {});
-    const notes = wrapper.get('[data-testid="between-version-release-notes"]').text();
-    expect(notes).toContain("v0.3.0");
-    expect(notes).toContain("新增安全自我更新");
-    expect(notes).toContain("v0.2.0");
-    expect(notes).toContain("改进工作区恢复");
+    const notes = wrapper.get('[data-testid="between-version-release-notes"]');
+    const notesText = notes.text();
+    expect(notesText).toContain("v0.3.0");
+    expect(notesText).toContain("新增安全自我更新");
+    expect(notesText).toContain("v0.2.0");
+    expect(notesText).toContain("改进工作区恢复");
+    // Markdown 正文按结构渲染：分区标题成行，不再出现原始 md 标记。
+    expect(notesText).toContain("Features");
+    expect(notesText).toContain("Bug Fixes");
+    expect(notesText).not.toContain("## ");
+    expect(notesText).not.toContain("**");
+    expect(notesText).not.toContain("- ");
+    // 同一版本内重复的条目只保留一次；跨版本历史内容不被吞并。
+    expect(notesText.match(/改进工作区恢复/g)).toHaveLength(1);
+    expect(notesText.match(/新增安全自我更新/g)).toHaveLength(1);
     expect(wrapper.get('[data-testid="release-update-card"]').text())
       .toContain("同一通道下载发布包和 SHA-256 文件");
     expect(wrapper.get('[data-testid="release-update-card"]').text())

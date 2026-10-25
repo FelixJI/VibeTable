@@ -88,6 +88,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     cols: readonly CollectionSummary[],
     names: Readonly<Record<string, string>>,
   ): void {
+    if (currentTable.value && !cols.some(item => item.collection === currentTable.value)) {
+      lastError.value = `数据表“${displayNames.value[currentTable.value] ?? currentTable.value}”已删除或不可用，请选择其他数据表。`;
+      currentTable.value = null;
+    }
     if (sameCollections(collections.value, cols)
       && sameDisplayNames(displayNames.value, names)) return;
     collections.value = cols;
@@ -96,6 +100,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   function selectTable(name: string): void {
     currentTable.value = name;
+    lastError.value = null;
   }
 
   function setFailed(message: string): void {

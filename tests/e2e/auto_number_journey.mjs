@@ -26,7 +26,8 @@ export async function waitForCopiedNumber(page, rawBridgeRequest, marker, deadli
 }
 
 export async function runAutoNumberJourney(page, recorder, runtime, ports) {
-  const { createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
+  const { createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
+    selectVisibleNOption, beginBridgeMessageCapture, openFieldSettingsFromHeader,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
@@ -60,11 +61,26 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   const cancelled = await rawBridgeRequest(page, "schema.getTable", { tableId: populated.tableId });
   recorder.check("closing the numbering preview leaves schema and data untouched",
     !cancelled.payload.fields.some(field => field.logicalType === "autoNumber"), { cancelled });
+  const applyThroughDrawer = async () => {
+    const card = page.getByTestId("field-change-plan");
+    await card.waitFor();
+    for (const checkbox of await card.getByRole("checkbox").all()) {
+      if (!await checkbox.isChecked()) await checkbox.check();
+    }
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+    await page.getByTestId("field-apply-button").click();
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`autoNumber apply failed: ${JSON.stringify(applied)}`);
+    }
+    // 成功回执后按产品契约收尾：等待抽屉真实自动关闭并返回网格，
+    // 不再等已废弃的输入禁用契约，也不与自动关闭竞态点关闭按钮。
+    await settleFieldSettingsAfterApply(page, applied);
+    return applied;
+  };
   await openNew();
   await configure();
-  await page.getByTestId("field-apply-button").click();
-  await page.getByTestId("auto-number-prefix").locator("input:disabled").waitFor();
-  await closeFieldSettingsDrawer(page);
+  await applyThroughDrawer();
   const backfilled = await rawBridgeRequest(page, "schema.getTable", { tableId: populated.tableId });
   const backfillField = backfilled.payload.fields.find(field => field.logicalType === "autoNumber");
   const backfillRows = await rawBridgeRequest(page, "query.page", { tableId: populated.tableId, query });
@@ -74,9 +90,10 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
 
   const tableId = await createEmptyTable(page, "E2E AutoNumber Only");
   await configure();
-  await page.getByTestId("field-apply-button").click();
-  await page.getByTestId("auto-number-prefix").locator("input:disabled").waitFor();
-  await closeFieldSettingsDrawer(page);
+  const emptyPreview = await page.getByTestId("auto-number-backfill-preview").innerText();
+  recorder.check("an empty table previews zero backfilled records before creating its first field",
+    emptyPreview.includes("回填 0 条记录"), { emptyPreview });
+  await applyThroughDrawer();
   const described = await rawBridgeRequest(page, "schema.getTable", { tableId });
   const field = described.payload.fields.find(item => item.logicalType === "autoNumber");
   recorder.check("autoNumber is a real readonly string field with a stable identity",
@@ -145,19 +162,58 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
       && filtered.payload.rows[0][field.identity.physicalName] === "HT-000004"
       && filtered.payload.rows.every(row => rows.payload.rows.some(original => original.id === row.id
         && original[field.identity.physicalName] === row[field.identity.physicalName])), { filtered });
+  // 新契约用户流程：重开设置时起点冻结，前缀与补零宽度可改；
+  // 重格式化经真实 plan 预览确认后同事务改写存量编号。
+  const reformatPrefix = "VG-";
+  const reformatWidth = 4;
+  const number = seq => `${reformatPrefix}${String(seq).padStart(reformatWidth, "0")}`;
+  await openFieldSettingsFromHeader(page, field.identity.physicalName);
+  await page.locator('.field-settings-drawer [data-name="advanced"]').click();
+  await page.getByTestId("auto-number-start").locator("input:disabled").waitFor();
+  recorder.check("an existing autoNumber keeps its start frozen while prefix and width stay editable",
+    await page.getByTestId("auto-number-start").locator("input").isDisabled()
+      && !(await page.getByTestId("auto-number-prefix").locator("input").isDisabled())
+      && !(await page.getByTestId("auto-number-width").locator("input").isDisabled()), {});
+  await page.getByTestId("auto-number-prefix").locator("input").fill(reformatPrefix);
+  const widthInput = page.getByTestId("auto-number-width").locator("input");
+  await widthInput.fill(String(reformatWidth));
+  await widthInput.press("Enter");
+  await page.getByTestId("field-plan-button").click();
+  await page.getByTestId("auto-number-backfill-preview").waitFor();
+  const reformatPreview = await page.getByTestId("auto-number-backfill-preview").innerText();
+  const formatSample = await page.getByTestId("auto-number-sample").innerText();
+  recorder.check("reformat preview rewrites stored numbers under the frozen id ordering",
+    reformatPreview.includes("重格式化 4 条记录") && formatSample === number(1), { reformatPreview, formatSample });
+  const reformattedReceipt = await applyThroughDrawer();
+  const reformatted = await rawBridgeRequest(page, "query.page", { tableId, query });
+  // 插入分配的序号与 record id 字典序无关：按 id 匹配 reformat 前的行，
+  // 解析其旧 HT- 序号，逐条验证同一记录从旧序号变为新格式。
+  const sequenceOf = row => {
+    const seq = Number(row[field.identity.physicalName].slice("HT-".length));
+    return Number.isInteger(seq) && seq >= 1 ? seq : null;
+  };
+  recorder.check("committed reformat preserves every record sequence under the new format",
+    reformattedReceipt.payload?.action === "update"
+      && reformatted.payload.rows.length === rows.payload.rows.length
+      && reformatted.payload.rows.every(row => rows.payload.rows.some(original => original.id === row.id))
+      && reformatted.payload.rows.every(row => {
+        const original = rows.payload.rows.find(item => item.id === row.id);
+        const seq = original ? sequenceOf(original) : null;
+        return seq !== null && row[field.identity.physicalName] === number(seq);
+      }), { reformatted });
   const renamed = await applyV2FieldChange(page, tableId, field.identity.fieldId, "update", {
     mutateDraft: draft => ({ ...draft, displayName: "Renamed contract number" }),
   });
   const afterRename = await rawBridgeRequest(page, "query.page", { tableId, query });
   recorder.check("renaming keeps the same field, business values and record ids",
     renamed.applied?.payload?.definition?.identity?.fieldId === field.identity.fieldId
-      && afterRename.payload.rows.every(row => rows.payload.rows.some(original => original.id === row.id
+      && afterRename.payload.rows.every(row => reformatted.payload.rows.some(original => original.id === row.id
         && original[field.identity.physicalName] === row[field.identity.physicalName])), { renamed, afterRename });
-  const highest = rows.payload.rows.find(row => row[field.identity.physicalName] === "HT-000004");
+  const highest = reformatted.payload.rows.find(row => row[field.identity.physicalName] === number(4));
   await applyProductMutation(page, tableId, [{ kind: "delete", recordId: highest.id }], "number-delete-highest");
-  const remaining = rows.payload.rows.filter(row => row.id !== highest.id);
+  const remaining = reformatted.payload.rows.filter(row => row.id !== highest.id);
   const override = await applyProductMutation(page, tableId, [{ kind: "update", recordId: remaining[0].id,
-    values: { [field.identity.physicalName]: "HT-999999" } }], "number-override", true);
+    values: { [field.identity.physicalName]: `${reformatPrefix}999999` } }], "number-override", true);
   recorder.check("manual numbering override is rejected at the authority boundary",
     override.type === "mutation.apply"
       && override.payload?.error?.code === "mutation.field.read_only"
@@ -183,8 +239,8 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null, values: {} }], "number-after-reopen");
   const reopened = await rawBridgeRequest(page, "query.page", { tableId, query });
   recorder.check("workspace reopen resumes above the deleted highest number",
-    reopened.payload.rows.some(row => row[field.identity.physicalName] === "HT-000005")
-      && !reopened.payload.rows.some(row => row[field.identity.physicalName] === "HT-000004"), { reopened });
+    reopened.payload.rows.some(row => row[field.identity.physicalName] === number(5))
+      && !reopened.payload.rows.some(row => row[field.identity.physicalName] === number(4)), { reopened });
 }
 
 export async function prepareAutoNumberSnapshot(page, recorder, tableId, field, ports) {

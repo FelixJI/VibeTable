@@ -7,10 +7,14 @@ import type {
   FieldSettingsDescribeResultV2,
 } from "@/contracts";
 import {
+  autoNumberOrderValid,
+  autoNumberSample,
   buildFieldChangeIntent,
   draftFromDefinition,
   draftFromCapability,
   draftsEqual,
+  fieldDisplayNameIssues,
+  fieldDraftIssues,
   initialDraft,
   replaceDraftType,
   relationPairPatchFromDrafts,
@@ -28,6 +32,114 @@ const capabilityFixturePath = resolve(
 function field(): FieldDefinitionV2 {
   return JSON.parse(readFileSync(fixturePath, "utf8")) as FieldDefinitionV2;
 }
+
+describe("field draft issues", () => {
+  function draft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const recommended = JSON.parse(
+      readFileSync(capabilityFixturePath, "utf8") as string,
+    ) as { recommended: {
+      value: Record<string, unknown>;
+      constraints: Record<string, unknown>;
+      storage: Record<string, unknown>;
+      display: Record<string, unknown>;
+    } };
+    return {
+      displayName: "金额",
+      help: "",
+      logicalType: "number",
+      value: { ...recommended.recommended.value, default: { enabled: false, value: null, source: "user", defaultsVersion: 1 } },
+      constraints: recommended.recommended.constraints,
+      storage: recommended.recommended.storage,
+      display: recommended.recommended.display,
+      ...overrides,
+    } as Record<string, unknown>;
+  }
+
+  it("accepts a normal draft and rejects blank or over-long display names", () => {
+    expect(fieldDisplayNameIssues("订单金额")).toEqual([]);
+    expect(fieldDisplayNameIssues("   ")).toEqual(["显示名称不能为空"]);
+    expect(fieldDisplayNameIssues("a".repeat(129))).toEqual([
+      `显示名称最多 128 个字符`,
+    ]);
+    expect(fieldDisplayNameIssues("订单\n金额")).toEqual([
+      "显示名称不能包含换行或控制字符",
+    ]);
+    expect(fieldDisplayNameIssues("名字\u0007")).toEqual([
+      "显示名称不能包含换行或控制字符",
+    ]);
+  });
+
+  it("enforces per-type default value limits before planning", () => {
+    const base = draft() as { constraints: Record<string, unknown> };
+    const range = { min: 10, max: 20 };
+    expect(fieldDraftIssues(draft({
+        value: { required: false, default: { enabled: true, value: 5, source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+        constraints: { ...base.constraints, range },
+      }) as never)).toEqual(["默认值不能小于最小值 10"]);
+    expect(fieldDraftIssues(draft({
+        storage: { kind: "pocketbase-number", options: { onlyInt: true } },
+        value: { required: false, default: { enabled: true, value: 1.5, source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual(["默认值必须是整数（该字段仅允许整数）"]);
+    const textConstraints = {
+      ...base.constraints,
+      length: { min: 2, max: 4 },
+    };
+    expect(fieldDraftIssues(draft({
+        logicalType: "text",
+        constraints: textConstraints,
+        value: { required: false, default: { enabled: true, value: "过长默认文本", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual(["默认值长度不能超过 4 个字符"]);
+    expect(fieldDraftIssues(draft({
+        logicalType: "date",
+        value: { required: false, default: { enabled: true, value: "2026/07/01", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual(["默认日期需要 YYYY-MM-DD 格式"]);
+    expect(fieldDraftIssues(draft({
+        logicalType: "date",
+        value: { required: false, default: { enabled: true, value: "2026-07-01", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual([]);
+    // 权威 normalizeDateTime 要求 RFC3339Nano：字面 T、秒与时区必需。
+    // 无秒/无时区/空格分隔的新写入默认值都要被前端拦下。
+    expect(fieldDraftIssues(draft({
+        logicalType: "dateTime",
+        value: { required: false, default: { enabled: true, value: "2026-08-12T09:00", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual(["默认日期时间需要含秒和时区的 RFC3339 格式（如 2026-08-12T09:00:00Z）"]);
+    expect(fieldDraftIssues(draft({
+        logicalType: "dateTime",
+        value: { required: false, default: { enabled: true, value: "2026-08-12 09:00:00Z", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual(["默认日期时间需要含秒和时区的 RFC3339 格式（如 2026-08-12T09:00:00Z）"]);
+    expect(fieldDraftIssues(draft({
+        logicalType: "dateTime",
+        value: { required: false, default: { enabled: true, value: "2026-08-12T09:00:00Z", source: "user", defaultsVersion: 1 }, presence: { mode: "native" } },
+      }) as never)).toEqual([]);
+    expect(fieldDraftIssues(null)).toEqual([]);
+  });
+});
+
+describe("auto number configuration", () => {
+  it("accepts only complete permutations and defaults to prefix,date,number", () => {
+    expect(autoNumberOrderValid(undefined)).toBe(true);
+    expect(autoNumberOrderValid(["prefix", "date", "number"])).toBe(true);
+    expect(autoNumberOrderValid(["number", "date", "prefix"])).toBe(true);
+    expect(autoNumberOrderValid(["prefix", "number"])).toBe(false);
+    expect(autoNumberOrderValid(["prefix", "date", "date"])).toBe(false);
+    expect(autoNumberOrderValid(["prefix", "date"])).toBe(false);
+  });
+
+  it("composes the first number sample from order, optional date segment and padding", () => {
+    const now = new Date(Date.UTC(2026, 6, 8));
+    expect(autoNumberSample({ prefix: "HT-", start: 1, width: 6 }, now)).toBe("HT-000001");
+    expect(autoNumberSample({
+      prefix: "HT-", start: 41, width: 4, dateFormat: "yyyyMMdd", order: ["prefix", "date", "number"],
+    }, now)).toBe("HT-202607080041");
+    expect(autoNumberSample({
+      prefix: "", start: 1, width: 3, dateFormat: "yyyyMMdd", order: ["date", "number", "prefix"],
+    }, now)).toBe("20260708001");
+    // 日期段禁用：date token 被跳过，其余顺序保持。
+    expect(autoNumberSample({
+      prefix: "N", start: 7, width: 2, dateFormat: null, order: ["date", "number", "prefix"],
+    }, now)).toBe("07N");
+  });
+});
 
 describe("paired relation drafts", () => {
   const pair = {

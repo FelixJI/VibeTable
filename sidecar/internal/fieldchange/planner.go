@@ -51,6 +51,13 @@ type DefinitionNormalizer interface {
 	) error
 }
 
+// ActiveFieldSource enumerates a table's fields so the planner can reject
+// duplicate active display names at the authority layer. Catalog implements
+// it; test stubs without it keep the check inert.
+type ActiveFieldSource interface {
+	Fields(ctx context.Context, tableID string, includeRetired bool) ([]v2.FieldDefinition, error)
+}
+
 type PlanStore interface {
 	FindActive(ctx context.Context, intentHash string, now time.Time) (*v2.FieldChangePlan, error)
 	Save(
@@ -186,10 +193,25 @@ func (planner *Planner) plan(
 	}
 	// Numbering previews freeze data before cache lookup as well as execution.
 	// An omitted client revision must not reuse a plan for older rows.
-	if intent.ExpectedDataRevision == nil && intent.Action == v2.ActionCreate &&
-		intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber {
-		frozen := revisions.Data
-		intent.ExpectedDataRevision = &frozen
+	if intent.ExpectedDataRevision == nil {
+		freeze := intent.Action == v2.ActionCreate &&
+			intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber
+		if !freeze && intent.Action == v2.ActionUpdate &&
+			intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber {
+			existing, fieldErr := planner.source.Field(ctx, intent.TableID, intent.FieldID)
+			if fieldErr != nil {
+				return v2.FieldChangePlan{}, fieldErr
+			}
+			// Same predicate as the preflight reformat warning: only a real
+			// format change rewrites stored rows, so plain rename/help edits
+			// keep applying without a data revision gate.
+			freeze = existing != nil && existing.AutoNumber != nil && intent.Draft.AutoNumber != nil &&
+				!reflect.DeepEqual(existing.AutoNumber, intent.Draft.AutoNumber)
+		}
+		if freeze {
+			frozen := revisions.Data
+			intent.ExpectedDataRevision = &frozen
+		}
 	}
 	now := planner.clock()
 	var before, after *v2.FieldDefinition
@@ -238,6 +260,9 @@ func (planner *Planner) plan(
 		if err != nil {
 			return v2.FieldChangePlan{}, err
 		}
+	}
+	if err := planner.rejectDuplicateActiveFieldNames(ctx, intent, before, after, relatedChanges); err != nil {
+		return v2.FieldChangePlan{}, err
 	}
 	classes := classifyIntent(intent, before, after)
 	for _, related := range relatedChanges {
@@ -331,6 +356,10 @@ func (planner *Planner) plan(
 	for _, warning := range warnings {
 		if warning.Code == "field.auto_number.backfill" {
 			steps = append(steps, v2.PlanStep{Kind: "autoNumberBackfill", Details: warning.Details})
+		}
+		if warning.Code == "field.auto_number.reformat" {
+			steps = append(steps, v2.PlanStep{Kind: "autoNumberReformat", Details: warning.Details})
+			confirmations = append(confirmations, "autoNumberReformat")
 		}
 	}
 	if len(relatedChanges) != 0 {
@@ -662,8 +691,15 @@ func (planner *Planner) definitionFromDraft(
 	before *v2.FieldDefinition,
 	draft *v2.FieldDraft,
 ) (*v2.FieldDefinition, error) {
-	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil && !reflect.DeepEqual(before.AutoNumber, draft.AutoNumber) {
-		return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot change after creation", nil)
+	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil {
+		if before.AutoNumber == nil || draft.AutoNumber == nil {
+			return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot be removed after creation", nil)
+		}
+		if draft.AutoNumber.Start != before.AutoNumber.Start {
+			return nil, productError("field.auto_number.immutable", "draft.autoNumber.start", "the starting sequence cannot change after creation", nil)
+		}
+		// prefix/width/dateFormat/order may change: the executor reformats every
+		// stored value atomically in the field-change transaction.
 	}
 	if draft == nil {
 		return nil, productError("field.contract.invalid", "draft", "draft is required", nil)
@@ -829,6 +865,108 @@ func (planner *Planner) definitionFromDraft(
 	return definition, nil
 }
 
+// rejectDuplicateActiveFieldNames prevents new display-name conflicts between
+// active fields in one table. The comparison is
+// exact on the trimmed name — the same semantics import preflight and display
+// validation already use; there is no case folding. Historical same-name
+// conflicts may remain while unrelated fields are edited or duplicates are
+// repaired; only newly conflicting field identities are rejected.
+func (planner *Planner) rejectDuplicateActiveFieldNames(
+	ctx context.Context,
+	intent v2.FieldChangeIntent,
+	before *v2.FieldDefinition,
+	after *v2.FieldDefinition,
+	related []v2.RelatedFieldChange,
+) error {
+	source, ok := planner.source.(ActiveFieldSource)
+	if !ok {
+		return nil
+	}
+	// Build the FINAL field set per table: start from the stored active
+	// fields, drop every field this plan changes (its own field and each
+	// related pair member), then add the plan's resulting definitions. This
+	// covers self-referencing pairs, two brand-new same-named pair members,
+	// and legitimate name swaps between the two ends of one plan.
+	finals := map[string][]v2.FieldDefinition{}
+	storedNames := map[string]map[string]string{}
+	remove := map[string]map[string]struct{}{}
+	changed := map[string]map[string]*v2.FieldDefinition{}
+	add := func(tableID string, fieldID string, definition *v2.FieldDefinition) {
+		if definition == nil {
+			return
+		}
+		if changed[tableID] == nil {
+			changed[tableID] = map[string]*v2.FieldDefinition{}
+		}
+		changed[tableID][fieldID] = definition
+	}
+	add(intent.TableID, intent.FieldID, after)
+	for index := range related {
+		add(related[index].TableID, related[index].FieldID, related[index].After)
+	}
+	for tableID, byID := range changed {
+		remove[tableID] = make(map[string]struct{}, len(byID))
+		for fieldID := range byID {
+			remove[tableID][fieldID] = struct{}{}
+		}
+	}
+	for tableID := range changed {
+		stored, err := source.Fields(ctx, tableID, false)
+		if err != nil {
+			return err
+		}
+		retired := map[string]struct{}{}
+		storedNames[tableID] = make(map[string]string, len(stored))
+		for _, field := range stored {
+			if field.Lifecycle.State != v2.LifecycleActive {
+				continue
+			}
+			storedNames[tableID][field.Identity.FieldID] = strings.TrimSpace(field.DisplayName)
+			if _, replaced := remove[tableID][field.Identity.FieldID]; replaced {
+				continue
+			}
+			if _, seen := retired[field.Identity.FieldID]; seen {
+				continue
+			}
+			retired[field.Identity.FieldID] = struct{}{}
+			finals[tableID] = append(finals[tableID], field)
+		}
+		for _, definition := range changed[tableID] {
+			if definition.Lifecycle.State == v2.LifecycleActive {
+				finals[tableID] = append(finals[tableID], *definition)
+			}
+		}
+	}
+	for tableID, fields := range finals {
+		owners := make(map[string]string, len(fields))
+		for _, field := range fields {
+			name := strings.TrimSpace(field.DisplayName)
+			if name == "" {
+				continue // definition validation owns the blank-name rejection
+			}
+			if previous, duplicate := owners[name]; duplicate {
+				if storedNames[tableID][previous] == name &&
+					storedNames[tableID][field.Identity.FieldID] == name {
+					continue
+				}
+				path := "draft.displayName"
+				details := map[string]any{"fieldId": previous}
+				if tableID != intent.TableID {
+					path = "relationPair.reciprocalDisplayName"
+					details = map[string]any{"fieldId": field.Identity.FieldID}
+				}
+				return productError(
+					"field.display_name.duplicate", path,
+					"another active field in this table already uses this name",
+					details,
+				)
+			}
+			owners[name] = field.Identity.FieldID
+		}
+	}
+	return nil
+}
+
 func dataSensitivePlan(action v2.ChangeAction, classes []v2.ChangeClass) bool {
 	if action == v2.ActionBackfill || action == v2.ActionPurge {
 		return true
@@ -932,6 +1070,11 @@ func classify(
 		// Formula source and inferred result type are authoritative schema
 		// changes even when the provider field shape happens to stay the same.
 		// They must advance the revision and trigger a fresh materialization.
+		classes[v2.ClassSchema] = struct{}{}
+	}
+	if !reflect.DeepEqual(before.AutoNumber, after.AutoNumber) {
+		// Numbering decoration (prefix/width/dateFormat/order) changes rewrite
+		// stored values in-transaction; sequences never change.
 		classes[v2.ClassSchema] = struct{}{}
 	}
 	if relationCascadeIntroduced(before, after) {

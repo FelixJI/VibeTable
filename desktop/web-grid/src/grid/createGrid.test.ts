@@ -5,11 +5,15 @@ import {
   buildEditEventHandlers,
   buildOptions,
   buildTabulatorColumns,
+  activateEditorForKeyStroke,
   jsonHeaderFilter,
   jsonValueFormatter,
   ROW_KEY_FIELD,
   ROW_NUMBER_FIELD,
+  shouldStartCellEditOnKey,
 } from "./createGrid";
+import { isRowIdColumn, isRowIdFieldName } from "./gridState";
+import { defaultVisibleFields } from "@/stores/viewQueryStore";
 import type { GridColumnDefinition } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
 import type { DisplaySpec } from "@/contracts/generated/schemaV2";
@@ -270,8 +274,114 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     };
 
     expect(buildColumns(page).map(({ minWidth }) => minWidth))
-      .toEqual([100, 120, 132, 180, 160, 190, 190]);
+      .toEqual([84, 104, 116, 156, 136, 168, 170]);
     expect(buildOptions(page).layout).toBe("fitColumns");
+  });
+
+  it("gives new columns a compact default width that fitColumns cannot stretch", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "enabled", title: "Enabled", dataType: "boolean", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+        { name: "created", title: "Created", dataType: "datetime", editable: false, nullable: false },
+      ],
+      rows: [],
+    };
+    const defs = buildColumns(page);
+    // 默认宽度 = 家族紧凑值，且禁止 fitColumns 拉伸铺满视口；
+    // 用户拖宽后的宽度由视图持久化覆盖，优先于该默认值。
+    expect(defs.map(({ width }) => width)).toEqual([84, 136, 156]);
+    expect(defs.every(({ widthGrow }) => widthGrow === 0)).toBe(true);
+    // 行号列保持固定窄列，其余数据列均带默认宽度且不可拉伸。
+    const tabulatorColumns = buildTabulatorColumns(page);
+    expect(tabulatorColumns[0]?.field).toBe(ROW_NUMBER_FIELD);
+    expect(tabulatorColumns.slice(1).every(column => column.widthGrow === 0)).toBe(true);
+  });
+
+  it("hides the row-id column by default across host projections and stays in sync with the visibility panel", () => {
+    // 真实宿主 ReadColumns 投影：name=id, fieldId=id, kind=scalar。
+    const realHostPage: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "id", title: "ID", fieldId: "id", kind: "scalar", dataType: "text", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+      ],
+      rows: [],
+    };
+    const [realIdColumn, realNameColumn] = buildColumns(realHostPage);
+    // 首次构建（无本地布局/默认 preset）即隐藏，与显示字段面板的默认一致。
+    expect(realIdColumn.visible).toBe(false);
+    expect(realNameColumn.visible).toBeUndefined();
+    expect(defaultVisibleFields(realHostPage.columns.map(column => column.name)))
+      .toEqual(["name"]);
+
+    // sidecar schema-describe 与旧宿主形状同样识别。
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "id", title: "行 ID", kind: "system", dataType: "text", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+      ],
+      rows: [],
+    };
+    const [idColumn, nameColumn] = buildColumns(page);
+    expect(idColumn.visible).toBe(false);
+    expect(nameColumn.visible).toBeUndefined();
+    expect(isRowIdColumn({ name: "id", kind: "system" })).toBe(true);
+    expect(isRowIdColumn({ name: "id" })).toBe(true);
+    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(true);
+    expect(isRowIdColumn({ name: "f_title", kind: "system" })).toBe(false);
+    expect(isRowIdFieldName("id")).toBe(true);
+    expect(isRowIdFieldName("f_title")).toBe(false);
+  });
+
+  it("starts editing the selected cell when a printable key is typed", () => {
+    // 键入触发不使用 force：只读/忙碌列由 Tabulator editable 回调拒绝（返回 false）。
+    expect(shouldStartCellEditOnKey({ key: "a", ctrlKey: false, metaKey: false, altKey: false })).toBe(true);
+    expect(shouldStartCellEditOnKey({ key: "A", ctrlKey: false, metaKey: false, altKey: false })).toBe(true);
+    expect(shouldStartCellEditOnKey({ key: "1", ctrlKey: false, metaKey: false, altKey: false })).toBe(true);
+    // 修饰键组合、空格、功能键与 IME 组合输入保持原有语义。
+    expect(shouldStartCellEditOnKey({ key: "c", ctrlKey: true, metaKey: false, altKey: false })).toBe(false);
+    expect(shouldStartCellEditOnKey({ key: "c", ctrlKey: false, metaKey: true, altKey: false })).toBe(false);
+    expect(shouldStartCellEditOnKey({ key: "c", ctrlKey: false, metaKey: false, altKey: true })).toBe(false);
+    expect(shouldStartCellEditOnKey({ key: " ", ctrlKey: false, metaKey: false, altKey: false })).toBe(false);
+    expect(shouldStartCellEditOnKey({ key: "Enter", ctrlKey: false, metaKey: false, altKey: false })).toBe(false);
+    expect(shouldStartCellEditOnKey({ key: "ArrowDown", ctrlKey: false, metaKey: false, altKey: false })).toBe(false);
+    expect(shouldStartCellEditOnKey({
+      key: "中", ctrlKey: false, metaKey: false, altKey: false, isComposing: true,
+    })).toBe(false);
+    // Windows IME 发起组合的首个 keydown（key="Process"）进入编辑，
+    // 组合输入随后在聚焦的编辑器内原生继续。
+    expect(shouldStartCellEditOnKey({
+      key: "Process", ctrlKey: false, metaKey: false, altKey: false, isComposing: false,
+    })).toBe(true);
+  });
+
+  it("activates the editor via focus redirect without injecting characters", () => {
+    // 键入启动编辑后只聚焦/全选编辑器，字符由原始 keydown 的默认动作
+    // 原生插入：负号、小数开头与 IME 组合均由浏览器处理，不再手工赋值。
+    const numeric = document.createElement("input");
+    numeric.type = "number";
+    numeric.value = "5";
+    document.body.append(numeric);
+    const text = document.createElement("input");
+    text.type = "text";
+    text.value = "old";
+    document.body.append(text);
+
+    activateEditorForKeyStroke(numeric);
+    expect(document.activeElement).toBe(numeric);
+    // number 无法全选：清空旧值（合法空串），首键由原生默认动作插入。
+    expect(numeric.value).toBe("");
+
+    activateEditorForKeyStroke(text);
+    expect(document.activeElement).toBe(text);
+    // 全选让首次键入替换原值（type-over），而非追加。
+    expect(text.selectionStart).toBe(0);
+    expect(text.selectionEnd).toBe(3);
+    numeric.remove();
+    text.remove();
   });
 
   it("does NOT emit a Tabulator column for rowKey (hidden transport metadata)", () => {

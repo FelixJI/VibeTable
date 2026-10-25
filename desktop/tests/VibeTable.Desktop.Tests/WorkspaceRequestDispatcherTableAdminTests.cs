@@ -10,6 +10,51 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceTableRequestControllerTests
 {
     [TestMethod]
+    public async Task CreateTable_MapsAuthorityDuplicateNameToAFriendlyFailure()
+    {
+        var tableGateway = new FakeTableRpcGateway
+        {
+            ListTablesResult = new TableSummary(
+                ["tbl_existing"],
+                [],
+                new Dictionary<string, string> { ["tbl_existing"] = "Orders" }),
+        };
+        var sink = new FakeWebReplySink();
+        IProductDataRpcGateway? currentGateway = null;
+        var controller = new WorkspaceTableRequestController(
+            new TableWorkspaceService(tableGateway),
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () => currentGateway,
+            NoDatabaseOpenRoute.Instance);
+        var transport = new SchemaCaptureTransport
+        {
+            CreateTableProductError = "schema.table.display_name_duplicate",
+        };
+        await using var client = new JsonRpcClient(transport);
+        using var productGateway = new JsonRpcProductDataGateway(client);
+        currentGateway = productGateway;
+
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.createRequested",
+            "create-duplicate",
+            JsonSerializer.SerializeToElement(new { displayName = "Orders" }),
+            string.Empty));
+
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("create-duplicate", failure.RequestId);
+        string serialized = JsonSerializer.Serialize(failure.Payload);
+        StringAssert.Contains(serialized, "TABLE_NAME_DUPLICATE");
+        Assert.AreEqual(
+            "同一工作区内已存在同名数据表，请修改名称后重试。",
+            JsonElement.Parse(JsonSerializer.Serialize(failure.Payload))
+                .GetProperty("message").GetString());
+        Assert.IsFalse(serialized.Contains("SCHEMA_APPLY_FAILED"));
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "database.collectionsChanged"));
+    }
+
+    [TestMethod]
     public async Task CreateTable_IgnoresRendererIdentitiesAndBootstrapsAnEmptyOpaqueTable()
     {
         var tableGateway = new FakeTableRpcGateway
@@ -509,6 +554,9 @@ public sealed class WorkspaceTableRequestControllerTests
             }
         }
 
+        /// <summary>When set, schema.table.create answers with this product error code.</summary>
+        internal string? CreateTableProductError { get; set; }
+
         public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
             => _incoming.Reader.ReadAsync(cancellationToken).AsTask();
 
@@ -547,12 +595,25 @@ public sealed class WorkspaceTableRequestControllerTests
                 _ => throw new InvalidOperationException(
                     $"Unexpected RPC method: {method}"),
             };
-            JsonElement response = JsonSerializer.SerializeToElement(new
-            {
-                jsonrpc = "2.0",
-                id,
-                result,
-            });
+            JsonElement? error = method == "schema.table.create" && CreateTableProductError is { } errorCode
+                ? JsonSerializer.SerializeToElement(new
+                {
+                    code = -32150,
+                    message = "Product data error",
+                    data = new
+                    {
+                        kind = "product_data_error",
+                        code = errorCode,
+                        message = "another table in this workspace already uses this name",
+                        path = "displayName",
+                        details = new { },
+                        retryable = false,
+                    },
+                })
+                : null;
+            JsonElement response = error is null
+                ? JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, result })
+                : JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, error });
             _incoming.Writer.TryWrite(response);
             return Task.CompletedTask;
         }

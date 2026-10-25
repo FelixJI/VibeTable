@@ -431,6 +431,175 @@ def test_native_chrome_foreign_owner_fails_without_observation_retry(tmp_path, m
     assert len(calls) == 1
 
 
+def test_native_recovery_settle_polls_the_existing_budget_until_recover_reenables(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    # DOM readiness can precede host recovery; capture only the enabled endpoint.
+    button = {
+        "id": "plugin-recover",
+        "pid": 12,
+        "enabled": False,
+        "x": 846,
+        "y": 35,
+        "width": 70,
+        "height": 24,
+    }
+    commands = []
+
+    def observe(command, **kwargs):
+        commands.append(command[1])
+        payload = dict(button)
+        if len(commands) > 3:
+            payload["enabled"] = True
+        return SimpleNamespace(stdout=json.dumps({"pid": 12, "hwnd": 14, "buttons": [payload]}))
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native.time, "sleep", lambda _delay: None)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 14)
+    observation, found = native._observe_owned_chrome(
+        owned,
+        tmp_path / "observer",
+        14,
+        12,
+        {"action": "observe", "stage": "crashed", "buttonId": "plugin-recover"},
+        tmp_path / "capture.png",
+        deadline=native.time.monotonic() + 15,
+    )
+    assert found["enabled"] is True
+    assert commands == ["--buttons", "--buttons", "--buttons", "--buttons", "--screenshot"]
+    assert observation["pid"] == 12
+
+
+def test_native_recovery_settle_exhausts_its_request_budget_when_never_reenabled(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    button = {
+        "id": "plugin-recover",
+        "pid": 12,
+        "enabled": False,
+        "x": 10,
+        "y": 20,
+        "width": 30,
+        "height": 40,
+    }
+    clock = [100.0]
+    calls = []
+
+    def observe(command, **kwargs):
+        calls.append(command)
+        clock[0] += 8
+        return SimpleNamespace(
+            stdout=json.dumps({"pid": 12, "hwnd": 14, "buttons": [dict(button)]})
+        )
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(native.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 14)
+    with pytest.raises(OSError, match="did not settle within its request budget"):
+        native._observe_owned_chrome(
+            owned,
+            tmp_path / "observer",
+            14,
+            12,
+            {"action": "observe", "stage": "recovered", "buttonId": "plugin-recover"},
+            tmp_path / "capture.png",
+            deadline=112,
+        )
+    assert len(calls) == 2
+
+
+def test_native_recovery_settle_fails_at_once_when_a_foreign_window_owns_the_entry(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    button = {
+        "id": "plugin-recover",
+        "pid": 12,
+        "enabled": True,
+        "x": 10,
+        "y": 20,
+        "width": 30,
+        "height": 40,
+    }
+    calls = []
+
+    def observe(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            stdout=json.dumps({"pid": 12, "hwnd": 14, "buttons": [dict(button)]})
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native.time, "sleep", lambda _delay: None)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 99)
+    with pytest.raises(OSError, match="missing, disabled or obscured"):
+        native._observe_owned_chrome(
+            owned,
+            tmp_path / "observer",
+            14,
+            12,
+            {"action": "observe", "stage": "crashed", "buttonId": "plugin-recover"},
+            tmp_path / "capture.png",
+            deadline=native.time.monotonic() + 15,
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("stage", "button_id"), [("crashed", "plugin-manage"), ("recovered", "plugin-stop")]
+)
+def test_native_recovery_stages_do_not_wait_for_other_plugin_buttons(
+    tmp_path, monkeypatch, stage, button_id
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    recover = {
+        "id": "plugin-recover",
+        "pid": 12,
+        "enabled": True,
+        "x": 8,
+        "y": 8,
+        "width": 8,
+        "height": 8,
+    }
+    calls = []
+
+    def observe(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            stdout=json.dumps({"pid": 12, "hwnd": 14, "buttons": [dict(recover)]})
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native.time, "sleep", lambda _delay: None)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 14)
+    with pytest.raises(OSError, match="missing, disabled or obscured"):
+        native._observe_owned_chrome(
+            owned,
+            tmp_path / "observer",
+            14,
+            12,
+            {"action": "observe", "stage": stage, "buttonId": button_id},
+            tmp_path / "capture.png",
+            deadline=native.time.monotonic() + 15,
+        )
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("as_bytes", [True, False])
 @pytest.mark.parametrize("failure", ["timeout", "nonzero"])
 def test_native_plugin_observer_failure_keeps_bounded_stage_stderr_without_input(

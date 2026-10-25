@@ -123,4 +123,18 @@ describe("HomeView", () => {
     expect(cell.text()).toContain("班");
     expect(cell.attributes("title")).toContain("调休上班");
   });
+
+  it("renders the mini calendar grid immediately instead of popping it in later", async () => {
+    // 共享日历未加载完成时（无桥接、状态 unavailable），迷你日历也应立即
+    // 呈现本地周末规则网格，避免首页从上到下逐块出现。
+    const calendar = useWorkCalendarStore();
+    expect(calendar.available).toBe(false);
+    const wrapper = mount(HomeView);
+    await nextTick();
+    expect(calendar.available).toBe(false);
+    expect(wrapper.find(".calendar-card [data-date]").exists()).toBe(true);
+    // 加载中不显示“不可用”占位；只有失败才提示。
+    expect(wrapper.find(".calendar-card").text())
+      .not.toContain("共享工作日历暂不可用");
+  });
 });

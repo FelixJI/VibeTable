@@ -335,15 +335,18 @@ function openTable(name: string) {
           <div class="mini-heading">
             <span>{{ t("home.today") }}</span><strong>{{ monthText }}</strong>
           </div>
+          <!-- 迷你日历始终立即渲染本地周末规则网格；共享日历加载后仅补充
+               休/班标记，避免首页内容从上到下逐块出现。 -->
           <WorkCalendarMonth
             :month-key="calendarMonth"
             :overrides="workCalendar.overrides"
-            v-if="workCalendar.available"
             :locale="ui.locale"
             compact
           />
-          <p v-if="!workCalendar.available">{{ t("settings.workCalendar.unavailable") }}</p>
-          <div v-if="workCalendar.available" class="calendar-legend">
+          <p v-if="workCalendar.status === 'error' || workCalendar.status === 'conflict'" role="note">
+            {{ t("settings.workCalendar.unavailable") }}
+          </p>
+          <div class="calendar-legend">
             <span><i class="legend-rest">休</i>{{ t("calendar.legend.rest") }}</span>
             <span><i class="legend-work">班</i>{{ t("calendar.legend.work") }}</span>
           </div>
@@ -465,7 +468,7 @@ h1 {
   border-radius: var(--vt-radius-lg);
   background: var(--vt-bg);
 }
-.continue-card { min-height: 0; padding: 22px; transition: min-height 160ms var(--vt-ease, ease); }
+.continue-card { min-height: 0; padding: 22px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .section-heading h2 { margin: 0; font-size: var(--vt-font-heading); font-weight: 600; }
 .recent-list { border-top: 1px solid var(--vt-border); }

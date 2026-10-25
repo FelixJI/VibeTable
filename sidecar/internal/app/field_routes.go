@@ -28,6 +28,7 @@ func registerFieldRoutes(
 	formulaJobs *jobs.Service,
 	logger *slog.Logger,
 	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
+	autoNumberReformatter fieldchange.AutoNumberReformatter,
 	gates ...businessWriteGate,
 ) schemaFieldChangeDomain {
 	catalog := fieldchange.NewCatalog(app)
@@ -39,6 +40,7 @@ func registerFieldRoutes(
 	executorOptions := []fieldchange.ExecutorOption{
 		fieldchange.WithMigrationScheduler(migration),
 		fieldchange.WithExecutorLogger(logger),
+		fieldchange.WithAutoNumberReformatter(autoNumberReformatter),
 	}
 	if formulaJobs != nil {
 		executorOptions = append(

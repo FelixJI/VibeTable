@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { headerFilterConditions } from "@/grid/viewQuery";
+import { isRowIdFieldName } from "@/grid/gridState";
 import type {
   FilterExpression,
   GroupCondition,
@@ -43,6 +44,14 @@ function withoutManagedHeaderFilters(
   return result;
 }
 
+/**
+ * 默认可见列：行 ID（主键，物理名 `id`）默认隐藏，与网格列构建规则
+ * （`isRowIdColumn`）保持同步；用户在“显示字段”中显式勾选后仍可显示。
+ */
+export function defaultVisibleFields(allFields: readonly string[]): string[] {
+  return allFields.filter(field => !isRowIdFieldName(field));
+}
+
 export const useViewQueryStore = defineStore("view-query", {
   state: () => ({
     collection: "",
@@ -64,7 +73,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.sorts = [];
       this.groups = [];
       this.summaries = [];
-      this.visibleFields = [...allFields];
+      this.visibleFields = defaultVisibleFields(allFields);
       this.collapsedGroupKeys = [];
     },
     replace(collection: string, view: PresetView, allFields: readonly string[]) {
@@ -81,7 +90,7 @@ export const useViewQueryStore = defineStore("view-query", {
       this.visibleFields = allFields.length === 0
         ? [...view.visibleFields]
         : saved.length > 0 || view.columns?.some(column => column.visible === false)
-          ? saved : [...allFields];
+          ? saved : defaultVisibleFields(allFields);
     },
     updateRuntime(query: {
       readonly headerFilters: readonly FilterExpression[];

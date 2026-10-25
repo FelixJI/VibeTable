@@ -2,7 +2,7 @@ import path from "node:path";
 
 /** Real WPF/WebView2 settings journey for the common field display families (scenario 45). */
 export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps) {
-  const { createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable,
+  const { createEmptyTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply, selectTable,
     applyProductMutation, rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture,
     waitForCapturedBridgeMessage, openWorkspaceCenterFromSwitcher, replicaUiMethod,
     beginWritableWorkspaceBootstrapCapture } = deps;
@@ -60,7 +60,9 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
     await page.getByTestId("field-apply-button").click();
     const applied = await waitForCapturedBridgeMessage(page, 60_000);
     if (applied.type !== "field.change.apply") throw new Error(`common display apply failed: ${JSON.stringify(applied)}`);
-    await closeFieldSettingsDrawer(page);
+    // 成功回执后按产品契约收尾：create 自动关闭等真实关闭，update 重新
+    // 描述为干净编辑态后由用户手动关闭，不再与自动关闭竞态点击关闭按钮。
+    await settleFieldSettingsAfterApply(page, applied);
     return applied;
   };
   const waitTexts = async (field, expected) => {
@@ -201,6 +203,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await selectTable(page, tableName);
   const createLookupField = async (name, targetField, aggregation) => {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await page.getByTestId("field-display-name").locator("input").first().fill(name);
     const typeSelect = page.getByTestId("field-logical-type");
     await typeSelect.locator(".n-base-selection").click();

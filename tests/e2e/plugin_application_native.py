@@ -304,10 +304,18 @@ def _observe_owned_chrome(
     *,
     deadline: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    settle = request["action"] == "observe" and request["stage"] in {
+    contrast_settle = request["action"] == "observe" and request["stage"] in {
         "contrast",
         "contrast-restored",
     }
+    # S49: DOM nav-home readiness can precede host CompleteRendererRecovery,
+    # so crashed/recovered observes of this entry poll the same budget.
+    recovery_settle = (
+        request["action"] == "observe"
+        and request["buttonId"] == "plugin-recover"
+        and request["stage"] in {"crashed", "recovered"}
+    )
+    settle = contrast_settle or recovery_settle
     capture = not settle
     while True:
         remaining = deadline - time.monotonic()
@@ -341,7 +349,7 @@ def _observe_owned_chrome(
         if len(buttons) > 1 or (buttons and buttons[0]["pid"] != host_pid):
             raise ValueError("expected one actual native plugin button")
         button = buttons[0] if buttons else None
-        ready = (
+        geometry = (
             button is not None
             and all(
                 isinstance(button[key], (int, float)) and math.isfinite(button[key])
@@ -350,14 +358,21 @@ def _observe_owned_chrome(
             and button["width"] > 0
             and button["height"] > 0
         )
-        if ready and button is not None:
+        owned = False
+        if geometry and button is not None:
             x, y = button["x"] + button["width"] / 2, button["y"] + button["height"] / 2
-            ready = button["enabled"] and native._root_at(x, y) == hwnd
-        if ready and button is not None:
+            owned = native._root_at(x, y) == hwnd
+        if geometry and button is not None and button["enabled"] and owned:
             if capture:
                 return observation, button
             capture = True
             continue
+        if recovery_settle and not capture:
+            if geometry and button is not None and owned and not button["enabled"]:
+                # Only tolerated transient: whole, host-owned but still disabled.
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                continue
+            raise OSError("native plugin button is missing, disabled or obscured")
         if not settle or capture:
             raise OSError("native plugin button is missing, disabled or obscured")
         # Poll only owned native readiness while Windows' Please wait layer is

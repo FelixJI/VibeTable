@@ -104,7 +104,7 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
 	})
-	registerFieldRoutes(r, pb, nil, nil, nil, nil)
+	registerFieldRoutes(r, pb, nil, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
 	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)

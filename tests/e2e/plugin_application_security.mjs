@@ -198,7 +198,9 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const after = await browserSession.send("SystemInfo.getProcessInfo");
   recorder.check("old faulting renderer leaves the shared browser process set",
     !after.processInfo.some(next => next.id === faulting[0].id), { before, looping, faulting, after });
-  await nativePluginInput(runtime, "observe", "plugin-manage", "recovered").then(result => recorder.check("actual WPF recovery screenshot remains actionable", result.status === "completed", { result }));
+  // 恢复清空 surface 后管理按钮按契约隐藏：资格观察改用常驻 plugin-recover，禁用窗口由 helper 等待。
+  await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("actual WPF recovery screenshot remains actionable", result.status === "completed"
+    && ["plugin-stop", "plugin-return", "plugin-manage"].every(id => !result.observation.buttons.some(button => button.id === id)), { result }));
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);

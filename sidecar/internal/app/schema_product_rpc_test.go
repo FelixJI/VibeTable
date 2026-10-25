@@ -695,7 +695,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	})
 	migration := fieldchange.NewMigrationService(pb, nil)
 	t.Cleanup(migration.Shutdown)
-	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil)
+	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil, nil)
 
 	contentSource, err := queryschema.New(pb.DataDir())
 	if err != nil {

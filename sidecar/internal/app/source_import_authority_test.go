@@ -33,7 +33,7 @@ func newSourceImportAuthorityFixture(t *testing.T) *sourceImportAuthorityFixture
 	r := router.NewRouter(func(writer http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{Event: router.Event{Response: writer, Request: request}}, nil
 	})
-	domain := registerFieldRoutes(r, pb, nil, nil, nil, nil, gate)
+	domain := registerFieldRoutes(r, pb, nil, nil, nil, nil, nil, gate)
 	fixture.authority = newSourceImportAuthority(domain, mutation.New(pb, mutation.MetadataSchemaSource{}), gate)
 	return fixture
 }

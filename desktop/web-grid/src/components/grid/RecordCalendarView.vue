@@ -19,6 +19,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   intent: [intent: CalendarRecordMoveIntent];
+  openRecord: [row: Record<string, unknown>];
 }>();
 const ui = useUiStore();
 const month = ref(startOfMonth(new Date()));
@@ -160,6 +161,11 @@ function dropRecord(targetDate: string, event: DragEvent): void {
             v-for="row in cell.items.slice(0, 3)"
             :key="String(row.rowKey ?? rowTitle(row))"
             data-testid="calendar-record"
+            role="button"
+            tabindex="0"
+            @click="emit('openRecord', row)"
+            @keydown.enter="emit('openRecord', row)"
+            @keydown.space.prevent="emit('openRecord', row)"
             :title="rowTitle(row)"
             :draggable="Boolean(movableRecord(row))"
             @dragstart="startRecordDrag(row, $event)"

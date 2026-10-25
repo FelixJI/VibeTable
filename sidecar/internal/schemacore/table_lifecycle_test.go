@@ -11,8 +11,92 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
+
+func TestTableCreateRejectsDuplicateDisplayNameButKeepsReplayIdempotent(t *testing.T) {
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: t.TempDir(), HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Errorf("ResetBootstrapState(): %v", err)
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewTableLifecycle(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: "订单", OperationID: "operation-duplicate-name-1",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same name, different operationId: a second physical table is rejected.
+	_, err = lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: " 订单 ", OperationID: "operation-duplicate-name-2",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	var conflict *schemaerror.ProductError
+	if !errors.As(err, &conflict) || conflict.Code != "schema.table.display_name_duplicate" {
+		t.Fatalf("duplicate create error = %#v", err)
+	}
+	// The same operationId replays idempotently instead of tripping the check.
+	replayed, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: "订单", OperationID: "operation-duplicate-name-1",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil || replayed.TableID != first.TableID {
+		t.Fatalf("replay = %#v, %v", replayed, err)
+	}
+	// Case differs: no case folding is part of the product semantics.
+	if _, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: "Order", OperationID: "operation-duplicate-name-3",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	}); err != nil {
+		t.Fatalf("case-sensitive names must stay allowed: %v", err)
+	}
+	t.Run("unavailable name index rejects creation without partial writes", func(t *testing.T) {
+		// Corrupt only this disposable fixture's physical name column: a failed
+		// duplicate lookup must not be treated as proof that the name is free.
+		beforeTables, err := app.CountRecords("vibetable_tables")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeAudit, err := app.CountRecords("vibetable_audit_outbox")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.DB().NewQuery("ALTER TABLE vibetable_tables DROP COLUMN display_name").Execute(); err != nil {
+			t.Fatal(err)
+		}
+		_, err = lifecycle.Create(context.Background(), v2.TableCreateIntent{
+			DisplayName: "新表", OperationID: "operation-unavailable-name-lookup",
+			Actor: v2.Actor{ID: "local-user", Kind: "user"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "find duplicate table display name") {
+			t.Fatalf("unavailable duplicate check = %v", err)
+		}
+		afterTables, err := app.CountRecords("vibetable_tables")
+		if err != nil || afterTables != beforeTables {
+			t.Fatalf("table count = %d, %v; want %d", afterTables, err, beforeTables)
+		}
+		afterAudit, err := app.CountRecords("vibetable_audit_outbox")
+		if err != nil || afterAudit != beforeAudit {
+			t.Fatalf("audit count = %d, %v; want %d", afterAudit, err, beforeAudit)
+		}
+	})
+}
 
 func TestTableLifecycleCreatesOnlyNormalizedV2AuthorityAndAudit(t *testing.T) {
 	app := pocketbase.NewWithConfig(pocketbase.Config{

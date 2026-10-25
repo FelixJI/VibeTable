@@ -354,7 +354,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		}
 		fieldSettings := registerFieldRoutes(
 			event.Router, pb, fieldMigration, jobService, options.Logger,
-			fieldProtectionVerifier,
+			fieldProtectionVerifier, mutationKernel,
 			businessGate,
 		)
 		importWorkspaceID := ""

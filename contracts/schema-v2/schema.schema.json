@@ -312,7 +312,15 @@
       "properties": {
         "prefix": {"type": "string", "maxLength": 64, "pattern": "^[^\u0000\r\n]*$"},
         "start": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
-        "width": {"type": "integer", "minimum": 1, "maximum": 16}
+        "width": {"type": "integer", "minimum": 1, "maximum": 16},
+        "dateFormat": {"enum": ["yyyyMMdd", null]},
+        "order": {
+          "type": "array",
+          "items": {"enum": ["prefix", "date", "number"]},
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        }
       }
     },
     "AutoDateSpec": {

@@ -15,8 +15,25 @@ public partial class MainWindow
     {
         try
         {
-            JsonElement? workspaceSummary = await ReadWorkspaceDiagnosticsAsync(
-                _session.Token);
+            JsonElement? workspaceSummary = null;
+            string? workspaceDiagnosticsError = null;
+            try
+            {
+                workspaceSummary = await ReadWorkspaceDiagnosticsAsync(
+                    _session.Token);
+            }
+            catch (OperationCanceledException) when (_session.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // Degrade only the workspace part; local runtime facts still
+                // ship and a bounded structured code says why.
+                workspaceDiagnosticsError = exception is WorkspaceDiagnosticsUnavailableException unavailable
+                    ? unavailable.ErrorCode
+                    : "desktop.diagnostics.workspace_unexpected";
+            }
             using Process process = Process.GetCurrentProcess();
             PocketBaseSupervisor? sidecar = _runtime.CurrentSidecar;
             PythonBackendSupervisor? backend = _runtime.CurrentBackend;
@@ -33,7 +50,8 @@ public partial class MainWindow
                     ReadDesktopDiagnosticLog(),
                     sidecar?.GetSanitizedLog() ?? string.Empty,
                     backend?.GetStdErrorLog() ?? string.Empty,
-                    workspaceSummary));
+                    workspaceSummary,
+                    workspaceDiagnosticsError));
             _webBridge.PostResponse(request.Type, request.RequestId, bundle);
         }
         catch (OperationCanceledException) when (_session.IsCancellationRequested)
@@ -65,6 +83,18 @@ public partial class MainWindow
         catch (UnauthorizedAccessException) { return string.Empty; }
     }
 
+    /// <summary>Structured, bounded reason a workspace diagnostics read failed.</summary>
+    private sealed class WorkspaceDiagnosticsUnavailableException : Exception
+    {
+        public WorkspaceDiagnosticsUnavailableException(string errorCode)
+            : base(errorCode)
+        {
+            ErrorCode = errorCode;
+        }
+
+        public string ErrorCode { get; }
+    }
+
     private async Task<JsonElement?> ReadWorkspaceDiagnosticsAsync(
         CancellationToken cancellationToken)
     {
@@ -80,9 +110,20 @@ public partial class MainWindow
                 StringComparer.Ordinal) != true)
             return null;
         Guid operationId = Guid.NewGuid();
-        ulong sequence = _workspaceSessionFilter.ReserveHostSequence(
-            workspaceId,
-            session.SessionEpoch);
+        ulong sequence;
+        try
+        {
+            sequence = _workspaceSessionFilter.ReserveHostSequence(
+                workspaceId,
+                session.SessionEpoch);
+        }
+        catch (InvalidOperationException)
+        {
+            // The epoch retired between reading the session and reserving
+            // (switch/close raced this read).
+            throw new WorkspaceDiagnosticsUnavailableException(
+                "workspace.session_inactive");
+        }
         JsonElement wire = JsonSerializer.SerializeToElement(new
         {
             scope = "workspace",
@@ -99,7 +140,7 @@ public partial class MainWindow
             pathGrant: null,
             cancellationToken).ConfigureAwait(false);
         if (result.Error is not null)
-            throw new InvalidOperationException(result.Error.Code);
+            throw new WorkspaceDiagnosticsUnavailableException(result.Error.Code);
         return result.Result;
     }
 }
