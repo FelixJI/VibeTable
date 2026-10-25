@@ -65,6 +65,7 @@ public sealed class PluginSurfaceSessionManager
 
     internal const int RetiredCloseLimit = 256;
     private readonly object _gate = new();
+    private readonly HashSet<string> _mountedTokens = new(StringComparer.Ordinal);
     private readonly HashSet<string> _retiredTokens = new(StringComparer.Ordinal);
     private readonly Queue<string> _retiredOrder = new();
     private readonly ConcurrentDictionary<string, PluginSurfaceSession> _sessions =
@@ -102,13 +103,31 @@ public sealed class PluginSurfaceSessionManager
     internal event Action<string>? Closed;
 
     /// <summary>
-    /// Raised after the active surface set changes (open or close). Callbacks
-    /// run outside the gate; readers must use <see cref="ActiveSurfaceCount"/>.
+    /// Raised after a surface is allocated, mounted or closed. Callbacks run
+    /// outside the gate; mounted frames are distinct from catalog capabilities.
     /// </summary>
     public event Action? Changed;
 
     /// <summary>Number of currently open plugin surfaces.</summary>
     public int ActiveSurfaceCount => _sessions.Count;
+
+    /// <summary>Number of plugin frames mounted by the current renderer.</summary>
+    internal int MountedSurfaceCount
+    {
+        get { lock (_gate) return _mountedTokens.Count; }
+    }
+
+    internal bool MarkMounted(string surfaceToken)
+    {
+        bool changed;
+        lock (_gate)
+        {
+            if (!_sessions.ContainsKey(surfaceToken)) return false;
+            changed = _mountedTokens.Add(surfaceToken);
+        }
+        if (changed) Changed?.Invoke();
+        return true;
+    }
 
     public bool TryAccept(PluginSurfaceEvent message, out PluginSurfaceSession? session)
     {
@@ -169,6 +188,7 @@ public sealed class PluginSurfaceSessionManager
         lock (_gate)
         {
             if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out session)) return false;
+            _mountedTokens.Remove(surfaceToken);
             _retiredTokens.Add(surfaceToken);
             _retiredOrder.Enqueue(surfaceToken);
             while (_retiredOrder.Count > RetiredCloseLimit)

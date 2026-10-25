@@ -60,8 +60,10 @@ public sealed class PluginWebViewResourceHost : IDisposable
         remove => _surfaces.Changed -= value;
     }
 
-    /// <summary>True while at least one plugin surface is open.</summary>
-    public bool HasActiveSurfaces => _surfaces.ActiveSurfaceCount > 0;
+    /// <summary>True while a plugin frame is mounted, not merely listed in the catalog.</summary>
+    public bool HasActiveSurfaces => _surfaces.MountedSurfaceCount > 0;
+
+    internal bool MarkSurfaceMounted(string surfaceToken) => _surfaces.MarkMounted(surfaceToken);
 
     public void Attach(CoreWebView2 core)
     {

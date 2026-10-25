@@ -512,6 +512,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         // Name was assigned by the trusted app's iframe element before plugin code runs.
         string token = frame.Name;
         if (!_pluginResources.TryGetSurface(token, out var surface) || surface is null || surface.ApiVersion != "3.x") return;
+        if (!_pluginResources.MarkSurfaceMounted(token)) return;
         string source = surface.DocumentUri.AbsoluteUri;
         _pluginFrames[token] = (frame, generation);
         bool active = true;

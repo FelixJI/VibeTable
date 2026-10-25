@@ -22,6 +22,48 @@ public sealed class PluginActionPresentationTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    public async Task CatalogProjectionAfterRecoveryDoesNotActivateNativePluginChrome()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-catalog-chrome-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var snapshot = PresentationSnapshot();
+            using (var package = ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, ZipArchiveMode.Create))
+            {
+                package.CreateEntry("ui/index.html");
+                package.CreateEntry("ui/run.js");
+            }
+            var reply = new PluginRequestDispatcherTestsAccessibleSink();
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePickerForPresentation(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { snapshot })),
+                packageCacheRoot: _ => root);
+
+            string? retiredToken = null;
+            foreach (string requestId in new[] { "initial", "after-recovery" })
+            {
+                resources.CloseAllSurfaces();
+                Assert.IsFalse(resources.HasActiveSurfaces);
+                if (retiredToken is not null)
+                    Assert.IsFalse(resources.MarkSurfaceMounted(retiredToken), "A retired frame cannot reactivate native chrome.");
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", requestId, """{"projectKey":"project-1"}"""));
+                var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single();
+                string token = projected.Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken!;
+                Assert.IsNotNull(token);
+                Assert.IsFalse(resources.HasActiveSurfaces,
+                    "Catalog capabilities do not represent a mounted plugin frame, including after renderer recovery.");
+                Assert.IsTrue(resources.MarkSurfaceMounted(token));
+                Assert.IsTrue(resources.HasActiveSurfaces, "A mounted plugin keeps the native escape buttons reachable.");
+                retiredToken = token;
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     [DataRow("application")]
     [DataRow("headless")]
     public async Task NativeDescribeRejectsNonmanualInvocation(string presentation)
