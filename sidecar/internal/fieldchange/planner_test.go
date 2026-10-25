@@ -3,6 +3,7 @@ package fieldchange_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -246,6 +247,65 @@ func TestPlanRejectsDuplicateActiveFieldDisplayName(t *testing.T) {
 		Actor: v2.Actor{ID: "user_local", Kind: "user"},
 	}); err != nil {
 		t.Fatalf("retired name reuse rejected: %v", err)
+	}
+}
+
+func TestHistoricalDuplicateNamesAllowUnrelatedChangesAndIncrementalRepair(t *testing.T) {
+	t.Parallel()
+	fields := make([]v2.FieldDefinition, 4)
+	byID := map[string]v2.FieldDefinition{}
+	for index := range fields {
+		field := definitionFor(v2.LogicalText)
+		field.Identity.FieldID = fmt.Sprintf("fld_historical_%d", index)
+		field.Identity.PhysicalName = fmt.Sprintf("f_historical_%d", index)
+		field.Value.Presence.PhysicalName = "__vt_has_" + field.Identity.PhysicalName
+		field.DisplayName = "历史重名"
+		if index == 3 {
+			field.DisplayName = "其他字段"
+		}
+		fields[index] = field
+		byID[field.Identity.FieldID] = field
+	}
+	planner := fieldchange.NewPlanner(sourceStub{
+		revisions: fieldchange.Revisions{Schema: "schema_2"}, fields: byID,
+		tableFields: map[string][]v2.FieldDefinition{"tbl_orders": fields},
+	}, nil, nil, nil)
+	for _, test := range []struct {
+		name   string
+		action v2.ChangeAction
+		index  int
+		nameTo string
+		reject bool
+	}{
+		{"unrelated edit", v2.ActionUpdate, 3, "其他字段", false},
+		{"duplicate help edit", v2.ActionUpdate, 0, "历史重名", false},
+		{"unique creation", v2.ActionCreate, 3, "新字段", false},
+		{"rename one of three", v2.ActionUpdate, 0, "修复后的名称", false},
+		{"retire one of three", v2.ActionRetire, 0, "历史重名", false},
+		{"new duplicate", v2.ActionCreate, 3, "历史重名", true},
+		{"rename into duplicates", v2.ActionUpdate, 3, "历史重名", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			draft := draftFrom(fields[test.index])
+			draft.DisplayName = test.nameTo
+			draft.Help = "更新说明"
+			intent := v2.FieldChangeIntent{
+				Action: test.action, TableID: "tbl_orders", ExpectedSchemaRev: "schema_2",
+				Actor: v2.Actor{ID: "user_local", Kind: "user"}, Draft: &draft,
+			}
+			if test.action != v2.ActionCreate {
+				intent.FieldID = fields[test.index].Identity.FieldID
+			}
+			_, err := planner.Plan(context.Background(), intent)
+			if test.reject {
+				var productErr *fieldchange.ProductError
+				if !errors.As(err, &productErr) || productErr.Code != "field.display_name.duplicate" {
+					t.Fatalf("new conflict error = %#v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("historical conflict blocks operation: %v", err)
+			}
+		})
 	}
 }
 

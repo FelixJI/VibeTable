@@ -20,6 +20,10 @@ function typeLabel(column: ColumnSchema): string {
   const known = types.has(type) ? type : types.has(column.dataType) ? column.dataType : null;
   return known ? t(`fieldManager.type.${known}`) : type;
 }
+function canConfigure(column: ColumnSchema): boolean {
+  return !!column.fieldId && column.fieldId !== "id" && column.name !== "id"
+    && column.kind !== "system";
+}
 </script>
 
 <template>
@@ -30,7 +34,7 @@ function typeLabel(column: ColumnSchema): string {
       <table><thead><tr><th>{{ t('createTable.fieldName') }}</th><th>{{ t('fieldManager.type') }}</th><th>{{ t('schema.required') }}</th><th>{{ t('fieldManager.access') }}</th><th>{{ t('fieldManager.actions') }}</th></tr></thead>
         <tbody><tr v-for="column in fields" :key="column.name">
           <td>{{ column.title }}</td><td>{{ typeLabel(column) }}</td><td>{{ t(column.nullable === false ? 'fieldManager.yes' : 'fieldManager.no') }}</td><td>{{ t(column.editable ? 'fieldManager.editable' : 'workspaceV2.switch.readOnly') }}</td>
-          <td><NButton size="small" :disabled="!column.fieldId || column.kind === 'system'" :aria-label="t('fieldManager.edit', { name: column.title })" @click="column.fieldId && emit('edit', column.fieldId)">{{ t('nav.settings') }}</NButton></td>
+          <td><NButton size="small" :disabled="!canConfigure(column)" :aria-label="t('fieldManager.edit', { name: column.title })" @click="canConfigure(column) && column.fieldId && emit('edit', column.fieldId)">{{ t('nav.settings') }}</NButton></td>
         </tr></tbody>
       </table>
       <p v-if="!fields.length" class="empty">{{ t(columns.length ? 'fieldManager.noMatch' : 'fieldManager.empty') }}</p>

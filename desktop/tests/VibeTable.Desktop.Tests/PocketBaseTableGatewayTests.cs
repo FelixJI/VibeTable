@@ -913,6 +913,38 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    [DataRow("bool", "true", true, true)]
+    [DataRow("bool", "false", true, true)]
+    [DataRow("number", "0", true, true)]
+    [DataRow("date", "{\"kind\":\"today\"}", true, true)]
+    [DataRow("text", "null", true, false)]
+    [DataRow("bool", "true", false, false)]
+    public async Task EditSchemaProjectsDefaultAvailabilityWithoutEvaluatingOrExposingItsValue(
+        string logicalType, string defaultJson, bool enabled, bool expected)
+    {
+        var transport = new ProductTransport();
+        JsonObject field = V2Field("default0", "default0", "Default", logicalType);
+        field["value"]!["required"] = true;
+        field["value"]!["default"]!["enabled"] = enabled;
+        field["value"]!["default"]!["value"] = JsonNode.Parse(defaultJson);
+        JsonObject title = V2Field("title000", "title000", "Required title", "text");
+        title["value"]!["required"] = true;
+        transport.Respond("schema.getTable", SchemaWithFields("items", field, title));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+
+        EditSchemaResult schema = await gateway.GetEditSchemaAsync("items", CancellationToken.None);
+        ColumnEditSchema column = schema.Columns.Single(item => item.Name == "f_default0");
+        Assert.AreEqual(expected, column.HasDefault);
+        Assert.IsFalse(column.Nullable);
+        Assert.IsFalse(schema.Columns.Single(item => item.Name == "f_title000").HasDefault);
+        Assert.IsFalse(schema.Columns.Single(item => item.Name == "id").HasDefault);
+        JsonElement wire = JsonSerializer.SerializeToElement(column, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.AreEqual(expected, wire.GetProperty("hasDefault").GetBoolean());
+        Assert.IsFalse(wire.TryGetProperty("defaultValue", out _));
+    }
+
+    [TestMethod]
     public async Task AutoNumberIsReadonlyTextAndSupportsEmptyRecordInsertion()
     {
         var transport = new ProductTransport();

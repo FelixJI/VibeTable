@@ -316,6 +316,8 @@ export interface ColumnEditSchema {
   readonly primaryKey: boolean;
   readonly editor: Editor;
   readonly validation: readonly ValidationRule[];
+  /** Authority can supply a non-null default on insert, including dynamic defaults. */
+  readonly hasDefault?: boolean;
 }
 
 /** Result of `table.getEditSchema`. Mirrors `EditSchemaResult`. */

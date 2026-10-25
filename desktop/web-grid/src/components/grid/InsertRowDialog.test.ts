@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
-import { NInputNumber } from "naive-ui";
+import { NInputNumber, NSelect } from "naive-ui";
 import InsertRowDialog from "./InsertRowDialog.vue";
 import type { ColumnEditSchema, ColumnSchema } from "@/contracts";
 
@@ -62,6 +62,24 @@ describe("InsertRowDialog", () => {
   it("renders nothing without required columns", () => {
     mountDialog({ columns: [] });
     expect(field("insert-row-dialog")).toBeNull();
+  });
+
+  it.each(["single_select", "multi_select"] as const)("shows %s option labels and submits stable option IDs", async (kind) => {
+    const wrapper = mountDialog({
+      columns: [column("kind", { kind, options: ["opt_standard", "opt_urgent00"] })],
+      displayColumns: [{ name: "kind", title: "类型", dataType: "text", editable: true, nullable: false,
+        enumOptions: [{ optionId: "opt_standard", label: "标准", color: null, order: 0, state: "active" }],
+        filterOptions: [{ value: "opt_urgent00", label: "加急" }],
+      }],
+    });
+    const select = wrapper.findComponent(NSelect);
+    expect(select.props("options")).toEqual([
+      { label: "标准", value: "opt_standard" }, { label: "加急", value: "opt_urgent00" },
+    ]);
+    select.vm.$emit("update:value", kind === "multi_select" ? ["opt_urgent00"] : "opt_urgent00");
+    await wrapper.vm.$nextTick();
+    field("insert-row-submit")!.click();
+    expect(wrapper.emitted("submit")?.[0]?.[0]).toEqual({ kind: kind === "multi_select" ? ["opt_urgent00"] : "opt_urgent00" });
   });
 
   it("blocks submit until every required value is valid and parses values by editor", async () => {

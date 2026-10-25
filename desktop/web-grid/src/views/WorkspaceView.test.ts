@@ -3490,20 +3490,24 @@ describe("WorkspaceView", () => {
     table.setEditSchema([{
       name: "name", storageName: "name", dataType: "text", editable: true, nullable: false,
       primaryKey: false, editor: { kind: "text" }, validation: [{ kind: "required" }],
+    }, {
+      name: "enabled", storageName: "enabled", dataType: "boolean", editable: true, nullable: false,
+      primaryKey: false, editor: { kind: "boolean" }, validation: [], hasDefault: true,
     }], revision);
     table.setDatasetReady({ table: "orders", columns: [
       { name: "name", title: "名称", dataType: "text", editable: true, nullable: false },
+      { name: "enabled", title: "启用（后端默认 true）", dataType: "boolean", editable: true, nullable: false },
     ], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote", revision });
     const wrapper = mountView();
     await flushPromises();
     await wrapper.get('[data-testid="toolbar-insert-row"]').trigger("click");
     expect(posted.filter(message => message.type === "table.insertRowRequested")).toHaveLength(0);
     const dialog = wrapper.findComponent(InsertRowDialog);
-    expect(dialog.props("columns")[0]?.name).toBe("name");
+    expect(dialog.props("columns").map(column => column.name)).toEqual(["name"]);
     dialog.vm.$emit("submit", { name: "新记录" });
     await flushPromises();
     const request = posted.find(message => message.type === "table.insertRowRequested")!;
-    expect(request.payload).toMatchObject({ values: { name: "新记录" } });
+    expect(request.payload).toEqual(expect.objectContaining({ values: { name: "新记录" } }));
     emit({ type: "table.editRejected", requestId: request.requestId,
       payload: { kind: "mutation_validation", message: "名称已存在", conflictingRowKeys: [] } });
     await flushPromises();

@@ -850,12 +850,12 @@ func (planner *Planner) definitionFromDraft(
 	return definition, nil
 }
 
-// rejectDuplicateActiveFieldNames enforces the product boundary that two
-// active fields in one table never share a display name. The comparison is
+// rejectDuplicateActiveFieldNames prevents new display-name conflicts between
+// active fields in one table. The comparison is
 // exact on the trimmed name — the same semantics import preflight and display
 // validation already use; there is no case folding. Historical same-name
-// data is untouched: the check only runs while planning a new create/update,
-// never while reading existing schemas.
+// conflicts may remain while unrelated fields are edited or duplicates are
+// repaired; only newly conflicting field identities are rejected.
 func (planner *Planner) rejectDuplicateActiveFieldNames(
 	ctx context.Context,
 	intent v2.FieldChangeIntent,
@@ -873,6 +873,7 @@ func (planner *Planner) rejectDuplicateActiveFieldNames(
 	// covers self-referencing pairs, two brand-new same-named pair members,
 	// and legitimate name swaps between the two ends of one plan.
 	finals := map[string][]v2.FieldDefinition{}
+	storedNames := map[string]map[string]string{}
 	remove := map[string]map[string]struct{}{}
 	changed := map[string]map[string]*v2.FieldDefinition{}
 	add := func(tableID string, fieldID string, definition *v2.FieldDefinition) {
@@ -900,10 +901,12 @@ func (planner *Planner) rejectDuplicateActiveFieldNames(
 			return err
 		}
 		retired := map[string]struct{}{}
+		storedNames[tableID] = make(map[string]string, len(stored))
 		for _, field := range stored {
 			if field.Lifecycle.State != v2.LifecycleActive {
 				continue
 			}
+			storedNames[tableID][field.Identity.FieldID] = strings.TrimSpace(field.DisplayName)
 			if _, replaced := remove[tableID][field.Identity.FieldID]; replaced {
 				continue
 			}
@@ -927,6 +930,10 @@ func (planner *Planner) rejectDuplicateActiveFieldNames(
 				continue // definition validation owns the blank-name rejection
 			}
 			if previous, duplicate := owners[name]; duplicate {
+				if storedNames[tableID][previous] == name &&
+					storedNames[tableID][field.Identity.FieldID] == name {
+					continue
+				}
 				path := "draft.displayName"
 				details := map[string]any{"fieldId": previous}
 				if tableID != intent.TableID {

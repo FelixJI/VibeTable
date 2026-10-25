@@ -79,6 +79,15 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 && field.TryGetProperty("constraints", out var constraintsElement)
                 ? new[] { (IReadOnlyDictionary<string, object?>)ToDictionary(constraintsElement) }
                 : Array.Empty<IReadOnlyDictionary<string, object?>>();
+            bool hasDefault = hasField
+                && field.TryGetProperty("value", out JsonElement valueSpec)
+                && valueSpec.ValueKind == JsonValueKind.Object
+                && valueSpec.TryGetProperty("default", out JsonElement defaultSpec)
+                && defaultSpec.ValueKind == JsonValueKind.Object
+                && defaultSpec.TryGetProperty("enabled", out JsonElement enabled)
+                && enabled.ValueKind == JsonValueKind.True
+                && defaultSpec.TryGetProperty("value", out JsonElement defaultValue)
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
             return new ColumnEditSchema(
                 column.Name,
                 column.Name,
@@ -89,7 +98,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 column.Nullable,
                 string.Equals(column.Name, primaryKey, StringComparison.Ordinal),
                 editor,
-                constraints);
+                constraints,
+                hasDefault);
         }).ToArray();
         return new EditSchemaResult(
             table,

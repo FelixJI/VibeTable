@@ -187,7 +187,7 @@ function confirm(): void {
           <NIcon v-if="activeId === view.id" :size="14"><Check /></NIcon>
           <span>{{ view.name }}</span>
           <NTag v-if="view.view.isDefault" size="tiny" :bordered="false">{{ t("views.default") }}</NTag>
-          <i v-if="dirty && activeId === view.id" :title="t('views.unsaved')"></i>
+          <i v-if="dirty && activeId === view.id" class="view-dirty-indicator" :title="t('views.unsaved')"></i>
         </button>
         <NDropdown trigger="click" :disabled="loading" :options="options" @select="key => menu(String(key), view)">
           <NButton quaternary size="tiny" :disabled="loading" :aria-label="t('views.actionsFor', { name: view.name })" :data-testid="`view-actions-${view.id}`"><template #icon><NIcon><MoreHorizontal /></NIcon></template></NButton>
@@ -240,11 +240,11 @@ function confirm(): void {
 .view-scroll { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
 .view-tab-wrap { display: flex; flex: 0 0 auto; align-items: center; border: 1px solid transparent; border-radius: var(--vt-radius-md); }
 .view-tab-wrap:has(.view-tab.active) { border-color: color-mix(in srgb, var(--vt-color-primary-500) 24%, var(--vt-border)); background: var(--vt-bg); box-shadow: var(--vt-shadow-1); }
-.view-tab { display: flex; height: 28px; max-width: 220px; align-items: center; gap: 5px; padding: 0 8px; overflow: hidden; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; font: inherit; font-size: var(--vt-font-caption); cursor: pointer; white-space: nowrap; }
+.view-tab { display: flex; flex: 0 0 auto; height: 28px; max-width: 220px; align-items: center; gap: 5px; padding: 0 8px; overflow: hidden; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; font: inherit; font-size: var(--vt-font-caption); cursor: pointer; white-space: nowrap; }
 .view-tab:hover { color: var(--vt-fg); background: var(--vt-bg-sunken); }
 .view-tab.active { color: var(--vt-fg-accent-strong); font-weight: 600; }
 .view-tab span { overflow: hidden; text-overflow: ellipsis; }
-.view-tab i { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
+.view-dirty-indicator { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .view-dialog-fields { display: grid; gap: 14px; }
 .view-kind-options { display: grid; grid-template-columns: repeat(5, minmax(76px, 1fr)); gap: 8px; }

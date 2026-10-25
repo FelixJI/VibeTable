@@ -21,13 +21,15 @@ describe("字段管理视图", () => {
   it("shows field metadata, searches names and opens settings by stable field id", async () => {
     const wrapper = mount(FieldManagementView, { props: { columns: [
       { name: "f_title", fieldId: "field-title", title: "标题", dataType: "text", nullable: false, editable: true },
-      { name: "id", title: "行 ID", kind: "system", dataType: "text", nullable: false, editable: false },
+      { name: "id", fieldId: "id", title: "行 ID", kind: "scalar", dataType: "text", nullable: false, editable: false },
     ] } });
     expect(wrapper.text()).toContain("2 个字段");
     expect(wrapper.text()).toContain("只读");
     await wrapper.get('[aria-label="设置字段 标题"]').trigger("click");
     expect(wrapper.emitted("edit")).toEqual([["field-title"]]);
     expect(wrapper.get('[aria-label="设置字段 行 ID"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[aria-label="设置字段 行 ID"]').trigger("click");
+    expect(wrapper.emitted("edit")).toEqual([["field-title"]]);
     await wrapper.get("input").setValue("标题");
     expect(wrapper.findAll("tbody tr")).toHaveLength(1);
     await wrapper.get("header button").trigger("click");

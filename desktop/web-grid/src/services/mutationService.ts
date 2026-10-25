@@ -420,14 +420,10 @@ export function useMutationService() {
       && !!table.editSchema?.some((column) => column.editable || column.dataType === "autoNumber");
   }
 
-  /**
-   * 必填列 = 权威 editSchema 中 editable 且 nullable=false 的列
-   * （后端投影：nullable = !value.required，见 backend/contracts/
-   * data_profile.py）。不依赖宿主是否额外附带 required 校验规则，
-   * 避免“漏拦”必填列；供宿主层（WorkspaceView）在插入前引导用户先填值。
-   */
+  /** 必填且无权威默认值的可编辑列；有默认值的列保持省略，由后端填充。 */
   function requiredInsertColumns() {
-    return (table.editSchema ?? []).filter(column => column.editable && !column.nullable);
+    return (table.editSchema ?? []).filter(column => column.editable && !column.nullable
+      && !column.hasDefault);
   }
 
   function blankInsertValue(value: unknown): boolean {

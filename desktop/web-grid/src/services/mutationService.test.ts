@@ -1013,6 +1013,8 @@ describe("mutationService correlated writes", () => {
         validation: [{ kind: "required" }] },
       { name: "note", storageName: "note", dataType: "text", editable: true,
         nullable: true, primaryKey: false, editor: { kind: "text" }, validation: [] },
+      { name: "enabled", storageName: "enabled", dataType: "boolean", editable: true,
+        nullable: false, primaryKey: false, editor: { kind: "boolean" }, validation: [], hasDefault: true },
     ], revision());
 
     expect(s.service.requiredInsertColumns().map(column => column.name)).toEqual(["title"]);
@@ -1031,6 +1033,17 @@ describe("mutationService correlated writes", () => {
     s.service.insertRow({ title: "首行" });
     await flush();
     expect(s.posted.at(-1)?.payload).toMatchObject({ values: { title: "首行" } });
+    expect(s.posted.at(-1)?.payload.values).not.toHaveProperty("enabled");
+  });
+
+  it("omits columns with authority defaults when all required values can be supplied by the backend", async () => {
+    const s = setup();
+    s.table.setEditSchema([{ name: "enabled", storageName: "enabled", dataType: "boolean", editable: true,
+      nullable: false, primaryKey: false, editor: { kind: "boolean" }, validation: [], hasDefault: true }], revision());
+    expect(s.service.requiredInsertColumns()).toEqual([]);
+    s.service.insertRow({});
+    await flush();
+    expect(s.posted.at(-1)?.payload.values).toEqual({});
   });
 
   it("insert confirmation, undo and redo retain the new authoritative row key", async () => {

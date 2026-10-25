@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * InsertRowDialog — 必填新行的应用内取值表单。仅在存在必填列
- * （nullable=false 且 editable）时由宿主打开；emit("submit") 后由宿主
+ * （nullable=false、editable 且无权威默认）时由宿主打开；emit("submit") 后由宿主
  * await mutationService.insertRow(values)，成功后关闭（失败保持打开并
  * 通过 error 呈现权威拒绝原因，输入不丢失）。值编辑/校验复用
  * grid/editorFactory 的 parseValue + validateLocally，不造占位值。
@@ -99,7 +99,10 @@ function selectOptions(column: ColumnEditSchema): { label: string; value: string
   const options = column.editor.kind === "single_select" || column.editor.kind === "multi_select"
     ? column.editor.options
     : [];
-  return options.map(option => ({ label: String(option), value: String(option) }));
+  const display = props.displayColumns.find(item => item.name === column.name);
+  const labels = new Map(display?.filterOptions?.map(option => [option.value, option.label]) ?? []);
+  for (const option of display?.enumOptions ?? []) labels.set(option.optionId, option.label);
+  return options.map(option => ({ label: labels.get(String(option)) ?? String(option), value: String(option) }));
 }
 
 function nativeDateInput(column: ColumnEditSchema): string {
