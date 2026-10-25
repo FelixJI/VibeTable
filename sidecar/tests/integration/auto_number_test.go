@@ -509,6 +509,239 @@ func TestAutoNumberReformatIgnoresIdOrderingForCollisionDetection(t *testing.T) 
 	}
 }
 
+func TestAutoNumberReformatPreviewFreezesRowsAgainstConcurrentChanges(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(t, ctx, app, "重格式化冻结", "auto_number_reformat_freeze")
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	draft := autoNumberDraft(t)
+	field := createV2IntegrationField(t, ctx, app, table.TableID, draft, "auto_number_reformat_freeze_field")
+	collection, _ := app.FindCollectionByNameOrId(table.PhysicalName)
+	physical := field.Definition.Identity.PhysicalName
+	seed := mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: "seed", IdempotencyKey: "seed",
+		TableID: table.TableID, SchemaRevision: field.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "local"}}
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("aa%013d", i)
+		seed.Operations = append(seed.Operations, mutation.Operation{Kind: mutation.OperationInsert, RecordID: &id, Values: map[string]any{}})
+	}
+	if _, err := kernel.Apply(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store, fieldchange.WithAutoNumberReformatter(kernel))
+
+	before, err := catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := draft
+	updated.AutoNumber = &v2.AutoNumberSpec{Prefix: "VG-", Start: 1, Width: 6}
+	reformatIntent := v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: table.TableID, FieldID: field.FieldID,
+		ExpectedSchemaRev: before.Schema, Draft: &updated,
+		Actor: v2.Actor{ID: "local", Kind: "user"},
+	}
+	preview, err := planner.Plan(ctx, reformatIntent)
+	if err != nil || !preview.CanApply {
+		t.Fatalf("reformat preview = %#v, %v", preview, err)
+	}
+	if preview.ExpectedDataRevision == nil || *preview.ExpectedDataRevision != before.Data {
+		t.Fatalf("reformat preview did not freeze the data revision: %#v", preview)
+	}
+	if preview.Impact.Records != 3 {
+		t.Fatalf("preview impact records = %d, want 3", preview.Impact.Records)
+	}
+
+	// 预览后插入一行：行变更只推进 data revision，不碰 schema revision。
+	extra := "bb0000000000004"
+	insert := mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: "insert", IdempotencyKey: "insert",
+		TableID: table.TableID, SchemaRevision: before.Schema, Actor: mutation.Actor{Type: "user", ID: "local"},
+		Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &extra, Values: map[string]any{}}}}
+	if _, err := kernel.Apply(ctx, insert); err != nil {
+		t.Fatal(err)
+	}
+	after, err := catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Schema != before.Schema {
+		t.Fatalf("row insert advanced schema revision: %v -> %v", before.Schema, after.Schema)
+	}
+	if after.Data == before.Data {
+		t.Fatal("row insert did not advance data revision")
+	}
+
+	// 旧 plan 应用必须以 data conflict 拒绝，且不产生部分修改。
+	if _, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: preview.PlanID, PlanHash: preview.PlanHash, OperationID: "reformat_stale",
+		Actor: preview.Intent.Actor, Confirmations: preview.Confirmations,
+	}); err == nil {
+		t.Fatal("stale reformat plan accepted after a row insert")
+	} else {
+		var productErr *fieldchange.ProductError
+		if !errors.As(err, &productErr) || productErr.Code != "field.change.data_conflict" {
+			t.Fatalf("stale reformat apply error = %#v", err)
+		}
+	}
+	records, err := app.FindRecordsByFilter(collection, "", "id", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 {
+		t.Fatalf("row count after rejected apply = %d, want 4", len(records))
+	}
+	for _, record := range records {
+		if got := record.GetString(physical); !strings.HasPrefix(got, "HT-") {
+			t.Fatalf("rejected reformat mutated values: %s = %s", record.Id, got)
+		}
+	}
+	stored, err := catalog.Field(ctx, table.TableID, field.FieldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AutoNumber == nil || stored.AutoNumber.Prefix != "HT-" {
+		t.Fatalf("rejected reformat mutated schema: %#v", stored.AutoNumber)
+	}
+
+	// 重新 preview：新 plan、新 impact（4 条）并冻结新 data revision。
+	second, err := planner.Plan(ctx, reformatIntent)
+	if err != nil || !second.CanApply {
+		t.Fatalf("second reformat preview = %#v, %v", second, err)
+	}
+	if second.PlanID == preview.PlanID {
+		t.Fatal("plan cache reused the stale reformat plan")
+	}
+	if second.ExpectedDataRevision == nil || *second.ExpectedDataRevision != after.Data {
+		t.Fatalf("second preview did not freeze the new data revision: %#v", second)
+	}
+	if second.Impact.Records != 4 {
+		t.Fatalf("second preview impact records = %d, want 4", second.Impact.Records)
+	}
+	receipt, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: second.PlanID, PlanHash: second.PlanHash, OperationID: "reformat_fresh",
+		Actor: second.Intent.Actor, Confirmations: second.Confirmations,
+	})
+	if err != nil {
+		t.Fatalf("fresh reformat apply failed: %v", err)
+	}
+	records, err = app.FindRecordsByFilter(collection, "", "id", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, record := range records {
+		want := "VG-" + fmt.Sprintf("%06d", index+1)
+		if got := record.GetString(physical); got != want {
+			t.Fatalf("reformat value = %s, want %s", got, want)
+		}
+	}
+
+	// 无变动（仅改名）的 autoNumber 更新省略 expectedDataRevision 时正常应用。
+	renamed := updated
+	renamed.DisplayName = "合同编号改名"
+	renameIntent := v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: table.TableID, FieldID: receipt.FieldID,
+		ExpectedSchemaRev: receipt.SchemaRevision, Draft: &renamed,
+		Actor: v2.Actor{ID: "local", Kind: "user"},
+	}
+	renamePlan, err := planner.Plan(ctx, renameIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamePlan.ExpectedDataRevision != nil {
+		t.Fatalf("display rename must not gate on the data revision: %#v", renamePlan)
+	}
+	if _, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: renamePlan.PlanID, PlanHash: renamePlan.PlanHash, OperationID: "rename_open",
+		Actor: renamePlan.Intent.Actor, Confirmations: renamePlan.Confirmations,
+	}); err != nil {
+		t.Fatalf("display rename apply failed: %v", err)
+	}
+
+	// 显式传入过期的 expectedDataRevision 仍在预览阶段被拒绝。
+	final, err := catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleDraft := updated
+	staleDraft.AutoNumber = &v2.AutoNumberSpec{Prefix: "LG-", Start: 1, Width: 6}
+	staleData := before.Data
+	_, err = planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: table.TableID, FieldID: receipt.FieldID,
+		ExpectedSchemaRev: final.Schema, ExpectedDataRevision: &staleData, Draft: &staleDraft,
+		Actor: v2.Actor{ID: "local", Kind: "user"},
+	})
+	var conflict *fieldchange.ProductError
+	if !errors.As(err, &conflict) || conflict.Code != "field.change.data_conflict" {
+		t.Fatalf("stale explicit data revision error = %#v", err)
+	}
+
+	// 删除路径：预览后删除一行 → 旧 plan 仍以 data_conflict 拒绝 → 新
+	// preview impact 降为 3 → 应用后仅存量行重格式化。
+	shrink := updated
+	shrink.AutoNumber = &v2.AutoNumberSpec{Prefix: "LG-", Start: 1, Width: 6}
+	shrinkIntent := v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: table.TableID, FieldID: receipt.FieldID,
+		ExpectedSchemaRev: final.Schema, Draft: &shrink,
+		Actor: v2.Actor{ID: "local", Kind: "user"},
+	}
+	shrinkPreview, err := planner.Plan(ctx, shrinkIntent)
+	if err != nil || !shrinkPreview.CanApply {
+		t.Fatalf("shrink reformat preview = %#v, %v", shrinkPreview, err)
+	}
+	if shrinkPreview.Impact.Records != 4 {
+		t.Fatalf("shrink preview impact records = %d, want 4", shrinkPreview.Impact.Records)
+	}
+	delete := mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: "delete", IdempotencyKey: "delete",
+		TableID: table.TableID, SchemaRevision: final.Schema, Actor: mutation.Actor{Type: "user", ID: "local"},
+		Operations: []mutation.Operation{{Kind: mutation.OperationDelete, RecordID: &extra}}}
+	if _, err := kernel.Apply(ctx, delete); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: shrinkPreview.PlanID, PlanHash: shrinkPreview.PlanHash, OperationID: "reformat_after_delete",
+		Actor: shrinkPreview.Intent.Actor, Confirmations: shrinkPreview.Confirmations,
+	}); err == nil {
+		t.Fatal("stale reformat plan accepted after a row delete")
+	} else {
+		var deleteConflict *fieldchange.ProductError
+		if !errors.As(err, &deleteConflict) || deleteConflict.Code != "field.change.data_conflict" {
+			t.Fatalf("post-delete reformat apply error = %#v", err)
+		}
+	}
+	shrinkSecond, err := planner.Plan(ctx, shrinkIntent)
+	if err != nil || !shrinkSecond.CanApply {
+		t.Fatalf("second shrink preview = %#v, %v", shrinkSecond, err)
+	}
+	if shrinkSecond.PlanID == shrinkPreview.PlanID {
+		t.Fatal("plan cache reused the stale shrink reformat plan")
+	}
+	if shrinkSecond.Impact.Records != 3 {
+		t.Fatalf("second shrink preview impact records = %d, want 3", shrinkSecond.Impact.Records)
+	}
+	if _, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: shrinkSecond.PlanID, PlanHash: shrinkSecond.PlanHash, OperationID: "reformat_shrink",
+		Actor: shrinkSecond.Intent.Actor, Confirmations: shrinkSecond.Confirmations,
+	}); err != nil {
+		t.Fatalf("shrink reformat apply failed: %v", err)
+	}
+	records, err = app.FindRecordsByFilter(collection, "", "id", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("row count after shrink reformat = %d, want 3", len(records))
+	}
+	for index, record := range records {
+		want := "LG-" + fmt.Sprintf("%06d", index+1)
+		if got := record.GetString(physical); got != want {
+			t.Fatalf("shrink reformat value = %s, want %s", got, want)
+		}
+	}
+}
+
 func TestAutoNumberTextFormulaAndLookupConsumption(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)

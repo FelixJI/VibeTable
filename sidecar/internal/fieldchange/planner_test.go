@@ -671,6 +671,93 @@ func TestConstraintPlanFreezesCurrentDataRevision(t *testing.T) {
 	}
 }
 
+func TestAutoNumberReformatUpdateFreezesDataRevisionBeforePlanCache(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalAutoNumber)
+	existing.AutoNumber = &v2.AutoNumberSpec{Prefix: "HT-", Start: 1, Width: 6}
+	reformat := draftFrom(existing)
+	reformat.AutoNumber = &v2.AutoNumberSpec{Prefix: "VG-", Start: 1, Width: 6}
+	store := fieldchange.NewMemoryPlanStore()
+	intent := v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &reformat, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	}
+	first, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, store, nil,
+	).Plan(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExpectedDataRevision == nil || *first.ExpectedDataRevision != 7 ||
+		first.Intent.ExpectedDataRevision == nil || *first.Intent.ExpectedDataRevision != 7 {
+		t.Fatalf("reformat preview did not freeze the data revision: %#v", first)
+	}
+	// 行增删后同一 intent 不得复用旧 cache（旧记录集）：预览必须拿到冻结
+	// 新数据版本的新计划。
+	second, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 8},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, store, nil,
+	).Plan(context.Background(), intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.PlanID == first.PlanID || second.ExpectedDataRevision == nil ||
+		*second.ExpectedDataRevision != 8 {
+		t.Fatalf("stale reformat plan reused after a data revision change: %#v / %#v", first, second)
+	}
+}
+
+func TestDisplayRenameKeepsDataRevisionOpen(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalText)
+	rename := draftFrom(existing)
+	rename.DisplayName = "字段改名"
+	plan, err := fieldchange.NewPlanner(
+		sourceStub{
+			revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7},
+			fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+		},
+		impactPreflight{}, fieldchange.NewMemoryPlanStore(), nil,
+	).Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &rename, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ExpectedDataRevision != nil {
+		t.Fatalf("display rename must not gate on the data revision: %#v", plan)
+	}
+}
+
+func TestAutoNumberReformatPreflightSourceErrorsPropagate(t *testing.T) {
+	t.Parallel()
+	existing := definitionFor(v2.LogicalAutoNumber)
+	existing.AutoNumber = &v2.AutoNumberSpec{Prefix: "HT-", Start: 1, Width: 6}
+	reformat := draftFrom(existing)
+	reformat.AutoNumber = &v2.AutoNumberSpec{Prefix: "VG-", Start: 1, Width: 6}
+	_, err := fieldchange.NewPlanner(
+		sourceStub{revisions: fieldchange.Revisions{Schema: "schema_2", Data: 7}},
+		impactPreflight{}, fieldchange.NewMemoryPlanStore(), nil,
+	).Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionUpdate, TableID: "tbl_orders",
+		FieldID: existing.Identity.FieldID, ExpectedSchemaRev: "schema_2",
+		Draft: &reformat, Actor: v2.Actor{ID: "user_local", Kind: "user"},
+	})
+	if !errors.Is(err, fieldchange.ErrFieldNotFound) {
+		t.Fatalf("missing field error = %#v", err)
+	}
+}
+
 func TestNoopUpdateAndRestoreAreRejected(t *testing.T) {
 	t.Parallel()
 	for _, action := range []v2.ChangeAction{

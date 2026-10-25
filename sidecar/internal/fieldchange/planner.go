@@ -193,10 +193,25 @@ func (planner *Planner) plan(
 	}
 	// Numbering previews freeze data before cache lookup as well as execution.
 	// An omitted client revision must not reuse a plan for older rows.
-	if intent.ExpectedDataRevision == nil && intent.Action == v2.ActionCreate &&
-		intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber {
-		frozen := revisions.Data
-		intent.ExpectedDataRevision = &frozen
+	if intent.ExpectedDataRevision == nil {
+		freeze := intent.Action == v2.ActionCreate &&
+			intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber
+		if !freeze && intent.Action == v2.ActionUpdate &&
+			intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber {
+			existing, fieldErr := planner.source.Field(ctx, intent.TableID, intent.FieldID)
+			if fieldErr != nil {
+				return v2.FieldChangePlan{}, fieldErr
+			}
+			// Same predicate as the preflight reformat warning: only a real
+			// format change rewrites stored rows, so plain rename/help edits
+			// keep applying without a data revision gate.
+			freeze = existing != nil && existing.AutoNumber != nil && intent.Draft.AutoNumber != nil &&
+				!reflect.DeepEqual(existing.AutoNumber, intent.Draft.AutoNumber)
+		}
+		if freeze {
+			frozen := revisions.Data
+			intent.ExpectedDataRevision = &frozen
+		}
 	}
 	now := planner.clock()
 	var before, after *v2.FieldDefinition
