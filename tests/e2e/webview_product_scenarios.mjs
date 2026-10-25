@@ -9002,7 +9002,7 @@ async function combinationWorkspaceRoot(page, runtime, recorder, workspaceId) {
 
 async function scenario39Seed(page, recorder, runtime) {
   const helpers = {
-    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
     rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
     waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,
