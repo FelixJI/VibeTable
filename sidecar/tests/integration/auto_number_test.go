@@ -816,8 +816,38 @@ func TestAutoNumberTextFormulaAndLookupConsumption(t *testing.T) {
 		}
 	}
 	insert(source.TableID, "number_text_second_child", map[string]any{link.FieldID: parent.AffectedRows[0].RecordID})
+	// assertReady 在首行值持久化后即可返回，而批处理任务可能仍在推进下一批
+	// 或派生 fanout；这些合法系统写入会推进 data revision，把冻结了数据版本
+	// 的 plan 以 data_conflict 拒绝。等全部相关 jobs 明确终态后再进入格式化
+	// 阶段（后台 worker 自动运行，不手动 claim 以免与 Run 冲突；failed 直接失败）。
+	waitJobsIdle := func() {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			open, err := app.FindRecordsByFilter("vibetable_jobs",
+				"(job_type={:backfill} || job_type={:fanout}) && (state='queued' || state='running' || state='failed')",
+				"+id", 0, 0,
+				dbx.Params{"backfill": "formula_backfill", "fanout": "formula_fanout"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, job := range open {
+				if job.GetString("state") == "failed" {
+					t.Fatalf("background job %s/%s failed", job.GetString("job_type"), job.Id)
+				}
+			}
+			if len(open) == 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("background jobs never drained: %d open", len(open))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	reformat := func(tableID string, field v2.ApplyReceipt, prefix string) v2.ApplyReceipt {
 		t.Helper()
+		waitJobsIdle()
 		draft := autoNumberDraft(t)
 		draft.AutoNumber = &v2.AutoNumberSpec{Prefix: prefix, Start: 1, Width: 6, DateFormat: v2.AutoNumberDateFormat}
 		revisions, err := catalog.Revisions(ctx, tableID)
