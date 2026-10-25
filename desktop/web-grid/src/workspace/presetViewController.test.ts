@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PresetEntry, PresetsResult } from "@/contracts";
 import type { HostBridge } from "@/bridge/hostBridge";
 import type { DataSourceViewGrid } from "@/grid/dataSourceViewState";
+import type { GridPresentationService } from "@/services/gridPresentationService";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePresetVersionService } from "@/services/presetVersionService";
 import { ProductRpcError, ProductRpcProtocolError } from "@/services/productRpcResult";
@@ -65,6 +66,7 @@ function dependencies(service: PresetViewDependencies["service"]) {
     refreshLookups: vi.fn(),
     reportError: vi.fn(),
     defaultChangeIncompleteError: (cause: unknown) => new Error("default change incomplete", { cause }),
+    presentation: undefined as PresetViewDependencies["presentation"] | undefined,
   };
 }
 
@@ -192,6 +194,26 @@ describe("presetViewController", () => {
   const column = (name: string, title: string) => ({
     name, title, dataType: "text", editable: true, nullable: true,
   } as const);
+  const gridColumn = (field: string, visible: boolean) => ({
+    getField: () => field,
+    getWidth: () => 120,
+    isVisible: () => visible,
+    getDefinition: () => ({ frozen: false }),
+  });
+  const gridStub = (
+    columns: Array<ReturnType<typeof gridColumn>>,
+    applied?: Array<Array<{ readonly field: string; readonly visible: boolean }>>,
+  ): DataSourceViewGrid => ({
+    initialized: true,
+    getColumns: () => columns,
+    getSorters: () => [],
+    getHeaderFilters: () => [],
+    ...(applied ? {
+      applyPresentation: (presentation: Parameters<NonNullable<DataSourceViewGrid["applyPresentation"]>>[0]) => {
+        applied.push(presentation.columns.map(item => ({ field: item.field, visible: item.visible })));
+      },
+    } : {}),
+  });
 
   it("字段创建后的 schema 增量保持新列默认可见并随视图捕获持久", async () => {
     const savePreset = vi.fn(async (collection: string, name: string, view: PresetEntry["view"]) => ({
@@ -225,23 +247,8 @@ describe("presetViewController", () => {
 
   it("捕获的视图列在新字段增量后保持 visible 并在重开时重新应用", async () => {
     // 最小 DataSourceViewGrid stub：提供新旧列的真实 layout（字段/可见性）。
-    const makeColumn = (field: string, visible: boolean) => ({
-      getField: () => field,
-      getWidth: () => 120,
-      isVisible: () => visible,
-      getDefinition: () => ({ frozen: false }),
-    });
-    const gridRef = ref<DataSourceViewGrid | null>(null);
-    const makeGrid = (columns: ReturnType<typeof makeColumn>[]): DataSourceViewGrid => ({
-      initialized: true,
-      getColumns: () => columns,
-      getSorters: () => [],
-      getHeaderFilters: () => [],
-      applyPresentation: presentation => {
-        applied.push(presentation.columns.map(item => ({ ...item })));
-      },
-    });
     const applied: Array<Array<{ readonly field: string; readonly visible: boolean }>> = [];
+    const gridRef = ref<DataSourceViewGrid | null>(null);
     let savedPreset: PresetEntry | null = null;
     const savePreset = vi.fn(async (collection: string, name: string, view: PresetEntry["view"]) => {
       savedPreset = { ...preset("custom", collection), name, view };
@@ -258,7 +265,7 @@ describe("presetViewController", () => {
     const deps = dependencies(service);
     deps.grid = { current: gridRef };
     deps.table.schema = [idColumn, column("title", "标题")];
-    gridRef.value = makeGrid([makeColumn("id", false), makeColumn("title", true)]);
+    gridRef.value = gridStub([gridColumn("id", false), gridColumn("title", true)], applied);
     const scope = effectScope();
     const controller = scope.run(() => createPresetViewController(deps))!;
     deps.workspace.selectTable("orders");
@@ -267,9 +274,9 @@ describe("presetViewController", () => {
 
     // 字段创建后 schema 与网格同步通量：新列实际可见。
     deps.table.schema = [idColumn, column("title", "标题"), column("amount", "金额")];
-    gridRef.value = makeGrid([
-      makeColumn("id", false), makeColumn("title", true), makeColumn("amount", true),
-    ]);
+    gridRef.value = gridStub([
+      gridColumn("id", false), gridColumn("title", true), gridColumn("amount", true),
+    ], applied);
     await flushPromises();
     expect(deps.query.visibleFields).toEqual(["title", "amount"]);
 
@@ -288,9 +295,9 @@ describe("presetViewController", () => {
     deps.table.schema = null;
     deps.workspace.currentTable = null;
     await flushPromises();
-    gridRef.value = makeGrid([
-      makeColumn("id", false), makeColumn("title", true), makeColumn("amount", true),
-    ]);
+    gridRef.value = gridStub([
+      gridColumn("id", false), gridColumn("title", true), gridColumn("amount", true),
+    ], applied);
     deps.workspace.selectTable("orders");
     await flushPromises();
     deps.table.schema = [idColumn, column("title", "标题"), column("amount", "金额")];
@@ -298,6 +305,242 @@ describe("presetViewController", () => {
     const restored = applied.at(-1) ?? [];
     expect(restored.find(item => item.field === "amount")?.visible).toBe(true);
     expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+    scope.stop();
+  });
+
+  it("建表初期 id-only 的 memoryDefaults 不得在重载时锁死增长后 schema 的可见集", async () => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async (collection: string) => ({ collection, presets: [] })),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    // 真实时序：选表后（reset 清空可见集、loadCollection 尚未 applyView、
+    // pendingView 为空）网格就绪，memoryDefaults 捕获空可见集 + id 列
+    // visible:false。单一网格实例，列随 schema 原地增长。
+    const gridColumns = [gridColumn("id", false)];
+    deps.table.schema = [idColumn];
+    deps.workspace.selectTable("orders");
+    gridRef.value = gridStub(gridColumns);
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual([]);
+
+    // 首个真实页面到达：schema 增长，可见集自愈为全部非 ID 字段。
+    gridColumns.push(gridColumn("title", true), gridColumn("quantity", true));
+    deps.table.schema = [idColumn, column("title", "标题"), column("quantity", "数量")];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "quantity"]);
+
+    // 无预设时 presentation.reload 回退到陈旧 memoryDefaults：空可见集
+    // + id visible:false 不得把已增长的 schema 锁成全部隐藏。
+    await controller.dispatch({ type: "presentation.reload" });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "quantity"]);
+
+    // 后续字段创建（S05 连续公式列）不得把可见集重置为仅最新列。
+    gridColumns.push(gridColumn("formula_4", true));
+    deps.table.schema = [
+      idColumn, column("title", "标题"), column("quantity", "数量"), column("formula_4", "日期文本"),
+    ];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "quantity", "formula_4"]);
+    scope.stop();
+  });
+
+  it("旧默认预设在重载时保留显式隐藏并让新增字段默认可见", async () => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    // 保存时带列布局：title 可见，业务字段 secret 被用户显式隐藏。
+    const savedDefault = {
+      ...preset("saved-default", "orders", true),
+      view: {
+        ...preset("saved-default", "orders", true).view,
+        columns: [
+          { name: "id", order: 0, visible: false, frozen: false, width: null },
+          { name: "title", order: 1, visible: true, frozen: false, width: null },
+          { name: "secret", order: 2, visible: false, frozen: false, width: null },
+        ],
+        visibleFields: ["title"],
+      },
+    };
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async (collection: string) => ({ collection, presets: [savedDefault] })),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    const gridColumns = [gridColumn("id", false), gridColumn("title", true), gridColumn("secret", false)];
+    deps.table.schema = [idColumn, column("title", "标题"), column("secret", "机密")];
+    gridRef.value = gridStub(gridColumns);
+    await flushPromises();
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
+
+    // 预设保存后新增 amount（无本地 presentation 匹配时走 baseline 回退路径）。
+    gridColumns.push(gridColumn("amount", true));
+    deps.table.schema = [
+      idColumn, column("title", "标题"), column("secret", "机密"), column("amount", "金额"),
+    ];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+
+    // reload：旧预设的显式隐藏（secret/id）保留，新增字段（amount）默认可见。
+    await controller.dispatch({ type: "presentation.reload" });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+    scope.stop();
+  });
+
+  it("切换到旧预设时新增字段默认可见且捕获列不落 visible:false", async () => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    const applied: Array<Array<{ readonly field: string; readonly visible: boolean }>> = [];
+    const withColumns = (id: string, isDefault = false) => ({
+      ...preset(id, "orders", isDefault),
+      view: {
+        ...preset(id, "orders", isDefault).view,
+        columns: [
+          { name: "id", order: 0, visible: false, frozen: false, width: null },
+          { name: "title", order: 1, visible: true, frozen: false, width: null },
+        ],
+        visibleFields: ["title"],
+      },
+    });
+    const first = withColumns("old-default", true);
+    const second = withColumns("old-switch");
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [first, second] })),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    // 预设保存时只有 id/title；当前 schema 已增长出 amount。
+    const gridColumns = [gridColumn("id", false), gridColumn("title", true), gridColumn("amount", true)];
+    deps.table.schema = [idColumn, column("title", "标题"), column("amount", "金额")];
+    gridRef.value = gridStub(gridColumns, applied);
+    await flushPromises();
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+
+    // 切换到另一旧预设：query 不得排除 amount，应用到网格的捕获列
+    // amount 必须 visible:true（否则随后的 savePresentation 会把实际可见
+    // 的新列持久化为 visible:false）。
+    applied.length = 0;
+    await controller.dispatch({ type: "view.switch", view: second });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+    const restored = applied.at(-1) ?? [];
+    expect(restored.find(item => item.field === "amount")?.visible).toBe(true);
+    expect(restored.find(item => item.field === "id")?.visible).toBe(false);
+    scope.stop();
+  });
+
+  it("schema 未知时切换旧预设在 schema 回来后保留旧隐藏并让新增字段可见", async () => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    const applied: Array<Array<{ readonly field: string; readonly visible: boolean }>> = [];
+    const savedStates: Array<{ columns?: Array<{ name: string; visible: boolean }> }> = [];
+    const persistenceService = {
+      read: vi.fn(async () => ({ state: null, revision: "r1", conflict: false })),
+      save: vi.fn(async (_table: string, state: { columns?: Array<{ name: string; visible: boolean }> }) => {
+        savedStates.push(state);
+        return { state, revision: "r-next", conflict: false };
+      }),
+    } as unknown as GridPresentationService;
+    const withColumns = (id: string, isDefault = false) => ({
+      ...preset(id, "orders", isDefault),
+      view: {
+        ...preset(id, "orders", isDefault).view,
+        columns: [
+          { name: "id", order: 0, visible: false, frozen: false, width: null },
+          { name: "title", order: 1, visible: true, frozen: false, width: null },
+          { name: "secret", order: 2, visible: false, frozen: false, width: null },
+        ],
+        visibleFields: ["title"],
+      },
+    });
+    const first = withColumns("old-default", true);
+    const second = withColumns("old-switch");
+    // 无列布局的合法旧预设：既有 visibleFields 精确集合语义。
+    const third = {
+      ...preset("legacy-no-columns", "orders"),
+      view: { ...preset("legacy-no-columns", "orders").view, visibleFields: ["title"] },
+    };
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [first, second, third] })),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    deps.presentation = { service: persistenceService, identity: ref<string | null>("device-1") };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    const gridColumns = [gridColumn("id", false), gridColumn("title", true), gridColumn("secret", false)];
+    deps.table.schema = [idColumn, column("title", "标题"), column("secret", "机密")];
+    gridRef.value = gridStub(gridColumns, applied);
+    await flushPromises();
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
+
+    // 真实 beginLoad：schema 置空；view.switch 只查 presets.loading，可在此
+    // 窗口触发。不得把待应用视图按空 schema 清空。
+    deps.table.schema = null;
+    await flushPromises();
+    applied.length = 0;
+    savedStates.length = 0;
+    await controller.dispatch({ type: "view.switch", view: second });
+    await flushPromises();
+    // 等待期间不得把旧 grid/query 捕获成新预设布局持久化。
+    expect(savedStates).toHaveLength(0);
+
+    // schema 回来且已增长 amount：旧隐藏（secret/id）保留，新增默认可见。
+    gridColumns.push(gridColumn("amount", true));
+    deps.table.schema = [
+      idColumn, column("title", "标题"), column("secret", "机密"), column("amount", "金额"),
+    ];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+    const restored = applied.at(-1) ?? [];
+    expect(restored.find(item => item.field === "amount")?.visible).toBe(true);
+    expect(restored.find(item => item.field === "secret")?.visible).toBe(false);
+    expect(restored.find(item => item.field === "id")?.visible).toBe(false);
+
+    // schema 回来后的后续保存携带 reconcile 后的布局（新列可见、旧隐藏保留）。
+    await controller.dispatch({ type: "keyword.changed", keyword: "稳定" });
+    await flushPromises();
+    const saved = savedStates.at(-1);
+    expect(saved?.columns?.find(item => item.name === "amount")?.visible).toBe(true);
+    expect(saved?.columns?.find(item => item.name === "secret")?.visible).toBe(false);
+    expect(saved?.columns?.find(item => item.name === "id")?.visible).toBe(false);
+
+    // latest-intent：schema 再次未知时先暂存带列布局的 first，再切到无列
+    // 布局的 third 直接应用；schema 回来后不得让遗留的 first 覆盖 third。
+    deps.presets.markSaved();
+    deps.table.schema = null;
+    await flushPromises();
+    await controller.dispatch({ type: "view.switch", view: first });
+    await controller.dispatch({ type: "view.switch", view: third });
+    await flushPromises();
+    deps.table.schema = [
+      idColumn, column("title", "标题"), column("secret", "机密"), column("amount", "金额"),
+    ];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
     scope.stop();
   });
 

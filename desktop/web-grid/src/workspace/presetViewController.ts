@@ -224,8 +224,11 @@ export function createPresetViewController(
   }
 
   function savePresentation(): void {
-    if (initializing || applying || pendingView.value || !dependencies.workspace.currentTable
-      || !dependencies.grid.current.value || dependencies.grid.current.value.initialized === false) return;
+    // pendingRestore 暂存期间不得把旧 grid/query 捕获成待应用视图的布局。
+    if (initializing || applying || pendingView.value || pendingRestore
+      || !dependencies.workspace.currentTable
+      || !dependencies.grid.current.value
+      || dependencies.grid.current.value.initialized === false) return;
     const view = captureCurrent();
     presentedView.value = view;
     const active = dependencies.presets.presets.find(item => item.id === dependencies.presets.activePresetId);
@@ -281,6 +284,31 @@ export function createPresetViewController(
   async function applyView(view: PresetView): Promise<void> {
     const collection = dependencies.workspace.currentTable;
     if (!collection) return;
+    // 带列布局的视图可能与当前 schema 脱节：用同一 reconcileState 语义
+    // 对照，已知列保持原可见性、新增列默认可见、已删列剪退；对当前
+    // schema 捕获的视图幂等。无列布局保持既有 visibleFields 语义。
+    const schema = dependencies.table.schema;
+    if (view.columns?.length) {
+      // schema 未知（beginLoad 置空）时不得按空集清空视图：暂存到既有
+      // pendingRestore，等 schema 回来后经 restoreLoaded 重走本入口。
+      if (!schema) {
+        pendingRestore = { view, local: null };
+        return;
+      }
+      const state = reconcileState({
+        columns: view.columns, sorts: [], filters: [], keyword: null,
+        density: view.density ?? "comfortable", forcedRemote: false,
+      }, schema);
+      view = {
+        ...view, columns: state.columns,
+        visibleFields: [
+          ...state.columns.filter(column => column.visible !== false).map(column => column.name),
+          ...defaultVisibleFields(state.newlyAdded),
+        ],
+      };
+    }
+    // 应用新视图即接管最新意图：清掉可能遗留的未知 schema 暂存。
+    pendingRestore = null;
     presentedView.value = view;
     const generation = loadGeneration;
     legacyCozy = view.density === "cozy";
