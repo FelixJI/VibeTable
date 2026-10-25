@@ -636,6 +636,33 @@ export async function closeFieldSettingsDrawer(page) {
     await page.getByTestId("view-all-records").click();
   }
 }
+
+// 成功的 create/purge apply 回执会让产品自行关闭字段设置抽屉；update 与
+// 携带迁移任务的回执会重新描述为干净编辑态并保持打开，等待用户手动关闭。
+// 回执 action 是权威判据：不要在自动关闭竞态中点击一个即将消失的按钮。
+export function fieldApplyReceiptAutoCloses(receipt) {
+  const payload = receipt?.payload;
+  return receipt?.type === "field.change.apply" && Boolean(payload)
+    && !payload.migrationJobId && ["create", "purge"].includes(payload.action);
+}
+
+export async function waitForFieldSettingsAutoClose(page, timeoutMs = 30_000) {
+  await page.getByTestId("field-display-name").waitFor({ state: "hidden", timeout: timeoutMs });
+}
+
+// Apply 回执已确认成功后，按产品契约收尾：自动关闭的路径等待真实关闭，
+// 保持打开的路径走用户手动关闭（含脏草稿的应用内 discard 确认）。
+// 两条路径都和手动关闭一样，从字段管理页返回全部记录网格。
+export async function settleFieldSettingsAfterApply(page, receipt) {
+  if (!fieldApplyReceiptAutoCloses(receipt)) {
+    await closeFieldSettingsDrawer(page);
+    return;
+  }
+  await waitForFieldSettingsAutoClose(page);
+  if (await page.getByTestId("field-management-view").isVisible()) {
+    await page.getByTestId("view-all-records").click();
+  }
+}
 async function applyV2FieldChange(
   page,
   tableId,
@@ -1522,7 +1549,7 @@ async function scenario02(page, recorder, _network, runtime) {
     if (applied.type !== "field.change.apply" || applied.payload?.error) {
       throw new Error(`number display UI apply failed: ${JSON.stringify(applied)}`);
     }
-    await closeFieldSettingsDrawer(page);
+    await settleFieldSettingsAfterApply(page, applied);
     return applied;
   };
   const setDisplayScaleInput = async (value) => {
@@ -1962,7 +1989,8 @@ async function scenario02(page, recorder, _network, runtime) {
     { savedComputedValues, savedComputedDefinitions });
   const computedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await runAutoNumberJourney(page, recorder, runtime, {
-    createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
+    createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
+    selectVisibleNOption, beginBridgeMessageCapture, openFieldSettingsFromHeader,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
@@ -3692,7 +3720,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
       const migration = await waitForFieldMigration(page, applied.payload.migrationJobId);
       if (migration.payload?.phase !== "completed") throw new Error(JSON.stringify(migration));
     }
-    await closeFieldSettingsDrawer(page);
+    await settleFieldSettingsAfterApply(page, applied);
     const described = await rawBridgeRequest(page, "field.settings.describe", {
       tableId, fieldId: applied.payload.fieldId,
     });
@@ -4110,6 +4138,7 @@ async function applyRelationPairThroughUi(page) {
     throw new Error(`relation UI apply did not complete atomically: ${JSON.stringify(response)}`);
   }
   await planCard.waitFor({ state: "hidden", timeout: 30_000 });
+  return response;
 }
 
 async function editRelationPairScenario(page, recorder, authors, articleTableId, title, relation) {
@@ -4174,14 +4203,14 @@ async function editRelationPairScenario(page, recorder, authors, articleTableId,
     canonicalJsonText(before) === canonicalJsonText(
       await readRelationPairAuthority(page, articleTableId, relation.fieldId),
     ));
-  await applyRelationPairThroughUi(page);
+  const pairApplied = await applyRelationPairThroughUi(page);
   const committed = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
   recorder.check("UI apply atomically saves both planned definitions without replacing pair or links",
     canonicalJsonText(committed.map(endpoint => endpoint.definition))
       === canonicalJsonText([planned.after, related.after])
       && canonicalJsonText(relationPairIdentitiesAndLinks(committed)) === canonicalJsonText(identitiesAndLinks),
     { committed });
-  await closeFieldSettingsDrawer(page);
+  await settleFieldSettingsAfterApply(page, pairApplied);
   await page.waitForFunction(({ field, label }) => (
     document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
       ?.textContent === label
@@ -4213,12 +4242,12 @@ async function editRelationPairScenario(page, recorder, authors, articleTableId,
   recorder.check("public setNull plans the same shared policy on both endpoints",
     setNull.canApply === true && setNull.after?.relation?.deletePolicy === "setNull"
       && setNull.relatedChanges?.[0]?.after?.relation?.deletePolicy === "setNull");
-  await applyRelationPairThroughUi(page);
+  const policyApplied = await applyRelationPairThroughUi(page);
   const clearedPolicy = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
   recorder.check("setNull apply preserves pair and links while saving both endpoint policies",
     clearedPolicy.every(endpoint => endpoint.definition.relation.deletePolicy === "setNull")
       && canonicalJsonText(relationPairIdentitiesAndLinks(clearedPolicy)) === canonicalJsonText(identitiesAndLinks));
-  await closeFieldSettingsDrawer(page);
+  await settleFieldSettingsAfterApply(page, policyApplied);
 
   const secondTargetId = "pairtarget00002";
   const second = await applyProductMutation(page, authors.tableId, [{
@@ -4417,8 +4446,8 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   await openRelationPairEditor(page, byName.physicalName, pairBefore[1].definition.displayName);
   await selectVisibleNOption(page, "relation-target-display-field", "合同编号");
   await planRelationPairThroughUi(page);
-  await applyRelationPairThroughUi(page);
-  await closeFieldSettingsDrawer(page);
+  const pairApplied = await applyRelationPairThroughUi(page);
+  await settleFieldSettingsAfterApply(page, pairApplied);
   await waitLabels("CT-001");
   const pairAfter = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
   recorder.check("changing source display advances metadata while keeping both pair identities and links",
@@ -4429,8 +4458,8 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   await openRelationPairEditor(page, byName.physicalName, pairAfter[1].definition.displayName);
   await selectVisibleNOption(page, "relation-target-display-field", "合同名称");
   await planRelationPairThroughUi(page);
-  await applyRelationPairThroughUi(page);
-  await closeFieldSettingsDrawer(page);
+  const renamedApplied = await applyRelationPairThroughUi(page);
+  await settleFieldSettingsAfterApply(page, renamedApplied);
   await waitLabels("城轨一期更新");
   await page.getByTestId("view-create").click();
   const dialog = page.locator(".view-dialog:visible");
@@ -5064,9 +5093,13 @@ async function scenario26(page, recorder, _network, runtime) {
     const button = document.querySelector('[data-testid="field-apply-button"]');
     return button instanceof HTMLButtonElement && !button.disabled;
   }, undefined, { timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
   await page.getByTestId("field-apply-button").click();
-  await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-  await closeFieldSettingsDrawer(page);
+  const applied = await waitForCapturedBridgeMessage(page, 60_000);
+  if (applied.type !== "field.change.apply" || applied.payload?.error) {
+    throw new Error(`lookup UI apply failed: ${JSON.stringify(applied)}`);
+  }
+  await settleFieldSettingsAfterApply(page, applied);
 
   const listedCondition = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
   const conditionDef = listedCondition.payload?.definitions?.find(
@@ -5278,9 +5311,13 @@ async function scenario26(page, recorder, _network, runtime) {
   await page.getByTestId("lookup-editor-commit").click();
   await page.getByTestId("field-plan-button").click();
   await page.getByTestId("field-change-plan").waitFor({ timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
   await page.getByTestId("field-apply-button").click();
-  await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-  await closeFieldSettingsDrawer(page);
+  const aggregationApplied = await waitForCapturedBridgeMessage(page, 60_000);
+  if (aggregationApplied.type !== "field.change.apply" || aggregationApplied.payload?.error) {
+    throw new Error(`lookup aggregation apply failed: ${JSON.stringify(aggregationApplied)}`);
+  }
+  await settleFieldSettingsAfterApply(page, aggregationApplied);
   await chooseToolbarMore(page, "refresh");
   await waitForLookupCellText(page, lookupFieldKey, "40");
   const savedAggregation = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
@@ -10548,9 +10585,13 @@ async function scenario20(page, recorder, _network, runtime) {
       const button = document.querySelector('[data-testid="field-apply-button"]');
       return button instanceof HTMLButtonElement && !button.disabled;
     }, undefined, { timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
     await applyButton.click();
-    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await closeFieldSettingsDrawer(page);
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`field UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await settleFieldSettingsAfterApply(page, applied);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 
@@ -10744,9 +10785,13 @@ async function scenario21(page, recorder, _network, runtime) {
       const button = document.querySelector('[data-testid="field-apply-button"]');
       return button instanceof HTMLButtonElement && !button.disabled;
     }, undefined, { timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
     await applyButton.click();
-    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await closeFieldSettingsDrawer(page);
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`field UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await settleFieldSettingsAfterApply(page, applied);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 
@@ -10957,9 +11002,13 @@ async function scenario22(page, recorder, _network, runtime) {
       const button = document.querySelector('[data-testid="field-apply-button"]');
       return button instanceof HTMLButtonElement && !button.disabled;
     }, undefined, { timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
     await applyButton.click();
-    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await closeFieldSettingsDrawer(page);
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`field UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await settleFieldSettingsAfterApply(page, applied);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 
@@ -11906,7 +11955,7 @@ async function scenario45(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   await runCommonFieldDisplayJourney(page, recorder, runtime, {
-    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
+    createEmptyTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply, selectTable, applyProductMutation,
     rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
   });
@@ -11996,7 +12045,7 @@ const scenarios = {
   "36-backend-import-exit": scenario36,
   "37-collection-formula-journey": (page, recorder, _network, runtime) => runCollectionFormulaJourney(
     page, recorder, runtime, {
-      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
       applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
       selectTable, selectNValue, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
       chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
@@ -12007,7 +12056,7 @@ const scenarios = {
   ),
   "38-calculation-chain-journey": (page, recorder, _network, runtime) => runCalculationChainJourney(
     page, recorder, runtime, {
-      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
       rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
       waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
       beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,

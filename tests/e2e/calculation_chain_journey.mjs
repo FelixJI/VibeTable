@@ -70,7 +70,7 @@ export function drainCorrelatedQueryReloads(page) {
 // setup reuses the existing helpers; computed fields never use their write shortcut.
 export async function runCalculationChainJourney(page, recorder, runtime, helpers) {
   const {
-    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer, settleFieldSettingsAfterApply,
     rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
     waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,
@@ -133,7 +133,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     if (["formula", "lookup"].includes(applied.payload?.definition?.logicalType)) {
       await waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, query, applied.payload);
     }
-    await closeFieldSettingsDrawer(page);
+    await settleFieldSettingsAfterApply(page, applied);
     const described = await request("field.settings.describe", { tableId, fieldId: applied.payload.fieldId });
     if (!described.definition?.identity?.physicalName) throw new Error(JSON.stringify(described));
     return described.definition;
