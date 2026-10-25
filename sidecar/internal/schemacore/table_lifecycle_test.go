@@ -66,6 +66,36 @@ func TestTableCreateRejectsDuplicateDisplayNameButKeepsReplayIdempotent(t *testi
 	}); err != nil {
 		t.Fatalf("case-sensitive names must stay allowed: %v", err)
 	}
+	t.Run("unavailable name index rejects creation without partial writes", func(t *testing.T) {
+		// Corrupt only this disposable fixture's physical name column: a failed
+		// duplicate lookup must not be treated as proof that the name is free.
+		beforeTables, err := app.CountRecords("vibetable_tables")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeAudit, err := app.CountRecords("vibetable_audit_outbox")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.DB().NewQuery("ALTER TABLE vibetable_tables DROP COLUMN display_name").Execute(); err != nil {
+			t.Fatal(err)
+		}
+		_, err = lifecycle.Create(context.Background(), v2.TableCreateIntent{
+			DisplayName: "新表", OperationID: "operation-unavailable-name-lookup",
+			Actor: v2.Actor{ID: "local-user", Kind: "user"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "find duplicate table display name") {
+			t.Fatalf("unavailable duplicate check = %v", err)
+		}
+		afterTables, err := app.CountRecords("vibetable_tables")
+		if err != nil || afterTables != beforeTables {
+			t.Fatalf("table count = %d, %v; want %d", afterTables, err, beforeTables)
+		}
+		afterAudit, err := app.CountRecords("vibetable_audit_outbox")
+		if err != nil || afterAudit != beforeAudit {
+			t.Fatalf("audit count = %d, %v; want %d", afterAudit, err, beforeAudit)
+		}
+	})
 }
 
 func TestTableLifecycleCreatesOnlyNormalizedV2AuthorityAndAudit(t *testing.T) {
