@@ -76,6 +76,7 @@ test("first table setup activates the created table before waiting for its datas
       };
     },
     getByTestId: (testId) => {
+      if (testId === "field-close-confirm-discard") return { isVisible: async () => false };
       if (testId === "nav-tables" || testId === "sidebar-new-table"
         || testId === "create-table-submit" || testId === "field-close-button") {
         return { click: async () => { events.push(testId); } };

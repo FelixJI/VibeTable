@@ -97,4 +97,56 @@ public sealed class RuntimeDiagnosticsBundleServiceTests
         string serialized = JsonSerializer.Serialize(bundle);
         Assert.IsFalse(serialized.Contains("auditDrain", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void Build_WorkspacePartFailureStillShipsLocalFactsWithExplicitFailure()
+    {
+        RuntimeDiagnosticsBundle bundle = RuntimeDiagnosticsBundleService.Build(
+            new RuntimeDiagnosticsInput(
+                "Windows", "1.0", "10.0", "0.31", 42,
+                "ready", "Ready", "Ready",
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                null,
+                "workspace.session_inactive"));
+
+        Assert.AreEqual("failed", bundle.WorkspaceDiagnostics.State);
+        Assert.AreEqual("workspace.session_inactive", bundle.WorkspaceDiagnostics.ErrorCode);
+        // The local runtime part stays usable instead of failing the bundle.
+        Assert.AreEqual("Windows", bundle.OperatingSystem);
+        Assert.AreEqual("unavailable", bundle.Index.State);
+        Assert.AreEqual(0, bundle.Jobs.Running);
+        Assert.AreEqual(0, bundle.PendingMutationRevision);
+    }
+
+    [TestMethod]
+    public void Build_WorkspacePartReportsAvailabilityWithoutLeakingFreeFormErrors()
+    {
+        RuntimeDiagnosticsInput localOnly = new(
+            "Windows", "1.0", "10.0", "0.31", 42,
+            "ready", "Ready", "Ready",
+            string.Empty, string.Empty, string.Empty, null);
+        Assert.AreEqual(
+            "unavailable",
+            RuntimeDiagnosticsBundleService.Build(localOnly).WorkspaceDiagnostics.State);
+
+        RuntimeDiagnosticsInput longCode = localOnly with
+        {
+            WorkspaceDiagnosticsError = new string('x', 200),
+        };
+        RuntimeDiagnosticsBundle bounded = RuntimeDiagnosticsBundleService.Build(longCode);
+        Assert.AreEqual("failed", bounded.WorkspaceDiagnostics.State);
+        Assert.AreEqual(160, bounded.WorkspaceDiagnostics.ErrorCode!.Length);
+
+        using JsonDocument summary = JsonDocument.Parse(
+            """{"jobs":{"queued":0,"running":0,"succeeded":0,"failed":0,"cancelled":0}}""");
+        RuntimeDiagnosticsInput available = localOnly with
+        {
+            WorkspaceSummary = summary.RootElement.Clone(),
+        };
+        Assert.AreEqual(
+            "available",
+            RuntimeDiagnosticsBundleService.Build(available).WorkspaceDiagnostics.State);
+    }
 }

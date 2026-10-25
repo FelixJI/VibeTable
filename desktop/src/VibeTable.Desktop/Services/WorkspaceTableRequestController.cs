@@ -666,6 +666,17 @@ public sealed class WorkspaceTableRequestController
         }
     }
 
+    private static bool IsProductError(RpcRemoteException exception, string code)
+    {
+        return exception.ErrorData is { ValueKind: JsonValueKind.Object } data
+            && data.TryGetProperty("kind", out JsonElement kind)
+            && kind.ValueKind == JsonValueKind.String
+            && kind.GetString() == "product_data_error"
+            && data.TryGetProperty("code", out JsonElement productCode)
+            && productCode.ValueKind == JsonValueKind.String
+            && productCode.GetString() == code;
+    }
+
     private async Task CreateTableAsync(RoutedWebRequest request)
     {
         if (!RequireTableAdminCorrelation(request, "table.create"))
@@ -731,6 +742,15 @@ public sealed class WorkspaceTableRequestController
                         summary,
                         createdTableId: tableId.GetString(),
                         emitGate: emitGate);
+                }
+                catch (RpcRemoteException exception) when (IsProductError(exception, "schema.table.display_name_duplicate"))
+                {
+                    TraceFailure("table.create", "TABLE_NAME_DUPLICATE");
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "同一工作区内已存在同名数据表，请修改名称后重试。",
+                        "TABLE_NAME_DUPLICATE",
+                        emitGate);
                 }
                 catch (SchemaLifecycleTimeoutException)
                 {

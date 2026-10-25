@@ -137,10 +137,9 @@
   background: transparent;
 }
 
+/* 迷你日历（首页）与设置页工作日历共用同一“今日”视觉：inset 主色描边。 */
 .work-calendar--compact .work-calendar__day--today {
-  color: #fff;
-  background: var(--vt-color-primary-500);
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px var(--vt-color-primary-500);
 }
 
 .work-calendar--compact .work-calendar__day--selected {

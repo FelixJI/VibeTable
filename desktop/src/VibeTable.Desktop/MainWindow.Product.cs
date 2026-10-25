@@ -532,6 +532,11 @@ public partial class MainWindow : Window
             recoverRenderer: RecoverRendererAsync);
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         DataContext = _viewModel;
+        // Native plugin chrome visibility follows the live surface registry;
+        // the Changed event can fire from non-UI threads, so hop to the
+        // dispatcher before touching the view model.
+        _pluginResources.SurfacesChanged += UpdateNativePluginChrome;
+        UpdateNativePluginChrome();
 
         Loaded += OnLoaded;
         Closing += OnClosing;
@@ -1104,6 +1109,24 @@ public partial class MainWindow : Window
         _ = RecoverRendererAsync("host-stop");
     }
 
+    private void UpdateNativePluginChrome()
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            if (Volatile.Read(ref _closing) == 0)
+                _viewModel.SetPluginSurfaceActive(_pluginResources.HasActiveSurfaces);
+            return;
+        }
+        // Read inside the dispatched callback: a queued hop captured earlier
+        // must never overwrite a newer surface state. Shutdown races resolve
+        // quietly — the discarded operation simply never runs.
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                UpdateNativePluginChrome();
+        });
+    }
+
     private void ReturnToPlatformFromNativeChrome() => PostHostPluginChrome("returnPlatform");
 
     private void ManagePluginsFromNativeChrome() => PostHostPluginChrome("manage");
@@ -1424,6 +1447,7 @@ public partial class MainWindow : Window
         _runtime.RecoveryFailed -= OnRuntimeRecoveryFailed;
         _runtime.BindingChanged -= OnRuntimeBindingChanged;
         _workspaceSessions.Changed -= OnWorkspaceSessionChanged;
+        _pluginResources.SurfacesChanged -= UpdateNativePluginChrome;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         if (_productGateway is not null)
         {

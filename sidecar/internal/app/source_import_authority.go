@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/sourceimport"
 )
 
@@ -41,9 +43,11 @@ func (authority *sourceImportAuthority) CreateTable(
 	intent v2.TableCreateIntent,
 	commit func(core.App, v2.TableCreateReceipt) error,
 ) (v2.TableCreateReceipt, error) {
-	return authority.schema.CreateTableWithCommit(ctx, intent, func(tx core.App, receipt v2.TableCreateReceipt) error {
+	receipt, err := authority.schema.CreateTableWithCommit(ctx, intent, func(tx core.App, receipt v2.TableCreateReceipt) error {
 		// Preview cannot reserve a display name. Check again inside the create
 		// transaction so a competing table leaves this new table rolled back.
+		// (The base lifecycle now rejects duplicate display names itself; this
+		// fence stays for defense in depth.)
 		conflicts, err := tx.FindRecordsByFilter("vibetable_tables",
 			"display_name={:name} && table_id!={:table}", "", 1, 0,
 			dbx.Params{"name": receipt.DisplayName, "table": receipt.TableID})
@@ -60,6 +64,17 @@ func (authority *sourceImportAuthority) CreateTable(
 		}
 		return nil
 	})
+	if err != nil {
+		// The import surface keeps its stable contract: the authority-level
+		// duplicate-name rejection maps onto the import target-name code.
+		var duplicate *schemaerror.ProductError
+		if errors.As(err, &duplicate) && duplicate.Code == "schema.table.display_name_duplicate" {
+			return v2.TableCreateReceipt{}, &sourceimport.Error{
+				Code: "source_import.target_name", Message: "target table name is already in use; rename and preview again",
+			}
+		}
+	}
+	return receipt, err
 }
 
 func (authority *sourceImportAuthority) ChangeField(

@@ -1442,6 +1442,58 @@ describe("workspace protection UI capability gates", () => {
     ]);
   });
 
+  it("shows the existing policy on remount and restores defaults through the save flow", async () => {
+    const protection = useWorkspaceProtectionStore();
+    protection.setRetention({
+      contractVersion: "2.0",
+      policyRevision: 4,
+      snapshotDays: 45,
+      snapshotCount: 70,
+      snapshotBuckets: ["daily"],
+      fileRevisionDays: 60,
+      fileRevisionCount: 200,
+      fileRevisionBuckets: ["weekly"],
+      trashMonths: 3,
+      repositoryLimitBytes: null,
+    });
+    // 保留策略在宿主侧可能早已水化；重新打开设置时草稿必须显示原有策略，
+    // 而不是回落到空默认值（旧行为会把保存按钮误标为可用）。
+    const settings = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" },
+    });
+    await settings.vm.$nextTick();
+
+    const numberInputs = () => settings.findAll(".retention-grid input")
+      .map((input) => (input.element as HTMLInputElement).value);
+    expect(numberInputs()[0]).toBe("45");
+    expect(numberInputs()[1]).toBe("70");
+    // 草稿与原有策略一致：保存不可用。
+    expect(settings.get('[data-testid="retention-save"]').attributes("disabled"))
+      .toBeDefined();
+
+    // 恢复默认只改草稿，仍走既有保存流程确认。
+    await settings.get('[data-testid="retention-reset-defaults"]').trigger("click");
+    await settings.vm.$nextTick();
+    expect(numberInputs()[0]).toBe("30");
+    expect(numberInputs()[1]).toBe("50");
+    expect(settings.get('[data-testid="retention-save"]').attributes("disabled"))
+      .toBeUndefined();
+    await settings.get('[data-testid="retention-save"]').trigger("click");
+    expect(settings.emitted("action")?.[0]?.[0]).toEqual({
+      method: "retention.update",
+      params: {
+        expectedRevision: 4,
+        snapshotDays: 30,
+        snapshotCount: 50,
+        snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
+        fileRevisionDays: 30,
+        fileRevisionCount: 100,
+        fileRevisionBuckets: ["daily", "weekly", "monthly"],
+        repositoryLimitBytes: null,
+      },
+    });
+  });
+
   it("explains durable quota pauses and integrity failures", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities([

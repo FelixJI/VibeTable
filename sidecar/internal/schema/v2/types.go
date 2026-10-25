@@ -348,9 +348,11 @@ type JSONSpec struct {
 }
 
 type AutoNumberSpec struct {
-	Prefix string `json:"prefix"`
-	Start  int64  `json:"start"`
-	Width  int    `json:"width"`
+	Prefix     string   `json:"prefix"`
+	Start      int64    `json:"start"`
+	Width      int      `json:"width"`
+	DateFormat string   `json:"dateFormat,omitempty"` // "" disables the date segment
+	Order      []string `json:"order,omitempty"`      // nil ⇒ prefix,date,number
 }
 
 type AutoDateSpec struct {

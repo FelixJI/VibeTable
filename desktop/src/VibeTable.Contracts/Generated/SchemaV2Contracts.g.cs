@@ -291,6 +291,10 @@ public sealed record AutoNumberSpecV2
     [JsonRequired] public required long Start { get; init; }
     [JsonPropertyName("width")]
     [JsonRequired] public required long Width { get; init; }
+    [JsonPropertyName("dateFormat")]
+    public string? DateFormat { get; init; }
+    [JsonPropertyName("order")]
+    public IReadOnlyList<string>? Order { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

@@ -361,6 +361,60 @@ public sealed class MainWindowViewModelTests
         // StartingBackend is untouched by renderer recovery.
         Assert.IsFalse(MainWindowViewModel.IsLegalTransition(StartupState.StartingBackend, StartupState.Ready));
     }
+
+    [TestMethod]
+    public async Task NativePluginChromeOnlyShowsWithAnActiveSurfaceAndReadyRenderer()
+    {
+        var web = new FakeWebViewBridge();
+        var vm = new MainWindowViewModel(new FakeBackendLifecycle(), web);
+        // Before the shell exists the chrome and the recovery entry are hidden.
+        Assert.IsFalse(vm.IsPluginChromeVisible);
+        Assert.IsFalse(vm.IsNativeRecoveryVisible);
+
+        var start = vm.StartAsync();
+        Assert.AreEqual(StartupState.LoadingWeb, vm.State);
+        Assert.IsFalse(vm.IsPluginChromeVisible, "no plugin surface is open yet");
+        Assert.IsTrue(vm.IsNativeRecoveryVisible, "a renderer load was issued");
+        web.CompleteLoad();
+        await start;
+        Assert.AreEqual(StartupState.Ready, vm.State);
+        Assert.IsFalse(vm.IsPluginChromeVisible, "ready shell without a plugin surface keeps the chrome hidden");
+
+        vm.SetPluginSurfaceActive(true);
+        Assert.IsTrue(vm.IsPluginChromeVisible);
+        vm.MoveToFaulted("renderer");
+        Assert.IsFalse(vm.IsPluginChromeVisible, "plugin chrome follows the live renderer only");
+        Assert.IsTrue(vm.IsNativeRecoveryVisible, "abnormal states keep the native recovery entry");
+
+        vm.SetPluginSurfaceActive(true);
+        vm.BeginRendererRecovery();
+        Assert.IsFalse(vm.IsPluginChromeVisible, "recovery hides the chrome even with a stale active flag");
+        vm.CompleteRendererRecovery();
+        Assert.IsTrue(vm.IsPluginChromeVisible);
+        vm.SetPluginSurfaceActive(false);
+        Assert.IsFalse(vm.IsPluginChromeVisible);
+    }
+
+    [TestMethod]
+    public async Task RecoveryClickFailureBeforeAdmissionIsSurfacedNotSwallowed()
+    {
+        var web = new FakeWebViewBridge();
+        MainWindowViewModel vm = null!;
+        vm = new MainWindowViewModel(new FakeBackendLifecycle(), web, recoverRenderer: _ =>
+            Task.FromException(new InvalidOperationException("admission raced a full retry")));
+        var start = vm.StartAsync(); web.CompleteLoad(); await start;
+        Assert.AreEqual(StartupState.Ready, vm.State);
+
+        vm.RecoverRendererCommand.Execute(null);
+        Assert.AreEqual(StartupState.Ready, vm.State, "no recovery was admitted; the shell stays ready");
+        Assert.IsFalse(vm.IsRendererRecovering);
+        StringAssert.Contains(vm.DetailMessage, "界面恢复失败");
+        StringAssert.Contains(vm.DetailMessage, "admission raced a full retry");
+        Assert.AreEqual(vm.DetailMessage, vm.RendererRecoveryError,
+            "the native chrome shows the failure even while the fallback is hidden");
+        vm.BeginRendererRecovery();
+        Assert.IsNull(vm.RendererRecoveryError, "a new recovery clears the previous failure");
+    }
 }
 
 /// <summary>

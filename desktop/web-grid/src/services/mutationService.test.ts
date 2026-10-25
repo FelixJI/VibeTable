@@ -1005,6 +1005,34 @@ describe("mutationService correlated writes", () => {
     s.table.reset(); expect(s.service.canInsertRow()).toBe(false);
   });
 
+  it("required columns block an empty insert locally and expose the pending list", async () => {
+    const s = setup();
+    s.table.setEditSchema([
+      { name: "title", storageName: "title", dataType: "text", editable: true,
+        nullable: false, primaryKey: false, editor: { kind: "text" },
+        validation: [{ kind: "required" }] },
+      { name: "note", storageName: "note", dataType: "text", editable: true,
+        nullable: true, primaryKey: false, editor: { kind: "text" }, validation: [] },
+    ], revision());
+
+    expect(s.service.requiredInsertColumns().map(column => column.name)).toEqual(["title"]);
+    const posted = s.posted.length;
+    s.service.insertRow({});
+    await flush();
+    // 本地拦截：不发送插入请求，也不产生历史/不确定状态。
+    expect(s.posted).toHaveLength(posted);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "mutation_validation",
+      message: expect.stringContaining("title"),
+    }));
+    expect(s.history.writeUncertain).toBe(false);
+
+    // 提供必填值后正常提交。
+    s.service.insertRow({ title: "首行" });
+    await flush();
+    expect(s.posted.at(-1)?.payload).toMatchObject({ values: { title: "首行" } });
+  });
+
   it("insert confirmation, undo and redo retain the new authoritative row key", async () => {
     const s = setup(); s.service.insertRow({ name: "added" });
     s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 10, row: { rowKey: 10, name: "added", __vibetableDigest: digest }, revision: revision(2) }); await flush();

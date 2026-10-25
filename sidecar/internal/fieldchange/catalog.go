@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
@@ -440,6 +443,23 @@ func (catalog *Catalog) Check(
 	impact := v2.Impact{
 		Failures: []v2.FailureSample{}, Dependencies: []v2.DependencyRef{},
 	}
+	if before != nil && after != nil && before.AutoNumber != nil && after.AutoNumber != nil &&
+		!reflect.DeepEqual(before.AutoNumber, after.AutoNumber) {
+		table, err := catalog.tableRecord(catalog.app, intent.TableID)
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		count, err := catalog.app.CountRecords(table.GetString("collection_id"))
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		impact.Records = count
+		return impact, []v2.Diagnostic{{
+			Code: "field.auto_number.reformat", Path: "draft.autoNumber",
+			Message: "existing numbers are rewritten to the new format in one transaction; sequences and the start never change",
+			Details: map[string]any{"order": "id asc", "count": count, "atomic": true, "conflictCheck": true},
+		}}, []v2.Diagnostic{}, nil
+	}
 	if before == nil && after != nil && after.AutoNumber != nil {
 		table, err := catalog.tableRecord(catalog.app, intent.TableID)
 		if err != nil {
@@ -454,6 +474,13 @@ func (catalog *Catalog) Check(
 			return impact, nil, []v2.Diagnostic{{Code: "field.auto_number.exhausted", Path: "draft.autoNumber.start", Message: "backfill exceeds the safe sequence range"}}, nil
 		}
 		samples := []map[string]any{}
+		var creations map[string]time.Time
+		if v2.AutoNumberDateEnabled(*after.AutoNumber) {
+			creations, err = autonumber.CreationTimes(ctx, catalog.app, intent.TableID)
+			if err != nil {
+				return impact, nil, nil, err
+			}
+		}
 		for index, record := range records {
 			if err := ctx.Err(); err != nil {
 				return impact, nil, nil, err
@@ -461,7 +488,14 @@ func (catalog *Catalog) Check(
 			if index >= 5 {
 				break
 			}
-			samples = append(samples, map[string]any{"recordId": record.Id, "value": v2.AutoNumberValue(*after.AutoNumber, after.AutoNumber.Start+int64(index))})
+			var createdAt time.Time
+			if creations != nil {
+				var found bool
+				if createdAt, found = creations[record.Id]; !found {
+					return impact, nil, []v2.Diagnostic{{Code: "field.auto_number.creation_unavailable", Path: "draft.autoNumber.dateFormat", Message: "existing record has no creation audit envelope"}}, nil
+				}
+			}
+			samples = append(samples, map[string]any{"recordId": record.Id, "value": v2.AutoNumberValue(*after.AutoNumber, after.AutoNumber.Start+int64(index), createdAt)})
 		}
 		return impact, []v2.Diagnostic{{Code: "field.auto_number.backfill", Path: "draft.autoNumber", Message: "existing records are numbered atomically in record ID order", Details: map[string]any{"order": "id asc", "count": impact.Records, "samples": samples, "atomic": true}}}, []v2.Diagnostic{}, nil
 	}

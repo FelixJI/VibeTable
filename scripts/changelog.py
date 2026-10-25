@@ -127,10 +127,10 @@ def collect_changelog(repo_root: Path, version: str) -> list[ChangelogEntry]:
     return entries
 
 
-def render_json(entries: list[ChangelogEntry]) -> str:
+def render_json(version: str, entries: list[ChangelogEntry]) -> str:
     return (
         json.dumps(
-            {"entries": [asdict(entry) for entry in entries]},
+            {"version": version, "entries": [asdict(entry) for entry in entries]},
             ensure_ascii=False,
             indent=2,
         )
@@ -163,7 +163,7 @@ def render_markdown(version: str, entries: list[ChangelogEntry]) -> str:
 def generated_contents(repo_root: Path, version: str) -> dict[Path, str]:
     entries = collect_changelog(repo_root, version)
     return {
-        repo_root / JSON_OUTPUT: render_json(entries),
+        repo_root / JSON_OUTPUT: render_json(version, entries),
         repo_root / MARKDOWN_OUTPUT: render_markdown(version, entries),
     }
 
@@ -182,7 +182,7 @@ def write_changelog(repo_root: Path, version: str) -> list[Path]:
 def write_changelog_json(repo_root: Path, version: str) -> list[Path]:
     """只更新应用内消费的 JSON；累计 CHANGELOG.md 由公共发布核心维护。"""
     path = repo_root / JSON_OUTPUT
-    content = render_json(collect_changelog(repo_root, version))
+    content = render_json(version, collect_changelog(repo_root, version))
     if path.is_file() and path.read_text(encoding="utf-8") == content:
         return []
     path.parent.mkdir(parents=True, exist_ok=True)

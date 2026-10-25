@@ -19,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaaudit"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -88,6 +89,27 @@ func (lifecycle *TableLifecycle) CreateWithCommit(
 		}
 		if !errors.Is(findErr, sql.ErrNoRows) {
 			return fmt.Errorf("find schema table replay: %w", findErr)
+		}
+		// Product boundary: one workspace never holds two tables with the same
+		// display name. The comparison is exact on the trimmed name — the same
+		// semantics creation, replay and import preflight already use; there is
+		// no case folding. Existing same-name history stays readable: the check
+		// runs only when a new table is created.
+		duplicates, duplicateErr := txApp.FindRecordsByFilter(
+			"vibetable_tables",
+			"display_name={:name}",
+			"id", 1, 0,
+			dbx.Params{"name": displayName},
+		)
+		if duplicateErr != nil {
+			return fmt.Errorf("find duplicate table display name: %w", duplicateErr)
+		}
+		if len(duplicates) > 0 {
+			return &schemaerror.ProductError{
+				Code:    "schema.table.display_name_duplicate",
+				Path:    "displayName",
+				Message: "another table in this workspace already uses this name",
+			}
 		}
 		collection := core.NewBaseCollection(physicalName)
 		collection.Fields.Add(&core.NumberField{

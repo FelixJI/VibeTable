@@ -88,6 +88,9 @@ func TestSchemaFieldChangeProductHTTPLifecycle(t *testing.T) {
 	oldPlanner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil), fieldchange.WithClock(func() time.Time { return time.Now().Add(-time.Hour) }))
 	expiredIntent := intent
 	expiredIntent.ExpectedSchemaRev = receipt.SchemaRevision
+	// Duplicate active display names are now rejected at the authority layer;
+	// the expiry scenario only needs a fresh, planable name.
+	expiredIntent.Draft = &v2.FieldDraft{DisplayName: "Amount Expired", LogicalType: v2.LogicalText, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display}
 	expired, err := oldPlanner.Plan(context.Background(), expiredIntent)
 	if err != nil {
 		t.Fatal(err)

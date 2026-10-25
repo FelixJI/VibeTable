@@ -420,19 +420,51 @@ export function useMutationService() {
       && !!table.editSchema?.some((column) => column.editable || column.dataType === "autoNumber");
   }
 
-  function insertRow(values: Readonly<Record<string, unknown>>): void {
-    if (disposed || !canInsertRow()) return;
+  /**
+   * 必填列 = 权威 editSchema 中 editable 且 nullable=false 的列
+   * （后端投影：nullable = !value.required，见 backend/contracts/
+   * data_profile.py）。不依赖宿主是否额外附带 required 校验规则，
+   * 避免“漏拦”必填列；供宿主层（WorkspaceView）在插入前引导用户先填值。
+   */
+  function requiredInsertColumns() {
+    return (table.editSchema ?? []).filter(column => column.editable && !column.nullable);
+  }
+
+  function blankInsertValue(value: unknown): boolean {
+    return value === null || value === undefined || value === ""
+      || Array.isArray(value) && value.length === 0;
+  }
+
+  /**
+   * 插入新行。返回是否成功提交：本地拦截（必填未填）、发送失败或被
+   * 权威拒绝部返回 false，并通过既有 report/init(onEditRejected) 通道
+   * 呈现错误；成功返回 true。调用方可据此在成功后再关闭表单。
+   */
+  function insertRow(values: Readonly<Record<string, unknown>>): Promise<boolean> {
+    if (disposed || !canInsertRow()) return Promise.resolve(false);
+    // 必填字段不能以空白值直接提交：先让用户填写必填值，再提交新行。
+    const missing = requiredInsertColumns()
+      .filter(column => blankInsertValue(values[column.name]));
+    if (missing.length > 0) {
+      report({
+        kind: "mutation_validation",
+        message: `必填字段尚未填写：${missing.map(column => column.name).join("、")}。请先填写必填值再提交新行。`,
+        conflictingRowKeys: [],
+      });
+      return Promise.resolve(false);
+    }
     const isCurrent = scope.capture();
     const tableId = ws.currentTable ?? "";
     const historyIsCurrent = history.captureGeneration();
-    void send("table.insertRowRequested", {
+    return send("table.insertRowRequested", {
       table: tableId, values, schemaRevision: table.revision!.schemaRevision,
     }, isCurrent, true).then((result) => {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       const r = result as InsertRowResult;
       applyResult(r, () => insertHistory(r, tableId, isCurrent), historyIsCurrent);
       rowInsertedHandler?.(r);
-    }).catch(() => {});
+      return true;
+    }).catch(() => false);
   }
 
   function deleteRows(rows: readonly DeleteRowReqItem[]): void {
@@ -500,7 +532,7 @@ export function useMutationService() {
   }
 
   return {
-    init, updateCell, canInsertRow, insertRow, deleteRows, recordPasteResult,
+    init, updateCell, canInsertRow, insertRow, deleteRows, recordPasteResult, requiredInsertColumns,
     performUndo: () => { if (disposed) return; return history.undo(); },
     performRedo: () => { if (disposed) return; return history.redo(); },
     dispose,

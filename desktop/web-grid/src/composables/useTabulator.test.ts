@@ -24,7 +24,7 @@ import { useViewQueryStore } from "@/stores/viewQueryStore";
  * useTabulator drives a real Tabulator via `createGrid`. Tabulator needs a
  * real DOM with layout, which jsdom does not provide reliably. We mock
  * `createGrid` so tests exercise the *lifecycle* of useTabulator (init on
- * first page, setData on data change, destroy on unmount) without depending
+ * first page, replaceData on data change, destroy on unmount) without depending
  * on Tabulator internals. The mock instance records every call for assertions.
  *
  * The mock is factory-installed at the top level (vi.mock is hoisted) and
@@ -35,6 +35,7 @@ import { useViewQueryStore } from "@/stores/viewQueryStore";
 interface MockTabulator {
   initialized?: boolean;
   setData: ReturnType<typeof vi.fn>;
+  replaceData: ReturnType<typeof vi.fn>;
   setColumns: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
@@ -60,6 +61,7 @@ vi.mock("@/grid/createGrid", async (importOriginal) => ({
     const mock: MockTabulator = {
       initialized: mockStartsInitialized,
       setData: vi.fn().mockResolvedValue(undefined),
+      replaceData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
       destroy: vi.fn(),
       on: vi.fn(),
@@ -233,7 +235,7 @@ function installRangeRuntime(mock: MockTabulator) {
     // Consumers must obtain the public component through getRanges().
     return {};
   });
-  mock.setData.mockImplementation(async (data: Array<{ rowKey: string }>) => {
+  mock.replaceData.mockImplementation(async (data: Array<{ rowKey: string }>) => {
     rows = data.map(item => item.rowKey);
     reset();
   });
@@ -338,7 +340,7 @@ describe("useTabulator", () => {
 
     table.beginLoad();
     await flushPromises();
-    expect(lastMock!.setData).toHaveBeenCalledWith([]);
+    expect(lastMock!.replaceData).toHaveBeenCalledWith([]);
     table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
     await flushPromises();
     expect(runtime.selection()).toEqual([{ rowKeys: ["a", "b"], fields: ["payload"] }]);
@@ -415,7 +417,7 @@ describe("useTabulator", () => {
     await flushPromises();
     const runtime = installRangeRuntime(lastMock!);
     runtime.select();
-    const method = operation === "data" ? lastMock!.setData : lastMock!.setColumns;
+    const method = operation === "data" ? lastMock!.replaceData : lastMock!.setColumns;
     const apply = method.getMockImplementation() as (data: unknown) => unknown;
     let finish!: () => void;
     method.mockImplementation((data) => {
@@ -517,7 +519,7 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
-  it("uses incremental setData on subsequent data changes (NOT createGrid again)", async () => {
+  it("uses incremental replaceData on subsequent data changes (NOT createGrid again)", async () => {
     const { createGrid } = await import("@/grid/createGrid");
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();
@@ -532,10 +534,10 @@ describe("useTabulator", () => {
     await flushPromises();
     expect(createGrid).toHaveBeenCalledTimes(1);
     expect(lastMock).not.toBeNull();
-    expect(lastMock!.setData).not.toHaveBeenCalled();
+    expect(lastMock!.replaceData).not.toHaveBeenCalled();
 
     // datasetReady replaces pages with the authoritative full dataset.
-    // This is a data-only change (same schema) -> must go through setData.
+    // This is a data-only change (same schema) -> must go through replaceData.
     table.setDatasetReady(
       makeDatasetReady([{ id: 1 }, { id: 2 }, { id: 3 }], [makeColumn("id")]),
     );
@@ -543,13 +545,19 @@ describe("useTabulator", () => {
 
     // createGrid must NOT have been called again (no destroy+rebuild).
     expect(createGrid).toHaveBeenCalledTimes(1);
-    // setData must have been called with the flattened row set.
-    expect(lastMock!.setData).toHaveBeenCalledTimes(1);
-    expect(lastMock!.setData).toHaveBeenCalledWith([
+    // replaceData must have been called with the flattened row set.
+    expect(lastMock!.replaceData).toHaveBeenCalledTimes(1);
+    expect(lastMock!.replaceData).toHaveBeenCalledWith([
       { id: 1 },
       { id: 2 },
       { id: 3 },
     ]);
+    expect(lastMock!.setData).not.toHaveBeenCalled();
+    useWorkspaceStore().selectTable("another-table");
+    table.setDatasetReady(makeDatasetReady([{ id: 4 }], [makeColumn("id")]));
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledWith([{ id: 4 }]);
+    expect(lastMock!.replaceData).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 
@@ -567,13 +575,13 @@ describe("useTabulator", () => {
       makeDatasetReady([{ id: 1 }, { id: 2 }], [makeColumn("id")]),
     );
     await flushPromises();
-    expect(lastMock!.setData).not.toHaveBeenCalled();
+    expect(lastMock!.replaceData).not.toHaveBeenCalled();
 
     const tableBuilt = lastMock!.on.mock.calls
       .find((call) => call[0] === "tableBuilt")?.[1] as () => void;
     tableBuilt();
     await flushPromises();
-    expect(lastMock!.setData).toHaveBeenCalledWith([{ id: 1 }, { id: 2 }]);
+    expect(lastMock!.replaceData).toHaveBeenCalledWith([{ id: 1 }, { id: 2 }]);
     wrapper.unmount();
   });
 
@@ -597,11 +605,11 @@ describe("useTabulator", () => {
       snapshot: { snapshotId: "snapshot", digest: "digest", databaseId: "db", table: "users", schemaRevision: "s", dataRevision: 1, normalizedQuery: {} },
     }, { labelsOnly: true });
     await flushPromises();
-    expect(lastMock!.setData).not.toHaveBeenCalled();
+    expect(lastMock!.replaceData).not.toHaveBeenCalled();
     edited();
     await flushPromises();
-    expect(lastMock!.setData).toHaveBeenCalledOnce();
-    expect(lastMock!.setData).toHaveBeenCalledWith([
+    expect(lastMock!.replaceData).toHaveBeenCalledOnce();
+    expect(lastMock!.replaceData).toHaveBeenCalledWith([
       { rowKey: "r1", name: "Draft", contract: "target", __vibetableRelationLabels: { contract: { target: "Fresh" } } },
     ]);
     wrapper.unmount();
@@ -632,14 +640,14 @@ describe("useTabulator", () => {
       makeDatasetReady([{ id: 1, name: "server refresh" }], [makeColumn("id")]),
     );
     await flushPromises();
-    expect(lastMock!.setData).not.toHaveBeenCalled();
+    expect(lastMock!.replaceData).not.toHaveBeenCalled();
     expect(lastMock!.setColumns).not.toHaveBeenCalled();
 
     edited!();
     await flushPromises();
-    expect(lastMock!.setData).toHaveBeenCalledOnce();
+    expect(lastMock!.replaceData).toHaveBeenCalledOnce();
     expect(lastMock!.setColumns).toHaveBeenCalledOnce();
-    expect(lastMock!.setData).toHaveBeenCalledWith([{ id: 1, name: "server refresh" }]);
+    expect(lastMock!.replaceData).toHaveBeenCalledWith([{ id: 1, name: "server refresh" }]);
     wrapper.unmount();
   });
 
@@ -671,14 +679,14 @@ describe("useTabulator", () => {
     await flushPromises();
 
     let finishSetData!: () => void;
-    lastMock!.setData.mockImplementation(() => new Promise<void>((resolve) => {
+    lastMock!.replaceData.mockImplementation(() => new Promise<void>((resolve) => {
       finishSetData = resolve;
     }));
     table.setDatasetReady(
       makeDatasetReady([{ id: 1 }, { id: 2 }], [makeColumn("id")]),
     );
     await flushPromises();
-    expect(lastMock!.setData).toHaveBeenCalledOnce();
+    expect(lastMock!.replaceData).toHaveBeenCalledOnce();
 
     wrapper.unmount();
     expect(lastMock!.destroy).not.toHaveBeenCalled();
@@ -1158,7 +1166,7 @@ describe("useTabulator", () => {
       range === "visible" ? [row("removed")] : [row("removed"), row("kept")],
     );
     lastMock!.getSelectedRows.mockReturnValue([row("removed"), row("kept")]);
-    lastMock!.setData.mockImplementation(async () => {
+    lastMock!.replaceData.mockImplementation(async () => {
       lastMock!.getRows.mockImplementation((range?: string) =>
         range === "visible" ? [row("kept")] : [row("kept")],
       );

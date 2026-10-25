@@ -20,6 +20,8 @@ const props = defineProps<{
   activeId: string | null;
   loading: boolean;
   dirty: boolean;
+  fieldsActive?: boolean;
+  workspaceKey?: string;
   error?: string | null;
   dateFields?: readonly { label: string; value: string }[];
   titleFields?: readonly { label: string; value: string }[];
@@ -44,7 +46,45 @@ const emit = defineEmits<{
   delete: [view: PresetEntry];
   setDefault: [view: PresetEntry];
   reload: [];
+  reset: [];
+  fields: [];
 }>();
+
+const order = ref<string[]>([]);
+const draggedId = ref<string | null>(null);
+const orderKey = computed(() => `vt:view-order:${props.workspaceKey ?? ""}:${props.collection}`);
+const orderedViews = computed(() => [...props.views].sort((a, b) => {
+  const rank = (id: string) => { const index = order.value.indexOf(id); return index < 0 ? order.value.length : index; };
+  return rank(a.id) - rank(b.id);
+}));
+watch(orderKey, key => {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    order.value = Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+  } catch { order.value = []; }
+  draggedId.value = null;
+}, { immediate: true });
+function moveView(source: string, target: string): void {
+  if (props.loading || source === target) return;
+  const ids = orderedViews.value.map(view => view.id);
+  if (!ids.includes(source) || !ids.includes(target)) return;
+  const targetIndex = ids.indexOf(target);
+  ids.splice(ids.indexOf(source), 1);
+  ids.splice(targetIndex, 0, source);
+  order.value = ids;
+  try { localStorage.setItem(orderKey.value, JSON.stringify(ids)); }
+  catch { /* Preferences remain available for this session when storage is unavailable. */ }
+}
+function dropView(target: string): void {
+  if (draggedId.value) moveView(draggedId.value, target);
+  draggedId.value = null;
+}
+function moveWithKeyboard(event: KeyboardEvent, id: string): void {
+  if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  const index = orderedViews.value.findIndex(view => view.id === id);
+  const target = orderedViews.value[index + (event.key === "ArrowLeft" ? -1 : 1)];
+  if (target) { event.preventDefault(); moveView(id, target.id); }
+}
 
 const dialog = ref<"create" | "duplicate" | "rename" | "delete" | null>(null);
 const input = ref("");
@@ -137,13 +177,13 @@ function confirm(): void {
       </div>
     </NAlert>
     <nav class="data-source-view-bar" :aria-label="t('views.ariaLabel')" data-testid="data-source-view-bar">
-    <div class="view-context"><NIcon :size="15"><Table2 /></NIcon><span>{{ t("views.tableType") }}</span></div>
+    <button class="view-tab" :class="{ active: fieldsActive }" type="button" data-testid="view-fields" @click="emit('fields')"><NIcon :size="15"><Table2 /></NIcon><span>{{ t("views.tableType") }}</span></button>
     <div class="view-scroll">
-      <button v-if="views.length === 0" class="view-tab active" type="button" data-testid="view-all-records">
-        <NIcon :size="14"><Check /></NIcon>{{ t("views.allRecords") }}
+      <button class="view-tab" :class="{ active: !activeId && !fieldsActive }" :disabled="loading" type="button" data-testid="view-all-records" @click="emit('reset')">
+        <NIcon v-if="!activeId && !fieldsActive" :size="14"><Check /></NIcon>{{ t("views.allRecords") }}
       </button>
-      <div v-for="view in views" :key="view.id" class="view-tab-wrap">
-        <button class="view-tab" :class="{ active: activeId === view.id }" type="button" :disabled="loading" :data-testid="`view-tab-${view.id}`" @click="emit('switch', view)">
+      <div v-for="view in orderedViews" :key="view.id" class="view-tab-wrap" :draggable="!loading" @dragstart="draggedId = view.id" @dragend="draggedId = null" @dragover.prevent @drop.prevent="dropView(view.id)">
+        <button class="view-tab" :class="{ active: activeId === view.id && !fieldsActive }" type="button" :disabled="loading" :title="t('views.reorder')" :data-testid="`view-tab-${view.id}`" @keydown="moveWithKeyboard($event, view.id)" @click="emit('switch', view)">
           <NIcon v-if="activeId === view.id" :size="14"><Check /></NIcon>
           <span>{{ view.name }}</span>
           <NTag v-if="view.view.isDefault" size="tiny" :bordered="false">{{ t("views.default") }}</NTag>

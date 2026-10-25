@@ -77,12 +77,23 @@ watch(() => [props.filters, props.groups, props.summaries, props.visibleFields] 
   draftVisible.value = [...props.visibleFields];
 }, { immediate: true, deep: true });
 
-function commit(): void {
+/**
+ * 每个面板只提交自己的关注点：任一面板应用时，其他已生效状态
+ * （尤其是显示字段/筛选/分组）必须原样回传，否则一个面板会把另一个
+ * 面板中尚未应用的草稿一起提交，造成“应用筛选却隐藏了其他字段”。
+ */
+function commitPatch(patch: Partial<{
+  filters: FilterExpression[];
+  groups: GroupCondition[];
+  summaries: SummaryCondition[];
+  visibleFields: string[];
+}>): void {
   emit("change", {
-    filters: cloneFilterExpressions(draftFilters.value),
-    groups: draftGroups.value.slice(0, 2),
-    summaries: draftSummaries.value.slice(0, 3),
-    visibleFields: [...draftVisible.value],
+    filters: cloneFilterExpressions(props.filters),
+    groups: [...props.groups].slice(0, 2),
+    summaries: [...props.summaries].slice(0, 3),
+    visibleFields: [...props.visibleFields],
+    ...patch,
   });
 }
 function addGroup(): void {
@@ -154,7 +165,7 @@ function isNumericField(field: string): boolean {
           :search-relation-targets="searchRelationTargets"
           @update="nodes => draftFilters = nodes"
         />
-        <footer><NButton size="small" type="primary" data-testid="view-filter-apply" @click="commit">应用</NButton></footer>
+        <footer><NButton size="small" type="primary" data-testid="view-filter-apply" @click="() => commitPatch({ filters: cloneFilterExpressions(draftFilters) })">应用</NButton></footer>
       </div>
     </NPopover>
 
@@ -176,7 +187,7 @@ function isNumericField(field: string): boolean {
           <NButton size="tiny" quaternary aria-label="删除分组" @click="draftGroups = draftGroups.filter((_, i) => i !== index)">×</NButton>
         </div>
         <NButton size="tiny" secondary :disabled="draftGroups.length >= 2 || !groupOptions.length" @click="addGroup">＋ 分组字段</NButton>
-        <footer><NButton size="small" type="primary" data-testid="view-group-apply" @click="commit">应用</NButton></footer>
+        <footer><NButton size="small" type="primary" data-testid="view-group-apply" @click="() => commitPatch({ groups: draftGroups.slice(0, 2) })">应用</NButton></footer>
       </div>
     </NPopover>
 
@@ -195,7 +206,7 @@ function isNumericField(field: string): boolean {
           <NButton size="tiny" quaternary aria-label="删除汇总" @click="draftSummaries = draftSummaries.filter((_, i) => i !== index)">×</NButton>
         </div>
         <NButton size="tiny" secondary :disabled="draftSummaries.length >= 3 || !numericOptions.length" @click="addSummary">＋ 汇总字段</NButton>
-        <footer><NButton size="small" type="primary" data-testid="view-summary-apply" @click="commit">应用</NButton></footer>
+        <footer><NButton size="small" type="primary" data-testid="view-summary-apply" @click="() => commitPatch({ summaries: draftSummaries.slice(0, 3) })">应用</NButton></footer>
       </div>
     </NPopover>
 
@@ -221,7 +232,7 @@ function isNumericField(field: string): boolean {
             :data-testid="`view-freeze-${column.name}`"
             @update:checked="checked => emit('freeze', column.name, checked)">{{ t('grid.presentation.freeze') }}</NCheckbox>
         </label>
-        <footer><NButton size="small" type="primary" data-testid="view-hidden-apply" @click="commit">应用</NButton></footer>
+        <footer><NButton size="small" type="primary" data-testid="view-hidden-apply" @click="() => commitPatch({ visibleFields: [...draftVisible] })">应用</NButton></footer>
       </div>
     </NPopover>
   </div>

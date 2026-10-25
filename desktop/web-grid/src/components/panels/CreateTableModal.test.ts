@@ -13,7 +13,7 @@ describe("CreateTableModal", () => {
     document.body.innerHTML = "";
   });
 
-  it("collects only the table display name and delegates fields to Schema v2", async () => {
+  it("collects the table display name and explains name restrictions before submission", async () => {
     const admin = useTableAdminStore();
     const ui = useUiStore();
     admin.openCreate();
@@ -21,7 +21,8 @@ describe("CreateTableModal", () => {
     const wrapper = mount(CreateTableModal, { attachTo: document.body });
 
     expect(wrapper.find('[data-testid="create-table-field-row"]').exists()).toBe(false);
-    expect(document.body.textContent).toContain("Schema v2");
+    expect(document.body.textContent).toContain("1–128 个字符");
+    expect(document.body.textContent).toContain("不能重名");
     expect(admin.canSubmit).toBe(false);
 
     admin.form.name = "订单";

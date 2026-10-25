@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,9 @@ def test_first_formal_release_uses_visible_history_from_head(
     entries = changelog.collect_changelog(REPO_ROOT, "0.1.0")
 
     assert entries == [changelog.ChangelogEntry(subject="feat: 初始化项目", commit="aaaaaaaa")]
+    rendered = json.loads(changelog.render_json("0.1.0", entries))
+    assert rendered["version"] == "0.1.0"
+    assert rendered["entries"][0]["subject"] == "feat: 初始化项目"
     assert changelog.render_markdown("0.1.0", entries) == (
         "# VibeTable 0.1.0\n\n## 变更\n\n- feat: 初始化项目 (`aaaaaaaa`)\n\n"
     )

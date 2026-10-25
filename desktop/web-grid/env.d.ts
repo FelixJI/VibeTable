@@ -35,6 +35,7 @@ declare module "tabulator-tables" {
     getRows(range?: "active" | "visible" | "selected" | "all"): TabulatorRowComponent[];
     getSelectedData(): Record<string, unknown>[];
     setData(data: unknown[]): Promise<void>;
+    replaceData(data: unknown[]): Promise<void>;
     setColumns(columns: unknown[]): void;
     destroy?(): void;
   }

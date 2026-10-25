@@ -168,6 +168,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
   };
   const openNewComputedFieldDrawer = async (displayName, typeValue) => {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
     await page.getByTestId("field-display-name").locator("input").fill(displayName);
     await selectNValue(page, "field-logical-type", typeValue);

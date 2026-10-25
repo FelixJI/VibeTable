@@ -140,6 +140,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   };
   const openNewField = async (name, type) => {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await fillNInput(page, "field-display-name", name);
     const select = page.getByTestId("field-logical-type");
     await select.locator(".n-base-selection").click();

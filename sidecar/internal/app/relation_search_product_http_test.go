@@ -378,16 +378,16 @@ func TestRelationSearchUsesRelationDisplayFieldProjection(t *testing.T) {
 	byName := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
 		Draft: &v2.FieldDraft{DisplayName: "按名称", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
 			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: name.FieldID}},
-		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-name-relation")
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "按名称来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-name-relation")
 	byUnits := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
 		Draft: &v2.FieldDraft{DisplayName: "按数量", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
 			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: units.FieldID}},
-		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-units-relation")
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "按数量来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-units-relation")
 	// 同字段：显示字段即目标表全局主显示字段，仍必须携带 raw typed scalar。
 	byCode := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
 		Draft: &v2.FieldDraft{DisplayName: "按编号", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
 			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: number.FieldID}},
-		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-code-relation")
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "按编号来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-code-relation")
 	description, err := schemaexecution.Describe(context.Background(), pb, table.TableID)
 	if err != nil {
 		t.Fatal(err)

@@ -820,7 +820,18 @@ watch(
   gap: 8px;
 }
 .flow-options :deep(.n-radio-group__splitor) { display: none; }
-.flow-options :deep(.n-radio-button) { height: auto; min-height: 76px; padding: 10px !important; border-radius: var(--vt-radius-lg) !important; white-space: normal; }
+/* Naive 只给首/末单选按钮画左右边框，卡片间隙会缺边：每张卡自带完整四边边框。 */
+.flow-options :deep(.n-radio-button) {
+  height: auto;
+  min-height: 76px;
+  padding: 10px !important;
+  border: 1px solid var(--n-button-border-color);
+  border-radius: var(--vt-radius-lg) !important;
+  white-space: normal;
+}
+.flow-options :deep(.n-radio-button--checked) {
+  border-color: var(--n-button-border-color-active);
+}
 .flow-options :deep(.n-radio-button__content) { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; }
 .flow-options small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .sync-provider-option { display: inline-grid; gap: 3px; padding-inline-start: 4px; }

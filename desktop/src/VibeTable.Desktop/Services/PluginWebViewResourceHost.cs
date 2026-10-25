@@ -53,6 +53,16 @@ public sealed class PluginWebViewResourceHost : IDisposable
         remove => _surfaces.Closed -= value;
     }
 
+    /// <summary>Raised whenever the active plugin surface set changes.</summary>
+    public event Action? SurfacesChanged
+    {
+        add => _surfaces.Changed += value;
+        remove => _surfaces.Changed -= value;
+    }
+
+    /// <summary>True while at least one plugin surface is open.</summary>
+    public bool HasActiveSurfaces => _surfaces.ActiveSurfaceCount > 0;
+
     public void Attach(CoreWebView2 core)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

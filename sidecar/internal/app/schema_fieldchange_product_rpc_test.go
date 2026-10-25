@@ -84,7 +84,7 @@ func TestSchemaFieldChangeRealProducerAndWriteAdmission(t *testing.T) {
 		}
 		return apply(ctx)
 	}
-	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil, gate)
+	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil, nil, gate)
 	registrations := schemaFieldChangeRegistrations(domain, schemaapi.New(pb))
 	methods := map[string]productrpc.Registration{}
 	for _, registration := range registrations {

@@ -625,35 +625,17 @@ async function createV2Field(
 }
 
 export async function closeFieldSettingsDrawer(page) {
-  // The drawer fires a native confirm only when dirty; clean closes must not pay a fixed dialog wait.
-  let markDialogSettled;
-  const dialogSettled = new Promise((resolve) => {
-    markDialogSettled = resolve;
-  });
-  let dialogSeen = false;
-  let acceptFailure;
-  const onDialog = async (dialog) => {
-    dialogSeen = true;
-    try {
-      await dialog.accept();
-    } catch (error) {
-      acceptFailure ??= error;
-    } finally {
-      markDialogSettled();
-    }
-  };
-  page.on("dialog", onDialog);
-  try {
-    await page.getByTestId("field-close-button").click();
-    if (dialogSeen) await dialogSettled;
-    if (acceptFailure) throw acceptFailure;
-    await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
-    if (acceptFailure) throw acceptFailure;
-  } finally {
-    page.off("dialog", onDialog);
+  const close = page.getByTestId("field-close-button");
+  if (await close.isVisible()) {
+    await close.click();
+    const discard = page.getByTestId("field-close-confirm-discard");
+    if (await discard.isVisible()) await discard.click();
+  }
+  await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+  if (await page.getByTestId("field-management-view").isVisible()) {
+    await page.getByTestId("view-all-records").click();
   }
 }
-
 async function applyV2FieldChange(
   page,
   tableId,
@@ -3675,6 +3657,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
   ];
   async function saveFormulaCase(item) {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await page.getByTestId("field-display-name").locator("input").fill(item.name);
     const typeSelect = page.getByTestId("field-logical-type");
     await typeSelect.locator(".n-base-selection").click();
@@ -5047,6 +5030,7 @@ async function scenario26(page, recorder, _network, runtime) {
 
   // 取消必须回到保存的定义：创建中途取消后摘要回到路径模式。
   await page.getByTestId("toolbar-field-manager").click();
+  await page.getByTestId("field-manager-create").click();
   await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
   await page.getByTestId("field-display-name").locator("input").fill("条件标题");
   const typeSelect = page.getByTestId("field-logical-type");
@@ -10543,6 +10527,7 @@ async function scenario20(page, recorder, _network, runtime) {
     const displayNameInput = page.getByTestId("field-display-name");
     if (!(await displayNameInput.isVisible())) {
       await page.getByTestId("toolbar-field-manager").click();
+      await page.getByTestId("field-manager-create").click();
       await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
     }
     await displayNameInput.locator("input").fill(displayName);
@@ -10565,7 +10550,7 @@ async function scenario20(page, recorder, _network, runtime) {
     }, undefined, { timeout: 30_000 });
     await applyButton.click();
     await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await page.getByTestId("field-close-button").click();
+    await closeFieldSettingsDrawer(page);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 
@@ -10747,6 +10732,7 @@ async function scenario21(page, recorder, _network, runtime) {
     const displayNameInput = page.getByTestId("field-display-name");
     if (!(await displayNameInput.isVisible())) {
       await page.getByTestId("toolbar-field-manager").click();
+      await page.getByTestId("field-manager-create").click();
       await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
     }
     await displayNameInput.locator("input").fill(displayName);
@@ -10760,7 +10746,7 @@ async function scenario21(page, recorder, _network, runtime) {
     }, undefined, { timeout: 30_000 });
     await applyButton.click();
     await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await page.getByTestId("field-close-button").click();
+    await closeFieldSettingsDrawer(page);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 
@@ -10959,6 +10945,7 @@ async function scenario22(page, recorder, _network, runtime) {
     const displayNameInput = page.getByTestId("field-display-name");
     if (!(await displayNameInput.isVisible())) {
       await page.getByTestId("toolbar-field-manager").click();
+      await page.getByTestId("field-manager-create").click();
       await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
     }
     await displayNameInput.locator("input").fill(displayName);
@@ -10972,7 +10959,7 @@ async function scenario22(page, recorder, _network, runtime) {
     }, undefined, { timeout: 30_000 });
     await applyButton.click();
     await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
-    await page.getByTestId("field-close-button").click();
+    await closeFieldSettingsDrawer(page);
     await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
   };
 

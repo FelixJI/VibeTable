@@ -51,6 +51,13 @@ type DefinitionNormalizer interface {
 	) error
 }
 
+// ActiveFieldSource enumerates a table's fields so the planner can reject
+// duplicate active display names at the authority layer. Catalog implements
+// it; test stubs without it keep the check inert.
+type ActiveFieldSource interface {
+	Fields(ctx context.Context, tableID string, includeRetired bool) ([]v2.FieldDefinition, error)
+}
+
 type PlanStore interface {
 	FindActive(ctx context.Context, intentHash string, now time.Time) (*v2.FieldChangePlan, error)
 	Save(
@@ -239,6 +246,9 @@ func (planner *Planner) plan(
 			return v2.FieldChangePlan{}, err
 		}
 	}
+	if err := planner.rejectDuplicateActiveFieldNames(ctx, intent, before, after, relatedChanges); err != nil {
+		return v2.FieldChangePlan{}, err
+	}
 	classes := classifyIntent(intent, before, after)
 	for _, related := range relatedChanges {
 		for _, class := range classifyIntent(intent, related.Before, related.After) {
@@ -331,6 +341,10 @@ func (planner *Planner) plan(
 	for _, warning := range warnings {
 		if warning.Code == "field.auto_number.backfill" {
 			steps = append(steps, v2.PlanStep{Kind: "autoNumberBackfill", Details: warning.Details})
+		}
+		if warning.Code == "field.auto_number.reformat" {
+			steps = append(steps, v2.PlanStep{Kind: "autoNumberReformat", Details: warning.Details})
+			confirmations = append(confirmations, "autoNumberReformat")
 		}
 	}
 	if len(relatedChanges) != 0 {
@@ -662,8 +676,15 @@ func (planner *Planner) definitionFromDraft(
 	before *v2.FieldDefinition,
 	draft *v2.FieldDraft,
 ) (*v2.FieldDefinition, error) {
-	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil && !reflect.DeepEqual(before.AutoNumber, draft.AutoNumber) {
-		return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot change after creation", nil)
+	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil {
+		if before.AutoNumber == nil || draft.AutoNumber == nil {
+			return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot be removed after creation", nil)
+		}
+		if draft.AutoNumber.Start != before.AutoNumber.Start {
+			return nil, productError("field.auto_number.immutable", "draft.autoNumber.start", "the starting sequence cannot change after creation", nil)
+		}
+		// prefix/width/dateFormat/order may change: the executor reformats every
+		// stored value atomically in the field-change transaction.
 	}
 	if draft == nil {
 		return nil, productError("field.contract.invalid", "draft", "draft is required", nil)
@@ -829,6 +850,101 @@ func (planner *Planner) definitionFromDraft(
 	return definition, nil
 }
 
+// rejectDuplicateActiveFieldNames enforces the product boundary that two
+// active fields in one table never share a display name. The comparison is
+// exact on the trimmed name — the same semantics import preflight and display
+// validation already use; there is no case folding. Historical same-name
+// data is untouched: the check only runs while planning a new create/update,
+// never while reading existing schemas.
+func (planner *Planner) rejectDuplicateActiveFieldNames(
+	ctx context.Context,
+	intent v2.FieldChangeIntent,
+	before *v2.FieldDefinition,
+	after *v2.FieldDefinition,
+	related []v2.RelatedFieldChange,
+) error {
+	source, ok := planner.source.(ActiveFieldSource)
+	if !ok {
+		return nil
+	}
+	// Build the FINAL field set per table: start from the stored active
+	// fields, drop every field this plan changes (its own field and each
+	// related pair member), then add the plan's resulting definitions. This
+	// covers self-referencing pairs, two brand-new same-named pair members,
+	// and legitimate name swaps between the two ends of one plan.
+	finals := map[string][]v2.FieldDefinition{}
+	remove := map[string]map[string]struct{}{}
+	changed := map[string]map[string]*v2.FieldDefinition{}
+	add := func(tableID string, fieldID string, definition *v2.FieldDefinition) {
+		if definition == nil {
+			return
+		}
+		if changed[tableID] == nil {
+			changed[tableID] = map[string]*v2.FieldDefinition{}
+		}
+		changed[tableID][fieldID] = definition
+	}
+	add(intent.TableID, intent.FieldID, after)
+	for index := range related {
+		add(related[index].TableID, related[index].FieldID, related[index].After)
+	}
+	for tableID, byID := range changed {
+		remove[tableID] = make(map[string]struct{}, len(byID))
+		for fieldID := range byID {
+			remove[tableID][fieldID] = struct{}{}
+		}
+	}
+	for tableID := range changed {
+		stored, err := source.Fields(ctx, tableID, false)
+		if err != nil {
+			return err
+		}
+		retired := map[string]struct{}{}
+		for _, field := range stored {
+			if field.Lifecycle.State != v2.LifecycleActive {
+				continue
+			}
+			if _, replaced := remove[tableID][field.Identity.FieldID]; replaced {
+				continue
+			}
+			if _, seen := retired[field.Identity.FieldID]; seen {
+				continue
+			}
+			retired[field.Identity.FieldID] = struct{}{}
+			finals[tableID] = append(finals[tableID], field)
+		}
+		for _, definition := range changed[tableID] {
+			if definition.Lifecycle.State == v2.LifecycleActive {
+				finals[tableID] = append(finals[tableID], *definition)
+			}
+		}
+	}
+	for tableID, fields := range finals {
+		owners := make(map[string]string, len(fields))
+		for _, field := range fields {
+			name := strings.TrimSpace(field.DisplayName)
+			if name == "" {
+				continue // definition validation owns the blank-name rejection
+			}
+			if previous, duplicate := owners[name]; duplicate {
+				path := "draft.displayName"
+				details := map[string]any{"fieldId": previous}
+				if tableID != intent.TableID {
+					path = "relationPair.reciprocalDisplayName"
+					details = map[string]any{"fieldId": field.Identity.FieldID}
+				}
+				return productError(
+					"field.display_name.duplicate", path,
+					"another active field in this table already uses this name",
+					details,
+				)
+			}
+			owners[name] = field.Identity.FieldID
+		}
+	}
+	return nil
+}
+
 func dataSensitivePlan(action v2.ChangeAction, classes []v2.ChangeClass) bool {
 	if action == v2.ActionBackfill || action == v2.ActionPurge {
 		return true
@@ -932,6 +1048,11 @@ func classify(
 		// Formula source and inferred result type are authoritative schema
 		// changes even when the provider field shape happens to stay the same.
 		// They must advance the revision and trigger a fresh materialization.
+		classes[v2.ClassSchema] = struct{}{}
+	}
+	if !reflect.DeepEqual(before.AutoNumber, after.AutoNumber) {
+		// Numbering decoration (prefix/width/dateFormat/order) changes rewrite
+		// stored values in-transaction; sequences never change.
 		classes[v2.ClassSchema] = struct{}{}
 	}
 	if relationCascadeIntroduced(before, after) {

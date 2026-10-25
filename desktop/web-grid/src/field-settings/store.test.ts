@@ -298,6 +298,24 @@ describe("field settings store", () => {
     expect(store.phase).toBe("editing");
   });
 
+  it("surfaces draft issues and blocks planning until name/value limits are resolved", () => {
+    const store = useFieldSettingsStore();
+    store.load(described());
+    expect(store.draftIssues).toEqual([]);
+
+    store.patchDraft({ displayName: "   " });
+    expect(store.draftIssues).toEqual(["显示名称不能为空"]);
+    expect(store.canPlan).toBe(false);
+
+    store.patchDraft({ displayName: "a".repeat(200) });
+    expect(store.draftIssues).toEqual(["显示名称最多 128 个字符"]);
+    expect(store.canPlan).toBe(false);
+
+    store.patchDraft({ displayName: "金额" });
+    expect(store.draftIssues).toEqual([]);
+    expect(store.dirty).toBe(false);
+  });
+
   it("invalidates a frozen plan when any plan input changes", () => {
     const store = useFieldSettingsStore();
     store.load(described());

@@ -412,7 +412,7 @@ describe("field settings service", () => {
     ]);
   });
 
-  it("ignores stale describe results, reports malformed responses, and honours a rejected close", async () => {
+  it("ignores stale describe results, reports malformed responses, and closes without a native confirm", async () => {
     let resolveFirst: ((value: unknown) => void) | undefined;
     const first = new Promise<unknown>((resolve) => { resolveFirst = resolve; });
     request
@@ -427,17 +427,40 @@ describe("field settings service", () => {
     await pending;
     expect(store.result?.tableId).toBe("tbl_opaque");
 
+    // 脏状态保护由抽屉内的确认对话框负责；service 层不再弹原生 confirm。
     store.patchDraft({ displayName: "unsaved" });
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal("confirm", confirm);
-    expect(service.requestClose()).toBe(false);
-    expect(store.open).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(service.requestClose()).toBe(true);
+    expect(store.open).toBe(false);
 
     request.mockResolvedValueOnce({ contract: "invalid" });
     await service.openCreate("tbl_invalid");
     expect(store.phase).toBe("failed");
     expect(store.error).toContain("field.contract.invalid");
+  });
+
+  it("closes the drawer after a successful create instead of reopening it in edit mode", async () => {
+    request
+      .mockResolvedValueOnce(describeResult(false))
+      .mockResolvedValueOnce(plan())
+      .mockResolvedValueOnce({ ...receipt(), action: "create" });
+    const onCommitted = vi.fn();
+    const service = useFieldSettingsService({ onCommitted });
+    const store = useFieldSettingsStore();
+
+    await service.openCreate("tbl_opaque");
+    store.patchDraft({ displayName: "新字段" });
+    await service.plan();
+    await service.apply();
+
+    expect(store.open).toBe(false);
+    expect(store.phase).toBe("idle");
+    expect(store.dirty).toBe(false);
+    expect(onCommitted).toHaveBeenCalledOnce();
+    expect(request.mock.calls.map(([name]) => name)).toEqual([
+      "field.settings.describe",
+      "field.change.plan",
+      "field.change.apply",
+    ]);
   });
 
   it("does not call the bridge when no description or applicable plan exists", async () => {

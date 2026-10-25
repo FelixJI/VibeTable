@@ -3,6 +3,8 @@ import { computed, ref, watch } from "vue";
 import { NDatePicker, NIcon, NInput, NPopover } from "naive-ui";
 import { CalendarDays, ChevronDown } from "@lucide/vue";
 import { t } from "@/i18n";
+import { darkThemeOverrides, lightThemeOverrides } from "@/design-tokens/theme";
+import { useTheme } from "@/composables/useTheme";
 import {
   formatMonthKey,
   monthLabel,
@@ -16,6 +18,14 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ "update:monthKey": [value: string] }>();
+
+// 设置页的日期选择（月份面板）显式采用产品主题，而不是依赖外层
+// NConfigProvider 的传递；面板脱离 provider 上下文时也保持产品主色，
+// 不回退到 Naive UI 默认强调色。复用 design-tokens 中的明暗主题令牌。
+const { isDark } = useTheme();
+const datePickerThemeOverrides = computed(() => ({
+  common: (isDark.value ? darkThemeOverrides : lightThemeOverrides).common,
+}));
 
 // 弹层（月份网格）开关。
 const open = ref(false);
@@ -102,6 +112,7 @@ function selectAll(event: FocusEvent): void {
         panel
         :value="monthTimestamp"
         :actions="null"
+        :theme-overrides="datePickerThemeOverrides"
         @update:value="onPick"
       />
     </div>

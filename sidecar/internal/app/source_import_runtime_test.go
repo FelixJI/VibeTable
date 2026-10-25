@@ -18,7 +18,7 @@ func sourceRuntimePorts(t *testing.T, runtime *metadataRuntimeFixture) (*sourceI
 	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{App: runtime.pb, Event: router.Event{Response: w, Request: request}}, nil
 	})
-	domain := registerFieldRoutes(r, runtime.pb, nil, nil, nil, nil, gate)
+	domain := registerFieldRoutes(r, runtime.pb, nil, nil, nil, nil, nil, gate)
 	return &sourceImportAuthorityFixture{app: runtime.pb,
 			authority: newSourceImportAuthority(domain, mutation.New(runtime.pb, mutation.MetadataSchemaSource{}), gate)},
 		&sourceImportJournal{PocketBaseJournal: sourceimport.NewJournal(runtime.pb), gates: []businessWriteGate{gate}}

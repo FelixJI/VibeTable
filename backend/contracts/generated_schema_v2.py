@@ -228,6 +228,11 @@ class AutoNumberSpec(SchemaV2WireModel):
     prefix: Annotated[str, Field(max_length=64, pattern="^[^\x00\r\n]*$")]
     start: Annotated[int, Field(ge=1, le=9007199254740991)]
     width: Annotated[int, Field(ge=1, le=16)]
+    date_format: Literal["yyyyMMdd", None] | None = None
+    order: (
+        Annotated[list[Literal["prefix", "date", "number"]], Field(min_length=3, max_length=3)]
+        | None
+    ) = None
 
 
 class AutoDateSpec(SchemaV2WireModel):

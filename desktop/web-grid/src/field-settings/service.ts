@@ -287,9 +287,8 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   }
 
   function requestClose(): boolean {
-    if (store.dirty && !globalThis.confirm("字段设置尚未保存，确定放弃更改吗？")) {
-      return false;
-    }
+    // 脏状态保护由抽屉内的确认对话框负责；这里只负责真正关闭。
+    // 保留返回值供测试与调用方判断是否已关闭。
     generation += 1;
     abortFormulaValidation();
     stopPolling();
@@ -352,6 +351,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       if (receipt.migrationJobId) {
         schedulePoll();
       } else if (receipt.action === "purge") {
+        frozenOperationId = null;
+        await options.onCommitted?.(receipt);
+        generation += 1;
+        store.close();
+      } else if (receipt.action === "create") {
+        // 创建成功后直接关闭侧栏：不再重新描述成编辑态，
+        // 避免残留“未保存更改”状态和关闭时的丢弃确认。
         frozenOperationId = null;
         await options.onCommitted?.(receipt);
         generation += 1;

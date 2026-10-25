@@ -70,7 +70,7 @@ export async function resumeLegacyLayoutProduct(page, recorder, runtime, h, stat
   const before = await h.requestStorageProof(runtime, state.tableId, 30000, true);
   await h.verifyLegacySidecarRecovery(page, recorder, runtime, state.tableId);
   await page.getByTestId("nav-plugins").click();
-  await page.getByTestId("legacy-layout-counts").waitFor({ timeout: 30000 });
+  recorder.check("plugin center no longer exposes retired layout preservation", await page.getByTestId("legacy-layout-preservation").count() === 0);
   const report = await h.rawBridgeRequest(page, "legacyLayout.reportRequested", {}, 20000, ["legacyLayout.reportLoaded"]);
   recorder.check("old workspace reports every original layout and damaged record", report.payload.interfaces === 3
     && report.payload.dashboards === 1 && report.payload.panels === 1, { report });

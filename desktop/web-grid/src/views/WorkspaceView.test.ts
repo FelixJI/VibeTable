@@ -10,6 +10,8 @@ import GridHost from "@/components/grid/GridHost.vue";
 import DataSourceViewBar from "@/components/grid/DataSourceViewBar.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import ContentRecordPanel from "@/content/ContentRecordPanel.vue";
+import RecordDetailsDrawer from "@/components/grid/RecordDetailsDrawer.vue";
+import InsertRowDialog from "@/components/grid/InsertRowDialog.vue";
 import FileWorkspaceView from "./FileWorkspaceView.vue";
 import ManagedAttachmentCell from "@/components/attachments/ManagedAttachmentCell.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
@@ -121,6 +123,7 @@ function makeRecordingBridge(onPost?: (message: Outbound) => void): {
 const mockTabulatorRef: {
   current: {
     setData: ReturnType<typeof vi.fn>;
+    replaceData: ReturnType<typeof vi.fn>;
     setColumns: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
     getRanges: () => unknown[];
@@ -129,6 +132,7 @@ const mockTabulatorRef: {
 } = {
   current: {
     setData: vi.fn().mockResolvedValue(undefined),
+    replaceData: vi.fn().mockResolvedValue(undefined),
     setColumns: vi.fn(),
     destroy: vi.fn(),
     getRanges: () => [],
@@ -362,6 +366,7 @@ describe("WorkspaceView", () => {
     // restore getRanges to "no selection" so shortcut tests start clean).
     mockTabulatorRef.current = {
       setData: vi.fn().mockResolvedValue(undefined),
+      replaceData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
       destroy: vi.fn(),
       getRanges: () => [],
@@ -1540,6 +1545,10 @@ describe("WorkspaceView", () => {
 
     const record = wrapper.get('[data-testid="calendar-record"]');
     expect(record.attributes("draggable")).toBe("true");
+    await record.trigger("click");
+    expect(wrapper.findComponent(RecordDetailsDrawer).props("row")).toMatchObject({ rowKey: "row-1" });
+    wrapper.findComponent(RecordDetailsDrawer).vm.$emit("close");
+    await flushPromises();
     await record.trigger("dragstart");
     await wrapper.get('[data-testid="calendar-day"][data-date="2026-08-20"]').trigger("drop");
     await flushPromises();
@@ -1665,6 +1674,10 @@ describe("WorkspaceView", () => {
     const record = wrapper.findAll('[data-testid="timeline-record"]')[0]!;
     const track = wrapper.findAll('[data-testid="timeline-track"]')[0]!;
     expect(record.attributes("draggable")).toBe("true");
+    await record.trigger("click");
+    expect(wrapper.findComponent(RecordDetailsDrawer).props("row")).toMatchObject({ rowKey: "row-1" });
+    wrapper.findComponent(RecordDetailsDrawer).vm.$emit("close");
+    await flushPromises();
     const initialStyle = record.attributes("style");
     vi.spyOn(track.element, "getBoundingClientRect").mockReturnValue({
       left: 100,
@@ -2784,7 +2797,7 @@ describe("WorkspaceView", () => {
     }
   });
 
-  it("opens the unified relation field settings drawer from the table toolbar", async () => {
+  it("opens field management from the toolbar and creates a field through its drawer", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -2793,7 +2806,7 @@ describe("WorkspaceView", () => {
       { orders: "Orders", contracts: "Contracts" },
     );
     workspace.selectTable("orders");
-    mountView();
+    const wrapper = mountView();
     await flushPromises();
 
     const trigger = document.body.querySelector('[data-testid="toolbar-field-manager"]') as HTMLElement;
@@ -2801,6 +2814,10 @@ describe("WorkspaceView", () => {
     trigger.click();
     await flushPromises();
 
+    expect(wrapper.find('[data-testid="field-management-view"]').exists()).toBe(true);
+    expect(posted.some(item => item.type === "field.settings.describe")).toBe(false);
+    await wrapper.get('[data-testid="field-management-view"] header button').trigger("click");
+    await flushPromises();
     expect(document.body.textContent).toContain("SCHEMA V2");
     expect(document.body.textContent).toContain("正在读取字段能力与推荐设置");
     expect(posted).toEqual(expect.arrayContaining([
@@ -3462,6 +3479,47 @@ describe("WorkspaceView", () => {
     expect(firstRow.attributes("disabled")).toBeDefined();
   });
 
+  it("collects required values before insertion and keeps the form after a rejected write", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "订单" });
+    workspace.selectTable("orders");
+    const revision = { databaseSessionId: "session-1", schemaRevision: "schema-1", dataRevision: 1 };
+    table.setEditSchema([{
+      name: "name", storageName: "name", dataType: "text", editable: true, nullable: false,
+      primaryKey: false, editor: { kind: "text" }, validation: [{ kind: "required" }],
+    }], revision);
+    table.setDatasetReady({ table: "orders", columns: [
+      { name: "name", title: "名称", dataType: "text", editable: true, nullable: false },
+    ], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote", revision });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('[data-testid="toolbar-insert-row"]').trigger("click");
+    expect(posted.filter(message => message.type === "table.insertRowRequested")).toHaveLength(0);
+    const dialog = wrapper.findComponent(InsertRowDialog);
+    expect(dialog.props("columns")[0]?.name).toBe("name");
+    dialog.vm.$emit("submit", { name: "新记录" });
+    await flushPromises();
+    const request = posted.find(message => message.type === "table.insertRowRequested")!;
+    expect(request.payload).toMatchObject({ values: { name: "新记录" } });
+    emit({ type: "table.editRejected", requestId: request.requestId,
+      payload: { kind: "mutation_validation", message: "名称已存在", conflictingRowKeys: [] } });
+    await flushPromises();
+    expect(dialog.props("show")).toBe(true);
+    expect(dialog.props("error")).toContain("名称已存在");
+    dialog.vm.$emit("submit", { name: "其他记录" });
+    await flushPromises();
+    const retry = posted.filter(message => message.type === "table.insertRowRequested").at(-1)!;
+    emit({ type: "table.rowsInserted", requestId: retry.requestId, payload: {
+      rowKey: "new-row", row: { rowKey: "new-row", name: "其他记录" },
+      revision: { ...revision, dataRevision: 2 },
+    } });
+    await flushPromises();
+    expect(wrapper.findComponent(InsertRowDialog).exists()).toBe(false);
+  });
+
   it("wires sidebar requestDelete -> ui.openDelete(name)", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
@@ -3619,6 +3677,7 @@ describe("WorkspaceView", () => {
     // the rowKeys with QueryPort-issued authoritative digests.
     mockTabulatorRef.current = {
       setData: vi.fn().mockResolvedValue(undefined),
+      replaceData: vi.fn().mockResolvedValue(undefined),
       setColumns: vi.fn(),
       destroy: vi.fn(),
       getRanges: () => [

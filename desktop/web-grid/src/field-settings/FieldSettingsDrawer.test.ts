@@ -157,7 +157,7 @@ async function openTab(wrapper: VueWrapper, text: string): Promise<void> {
 }
 
 describe("FieldSettingsDrawer", () => {
-  it("shows immutable numbering settings and deterministic backfill samples", async () => {
+  it("allows editing prefix/width on an existing auto number while start stays fixed", async () => {
     const store = useFieldSettingsStore();
     const result = described("number");
     const current = definition("number");
@@ -172,17 +172,26 @@ describe("FieldSettingsDrawer", () => {
     const wrapper = mountDrawer();
     await openTab(wrapper, "高级");
     expect(wrapper.get('[data-testid="auto-number-settings"]').text()).toContain("只读");
-    expect(wrapper.get('[data-testid="auto-number-prefix"] input').attributes("disabled")).toBeDefined();
+    // 只有起始值（序列）固定；前缀/宽度可改，通过迁移计划重格式化既有编号。
+    expect(wrapper.get('[data-testid="auto-number-start"] input').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="auto-number-prefix"] input').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get('[data-testid="auto-number-width"] input').attributes("disabled")).toBeUndefined();
+    // 已有字段修改 prefix/width 后仍可预览（canPlan 保持 true）。
+    expect(store.canPlan).toBe(false);
+    store.patchDraft({ autoNumber: { ...store.draft!.autoNumber!, prefix: "IN-", width: 8 } });
+    expect(store.dirty).toBe(true);
+    expect(store.canPlan).toBe(true);
     const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     const planned = plan();
     store.plan = { ...planned, after: numberField,
-      intent: { ...planned.intent, action: "create" },
+      intent: { ...planned.intent, action: "update" },
       steps: [{ kind: "autoNumberBackfill", details: { order: "id asc", count: 12,
-        samples: [{ recordId: "record-a", value: "HT-000001" }] } }],
+        samples: [{ recordId: "record-a", value: "IN-00000001" }] } }],
     };
     await flushPromises();
-    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("record-a → HT-000001");
+    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("record-a → IN-00000001");
+    expect(wrapper.get('[data-testid="auto-number-sample"]').text()).toContain("IN-");
     if (previousScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
     else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   });
@@ -477,7 +486,7 @@ describe("FieldSettingsDrawer", () => {
     expect(wrapper.text()).toContain("数据源字段标识（只读）");
   });
 
-  it("编辑选择项并发出关闭与预览事件", async () => {
+  it("编辑选择项后关闭需确认丢弃，非脏状态直接关闭", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();
     store.load(described("select"));
@@ -490,7 +499,142 @@ describe("FieldSettingsDrawer", () => {
     await wrapper.get('[data-testid="field-plan-button"]').trigger("click");
     await buttonWithText(wrapper, "关闭").trigger("click");
     expect(wrapper.emitted("plan")).toHaveLength(1);
+    // 脏状态：先弹出确认对话框，不直接关闭，也不用原生 confirm。
+    expect(wrapper.emitted("close")).toBeUndefined();
+    const confirmCard = wrapper.get('[data-testid="field-close-confirm"]');
+    expect(confirmCard.text()).toContain("未保存");
+    await wrapper.get('[data-testid="field-close-confirm-keep"]').trigger("click");
+    expect(wrapper.find('[data-testid="field-close-confirm"]').exists()).toBe(false);
+    expect(wrapper.emitted("close")).toBeUndefined();
+    await buttonWithText(wrapper, "关闭").trigger("click");
+    await wrapper.get('[data-testid="field-close-confirm-discard"]').trigger("click");
     expect(wrapper.emitted("close")).toHaveLength(1);
+
+    // 非脏状态：关闭直接生效，无确认对话框。
+    store.beginOpen();
+    store.load(described("select"));
+    await flushPromises();
+    await wrapper.get('[data-testid="field-close-button"]').trigger("click");
+    expect(wrapper.emitted("close")).toHaveLength(2);
+    expect(wrapper.find('[data-testid="field-close-confirm"]').exists()).toBe(false);
+  });
+
+  it("常驻展示名称限制与当前类型值限制摘要（合法空白草稿也可见）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    // 常驻提示不依赖草稿问题：合法/空白草稿也展示限制说明。
+    const hint = wrapper.get('[data-testid="field-display-name-hint"]');
+    expect(hint.text()).toContain("128");
+    expect(hint.text()).toContain("同表字段名称不可重复");
+    expect(wrapper.get('[data-testid="field-display-name"]').find("input").attributes("maxlength"))
+      .toContain("128");
+
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
+      .toContain("未启用额外值限制");
+
+    store.patchDraft({
+      constraints: { ...store.draft!.constraints, range: { min: 0, max: 100 } },
+      storage: { ...store.draft!.storage, options: { ...store.draft!.storage.options, onlyInt: true } },
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
+      .toContain("仅整数");
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
+      .toContain("0 ≤ 值 ≤ 100");
+  });
+
+  it("autoNumberReformat 计划确认展示人类可读文案而非内部 token", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    const current = definition("number");
+    const numberField: FieldDefinitionV2 = {
+      ...current, logicalType: "autoNumber",
+      autoNumber: { prefix: "HT-", start: 1, width: 6, dateFormat: "yyyyMMdd", order: ["prefix", "date", "number"] },
+      display: { ...current.display, kind: "readonly" },
+      storage: { ...current.storage, kind: "pocketbase-text" },
+      value: { ...current.value, presence: { mode: "native" } },
+    };
+    store.load({ ...described("number"), definition: numberField, capabilities: [capability("autoNumber")] });
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    const planned = plan();
+    store.setPlan({
+      ...planned,
+      confirmations: ["autoNumberReformat"],
+      intent: { ...planned.intent, action: "update" },
+    });
+    await flushPromises();
+    const planCard = wrapper.get('[data-testid="field-change-plan"]');
+    expect(planCard.text()).toContain("按新规则重排已有记录编号（保留序号）");
+    expect(planCard.text()).not.toContain("我已确认：autoNumberReformat");
+    if (previousScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
+  it("约束摘要同时展示已声明的两端边界", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("select", [capability("select"), capability("text")]));
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    store.patchDraft({
+      constraints: { ...store.draft!.constraints, selection: { min: 1, max: 3 } },
+    });
+    await flushPromises();
+    const summary = wrapper.get('[data-testid="field-constraint-summary"]').text();
+    expect(summary).toContain("至少选 1");
+    expect(summary).toContain("最多选 3");
+
+    store.patchDraft({
+      constraints: { ...store.draft!.constraints, length: { min: 2, max: 8 } },
+    });
+    await flushPromises();
+    // select 类型不展示文本长度；切回 text 后两端同时展示。
+    store.changeType("text");
+    store.patchDraft({
+      constraints: { ...store.draft!.constraints, length: { min: 2, max: 8 } },
+    });
+    await flushPromises();
+    const textSummary = wrapper.get('[data-testid="field-constraint-summary"]').text();
+    expect(textSummary).toContain("最短 2 字符");
+    expect(textSummary).toContain("最长 8 字符");
+  });
+
+  it("抽屉头部关闭按钮与 ESC/遮罩走同一条受控关闭链路", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    const drawer = wrapper.findComponent({ name: "Drawer" });
+    expect(drawer.exists()).toBe(true);
+    // NDrawerContent 的关闭按钮通过 doUpdateShow(false) 请求关闭。
+    drawer.vm.$emit("update:show", false);
+    await flushPromises();
+    expect(wrapper.emitted("close")).toHaveLength(1);
+  });
+
+  it("草稿问题在抽屉内可见并阻断预览", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="field-display-name"]').find("input").setValue("   ");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="field-draft-issues"]').text())
+      .toContain("显示名称不能为空");
+    expect(wrapper.get('[data-testid="field-plan-button"]').attributes("disabled")).toBeDefined();
   });
 
   it("删除已存在选项前要求替换或清空规则，取消时不改变草稿", async () => {

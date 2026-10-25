@@ -43,6 +43,10 @@ describe("RecordCalendarView", () => {
     expect(records[1]!.attributes("draggable")).toBe("false");
     expect(wrapper.text()).not.toContain("row-1");
     expect(wrapper.text()).not.toContain(digest);
+    await records[0]!.trigger("click");
+    expect(wrapper.emitted("openRecord")?.[0]?.[0]).toMatchObject({ rowKey: "row-1" });
+    await records[1]!.trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("openRecord")?.[1]?.[0]).toMatchObject({ rowKey: "row-2" });
 
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: "none" };

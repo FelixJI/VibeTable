@@ -95,10 +95,20 @@ public sealed class PluginSurfaceSessionManager
         {
             throw new InvalidOperationException("Could not allocate a unique surface token.");
         }
+        Changed?.Invoke();
         return session;
     }
 
     internal event Action<string>? Closed;
+
+    /// <summary>
+    /// Raised after the active surface set changes (open or close). Callbacks
+    /// run outside the gate; readers must use <see cref="ActiveSurfaceCount"/>.
+    /// </summary>
+    public event Action? Changed;
+
+    /// <summary>Number of currently open plugin surfaces.</summary>
+    public int ActiveSurfaceCount => _sessions.Count;
 
     public bool TryAccept(PluginSurfaceEvent message, out PluginSurfaceSession? session)
     {
@@ -115,6 +125,7 @@ public sealed class PluginSurfaceSessionManager
             return _sessions.TryGetValue(message.SurfaceToken, out session);
         if (!TryRetire(message.SurfaceToken, out session)) return false;
         Closed?.Invoke(message.SurfaceToken);
+        Changed?.Invoke();
         return true;
     }
 
@@ -148,6 +159,7 @@ public sealed class PluginSurfaceSessionManager
     {
         if (!TryRetire(surfaceToken, out _)) return false;
         Closed?.Invoke(surfaceToken);
+        Changed?.Invoke();
         return true;
     }
 

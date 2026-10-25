@@ -16,6 +16,11 @@ export interface RuntimeDiagnostics {
     readonly total: number | null; readonly errorCode: string | null;
   };
   readonly pendingMutationRevision: number;
+  /** Availability of the workspace-scoped part; the bundle is still usable when it failed. */
+  readonly workspaceDiagnostics: {
+    readonly state: "available" | "unavailable" | "failed";
+    readonly errorCode: string | null;
+  };
   readonly recentErrorCounts: readonly { readonly errorCode: string; readonly count: number }[];
   readonly logs: readonly {
     readonly timestamp: string; readonly level: string; readonly module: string;

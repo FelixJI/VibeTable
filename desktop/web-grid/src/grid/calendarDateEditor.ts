@@ -24,13 +24,40 @@ export type CalendarDateEditor = (
   cancel: CancelCallback,
 ) => HTMLElement;
 
+/** 带时间成分的存储值（date[ T]HH:mm…）；纯日期/纯时间不匹配。 */
+const DATETIME_PREFIX = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/u;
+
+/**
+ * 把带时间的存储值解码为本地日历日 + 本地 HH:mm。
+ * 提交端（selectedValue）按本地时间解释并写入权威 UTC；编辑初值必须
+ * 用同一坐标系解码，否则 UTC 存储串被直接截取会把 05:45Z 当作本地
+ * 05:45 展示，回读时问午/日期错位。无时区的朴素串按本地解释，
+ * 纯日期值不匹配（不破 date-only 语义），解析失败返回 null。
+ */
+function localDateTimeParts(value: unknown): { date: string; time: string; fullTime: string } | null {
+  const raw = String(value ?? "");
+  if (!DATETIME_PREFIX.test(raw)) return null;
+  const instant = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2}) (?=\d{2}:\d{2})/u, "$1T"));
+  if (Number.isNaN(instant.getTime())) return null;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return {
+    date: `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())}`,
+    time: `${pad(instant.getHours())}:${pad(instant.getMinutes())}`,
+    fullTime: `${pad(instant.getHours())}:${pad(instant.getMinutes())}`
+      + `:${pad(instant.getSeconds())}.${String(instant.getMilliseconds()).padStart(3, "0")}`,
+  };
+}
+
 function valueDate(value: unknown): string {
+  // datetime 存储（含时区/朴素）按本地日历日展示；date-only 走原逻辑。
+  const local = localDateTimeParts(value);
+  if (local) return local.date;
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(value ?? ""));
   return match && parseDateKey(match[1]) ? match[1] : formatDateKey(new Date());
 }
 
 function valueTime(value: unknown): string {
-  return /[T ](\d{2}:\d{2})/.exec(String(value ?? ""))?.[1] ?? "09:00";
+  return localDateTimeParts(value)?.time ?? "09:00";
 }
 
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -109,10 +136,23 @@ export function createCalendarDateEditor(
 
     const selectedValue = (): string => {
       if (dateType === "date") return selectedDate;
+      const original = localDateTimeParts(cell.getValue());
+      // 仅改日期：保留原值的秒与毫秒精度（时间未被动过）。
+      const timeUntouched = !!original && original.time === selectedTime;
+      const fullLocalTime = timeUntouched ? original!.fullTime : selectedTime;
       const preserved = replaceCalendarDateValue(cell.getValue(), selectedDate, "datetime");
-      return preserved && valueTime(preserved) === selectedTime
-        ? preserved
-        : `${selectedDate}T${selectedTime}`;
+      // 字符串日期替换保持原格式，但只有当替换结果解码回本地后仍是用户
+      // 所选的本地日期与时间（无跨午夜偏移）时才安全：否则 UTC 存储串的
+      // 日期替换会把“选 27”提交成“本地 28”。
+      if (preserved && valueDate(preserved) === selectedDate
+        && valueTime(preserved) === selectedTime) {
+        return preserved;
+      }
+      // 跨午夜或时间已改：按本地所选日期 + 完整本地时间转权威 UTC RFC3339。
+      const instant = new Date(`${selectedDate}T${fullLocalTime}`);
+      return Number.isNaN(instant.getTime())
+        ? `${selectedDate}T${fullLocalTime}`
+        : instant.toISOString();
     };
 
     const render = (): void => {
@@ -208,11 +248,12 @@ export function createCalendarDateEditor(
 
     onRendered(() => {
       render();
-      document.body.append(popup);
+      // 先定位再挂载，保证弹层首次出现即在目标位置（同步回调内完成）。
       const rect = input.getBoundingClientRect();
       const maxLeft = Math.max(8, window.innerWidth - 318);
       popup.style.left = `${Math.max(8, Math.min(rect.left, maxLeft))}px`;
       popup.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 360))}px`;
+      document.body.append(popup);
       input.focus({ preventScroll: true });
       document.addEventListener("pointerdown", onDocumentPointerDown, true);
     });

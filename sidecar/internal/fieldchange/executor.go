@@ -28,13 +28,14 @@ import (
 const fieldOperationTTL = 24 * time.Hour
 
 type Executor struct {
-	app             core.App
-	store           PlanStore
-	migration       MigrationScheduler
-	formulaBackfill FormulaBackfillScheduler
-	clock           func() time.Time
-	protectionProof ProtectionSnapshotVerifier
-	logger          *slog.Logger
+	app                   core.App
+	store                 PlanStore
+	migration             MigrationScheduler
+	formulaBackfill       FormulaBackfillScheduler
+	autoNumberReformatter AutoNumberReformatter
+	clock                 func() time.Time
+	protectionProof       ProtectionSnapshotVerifier
+	logger                *slog.Logger
 }
 
 type ProtectionSnapshotVerifier func(context.Context, string) error
@@ -59,6 +60,12 @@ type FormulaBackfillScheduler interface {
 	Start(jobID string) bool
 }
 
+// AutoNumberReformatter joins schema rewrites to the business mutation authority.
+type AutoNumberReformatter interface {
+	ReformatAutoNumber(context.Context, core.App, string, v2.FieldDefinition, v2.FieldDefinition, v2.Actor, string) ([]string, error)
+	PublishAutoNumberReformat(context.Context, []string) error
+}
+
 type ExecutorOption func(*Executor)
 
 func WithExecutorClock(clock func() time.Time) ExecutorOption {
@@ -76,6 +83,12 @@ func WithMigrationScheduler(scheduler MigrationScheduler) ExecutorOption {
 func WithFormulaBackfillScheduler(scheduler FormulaBackfillScheduler) ExecutorOption {
 	return func(executor *Executor) {
 		executor.formulaBackfill = scheduler
+	}
+}
+
+func WithAutoNumberReformatter(reformatter AutoNumberReformatter) ExecutorOption {
+	return func(executor *Executor) {
+		executor.autoNumberReformatter = reformatter
 	}
 }
 
@@ -207,6 +220,7 @@ func (executor *Executor) apply(
 	}
 	var receipt v2.ApplyReceipt
 	var formulaBackfillJobID string
+	var reformatEvents []string
 	err = executor.app.RunInTransaction(func(txApp core.App) error {
 		replayed, replayErr := loadReplay(
 			txApp, request.OperationID, requestHash, executor.clock().UTC(),
@@ -385,6 +399,30 @@ func (executor *Executor) apply(
 		); saveErr != nil {
 			return saveErr
 		}
+		if plan.Before != nil && plan.After != nil &&
+			plan.Before.AutoNumber != nil && plan.After.AutoNumber != nil &&
+			!reflect.DeepEqual(plan.Before.AutoNumber, plan.After.AutoNumber) {
+			if executor.autoNumberReformatter == nil {
+				table, tableErr := NewCatalog(txApp).tableRecord(txApp, plan.Intent.TableID)
+				if tableErr != nil {
+					return tableErr
+				}
+				count, countErr := txApp.CountRecords(table.GetString("collection_id"))
+				if countErr != nil {
+					return countErr
+				}
+				if count != 0 {
+					return productError("field.auto_number.reformat_unavailable", "planId", "number reformat requires the business mutation authority", nil)
+				}
+			} else {
+				reformatEvents, err = executor.autoNumberReformatter.ReformatAutoNumber(
+					ctx, txApp, plan.Intent.TableID, *plan.Before, *plan.After, request.Actor, request.OperationID,
+				)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		needsLookupBackfill, backfillErr := lookupNeedsBackfill(txApp, *plan)
 		if backfillErr != nil {
 			return backfillErr
@@ -444,6 +482,11 @@ func (executor *Executor) apply(
 	}
 	if formulaBackfillJobID != "" {
 		executor.formulaBackfill.Start(formulaBackfillJobID)
+	}
+	if len(reformatEvents) > 0 {
+		if publishErr := executor.autoNumberReformatter.PublishAutoNumberReformat(ctx, reformatEvents); publishErr != nil {
+			executor.logger.Warn("number reformat committed with pending durable delivery", "error", publishErr)
+		}
 	}
 	if plan.Intent.Action == v2.ActionPurge {
 		// The cleanup set committed with the schema change. A transient blob

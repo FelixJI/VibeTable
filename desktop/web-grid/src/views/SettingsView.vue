@@ -52,6 +52,8 @@ import { useAppPreferencesService } from "@/services/appPreferencesService";
 import { useThemeProjectionService } from "@/services/themeProjectionService";
 import type { ReleaseUpdateCheckResult } from "@/contracts/releaseUpdateContracts";
 import { useReleaseUpdateService } from "@/services/releaseUpdateService";
+import ReleaseNoteBody from "@/components/settings/ReleaseNoteBody.vue";
+import { buildReleaseNoteSections } from "@/components/settings/releaseNoteMarkdown";
 import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
@@ -96,6 +98,10 @@ const releaseUpdate = ref<ReleaseUpdateCheckResult | null>(null);
 const releaseUpdatePhase = ref<"idle" | "checking" | "installing">("idle");
 const releaseUpdateError = ref<string | null>(null);
 const changelogEntries = changelog.entries as readonly ChangelogEntry[];
+// generated/changelog.json 顶层 version 是本地更新记录所属版本（当前版本的
+// 全部条目）；由 scripts/changelog.py 生成，不在此处虚构逐条历史版本。
+const changelogVersion = changelog.version;
+const workspaceDiagnostics = computed(() => diagnostics.value?.workspaceDiagnostics);
 const updateProxyOptions = computed(() => [
   { label: t("settings.update.proxy.direct"), value: "direct" },
   { label: "ghproxy.net", value: "ghproxyNet" },
@@ -215,6 +221,12 @@ async function installReleaseUpdate(): Promise<void> {
     releaseUpdatePhase.value = "idle";
   }
 }
+
+// 发布说明正文是受限 Markdown（版本标题 + 分区 + 条目）：去掉与条头重复的
+// 版本标题、同版本内去重并合并重复版本条目，交给 ReleaseNoteBody 渲染。
+const releaseNoteSections = computed(() => releaseUpdate.value
+  ? buildReleaseNoteSections(releaseUpdate.value.releases)
+  : []);
 
 function formatDownloadSize(size: number): string {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -661,12 +673,13 @@ function setCalendarName(name: string): void {
                   <small>{{ t("settings.update.downloadSize") }} {{ formatDownloadSize(releaseUpdate.downloadBytes) }}</small>
                 </div>
                 <ol class="release-notes-list" data-testid="between-version-release-notes">
-                  <li v-for="release in releaseUpdate.releases" :key="release.version">
+                  <li v-for="release in releaseNoteSections" :key="release.version">
                     <div>
                       <strong>v{{ release.version }} · {{ release.title }}</strong>
                       <time v-if="release.publishedAt">{{ formatReleaseDate(release.publishedAt) }}</time>
                     </div>
-                    <pre>{{ release.body || t("settings.update.notesEmpty") }}</pre>
+                    <ReleaseNoteBody v-if="release.blocks.length" :blocks="release.blocks" />
+                    <p v-else class="release-note-empty">{{ t("settings.update.notesEmpty") }}</p>
                   </li>
                 </ol>
                 <NButton
@@ -684,8 +697,15 @@ function setCalendarName(name: string): void {
           </section>
           <section class="changelog-card" data-testid="about-changelog">
             <div class="changelog-heading">
-              <strong>{{ t("settings.about.changelog") }}</strong>
-              <small>{{ t("settings.about.changelogHint") }}</small>
+              <div>
+                <strong>{{ t("settings.about.changelog") }}</strong>
+                <small>{{ t("settings.about.changelogHint") }}</small>
+              </div>
+              <span
+                v-if="changelogVersion"
+                class="version-badge"
+                data-testid="changelog-version"
+              >v{{ changelogVersion }}</span>
             </div>
             <ol v-if="changelogEntries.length" class="changelog-list">
               <li v-for="entry in changelogEntries" :key="entry.commit ?? entry.subject">
@@ -711,7 +731,24 @@ function setCalendarName(name: string): void {
             <NAlert v-if="diagnosticsError" type="error" :title="t('settings.about.failed')">
               {{ diagnosticsError }}
             </NAlert>
-            <dl v-else-if="diagnostics" class="diagnostics-grid">
+            <template v-else-if="diagnostics">
+              <NAlert
+                v-if="workspaceDiagnostics?.state === 'failed'"
+                type="error"
+                title="工作区诊断失败"
+                data-testid="workspace-diagnostics-failed"
+              >
+                {{ workspaceDiagnostics.errorCode ?? "未知错误" }}
+              </NAlert>
+              <NAlert
+                v-else-if="workspaceDiagnostics?.state === 'unavailable'"
+                type="warning"
+                title="工作区诊断不可用"
+                data-testid="workspace-diagnostics-unavailable"
+              >
+                {{ workspaceDiagnostics.errorCode ?? "暂无工作区诊断数据" }}
+              </NAlert>
+              <dl class="diagnostics-grid">
               <div><dt>{{ t("settings.about.systemVersion") }}</dt><dd>{{ diagnostics.operatingSystem }}</dd></div>
               <div><dt>{{ t("settings.about.programVersion") }}</dt><dd>{{ diagnostics.programVersion }}</dd></div>
               <div><dt>{{ t("settings.about.runtimeVersion") }}</dt><dd>{{ diagnostics.dotnetVersion }}</dd></div>
@@ -722,6 +759,7 @@ function setCalendarName(name: string): void {
               <div><dt>待恢复 mutation</dt><dd>{{ diagnostics.pendingMutationRevision || "—" }}</dd></div>
               <div><dt>脱敏日志</dt><dd>{{ diagnostics.logs.length }} 条事件</dd></div>
             </dl>
+            </template>
             <p v-else class="diagnostics-loading">{{ t("settings.about.loading") }}</p>
           </section>
         </template>
@@ -761,7 +799,7 @@ function setCalendarName(name: string): void {
 .settings-nav button.active { color: var(--vt-color-primary-500); background: var(--vt-color-primary-50); }
 :root.dark .settings-nav button.active { background: rgba(91, 139, 255, 0.14); }
 .settings-content { flex: 1; min-width: 0; overflow: auto; padding: 36px clamp(28px, 6vw, 72px); }
-.settings-inner { max-width: 760px; }
+.settings-inner { max-width: 760px; container: settings-layout / inline-size; }
 .settings-inner--workspace-v2 { max-width: 1080px; }
 header { margin-bottom: 22px; }
 h1 { margin: 0 0 5px; font-size: 22px; font-weight: 650; letter-spacing: -0.015em; }
@@ -803,6 +841,12 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   padding: 0 6px;
 }
 .calendar-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(210px, 240px); gap: 18px; padding: 16px; }
+/* 导航占宽使视口断点反映不了真实可用宽度：按 settings-inner 内容宽度切换单列，避免 800×600 下单元格被压到 ~25px。 */
+@container settings-layout (max-width: 700px) {
+  .calendar-layout { grid-template-columns: 1fr; }
+  .calendar-rule-panel { border-top: 1px solid var(--vt-border); border-left: 0; }
+  .calendar-name-input { width: 100%; }
+}
 /* 面板宽度由内容驱动（不再固定 230px）：NInput 的固定宽度定下列宽，
    单选按钮按文字自然宽度排列，标签/备注在列宽内换行。避免固定窄列把
    控件右边裁切。 */
@@ -818,10 +862,15 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .calendar-rule-panel :deep(.n-radio-group) { min-width: 0; max-width: 100%; }
 .calendar-rule-panel { container-type: inline-size; }
 .calendar-rule-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+/* Naive 只给首/末单选按钮画左右边框，网格间隙会缺边：每个按钮自带完整四边边框。 */
 .calendar-rule-options :deep(.n-radio-button) {
   width: 100%;
   min-width: 0;
   justify-content: center;
+  border: 1px solid var(--n-button-border-color);
+}
+.calendar-rule-options :deep(.n-radio-button--checked) {
+  border-color: var(--n-button-border-color-active);
 }
 .calendar-rule-options :deep(.n-radio__label) {
   width: 100%;
@@ -879,12 +928,23 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .proxy-disclosure { font-size: var(--vt-font-caption); }
 .update-result { display: flex; flex-direction: column; gap: 14px; padding-top: 2px; }
 .update-version-line > div { display: flex; align-items: center; gap: 6px; }
-.release-notes-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.release-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 2px 8px 2px 0;
+  list-style: none;
+  /* 更新内容局部滚动：不把整个“关于”页拉长，也不遮住安装按钮。 */
+  max-height: 340px;
+  overflow-y: auto;
+}
 .release-notes-list li { padding: 13px 14px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-subtle); }
-.release-notes-list pre { margin: 8px 0 0; color: var(--vt-fg-muted); font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.changelog-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
+.release-note-empty { margin: 8px 0 0; color: var(--vt-fg-muted); }
+.changelog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.changelog-heading > div { display: flex; flex-direction: column; gap: 3px; }
 .changelog-heading small, .changelog-empty { color: var(--vt-fg-muted); }
-.changelog-list { margin: 0; padding: 0; list-style: none; }
+.changelog-list { margin: 0; padding: 0 8px 0 0; list-style: none; max-height: 320px; overflow-y: auto; /* 更新记录局部滚动，不拉长关于页。 */ }
 .changelog-list li { position: relative; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 42px; padding: 8px 0; border-top: 1px solid var(--vt-border); }
 .changelog-marker { width: 7px; height: 7px; border: 2px solid var(--vt-color-primary-500); border-radius: 50%; background: var(--vt-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vt-color-primary-500) 12%, transparent); }
 .changelog-subject { min-width: 0; overflow-wrap: anywhere; }

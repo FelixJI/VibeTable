@@ -127,4 +127,26 @@ describe("MonthNavigator", () => {
     expect(value).toContain("2025");
     expect(value).toMatch(/12/);
   });
+
+  it("adopts the product theme for the month picker panel instead of the library default", async () => {
+    // 设置页的日期选择月份面板必须显式吃产品主题（飞书蓝），不能依赖
+    // 外层 NConfigProvider 的传递，也不能回退到 Naive UI 默认强调色。
+    const wrapper = mount(MonthNavigator, {
+      props: { monthKey: "2026-07", locale: "zh-CN" },
+    });
+    // 面板弹层打开后才渲染 NDatePicker。
+    await wrapper.findComponent(NPopover).vm.$emit("update:show", true);
+    await wrapper.vm.$nextTick();
+    const picker = wrapper.findComponent(NDatePicker);
+    expect(picker.exists()).toBe(true);
+    const overrides = picker.props("themeOverrides") as { common?: { primaryColor?: string } };
+    expect(overrides?.common?.primaryColor).toBe("#3370ff");
+
+    const { useUiStore } = await import("@/stores/uiStore");
+    useUiStore().setThemeMode("dark");
+    await wrapper.vm.$nextTick();
+    const darkOverrides = wrapper.findComponent(NDatePicker)
+      .props("themeOverrides") as { common?: { primaryColor?: string } };
+    expect(darkOverrides?.common?.primaryColor).toBe("#5b8bff");
+  });
 });

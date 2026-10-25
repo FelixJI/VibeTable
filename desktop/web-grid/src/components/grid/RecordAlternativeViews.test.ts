@@ -562,6 +562,10 @@ describe("alternative record views", () => {
     expect(records[0]!.attributes("draggable")).toBe("true");
     expect(records[0]!.attributes("data-date")).toBe("2026-08-12");
     expect(records[1]!.attributes("draggable")).toBe("false");
+    await records[0]!.trigger("click");
+    expect(wrapper.emitted("openRecord")?.[0]?.[0]).toMatchObject({ rowKey: "row-1" });
+    await records[1]!.trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("openRecord")?.[1]?.[0]).toMatchObject({ rowKey: "row-2" });
     expect(wrapper.text()).not.toContain("row-1");
     expect(wrapper.text()).not.toContain(digest);
 

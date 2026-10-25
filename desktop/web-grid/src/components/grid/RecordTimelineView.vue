@@ -26,6 +26,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   intent: [intent: TimelineRecordMoveIntent];
+  openRecord: [row: Record<string, unknown>];
 }>();
 const ui = useUiStore();
 const draggedRecord = ref<TimelineMovableRecord | null>(null);
@@ -181,6 +182,11 @@ function dropRecord(event: DragEvent): void {
           <span
             :style="barStyle(item)"
             data-testid="timeline-record"
+            role="button"
+            tabindex="0"
+            @click="emit('openRecord', item.row)"
+            @keydown.enter="emit('openRecord', item.row)"
+            @keydown.space.prevent="emit('openRecord', item.row)"
             :data-date="item.startDateKey ?? undefined"
             :draggable="Boolean(movableRecord(item.row))"
             @dragstart="startRecordDrag(item.row, $event)"

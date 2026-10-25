@@ -21,6 +21,26 @@ import type {
 import { headerFilterConditions } from "./viewQuery";
 import type { TabulatorSorter, TabulatorHeaderFilter } from "./queryAdapter";
 
+/** 行 ID（主键）列的物理名；与权威 SchemaSnapshot.primaryKey 一致。 */
+export const ROW_ID_COLUMN_NAME = "id";
+
+/**
+ * 行 ID 列判定：物理名为 `id` 的系统列（旧宿主未标注 kind 时按名字识别）。
+ * 行 ID 默认隐藏；网格列构建（createGrid）、视图默认可见列
+ * （viewQueryStore.defaultVisibleFields / presetViewController）共享该规则。
+ */
+export function isRowIdColumn(
+  column: { readonly name: string; readonly kind?: string | null },
+): boolean {
+  return column.name === ROW_ID_COLUMN_NAME
+    && (column.kind === undefined || column.kind === null || column.kind === "system");
+}
+
+/** 仅知列名时的行 ID 判定（默认可见列列表只有列名）。 */
+export function isRowIdFieldName(name: string): boolean {
+  return name === ROW_ID_COLUMN_NAME;
+}
+
 /** A reconciled column state after pruning against the live schema. */
 export interface ReconciledGridState {
   /** Column states for columns that still exist in the schema. */

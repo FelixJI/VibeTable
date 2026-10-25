@@ -70,6 +70,36 @@ function dependencies(service: PresetViewDependencies["service"]) {
 describe("presetViewController", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it("keeps the built-in complete view available after creating a custom view", async () => {
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [] })),
+      savePreset: vi.fn(async (collection, name, view) => ({ ...preset("custom", collection), name, view })),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.table.schema = [
+      { name: "id", title: "行 ID", kind: "system", dataType: "text", editable: false, nullable: false },
+      { name: "due", title: "日期", dataType: "date", editable: true, nullable: true },
+    ];
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["due"]);
+    await controller.dispatch({ type: "view.create", request: { name: "日历", kind: "calendar",
+      dateField: "due", endDateField: null, titleField: null, groupField: null, coverField: null } });
+    expect(deps.presets.presets[0]?.view.isDefault).toBe(false);
+    expect(controller.activeKind.value).toBe("calendar");
+    deps.query.search = "needle";
+    await controller.dispatch({ type: "view.reset" });
+    expect(deps.presets.activePresetId).toBeNull();
+    expect(controller.activeKind.value).toBe("table");
+    expect(deps.query.search).toBe("");
+    expect(deps.query.visibleFields).toEqual(["due"]);
+    expect(deps.presets.presets).toHaveLength(1);
+    scope.stop();
+  });
+
   it.each([null, "customers", "orders"])("关闭或切表至 %s 后旧列表错误不污染当前呈现", async (nextTable) => {
     const oldList = deferred<PresetsResult>();
     const currentList = deferred<PresetsResult>();

@@ -201,6 +201,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await selectTable(page, tableName);
   const createLookupField = async (name, targetField, aggregation) => {
     await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-manager-create").click();
     await page.getByTestId("field-display-name").locator("input").first().fill(name);
     const typeSelect = page.getByTestId("field-logical-type");
     await typeSelect.locator(".n-base-selection").click();

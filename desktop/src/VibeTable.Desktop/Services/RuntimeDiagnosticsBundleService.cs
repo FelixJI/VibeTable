@@ -16,7 +16,8 @@ public sealed record RuntimeDiagnosticsInput(
     string DesktopLog,
     string SidecarLog,
     string BackendLog,
-    JsonElement? WorkspaceSummary);
+    JsonElement? WorkspaceSummary,
+    string? WorkspaceDiagnosticsError = null);
 
 public sealed record RuntimeComponentHealth(
     [property: JsonPropertyName("component")] string Component,
@@ -39,6 +40,17 @@ public sealed record RuntimeIndexStatus(
 public sealed record RuntimeErrorCount(
     [property: JsonPropertyName("errorCode")] string ErrorCode,
     [property: JsonPropertyName("count")] int Count);
+
+/// <summary>
+/// Availability of the workspace-scoped diagnostics part. <c>available</c>
+/// means the workspace RPC answered; <c>unavailable</c> means no active
+/// workspace session/capability (a normal state); <c>failed</c> means the
+/// read was attempted and failed — the local bundle is still returned and
+/// the bounded structured error code says why.
+/// </summary>
+public sealed record RuntimeWorkspaceDiagnosticsStatus(
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("errorCode")] string? ErrorCode);
 
 public sealed record RuntimeDiagnosticLogEntry(
     [property: JsonPropertyName("timestamp")] string Timestamp,
@@ -68,6 +80,7 @@ public sealed record RuntimeDiagnosticsBundle(
     [property: JsonPropertyName("jobs")] RuntimeJobStatus Jobs,
     [property: JsonPropertyName("index")] RuntimeIndexStatus Index,
     [property: JsonPropertyName("pendingMutationRevision")] long PendingMutationRevision,
+    [property: JsonPropertyName("workspaceDiagnostics")] RuntimeWorkspaceDiagnosticsStatus WorkspaceDiagnostics,
     [property: JsonPropertyName("recentErrorCounts")] IReadOnlyList<RuntimeErrorCount> RecentErrorCounts,
     [property: JsonPropertyName("logs")] IReadOnlyList<RuntimeDiagnosticLogEntry> Logs);
 
@@ -116,9 +129,24 @@ public static class RuntimeDiagnosticsBundleService
             jobs,
             index,
             pendingMutationRevision,
+            WorkspaceDiagnosticsStatus(input),
             counts,
             logs);
     }
+
+    private static RuntimeWorkspaceDiagnosticsStatus WorkspaceDiagnosticsStatus(
+        RuntimeDiagnosticsInput input)
+    {
+        if (!string.IsNullOrWhiteSpace(input.WorkspaceDiagnosticsError))
+            return new RuntimeWorkspaceDiagnosticsStatus(
+                "failed", BoundCode(input.WorkspaceDiagnosticsError));
+        if (input.WorkspaceSummary is not null)
+            return new RuntimeWorkspaceDiagnosticsStatus("available", null);
+        return new RuntimeWorkspaceDiagnosticsStatus("unavailable", null);
+    }
+
+    private static string BoundCode(string value) =>
+        value.Length <= 160 ? value : value[..160];
 
     private static IEnumerable<RuntimeDiagnosticLogEntry> ParseLogs(string raw)
     {

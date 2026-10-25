@@ -145,7 +145,7 @@ export interface UseTabulatorOptions {
  * useTabulator — owns the Tabulator lifecycle for a single grid host.
  *
  * Architecture-debt fix #5: we instantiate Tabulator ONCE and update its data
- * incrementally via `setData`, instead of destroy+rebuild on every change.
+ * in place via `replaceData`, instead of resetting scroll on every change.
  *
  * Init rule (adapts to `createGrid`'s real signature):
  *   `createGrid(element, page, opts?)` REQUIRES a full `TablePage` to
@@ -155,7 +155,7 @@ export interface UseTabulatorOptions {
  *   Only then do we call `createGrid(el, pages[0], { editSchema, onCellEdited })`.
  *
  * After init:
- *   - Row-data changes -> `tabulator.setData(store.allRows)` (incremental).
+ *   - Row-data changes -> `replaceData` within a table, `setData` across contexts.
  *     The first post-init data flush is skipped (createGrid already seeded
  *     those exact rows); detection is by row-reference identity, which is
  *     robust to flush-ordering quirks.
@@ -393,7 +393,7 @@ export function useTabulator(
     { immediate: true },
   );
 
-  // Incremental row updates. setData is a no-op until the grid exists, and is
+  // In-place row updates are a no-op until the grid exists, and are
   // skipped when the rows are unchanged from what was last seeded/set
   // (covers the init flush, which embeds the first page's rows via createGrid).
   watch(
@@ -518,7 +518,10 @@ export function useTabulator(
           const anchorAndSelection = captureViewportState(grid);
           const cellRanges = captureCellRanges(grid);
           const context = selectionContext;
-          await Promise.resolve(grid.setData([...rows]));
+          // setData resets scroll before our restoration; same-table edits must render in place.
+          await (renderedSelectionContext === context
+            ? grid.replaceData([...rows])
+            : grid.setData([...rows]));
           renderedSelectionContext = context;
           await restoreViewportState(grid, anchorAndSelection);
           restoreCellRanges(grid, cellRanges);

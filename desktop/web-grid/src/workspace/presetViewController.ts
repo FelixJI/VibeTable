@@ -21,7 +21,7 @@ import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
 import type { useUiStore } from "@/stores/uiStore";
-import { cloneFilterExpressions, type useViewQueryStore } from "@/stores/viewQueryStore";
+import { cloneFilterExpressions, defaultVisibleFields, type useViewQueryStore } from "@/stores/viewQueryStore";
 import type { useWorkspaceStore } from "@/stores/workspaceStore";
 
 type PresetStore = ReturnType<typeof usePresetVersionStore>;
@@ -86,6 +86,7 @@ export type PresetViewIntent =
   | { readonly type: "group.toggle"; readonly key: string }
   | { readonly type: "view.create"; readonly request: CreatePresetViewRequest }
   | { readonly type: "view.switch"; readonly view: PresetEntry }
+  | { readonly type: "view.reset" }
   | { readonly type: "view.save"; readonly view: PresetEntry }
   | { readonly type: "view.duplicate"; readonly view: PresetEntry; readonly name: string }
   | { readonly type: "view.rename"; readonly view: PresetEntry; readonly name: string }
@@ -258,7 +259,7 @@ export function createPresetViewController(
       ...baseline, columns: state.columns,
       filters: cloneFilterExpressions(state.filters), sorts: [...state.sorts],
       search: state.keyword ?? "", density: state.density,
-      visibleFields: [...state.columns.filter(column => column.visible !== false).map(column => column.name), ...state.newlyAdded],
+      visibleFields: [...state.columns.filter(column => column.visible !== false).map(column => column.name), ...defaultVisibleFields(state.newlyAdded)],
     } : baseline;
     initializing = false;
     await applyView(view);
@@ -308,12 +309,11 @@ export function createPresetViewController(
       if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
       dependencies.presets.receivePresets(result);
       const selected = result.presets.find(view => view.id === (requestedActiveId ?? local?.presetId))
-        ?? result.presets.find(view => view.view.isDefault)
-        ?? result.presets[0];
+        ?? (restoreLocal && local?.presetId === null ? undefined : result.presets.find(view => view.view.isDefault));
       dependencies.presets.activatePreset(selected?.id ?? null);
       const baseline = selected?.view ?? memoryDefaults.get(collection) ?? {
         kind: "table", layout: "table", columns: [], filters: [], sorts: [], search: "",
-        visibleFields: (dependencies.table.schema ?? []).map(column => column.name),
+        visibleFields: defaultVisibleFields((dependencies.table.schema ?? []).map(column => column.name)),
       };
       if (restoreLocal) forcedRemote = local?.forcedRemote ?? false;
       const matches = (local?.presetId ?? null) === (selected?.id ?? null)
@@ -547,6 +547,22 @@ export function createPresetViewController(
         return;
       case "view.save":
         return await save(intent.view);
+      case "view.reset": {
+        if (!collection || dependencies.presets.loading) return;
+        const current = dependencies.presets.presets.find(item => item.id === dependencies.presets.activePresetId);
+        if (current && dependencies.presets.dirty && !(await save(current))) return;
+        if (!stillCurrent()) return;
+        dependencies.presets.activatePreset(null);
+        const fields = (dependencies.table.schema ?? []).map(column => column.name);
+        const visible = defaultVisibleFields(fields);
+        await applyView({
+          kind: "table", layout: "table", filters: [], sorts: [], search: "",
+          groups: [], summaries: [], visibleFields: visible,
+          columns: fields.map((name, order) => ({ name, order, visible: visible.includes(name), frozen: false, width: null })),
+        });
+        if (stillCurrent()) savePresentation();
+        return;
+      }
       case "view.switch": {
         if (
           intent.view.collection !== dependencies.workspace.currentTable
@@ -570,7 +586,7 @@ export function createPresetViewController(
         const collection = dependencies.workspace.currentTable;
         if (!collection) return;
         const view: PresetView = {
-          ...captureTable(dependencies.presets.presets.length === 0),
+          ...captureTable(false),
           kind: intent.request.kind,
           layout: intent.request.kind,
           dateField: intent.request.dateField,
@@ -583,6 +599,8 @@ export function createPresetViewController(
         if (!stillCurrent()) return;
         if (saved) {
           dependencies.presets.activatePreset(saved.id);
+          await applyView(saved.view);
+          if (!stillCurrent()) return;
           savePresentation();
         }
         return;

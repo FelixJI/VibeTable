@@ -14,6 +14,15 @@ describe("workspaceStore", () => {
     expect(s.currentTable).toBeNull();
   });
 
+  it("clears a selected table removed from the authoritative catalog", () => {
+    const s = useWorkspaceStore();
+    s.setOpened([{ collection: "orders", metadata: {} }], { orders: "订单" });
+    s.selectTable("orders");
+    s.setCollections([], {});
+    expect(s.currentTable).toBeNull();
+    expect(s.lastError).toContain("订单");
+  });
+
   it("beginOpen moves to opening phase", () => {
     const s = useWorkspaceStore();
     s.beginOpen();

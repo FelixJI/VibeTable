@@ -2031,7 +2031,7 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert "rejectLegacyRoutes" in interface
     assert "runRecordManagerProduct" in interface
     legacy = (runner.NODE_RUNNER.parent / "legacy_layout_product.mjs").read_text(encoding="utf-8")
-    assert 'getByTestId("legacy-layout-counts")' in legacy
+    assert 'getByTestId("legacy-layout-preservation").count() === 0' in legacy
     assert "resumeLegacyLayoutProduct" in legacy
     assert "runApplicationPrint" in legacy
     assert "activateRestartedWorkspace(page, state.workspaceId)" in legacy

@@ -64,7 +64,7 @@ it("abandons a preset switch whose flush finishes after another table has restor
   f.save.mockImplementationOnce(() => saving.promise);
   await f.controller.dispatch({ type: "density.changed", density: "comfortable" });
   const switching = f.controller.dispatch({ type: "view.switch", view: next });
-  const other = { ...preset, id: "other", collection: "other", view: { ...preset.view, search: "B current" } };
+  const other = { ...preset, id: "other", collection: "other", view: { ...preset.view, isDefault: true, search: "B current" } };
   f.listPresets.mockResolvedValue({ collection: "other", presets: [other] });
   f.read.mockResolvedValue({ state: {}, revision: "b1", conflict: false });
   f.workspace.selectTable("other");

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildRestorePlan,
   defaultGridState,
+  isRowIdColumn,
+  isRowIdFieldName,
   isStateConflict,
   reconcileState,
 } from "./gridState";
@@ -139,6 +141,19 @@ describe("buildRestorePlan", () => {
     );
     const plan = buildRestorePlan(reconciled);
     expect(plan.columnLayout[0]).not.toHaveProperty("width");
+  });
+});
+
+describe("row id column rule", () => {
+  it("identifies the physical id system column and tolerates legacy hosts without kind", () => {
+    expect(isRowIdColumn({ name: "id", kind: "system" })).toBe(true);
+    expect(isRowIdColumn({ name: "id" })).toBe(true);
+    // 用户字段、非 id 的系统列（createdAt 等）都不是行 ID。
+    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(false);
+    expect(isRowIdColumn({ name: "f_title", kind: "system" })).toBe(false);
+    expect(isRowIdColumn({ name: "f_title" })).toBe(false);
+    expect(isRowIdFieldName("id")).toBe(true);
+    expect(isRowIdFieldName("f_title")).toBe(false);
   });
 });
 
