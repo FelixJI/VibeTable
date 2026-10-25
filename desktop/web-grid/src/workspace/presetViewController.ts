@@ -210,8 +210,36 @@ export function createPresetViewController(
     const base = activeView.value && activeKind.value !== "table"
       ? activeView.value
       : captureTable(isDefault);
+    let columns = base.columns;
+    const schemaFields = (dependencies.table.schema ?? []).map(column => column.name);
+    if (columns?.length) {
+      // 与 captureTable 同一做法按当前选择同步列可见性，并补齐当前 schema
+      // 缺失的列：新字段被显式隐藏后不得因缺席而永远被当作新增默认显示。
+      const known = new Set(columns.map(column => column.name));
+      const nextOrder = columns.length;
+      const missing = schemaFields
+        .filter(name => !known.has(name))
+        .map((name, index) => ({
+          name, order: nextOrder + index,
+          visible: dependencies.query.visibleFields.includes(name),
+          frozen: false, width: null,
+        }));
+      columns = [...columns, ...missing].map(column => ({
+        ...column,
+        visible: dependencies.query.visibleFields.includes(column.name),
+      }));
+    } else if (schemaFields.length) {
+      // 原布局为空的合法视图在 schema 已知时物化完整列（按当前选择写
+      // visible），避免本地持久空 columns 后重载把全部字段当作新增全显。
+      columns = schemaFields.map((name, order) => ({
+        name, order,
+        visible: dependencies.query.visibleFields.includes(name),
+        frozen: false, width: null,
+      }));
+    }
     return {
       ...base,
+      columns,
       filters: cloneFilterExpressions(dependencies.query.filters),
       sorts: [...dependencies.query.sorts],
       groups: [...dependencies.query.groups],
@@ -299,12 +327,18 @@ export function createPresetViewController(
         columns: view.columns, sorts: [], filters: [], keyword: null,
         density: view.density ?? "comfortable", forcedRemote: false,
       }, schema);
+      // 已知字段以顶层 visibleFields 为权威（兼容历史保存的 columns 与顶层
+      // 不一致状态）；columns 集合用于识别新增字段补默认可见，并把
+      // columns.visible 同步为最终选择，供 applyDataSourceView 与后续保存一致。
+      const covered = new Set(state.columns.map(column => column.name));
+      const selected = new Set(view.visibleFields);
+      const visibleFields = schema
+        .map(column => column.name)
+        .filter(name => selected.has(name) || (!covered.has(name) && !isRowIdFieldName(name)));
       view = {
-        ...view, columns: state.columns,
-        visibleFields: [
-          ...state.columns.filter(column => column.visible !== false).map(column => column.name),
-          ...defaultVisibleFields(state.newlyAdded),
-        ],
+        ...view,
+        columns: state.columns.map(column => ({ ...column, visible: visibleFields.includes(column.name) })),
+        visibleFields,
       };
     }
     // 应用新视图即接管最新意图：清掉可能遗留的未知 schema 暂存。

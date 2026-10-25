@@ -544,6 +544,195 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
+  it.each(["kanban", "gallery"])("%s 视图隐藏字段保存后切回保留新选择且列同步", async k => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    const applied: Array<Array<{ readonly field: string; readonly visible: boolean }>> = [];
+    const baseView = (kind: string): PresetEntry["view"] => ({
+      ...preset(`old-${kind}`, "orders", true).view,
+      kind: kind as "kanban" | "gallery",
+      layout: kind,
+      columns: [
+        { name: "id", order: 0, visible: false, frozen: false, width: null },
+        { name: "title", order: 1, visible: true, frozen: false, width: null },
+        { name: "amount", order: 2, visible: true, frozen: false, width: null },
+      ],
+      visibleFields: ["title", "amount"],
+    });
+    const savedViews: Array<PresetEntry["view"]> = [];
+    const savedLocal: Array<{ columns?: Array<{ name: string; visible: boolean }> }> = [];
+    const persistenceService = {
+      read: vi.fn(async () => ({
+        state: savedLocal.at(-1) ?? null,
+        revision: "r1", conflict: false,
+      })),
+      save: vi.fn(async (_table: string, state: { columns?: Array<{ name: string; visible: boolean }> }) => {
+        savedLocal.push(state);
+        return { state, revision: "r-next", conflict: false };
+      }),
+    } as unknown as GridPresentationService;
+    let revision = 0;
+    const kanbanEntry0 = { ...preset(`old-${k}`, "orders", true), view: baseView(k) };
+    let kanbanListed = kanbanEntry0;
+    const plainEntry = { ...preset("plain-table", "orders"), view: {
+      ...preset("plain-table", "orders").view,
+      visibleFields: ["title", "amount"],
+    } };
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [kanbanListed, plainEntry] })),
+      savePreset: vi.fn(async (collection: string, _name: string, view: PresetEntry["view"], target: { id: string } | null) => {
+        savedViews.push(view);
+        revision += 1;
+        const receipt = {
+          id: target?.id ?? `saved-${revision}`, collection, name: `saved-${revision}`,
+          scope: "system", revision: `rev-${revision}`, emittedEvents: [],
+          view,
+        } as PresetEntry;
+        if (target?.id === kanbanListed.id) kanbanListed = receipt;
+        return receipt;
+      }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    deps.presentation = { service: persistenceService, identity: ref<string | null>("device-1") };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    const gridColumns = [gridColumn("id", false), gridColumn("title", true), gridColumn("amount", true)];
+    deps.table.schema = [idColumn, column("title", "标题"), column("amount", "金额")];
+    gridRef.value = gridStub(gridColumns, applied);
+    await flushPromises();
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(controller.activeKind.value).toBe(k);
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+
+    // 看板/画廊里用户合法隐藏 amount（显示字段面板）并保存当前视图。
+    await controller.dispatch({ type: "definition.changed", definition: {
+      filters: [], groups: [], summaries: [], visibleFields: ["title"],
+    } });
+    const active = () => deps.presets.presets.find(item => item.id === deps.presets.activePresetId)!;
+    await controller.dispatch({ type: "view.save", view: active() });
+    expect(savedViews[0]?.visibleFields).toEqual(["title"]);
+    // 本地保存渠道（savePresentation 只持久 columns）：columns 必须同步
+    // 当前选择，否则本地恢复也会丢掉用户选择。
+    expect(savedLocal[0]?.columns?.find(item => item.name === "amount")?.visible).toBe(false);
+    expect(savedLocal[0]?.columns?.find(item => item.name === "title")?.visible).toBe(true);
+    // 本地 restore：重载后用户选择保留。
+    await controller.dispatch({ type: "presentation.reload" });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
+    expect(controller.activeKind.value).toBe(k);
+
+    // 切走（表视图）并新增 note 字段，再切回：%s 视图的新选择（amount 隐藏）
+    // 保留，新增字段默认可见，且 columns.visible 与最终选择同步。
+    const plain = () => deps.presets.presets.find(item => item.id === "plain-table")!;
+    await controller.dispatch({ type: "view.switch", view: plain() });
+    await flushPromises();
+    gridColumns.push(gridColumn("note", true));
+    deps.table.schema = [
+      idColumn, column("title", "标题"), column("amount", "金额"), column("note", "备注"),
+    ];
+    await flushPromises();
+    const kanbanEntry = () => deps.presets.presets.find(item => item.id === `old-${k}`)!;
+    await controller.dispatch({ type: "view.switch", view: kanbanEntry() });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title", "note"]);
+    expect(controller.activeKind.value).toBe(k);
+
+    await controller.dispatch({ type: "view.save", view: kanbanEntry() });
+    const resaved = savedViews.at(-1)!;
+    expect(resaved.visibleFields).toEqual(["title", "note"]);
+    expect(resaved.columns?.find(item => item.name === "amount")?.visible).toBe(false);
+    expect(resaved.columns?.find(item => item.name === "title")?.visible).toBe(true);
+
+    // 新增字段 note 被用户显式隐藏并保存：captureCurrent 必须把 note 补进
+    // columns 布局（否则后续 applyView 永远把它当新增默认显示）。
+    deps.presets.markSaved();
+    await controller.dispatch({ type: "definition.changed", definition: {
+      filters: [], groups: [], summaries: [], visibleFields: ["title"],
+    } });
+    await controller.dispatch({ type: "view.save", view: kanbanEntry() });
+    const hiddenNew = savedViews.at(-1)!;
+    expect(hiddenNew.visibleFields).toEqual(["title"]);
+    expect(hiddenNew.columns?.find(item => item.name === "note")?.visible).toBe(false);
+    expect(savedLocal.at(-1)?.columns?.find(item => item.name === "note")?.visible).toBe(false);
+    // 切走再切回：note 保持隐藏，不再被当作新增默认显示。
+    await controller.dispatch({ type: "view.switch", view: plain() });
+    await flushPromises();
+    await controller.dispatch({ type: "view.switch", view: kanbanEntry() });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
+    scope.stop();
+  });
+
+  it("无列布局的看板预设隐藏字段后本地恢复仍保持隐藏", async () => {
+    const gridRef = ref<DataSourceViewGrid | null>(null);
+    // 合法契约：无 columns，仅顶层 visibleFields 精确集合。
+    // 合法契约：无 columns，仅顶层 visibleFields 精确集合。
+    let kanbanListed: PresetEntry = {
+      ...preset("bare-kanban", "orders", true),
+      view: {
+        ...preset("bare-kanban", "orders", true).view,
+        kind: "kanban",
+        layout: "kanban",
+        visibleFields: ["title", "amount"],
+      },
+    };
+    const savedViews: Array<PresetEntry["view"]> = [];
+    const savedLocal: Array<{ columns?: Array<{ name: string; visible: boolean }> }> = [];
+    const persistenceService = {
+      read: vi.fn(async () => ({ state: savedLocal.at(-1) ?? null, revision: "r1", conflict: false })),
+      save: vi.fn(async (_table: string, state: { columns?: Array<{ name: string; visible: boolean }> }) => {
+        savedLocal.push(state);
+        return { state, revision: "r-next", conflict: false };
+      }),
+    } as unknown as GridPresentationService;
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [kanbanListed] })),
+      savePreset: vi.fn(async (collection: string, _name: string, view: PresetEntry["view"], target: { id: string } | null) => {
+        savedViews.push(view);
+        const receipt = {
+          id: target?.id ?? "saved-1", collection, name: "saved", scope: "system" as const,
+          revision: "rev-2", emittedEvents: [], view,
+        } as PresetEntry;
+        if (target?.id === kanbanListed.id) kanbanListed = receipt;
+        return receipt;
+      }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    deps.grid = { current: gridRef };
+    deps.presentation = { service: persistenceService, identity: ref<string | null>("device-1") };
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.table.schema = [idColumn, column("title", "标题"), column("amount", "金额")];
+    gridRef.value = gridStub([gridColumn("id", false), gridColumn("title", true), gridColumn("amount", true)]);
+    await flushPromises();
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(controller.activeKind.value).toBe("kanban");
+    expect(deps.query.visibleFields).toEqual(["title", "amount"]);
+
+    // 用户隐藏 amount 并保存：本地持久化不得留下空 columns（否则重载把
+    // 全部 schema 判为新增恢复全显）。
+    await controller.dispatch({ type: "definition.changed", definition: {
+      filters: [], groups: [], summaries: [], visibleFields: ["title"],
+    } });
+    const active = () => deps.presets.presets.find(item => item.id === deps.presets.activePresetId)!;
+    await controller.dispatch({ type: "view.save", view: active() });
+    const savedLayout = savedLocal.at(-1)?.columns ?? [];
+    expect(savedLayout.find(item => item.name === "amount")?.visible).toBe(false);
+    expect(savedLayout.find(item => item.name === "title")?.visible).toBe(true);
+    expect(savedViews.at(-1)?.columns?.find(item => item.name === "amount")?.visible).toBe(false);
+
+    await controller.dispatch({ type: "presentation.reload" });
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["title"]);
+    scope.stop();
+  });
+
   it("空表首个用户字段在增量后默认可见", async () => {
     const service: PresetServicePort = {
       listPresets: vi.fn(async (collection: string) => ({ collection, presets: [] })),
