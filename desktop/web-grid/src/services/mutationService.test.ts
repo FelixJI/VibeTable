@@ -1046,6 +1046,34 @@ describe("mutationService correlated writes", () => {
     expect(s.posted.at(-1)?.payload.values).toEqual({});
   });
 
+  it("submits parsed falsy JSON values for required columns but keeps the multi-select empty interception", async () => {
+    const s = setup();
+    s.table.setEditSchema([
+      { name: "payload", storageName: "payload", dataType: "json", editable: true,
+        nullable: false, primaryKey: false, editor: { kind: "json" }, validation: [{ kind: "required" }] },
+      { name: "tags", storageName: "tags", dataType: "multi_select", editable: true,
+        nullable: false, primaryKey: false, editor: { kind: "multi_select", options: [] },
+        validation: [{ kind: "required" }] },
+    ], revision());
+
+    // 必填 JSON：解析后的 ""/false/0/[]/{} 都是已提供值，直接提交。
+    for (const value of ["", false, 0, [], {}]) {
+      s.service.insertRow({ payload: value, tags: ["a"] });
+      await flush();
+      expect(s.posted.at(-1)?.payload.values).toMatchObject({ payload: value });
+    }
+
+    // 多选空数组仍是未选择，本地拦截。
+    const posted = s.posted.length;
+    s.service.insertRow({ payload: [], tags: [] });
+    await flush();
+    expect(s.posted).toHaveLength(posted);
+    expect(s.rejected).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "mutation_validation",
+      message: expect.stringContaining("tags"),
+    }));
+  });
+
   it("insert confirmation, undo and redo retain the new authoritative row key", async () => {
     const s = setup(); s.service.insertRow({ name: "added" });
     s.reply(s.posted.at(-1)!, "table.rowsInserted", { rowKey: 10, row: { rowKey: 10, name: "added", __vibetableDigest: digest }, revision: revision(2) }); await flush();

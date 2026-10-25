@@ -13,6 +13,7 @@ import {
   shouldStartCellEditOnKey,
 } from "./createGrid";
 import { isRowIdColumn, isRowIdFieldName } from "./gridState";
+import { defaultVisibleFields } from "@/stores/viewQueryStore";
 import type { GridColumnDefinition } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
 import type { DisplaySpec } from "@/contracts/generated/schemaV2";
@@ -298,7 +299,24 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     expect(tabulatorColumns.slice(1).every(column => column.widthGrow === 0)).toBe(true);
   });
 
-  it("hides the row-id system column by default and exposes the shared predicate", () => {
+  it("hides the row-id column by default across host projections and stays in sync with the visibility panel", () => {
+    // 真实宿主 ReadColumns 投影：name=id, fieldId=id, kind=scalar。
+    const realHostPage: TablePage = {
+      ...samplePage(),
+      columns: [
+        { name: "id", title: "ID", fieldId: "id", kind: "scalar", dataType: "text", editable: false, nullable: false },
+        { name: "name", title: "Name", dataType: "text", editable: false, nullable: false },
+      ],
+      rows: [],
+    };
+    const [realIdColumn, realNameColumn] = buildColumns(realHostPage);
+    // 首次构建（无本地布局/默认 preset）即隐藏，与显示字段面板的默认一致。
+    expect(realIdColumn.visible).toBe(false);
+    expect(realNameColumn.visible).toBeUndefined();
+    expect(defaultVisibleFields(realHostPage.columns.map(column => column.name)))
+      .toEqual(["name"]);
+
+    // sidecar schema-describe 与旧宿主形状同样识别。
     const page: TablePage = {
       ...samplePage(),
       columns: [
@@ -311,9 +329,8 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     expect(idColumn.visible).toBe(false);
     expect(nameColumn.visible).toBeUndefined();
     expect(isRowIdColumn({ name: "id", kind: "system" })).toBe(true);
-    // 旧宿主未标注 kind 时按物理名识别，避免误判用户字段。
     expect(isRowIdColumn({ name: "id" })).toBe(true);
-    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(false);
+    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(true);
     expect(isRowIdColumn({ name: "f_title", kind: "system" })).toBe(false);
     expect(isRowIdFieldName("id")).toBe(true);
     expect(isRowIdFieldName("f_title")).toBe(false);

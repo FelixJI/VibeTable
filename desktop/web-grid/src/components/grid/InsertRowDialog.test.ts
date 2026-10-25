@@ -82,6 +82,32 @@ describe("InsertRowDialog", () => {
     expect(wrapper.emitted("submit")?.[0]?.[0]).toEqual({ kind: kind === "multi_select" ? ["opt_urgent00"] : "opt_urgent00" });
   });
 
+  it.each(["[]", "\"\"", "false", "0", "{}"] as const)(
+    "submits a required JSON column's parsed empty-or-scalar value from raw input %s",
+    async (raw) => {
+      const wrapper = mountDialog({
+        columns: [column("payload", { kind: "json" })],
+      });
+      await new Promise(resolve => setTimeout(resolve));
+      // getAttribute 缺失时返回 null；用 not.toBeNull() 区分真禁用。
+      expect(field("insert-row-submit")!.getAttribute("disabled")).not.toBeNull();
+
+      const area = field("insert-row-input-payload")!.querySelector("textarea")!;
+      area.value = raw;
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve));
+      expect(field("insert-row-issue-payload")).toBeNull();
+      expect(field("insert-row-submit")!.getAttribute("disabled")).toBeNull();
+
+      field("insert-row-submit")!.click();
+      await new Promise(resolve => setTimeout(resolve));
+      // 真实链路前半：raw 文本解析为 JSON 值后 emit；后半由
+      // mutationService 回归（parsed ""/false/0/[]/{} 均不再被判缺失）。
+      const expected = JSON.parse(raw);
+      expect(wrapper.emitted("submit")?.[0]?.[0]).toEqual({ payload: expected });
+    },
+  );
+
   it("blocks submit until every required value is valid and parses values by editor", async () => {
     const wrapper = mountDialog({ columns: columns.slice(0, 4) });
     await new Promise(resolve => setTimeout(resolve));

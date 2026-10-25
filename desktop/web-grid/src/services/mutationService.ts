@@ -7,7 +7,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import type {
-  ApplyPasteResult, DeleteRowsResult, InsertRowResult, MutationErrorPayload,
+  ApplyPasteResult, ColumnEditSchema, DeleteRowsResult, InsertRowResult, MutationErrorPayload,
   MutationRevision, UpdateCellResult, WebPayloadMap,
 } from "@/contracts";
 
@@ -426,9 +426,14 @@ export function useMutationService() {
       && !column.hasDefault);
   }
 
-  function blankInsertValue(value: unknown): boolean {
-    return value === null || value === undefined || value === ""
-      || Array.isArray(value) && value.length === 0;
+  /** 未提供判定：json 已解析的 ""/false/0/[]/{} 都是合法值，仅 null/undefined 缺失；多选空数组仍拦。 */
+  function blankInsertValue(column: ColumnEditSchema, value: unknown): boolean {
+    if (value === null || value === undefined) return true;
+    if (column.editor.kind === "json") return false;
+    if (column.editor.kind === "multi_select") {
+      return value === "" || Array.isArray(value) && value.length === 0;
+    }
+    return value === "";
   }
 
   /**
@@ -440,7 +445,7 @@ export function useMutationService() {
     if (disposed || !canInsertRow()) return Promise.resolve(false);
     // 必填字段不能以空白值直接提交：先让用户填写必填值，再提交新行。
     const missing = requiredInsertColumns()
-      .filter(column => blankInsertValue(values[column.name]));
+      .filter(column => blankInsertValue(column, values[column.name]));
     if (missing.length > 0) {
       report({
         kind: "mutation_validation",

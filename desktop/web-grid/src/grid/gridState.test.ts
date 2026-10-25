@@ -145,13 +145,14 @@ describe("buildRestorePlan", () => {
 });
 
 describe("row id column rule", () => {
-  it("identifies the physical id system column and tolerates legacy hosts without kind", () => {
+  it("identifies the reserved id name regardless of the host projection shape", () => {
+    // 真实宿主 ReadColumns 投影：kind=scalar；sidecar：kind=system；旧宿主无 kind。
+    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(true);
     expect(isRowIdColumn({ name: "id", kind: "system" })).toBe(true);
     expect(isRowIdColumn({ name: "id" })).toBe(true);
-    // 用户字段、非 id 的系统列（createdAt 等）都不是行 ID。
-    expect(isRowIdColumn({ name: "id", kind: "scalar" })).toBe(false);
+    // 用户字段不是行 ID。
+    expect(isRowIdColumn({ name: "f_title", kind: "scalar" })).toBe(false);
     expect(isRowIdColumn({ name: "f_title", kind: "system" })).toBe(false);
-    expect(isRowIdColumn({ name: "f_title" })).toBe(false);
     expect(isRowIdFieldName("id")).toBe(true);
     expect(isRowIdFieldName("f_title")).toBe(false);
   });
