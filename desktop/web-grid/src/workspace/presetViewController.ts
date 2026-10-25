@@ -15,7 +15,7 @@ import {
   captureDataSourceView,
   type DataSourceViewGridSource,
 } from "@/grid/dataSourceViewState";
-import { reconcileState } from "@/grid/gridState";
+import { isRowIdFieldName, reconcileState } from "@/grid/gridState";
 import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
@@ -145,6 +145,10 @@ export function createPresetViewController(
   let initializing = true;
   let forcedRemote = false;
   let legacyCozy = false;
+  // 已知当前表字段集：schema 增量时区分新字段（默认可见，行 ID 除外）与
+  // 既有字段（保持用户显式隐藏）。在 restoreLoaded/applyView/schema watcher
+  // 同步；切表时随 currentTable watcher 清空。
+  let trackedSchemaFields = new Set<string>();
   const memoryDefaults = new Map<string, PresetView>();
   let loadGeneration = 0;
   let applying = false;
@@ -252,6 +256,7 @@ export function createPresetViewController(
   async function restoreLoaded(): Promise<void> {
     const schema = dependencies.table.schema;
     if (!schema || !pendingRestore) return;
+    trackedSchemaFields = new Set(schema.map(column => column.name));
     const { view: baseline, local } = pendingRestore;
     pendingRestore = null;
     const state = local ? reconcileState(local, schema) : null;
@@ -280,11 +285,10 @@ export function createPresetViewController(
     const generation = loadGeneration;
     legacyCozy = view.density === "cozy";
     if (view.density) dependencies.ui.setDensity(view.density === "cozy" ? "comfortable" : view.density);
-    dependencies.query.replace(
-      collection,
-      view,
-      (dependencies.table.schema ?? []).map(column => column.name),
-    );
+    // 应用视图即确认当前 schema 为已知基线（覆盖 view.reload 等非恢复路径）。
+    const schemaFields = (dependencies.table.schema ?? []).map(column => column.name);
+    trackedSchemaFields = new Set(schemaFields);
+    dependencies.query.replace(collection, view, schemaFields);
     if (view.kind && view.kind !== "table") {
       pendingView.value = null;
       requestAuthoritative();
@@ -422,12 +426,25 @@ export function createPresetViewController(
   watch(
     () => dependencies.table.schema,
     (columns) => {
-      if (pendingRestore) { void restoreLoaded(); return; }
+      if (pendingRestore) {
+        void restoreLoaded();
+        return;
+      }
       const collection = dependencies.workspace.currentTable;
-      if (!collection || !columns || dependencies.query.visibleFields.length > 0) return;
+      if (!collection || !columns) return;
       const fields = columns.map(column => column.name);
-      if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
-      else dependencies.query.reset(collection, fields);
+      const visible = new Set(dependencies.query.visibleFields);
+      if (trackedSchemaFields.size === 0) {
+        // 首次见到该表 schema：维持既有初始化语义。
+        if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
+        else dependencies.query.reset(collection, fields);
+      } else {
+        // 增量：新字段默认可见（行 ID 除外），既有字段保持原状（含显式
+        // 隐藏与隐藏全部），已删字段清退。
+        dependencies.query.visibleFields = fields.filter(name =>
+          visible.has(name) || (!trackedSchemaFields.has(name) && !isRowIdFieldName(name)));
+      }
+      trackedSchemaFields = new Set(fields);
     },
   );
 
@@ -453,6 +470,7 @@ export function createPresetViewController(
       presentedView.value = null;
       pendingRestore = null;
       pendingView.value = null;
+      trackedSchemaFields = new Set();
       dependencies.presets.clearPresets(collection ?? "");
       dependencies.query.reset(collection ?? "");
       void nextTick().then(() => {
