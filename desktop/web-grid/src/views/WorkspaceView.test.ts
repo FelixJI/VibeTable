@@ -1801,12 +1801,22 @@ describe("WorkspaceView", () => {
         expect(request).toBeDefined();
       });
       if (!request?.requestId) throw new Error("Expected a new preset.save request");
-      expect(request.payload).toMatchObject({ presetId: expectedPresetId });
+      const dispatched = request.payload as {
+        presetId: string | null;
+        operationId: string;
+        view: PresetEntry["view"];
+      };
+      expect(dispatched.presetId).toBe(expectedPresetId);
+      // 保存会补齐旧视图的列布局；其余语义逐阶段校验，完整列布局另行断言。
+      const { columns: _columns, ...intended } = saved.view;
+      expect(dispatched.view).toMatchObject(intended);
       answeredSaveRequestIds.add(request.requestId);
       // A fresh save is created with the UUIDv5 id derived from the operation.
+      // The reply echoes the committed (dispatched) view exactly like the real
+      // host producer, so the DTO snapshot comparison stays meaningful.
       const applied = expectedPresetId === null
-        ? { ...saved, id: await derivePresetId((request.payload as { operationId: string }).operationId) }
-        : saved;
+        ? { ...saved, id: await derivePresetId(dispatched.operationId), view: dispatched.view }
+        : { ...saved, view: dispatched.view };
       emit({ type: "preset.save", requestId: request.requestId, payload: applied });
       await flushPromises();
       return applied;
@@ -1829,6 +1839,12 @@ describe("WorkspaceView", () => {
 
     bar.vm.$emit("setDefault", renamed);
     const promoted = await answerSave({ ...renamed, view: { ...renamed.view, isDefault: true } }, renamed.id);
+    // 保存默认视图时应补齐当前字段的完整布局。
+    expect(promoted.view.columns).toEqual([
+      { name: "title", order: 0, visible: true, frozen: false, width: null },
+      { name: "status", order: 1, visible: true, frozen: false, width: null },
+      { name: "start", order: 2, visible: true, frozen: false, width: null },
+    ]);
     await answerSave({ ...first, view: { ...first.view, isDefault: false } }, "view-1");
     await vi.waitFor(() => expect(presets.activePresetId).toBe(promoted.id));
 
