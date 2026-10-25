@@ -21,8 +21,8 @@ function typeLabel(column: ColumnSchema): string {
   return known ? t(`fieldManager.type.${known}`) : type;
 }
 function canConfigure(column: ColumnSchema): boolean {
-  return !!column.fieldId && column.fieldId !== "id" && column.name !== "id"
-    && column.kind !== "system";
+  // 宿主把 autoDate 投影为 kind=system，但其字段设置仍可修改；仅保留主键/缺失 fieldId 不可配置。
+  return !!column.fieldId && column.fieldId !== "id" && column.name !== "id";
 }
 </script>
 
