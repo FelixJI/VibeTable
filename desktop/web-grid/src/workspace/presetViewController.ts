@@ -316,13 +316,13 @@ export function createPresetViewController(
     // 对照，已知列保持原可见性、新增列默认可见、已删列剪退；对当前
     // schema 捕获的视图幂等。无列布局保持既有 visibleFields 语义。
     const schema = dependencies.table.schema;
+    // beginLoad 期间完整视图也没有列布局；此时应用并保存会把保留网格
+    // 按空 visibleFields 捕获为全隐藏。所有视图等待 schema 后再应用。
+    if (!schema) {
+      pendingRestore = { view, local: null };
+      return;
+    }
     if (view.columns?.length) {
-      // schema 未知（beginLoad 置空）时不得按空集清空视图：暂存到既有
-      // pendingRestore，等 schema 回来后经 restoreLoaded 重走本入口。
-      if (!schema) {
-        pendingRestore = { view, local: null };
-        return;
-      }
       const state = reconcileState({
         columns: view.columns, sorts: [], filters: [], keyword: null,
         density: view.density ?? "comfortable", forcedRemote: false,

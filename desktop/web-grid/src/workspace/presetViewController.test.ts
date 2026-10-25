@@ -831,6 +831,35 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
+  it("字段变更刷新期间返回完整视图不会把保留网格持久化为全隐藏", async () => {
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [] })),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const gridColumns = [gridColumn("id", false), gridColumn("quantity", true)];
+    deps.grid.current.value = gridStub(gridColumns, []);
+    deps.table.schema = [idColumn, column("quantity", "数量")];
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["quantity"]);
+
+    // apply 的后台刷新先 beginLoad；抽屉关闭后“全部记录”仍可点击，
+    // 此时 Tabulator 保留旧列，但最新 schema 尚未送达。
+    deps.table.schema = null;
+    await flushPromises();
+    await controller.dispatch({ type: "view.reset" });
+    await flushPromises();
+    gridColumns.push(gridColumn("amount", true));
+    deps.table.schema = [idColumn, column("quantity", "数量"), column("amount", "金额")];
+    await flushPromises();
+    expect(deps.query.visibleFields).toEqual(["quantity", "amount"]);
+    scope.stop();
+  });
+
   it("跨表同名字段不携带上一表的隐藏语义", async () => {
     const customersHiddenTitle = {
       ...preset("customers-view", "customers", true),
