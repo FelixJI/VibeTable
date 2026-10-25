@@ -1,5 +1,11 @@
 # VibeTable 0.4.0
 
+## 0.5.5
+
+### Bug Fixes
+
+- **desktop:** 修复字段视图、数据编辑与设置交互 (#520) (4a47a34)
+
 ## 0.5.4
 
 ### Breaking Changes
