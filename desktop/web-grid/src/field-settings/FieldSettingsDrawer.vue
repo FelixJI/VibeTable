@@ -679,9 +679,10 @@ function deleteSelectOption(index: number): void {
   });
 }
 
+const autoNumberPlanStep = computed(() => store.plan?.steps.find(item =>
+  item.kind === "autoNumberBackfill" || item.kind === "autoNumberReformat"));
 const autoNumberPreview = computed(() => {
-  const step = store.plan?.steps.find(item => item.kind === "autoNumberBackfill");
-  const samples = step?.details.samples;
+  const samples = autoNumberPlanStep.value?.details.samples;
   return Array.isArray(samples) ? samples.flatMap(item => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) return [];
     return typeof item.recordId === "string" && typeof item.value === "string" ? [{ recordId: item.recordId, value: item.value }] : [];
@@ -1661,7 +1662,7 @@ function isTextual(type: LogicalTypeV2): boolean {
               </template>
               <!-- 既有编号的重格式化与新建回填都通过同一迁移计划确认；
                    序列不变，仅格式更新。 -->
-              <div v-if="store.plan.after?.autoNumber && autoNumberPreview.length > 0" data-testid="auto-number-backfill-preview">
+              <div v-if="store.plan.after?.autoNumber && autoNumberPlanStep" data-testid="auto-number-backfill-preview">
                 <strong>按记录 ID 升序原子{{ store.plan.intent.action === "create" ? "回填" : "重格式化" }} {{ store.plan.impact.records }} 条记录</strong>
                 <p>取消不会改变既有编号；不会按当前网格排序编号。</p>
                 <div v-for="sample in autoNumberPreview" :key="sample.recordId">{{ sample.recordId }} → {{ sample.value }}</div>

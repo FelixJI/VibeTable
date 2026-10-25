@@ -90,6 +90,9 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
 
   const tableId = await createEmptyTable(page, "E2E AutoNumber Only");
   await configure();
+  const emptyPreview = await page.getByTestId("auto-number-backfill-preview").innerText();
+  recorder.check("an empty table previews zero backfilled records before creating its first field",
+    emptyPreview.includes("回填 0 条记录"), { emptyPreview });
   await applyThroughDrawer();
   const described = await rawBridgeRequest(page, "schema.getTable", { tableId });
   const field = described.payload.fields.find(item => item.logicalType === "autoNumber");
@@ -178,8 +181,9 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await page.getByTestId("field-plan-button").click();
   await page.getByTestId("auto-number-backfill-preview").waitFor();
   const reformatPreview = await page.getByTestId("auto-number-backfill-preview").innerText();
+  const formatSample = await page.getByTestId("auto-number-sample").innerText();
   recorder.check("reformat preview rewrites stored numbers under the frozen id ordering",
-    reformatPreview.includes("重格式化 4 条记录") && reformatPreview.includes(number(1)), { reformatPreview });
+    reformatPreview.includes("重格式化 4 条记录") && formatSample === number(1), { reformatPreview, formatSample });
   const reformattedReceipt = await applyThroughDrawer();
   const reformatted = await rawBridgeRequest(page, "query.page", { tableId, query });
   // 插入分配的序号与 record id 字典序无关：按 id 匹配 reformat 前的行，

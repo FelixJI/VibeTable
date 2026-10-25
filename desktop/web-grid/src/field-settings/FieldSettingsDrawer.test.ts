@@ -186,12 +186,22 @@ describe("FieldSettingsDrawer", () => {
     const planned = plan();
     store.plan = { ...planned, after: numberField,
       intent: { ...planned.intent, action: "update" },
-      steps: [{ kind: "autoNumberBackfill", details: { order: "id asc", count: 12,
-        samples: [{ recordId: "record-a", value: "IN-00000001" }] } }],
+      steps: [{ kind: "autoNumberReformat", details: { order: "id asc", count: 12, atomic: true, conflictCheck: true } }],
     };
     await flushPromises();
-    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("record-a → IN-00000001");
+    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("重格式化 12 条记录");
     expect(wrapper.get('[data-testid="auto-number-sample"]').text()).toContain("IN-");
+    for (const records of [0, 3]) {
+      store.plan = { ...planned, before: null, after: numberField,
+        intent: { ...planned.intent, action: "create" }, impact: { ...planned.impact, records },
+        steps: [{ kind: "autoNumberBackfill", details: { order: "id asc", count: records,
+          samples: records ? [{ recordId: "record-a", value: "IN-00000001" }] : [] } }],
+      };
+      await flushPromises();
+      const preview = wrapper.get('[data-testid="auto-number-backfill-preview"]').text();
+      expect(preview).toContain(`回填 ${records} 条记录`);
+      expect(preview.includes("record-a → IN-00000001")).toBe(records > 0);
+    }
     if (previousScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
     else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   });
