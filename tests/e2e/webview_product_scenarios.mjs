@@ -331,6 +331,8 @@ async function selectVisibleNOption(page, testId, label) {
   // Resolve the enabled surface before clicking so a loading list cannot eat
   // the single opening gesture and leave the option wait with no open menu.
   await select.locator(".n-base-selection:not(.n-base-selection--disabled)").click();
+  // Field types are virtualized: search before resolving an offscreen option.
+  if (testId === "field-logical-type") await select.locator("input").fill(label);
   const option = page.locator(".n-base-select-option:visible")
     .filter({ hasText: label })
     .first();

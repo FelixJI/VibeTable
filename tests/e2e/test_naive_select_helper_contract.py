@@ -45,3 +45,10 @@ def test_multi_select_reads_chips_and_confirms_each_selection() -> None:
     assert "selectVisibleNOption(page" not in helper
     assert "force:" not in helper
     assert ".evaluate(" not in helper
+
+
+def test_field_type_selection_filters_before_waiting_for_virtual_options() -> None:
+    helper = _helper(RUNNER.read_text(encoding="utf-8"), "selectVisibleNOption")
+    search = 'if (testId === "field-logical-type") await select.locator("input").fill(label);'
+    assert search in helper
+    assert helper.index(".click();") < helper.index(search) < helper.index("const option =")
