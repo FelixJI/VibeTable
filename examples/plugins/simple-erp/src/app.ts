@@ -32,7 +32,7 @@ function availability(): void {
   get<HTMLButtonElement>("new").disabled = blocked || stale || uncertain || !tables.has(section);
   get<HTMLButtonElement>("export").disabled = blocked || !tables.has(section);
   document.querySelectorAll<HTMLButtonElement>("[data-edit]").forEach(button => { button.disabled = blocked || stale || uncertain; });
-  get<HTMLFormElement>("form").querySelectorAll<HTMLButtonElement>("button[type=submit]").forEach(button => { button.disabled = blocked || stale || uncertain; });
+  get<HTMLFormElement>("form").querySelectorAll<HTMLButtonElement>("button[type=submit]").forEach(button => { button.disabled = blocked || stale || uncertain || !tables.has(section); });
   get("stale").hidden = !stale;
   get("uncertain").hidden = !uncertain;
 }
@@ -185,8 +185,9 @@ function openEditor(row?: JsonObject): void {
 async function refresh(): Promise<void> {
   status("正在读取商品、客户和订单…", "loading");
   closeEditor();
-  while (subscriptions.length) { await api.data.unsubscribe(subscriptions[0]); subscriptions.shift(); }
+  // Unsubscribe stops callbacks even on failure; old data must no longer be writable.
   tables.clear(); render();
+  while (subscriptions.length) { await api.data.unsubscribe(subscriptions[0]); subscriptions.shift(); }
   const catalog = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"] });
   if (!("tables" in catalog)) throw new Error("未收到授权表目录。");
   // Subscribe before reading so changes during the initial read cannot be missed.
@@ -222,7 +223,7 @@ get("form").oninput = event => {
 };
 get("form").onsubmit = event => {
   event.preventDefault();
-  if (busy || leaveAction || stale || uncertain || !validateForm()) return;
+  if (busy || leaveAction || stale || uncertain || !tables.has(section) || !validateForm()) return;
   const data = new FormData(get<HTMLFormElement>("form"));
   status("正在生成保存预览…", "loading");
   void run(async () => {

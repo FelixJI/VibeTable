@@ -61,6 +61,25 @@ async function mount(themeArrivesFirst = false) {
   return { api, callbacks, preview, submit, themeChanged };
 }
 const click = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!.click();
+it("刷新退订失败后清空旧数据并禁止写入，完整重读后恢复", async () => {
+  const { api, preview } = await mount();
+  expect(document.querySelector<HTMLButtonElement>("#new")?.disabled).toBe(false);
+  api.data.unsubscribe.mockRejectedValueOnce(new Error("退订超时"));
+  click("#reload");
+  await vi.waitFor(() => expect(document.querySelector("#status")?.textContent).toContain("退订超时"));
+  expect(document.querySelector("#count")?.textContent).toBe("未加载");
+  expect(document.querySelector("[data-edit]")).toBeNull();
+  expect(document.querySelector<HTMLButtonElement>("#new")?.disabled).toBe(true);
+  expect(document.querySelector<HTMLButtonElement>('#form button[type="submit"]')?.disabled).toBe(true);
+  click('[data-section="orders"]'); click("#new");
+  expect(document.querySelector<HTMLElement>("#editor")?.hidden).toBe(true);
+  expect(preview).not.toHaveBeenCalled();
+  click("#reload");
+  await vi.waitFor(() => expect(document.querySelector("#status")?.textContent).toContain("已读取三张表"));
+  expect(document.querySelector<HTMLButtonElement>("#new")?.disabled).toBe(false);
+  click("#new");
+  expect(document.querySelector<HTMLElement>("#editor")?.hidden).toBe(false);
+});
 function fill(name: string, value: string): void {
   const input = document.querySelector<HTMLInputElement | HTMLSelectElement>(`[name=${name}]`)!;
   input.value = value; input.dispatchEvent(new Event("input", { bubbles: true }));

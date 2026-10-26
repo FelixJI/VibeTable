@@ -20,7 +20,7 @@ export function bindFields(section: Section, description: DataDescription): Reco
     const matches = description.fields.filter(field => field.displayName === name);
     const field = matches[0];
     if (matches.length !== 1 || !field || field.logicalType !== type || field.readonly
-      || (type === "relation" && field.resultType === "array")) {
+      || (type === "relation" && field.resultType !== "relation")) {
       throw new Error(`${description.displayName}：需要唯一、可写的${name}字段（${type}，关系须为单关联）。`);
     }
     fields[key] = field.fieldId;

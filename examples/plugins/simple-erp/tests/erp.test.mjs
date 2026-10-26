@@ -42,8 +42,13 @@ test("缺少字段、重名字段、只读字段及多关联均拒绝绑定", ()
   for (const change of [d => d.fields.pop(), d => d.fields.push(d.fields[1]), d => { d.fields[1].readonly = true; }]) {
     const metadata = description("products"); change(metadata); assert.throws(() => erp.bindFields("products", metadata));
   }
-  const metadata = description("orders"); metadata.fields.find(field => field.fieldId === "product").resultType = "array";
-  assert.throws(() => erp.bindFields("orders", metadata));
+  for (const fieldId of ["product", "customer"]) {
+    const metadata = description("orders");
+    // Go QuerySchema emits multiRelation for a relation with cardinality=many.
+    metadata.fields.find(field => field.fieldId === fieldId).resultType = "multiRelation";
+    assert.throws(() => erp.bindFields("orders", metadata), /关系须为单关联/);
+  }
+  assert.doesNotThrow(() => erp.bindFields("orders", description("orders")));
 });
 test("加载拒绝截断和过期数据，并结束分页迭代", async () => {
   const metadata = description("products");
