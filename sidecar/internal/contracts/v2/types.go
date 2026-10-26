@@ -599,7 +599,8 @@ func (value RetentionPolicy) Validate() error {
 	if value.RepositoryLimitBytes != nil && *value.RepositoryLimitBytes == 0 {
 		return errors.New("repository limit must be positive")
 	}
-	if err := validateBuckets(value.SnapshotBuckets); err != nil {
+	if err := validateBuckets(value.SnapshotBuckets); err != nil &&
+		!(len(value.SnapshotBuckets) == 1 && value.SnapshotBuckets[0] == "smart") {
 		return err
 	}
 	return validateBuckets(value.FileRevisionBuckets)

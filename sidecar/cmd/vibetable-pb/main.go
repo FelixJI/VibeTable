@@ -136,6 +136,7 @@ func run(args []string) int {
 			context.Background(),
 			cfg.DataDir,
 			cfg.WorkspaceV2.WorkspaceID,
+			cfg.ReplicaRoot,
 		)
 		if err != nil {
 			logError("rotate workspace repository", err)

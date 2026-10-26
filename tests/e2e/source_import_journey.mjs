@@ -754,7 +754,7 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   const openManagement = async () => {
     const panel = page.getByTestId("import-management");
     if (!(await panel.isVisible().catch(() => false))) {
-      await page.getByTestId("import-management-open").click();
+      await page.getByTestId("table-import-management").click();
     }
     await panel.waitFor({ state: "visible", timeout: 60_000 });
   };

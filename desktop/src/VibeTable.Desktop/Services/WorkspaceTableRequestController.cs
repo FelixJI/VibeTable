@@ -130,6 +130,7 @@ public sealed class WorkspaceTableRequestController
             "history.previewRestoreRequested" or
             "history.applyRestoreRequested" or
             "tableAdmin.createRequested" or
+            "tableAdmin.duplicateRequested" or
             "tableAdmin.deleteRequested";
 
     internal bool HandlesRequest(string requestType)
@@ -172,6 +173,7 @@ public sealed class WorkspaceTableRequestController
             "history.previewRestoreRequested" => PreviewRestoreAsync(request),
             "history.applyRestoreRequested" => ApplyRestoreAsync(request),
             "tableAdmin.createRequested" => CreateTableAsync(request),
+            "tableAdmin.duplicateRequested" => CreateTableAsync(request),
             "tableAdmin.deleteRequested" => DeleteTableAsync(request),
             _ => RejectUnknownAsync(request),
         };
@@ -679,9 +681,30 @@ public sealed class WorkspaceTableRequestController
 
     private async Task CreateTableAsync(RoutedWebRequest request)
     {
+        bool duplicate = request.Type == "tableAdmin.duplicateRequested";
         if (!RequireTableAdminCorrelation(request, "table.create"))
             return;
         string? displayName = GetString(request.Payload, "displayName")?.Trim();
+        string? sourceTableId = duplicate ? GetString(request.Payload, "collection") : null;
+        var copyScope = new Dictionary<string, bool> { ["copyRecords"] = true, ["copyViews"] = true };
+        if (duplicate)
+        {
+            foreach (string name in new[] { "copyRecords", "copyViews" })
+            {
+                if (!TryGetProperty(request.Payload, name, out JsonElement value)) continue;
+                if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    Reject(request, "复制范围必须是勾选状态。");
+                    return;
+                }
+                copyScope[name] = value.GetBoolean();
+            }
+        }
+        if (duplicate && string.IsNullOrWhiteSpace(sourceTableId))
+        {
+            Reject(request, "缺少待复制的数据表。");
+            return;
+        }
         if (string.IsNullOrWhiteSpace(displayName)
             || displayName.Length > 128
             || displayName.Any(char.IsControl))
@@ -708,15 +731,21 @@ public sealed class WorkspaceTableRequestController
                         _schemaLifecycleTimeout,
                         lifecycleToken,
                         _timeProvider);
+                    var intent = new Dictionary<string, object>
+                    {
+                        ["displayName"] = displayName,
+                        ["operationId"] = "table-create-" + Guid.NewGuid().ToString("N"),
+                        ["actor"] = new { id = "desktop-host", kind = "host" },
+                    };
+                    if (duplicate)
+                    {
+                        intent["sourceTableId"] = sourceTableId!;
+                        foreach (var item in copyScope) intent[item.Key] = item.Value;
+                    }
                     JsonElement applied = await budget.RunAsync(
                         SchemaLifecycleStage.Apply,
                         token => gateway.CreateTableAsync(
-                            JsonSerializer.SerializeToElement(new
-                            {
-                                displayName,
-                                operationId = "table-create-" + Guid.NewGuid().ToString("N"),
-                                actor = new { id = "desktop-host", kind = "host" },
-                            }),
+                            JsonSerializer.SerializeToElement(intent),
                             token)).ConfigureAwait(false);
                     if (applied.ValueKind != JsonValueKind.Object
                         || !applied.TryGetProperty("tableId", out JsonElement tableId)
@@ -742,6 +771,14 @@ public sealed class WorkspaceTableRequestController
                         summary,
                         createdTableId: tableId.GetString(),
                         emitGate: emitGate);
+                }
+                catch (RpcRemoteException exception) when (IsProductError(exception, "schema.table.duplicate_unsupported"))
+                {
+                    PostGuardedLifecycleFailure(
+                        request,
+                        "当前复制范围包含暂不支持的内容，未创建副本。含附件或自动编号的表可取消“复制记录”；查找引用、跨表双向关联、集合公式及记录的文件文档关联暂不支持复制。",
+                        "TABLE_DUPLICATE_UNSUPPORTED",
+                        emitGate);
                 }
                 catch (RpcRemoteException exception) when (IsProductError(exception, "schema.table.display_name_duplicate"))
                 {
@@ -775,7 +812,7 @@ public sealed class WorkspaceTableRequestController
                     TraceFailure("table.create", "TABLE_CREATE_FAILED");
                     PostGuardedLifecycleFailure(
                         request,
-                        "创建数据表失败。",
+                        duplicate ? "复制数据表失败。" : "创建数据表失败。",
                         "SCHEMA_APPLY_FAILED",
                         emitGate);
                 }

@@ -3,6 +3,8 @@ import { createPinia, setActivePinia } from "pinia";
 
 import { BridgeOperationError, BridgeRequestNotSentError, createHostBridge } from "./hostBridge";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { useHeaderFilterValuesService } from "@/services/headerFilterValues";
 import type {
   BridgeMessage,
   DatabaseOpenedPayload,
@@ -124,8 +126,40 @@ describe("HostBridge", () => {
   });
 
   afterEach(() => {
+    setHostBridgeForTesting(null);
     vi.useRealTimers();
   });
+
+  it.each(["string", "object"] as const)(
+    "routes query.view from the real value service through both allowlists and a %s host reply",
+    async (encoding) => {
+      openWorkspaceSessionFixture(useWorkspaceSessionStore());
+      const diagnostic = vi.fn();
+      const bridge = createHostBridge({webview, generateRequestId:()=>"header-values", onDiagnostic:diagnostic});
+      bridge.start();
+      setHostBridgeForTesting(bridge);
+      try {
+        const result = useHeaderFilterValuesService().loadFieldValues("tbl_projects", "project_name", 0);
+        void result.catch(() => undefined); // Cleanup may retire a pending request after a wire assertion fails.
+        expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+          type:"query.view",requestId:"header-values",
+          payload:{tableId:"tbl_projects",view:{query:{limit:1,offset:0},groups:[{field:"project_name",direction:"asc",bucket:"value"}],groupOffset:0,groupLimit:100}},
+          scope:expect.objectContaining({workspaceId:"11111111-1111-4111-8111-111111111111",sessionEpoch:7}),
+        }));
+        const reply = {type:"query.view",requestId:"header-values",payload:{
+          page:{rows:[],snapshot:{table:"tbl_projects"}},
+          groupRows:[{key:["上海项目"],count:1,summaries:[]},{key:[null],count:2,summaries:[]}],
+          groupOffset:0,hasMoreGroups:false,
+        }};
+        webview.emit(encoding==="string"?JSON.stringify(reply):reply);
+        await expect(result).resolves.toEqual({
+          options:[{key:"s:上海项目",label:"上海项目",rawValue:"上海项目",count:1},{key:"null",label:"（空白）",rawValue:null,count:2}],
+          hasMore:false,nextOffset:2,snapshotTable:"tbl_projects",
+        });
+        expect(diagnostic).not.toHaveBeenCalled();
+      } finally { bridge.stop(); }
+    },
+  );
 
   it("round-trips native clipboard text through the closed bridge", async () => {
     const bridge = createHostBridge({ webview, generateRequestId: () => "clipboard-read" });
@@ -436,6 +470,7 @@ describe("HostBridge", () => {
 
   it.each([
     ["tableAdmin.createRequested", { displayName: "Orders" }],
+    ["tableAdmin.duplicateRequested", { collection: "tbl_source", displayName: "Orders copy" }],
     ["tableAdmin.deleteRequested", { collection: "tbl_orders" }],
   ] as const)(
     "keeps %s on its host-owned schema lifecycle terminal state across a transition",
@@ -982,6 +1017,7 @@ describe("HostBridge", () => {
 
   it.each([
     ["tableAdmin.createRequested", { displayName: "Orders" }],
+    ["tableAdmin.duplicateRequested", { collection: "tbl_source", displayName: "Orders copy" }],
     ["tableAdmin.deleteRequested", { collection: "tbl_orders" }],
   ] as const)(
     "leaves %s schema lifecycle deadline ownership to the native host",

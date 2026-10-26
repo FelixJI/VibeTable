@@ -27,7 +27,7 @@ import { useHostBridge } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import type { FormulaDraftDiagnostic, FormulaDraftValidateRequest } from "./formula/formulaDraftRequest";
 import { isFormulaAuthorDocument, isFormulaTextRange } from "./formula/tokenDocument";
-import { buildFieldChangeIntent, relationPairPatchFromDrafts } from "./model";
+import { buildFieldChangeIntent, fieldDisplayNameIssues, findDuplicateDisplayName, relationPairPatchFromDrafts } from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
 import { useTableStore } from "@/stores/tableStore";
@@ -160,6 +160,55 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       store.lookupConditionSchema = null;
       store.lookupConditionFields = [];
       invalidateLookupPreview();
+    },
+    { flush: "sync" },
+  );
+
+  /** 输入期重名预检防抖窗口；与 lookup 预览一致量级，避免每次敲键都请求表结构。 */
+  const DISPLAY_NAME_CHECK_DELAY_MS = 300;
+  let displayNameCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let displayNameCheckGeneration = 0;
+  /**
+   * 显示名称重名预检：防抖后用权威 schema.getTable 核对同表活动字段，
+   * 排除自身；代际守卫丢弃过期异步结果（名称变化/关闭/重开/换表）。
+   * 仅在编辑态预检：plan/apply/migration 阶段由权威计划负责直查直拒。
+   * 预检失败不阻塞，服务端 plan 阶段仍会兜底拒绝。
+   */
+  const stopDisplayNameWatch = watch(
+    () => [store.open, store.result, store.phase, store.draft?.displayName] as const,
+    ([open, result, phase, displayName]) => {
+      displayNameCheckGeneration += 1;
+      if (displayNameCheckTimer !== null) {
+        clearTimeout(displayNameCheckTimer);
+        displayNameCheckTimer = null;
+      }
+      const name = (displayName ?? "").trim();
+      if (!open || !result || !store.draft
+        || (phase !== "editing" && phase !== "failed")
+        || !name
+        || fieldDisplayNameIssues(name).length > 0
+        || name === (store.original?.displayName ?? "").trim()) {
+        store.clearDisplayNameCheck();
+        return;
+      }
+      const tableId = result.tableId;
+      const selfFieldId = result.definition?.identity.fieldId ?? null;
+      const current = displayNameCheckGeneration;
+      store.beginDisplayNameCheck(name);
+      displayNameCheckTimer = setTimeout(async () => {
+        displayNameCheckTimer = null;
+        try {
+          const raw = await bridge.request("schema.getTable", { tableId });
+          if (current !== displayNameCheckGeneration || !store.open
+            || store.result?.tableId !== tableId) return;
+          const snapshot = parseSchemaSnapshotV2(unwrapFieldResult(raw));
+          const conflict = findDuplicateDisplayName(name, snapshot.fields, selfFieldId);
+          store.finishDisplayNameCheck(name, conflict?.displayName ?? null);
+        } catch {
+          if (current !== displayNameCheckGeneration || !store.open) return;
+          store.finishDisplayNameCheck(name, null);
+        }
+      }, DISPLAY_NAME_CHECK_DELAY_MS);
     },
     { flush: "sync" },
   );
@@ -876,6 +925,10 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   function dispose(): void {
     stopLookupWatch();
+    stopDisplayNameWatch();
+    displayNameCheckGeneration += 1;
+    if (displayNameCheckTimer !== null) clearTimeout(displayNameCheckTimer);
+    displayNameCheckTimer = null;
     lookupCatalogGeneration += 1;
     invalidateLookupPreview();
     generation += 1;

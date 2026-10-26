@@ -46,6 +46,10 @@ def test_application_packages_have_real_worker_free_entry_members(tmp_path: Path
     [
         {"action": "invoke"},
         {"buttonId": "foreign-admin-button"},
+        # 已移除的旧原生宿主行按钮（停止/返回/管理插件）不再是合法 QA 目标。
+        {"buttonId": "plugin-stop"},
+        {"buttonId": "plugin-return"},
+        {"buttonId": "plugin-manage"},
         {"stage": "../outside"},
         {"requestId": ""},
         {"path": "outside.png"},
@@ -55,7 +59,7 @@ def test_native_plugin_input_rejects_outside_the_closed_qa_request(change: dict[
     request = {
         "requestId": "owned-request",
         "action": "observe",
-        "buttonId": "plugin-manage",
+        "buttonId": "plugin-recover",
         "stage": "application",
     }
     request.update(change)
@@ -173,7 +177,7 @@ def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monk
         {
             "requestId": "restoration-request",
             "action": "contrast-off",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "contrast",
         },
         host_pid=12,
@@ -369,7 +373,7 @@ def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_
     from tests.e2e import plugin_application_native as native
 
     button = {
-        "id": "plugin-manage",
+        "id": "plugin-recover",
         "pid": 12,
         "enabled": True,
         "x": 10,
@@ -396,7 +400,7 @@ def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_
         tmp_path / "observer",
         14,
         12,
-        {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+        {"action": "observe", "stage": "contrast", "buttonId": "plugin-recover"},
         tmp_path / "capture.png",
         deadline=native.time.monotonic() + 15,
     )
@@ -424,7 +428,7 @@ def test_native_chrome_foreign_owner_fails_without_observation_retry(tmp_path, m
             tmp_path / "observer",
             14,
             12,
-            {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+            {"action": "observe", "stage": "contrast", "buttonId": "plugin-recover"},
             tmp_path / "capture.png",
             deadline=native.time.monotonic() + 15,
         )
@@ -558,7 +562,8 @@ def test_native_recovery_settle_fails_at_once_when_a_foreign_window_owns_the_ent
 
 
 @pytest.mark.parametrize(
-    ("stage", "button_id"), [("crashed", "plugin-manage"), ("recovered", "plugin-stop")]
+    ("stage", "button_id"),
+    [("crashed", "plugin-confirm-approve"), ("recovered", "plugin-confirm-reject")],
 )
 def test_native_recovery_stages_do_not_wait_for_other_plugin_buttons(
     tmp_path, monkeypatch, stage, button_id
@@ -646,7 +651,7 @@ def test_native_plugin_observer_failure_keeps_bounded_stage_stderr_without_input
         {
             "requestId": "observer-failure",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,
@@ -734,7 +739,7 @@ def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp
         {
             "requestId": "restored-owner",
             "action": "observe",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "contrast-restored",
         },
         host_pid=12,
@@ -765,7 +770,7 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
                     "hwnd": 14,
                     "buttons": [
                         {
-                            "id": "plugin-manage",
+                            "id": "plugin-recover",
                             "pid": 12,
                             "enabled": True,
                             "focused": False,
@@ -796,7 +801,7 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
         {
             "requestId": "zero-bounds-click",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,
@@ -847,7 +852,7 @@ def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
         {
             "requestId": "null-transition",
             "action": "observe",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": stage,
         },
         host_pid=12,
@@ -950,7 +955,7 @@ def test_native_input_is_rejected_after_request_deadline(tmp_path, monkeypatch):
         {
             "requestId": "expired",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,

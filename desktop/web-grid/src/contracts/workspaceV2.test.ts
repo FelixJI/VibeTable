@@ -63,11 +63,18 @@ const readers = new Map<string, (value: unknown) => unknown>([
   ["snapshot-catalog-entry.json", parseSnapshotCatalogEntryV2],
   ["lease-claim.json", parseLeaseClaimV2],
   ["retention-policy.json", parseRetentionPolicyV2],
+  ["retention-policy-smart.json", parseRetentionPolicyV2],
   ["workspace-event.json", parseWorkspaceEventV2],
   ["rpc-catalog.json", parseRpcContractCatalogV2],
 ]);
 
 describe("workspace v2 strict contracts", () => {
+  it("accepts exclusive smart retention without weakening custom bucket validation", () => {
+    const policy = { ...parseRetentionPolicyV2(fixture("retention-policy.json")), snapshotBuckets: ["smart"] };
+    expect(parseRetentionPolicyV2(policy).snapshotBuckets).toEqual(["smart"]);
+    expect(() => parseRetentionPolicyV2({ ...policy, snapshotBuckets: ["smart", "daily"] })).toThrow();
+    expect(() => parseRetentionPolicyV2({ ...policy, fileRevisionBuckets: ["smart"] })).toThrow();
+  });
   it("strictly parses and round-trips every typed fixture", () => {
     for (const [name, reader] of readers) {
       const original = fixture(name);

@@ -137,4 +137,58 @@ describe("HomeView", () => {
     expect(wrapper.find(".calendar-card").text())
       .not.toContain("共享工作日历暂不可用");
   });
+
+  it("deep-links the recovery timeline into the settings versions section", async () => {
+    const ui = useUiStore();
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "Home",
+      selectedRoot: "D:\\Home",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 1,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const wrapper = mount(HomeView);
+    const button = wrapper.get('[data-testid="home-open-timeline"]');
+    expect(button.text()).toContain("查看恢复时间线");
+    await button.trigger("click");
+    expect(ui.activeView).toBe("settings");
+    expect(ui.requestedSettingsSection).toBe("versions");
+  });
+
+  it("describes search hits with the local last-modified time instead of the physical id", async () => {
+    const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    workspace.setOpened(
+      [{ collection: "vt_t_01abc", metadata: {} }],
+      { vt_t_01abc: "客户清单" },
+    );
+    ui.touchTable("vt_t_01abc");
+    const wrapper = mount(HomeView);
+    await wrapper.get('[data-testid="home-search"] input').setValue("客户");
+    await nextTick();
+    const hit = wrapper.get(".search-results button");
+    expect(hit.text()).toContain("客户清单");
+    expect(hit.text()).toContain("本机修改");
+    expect(hit.text()).not.toContain("vt_t_01abc");
+  });
 });

@@ -3519,7 +3519,7 @@ async function scenario04(page, recorder, _network, runtime) {
     `${jsonField}\n"${importedJson}"\n`,
     "utf8",
   );
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const importConfirmation = await confirmImportPreview(page);
   const importOutcome = await waitForImportSuccess(page, 1);
   recorder.check("JSON import completed with one explicitly reported committed row",
@@ -6533,7 +6533,7 @@ async function scenario09(page, recorder, _network, runtime) {
     `${rows.join("\n")}\n`,
     "utf8",
   );
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const importFaultCapture = await beginImportFaultOutcomeCapture(page);
   let importFaultPrimaryError = null;
   let confirmation;
@@ -11877,7 +11877,7 @@ async function scenario36(page, recorder, _network, runtime) {
   for (let index = 0; index < 1_000; index += 1) rows.push(`backend-exit-${index}`);
   await fs.writeFile(path.join(runtime.controlsDir, "import-source.csv"),
     `${rows.join("\n")}\n`, "utf8");
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const capture = await beginImportFaultOutcomeCapture(page);
   let task;
   let barrier;
@@ -11943,7 +11943,7 @@ async function scenario36(page, recorder, _network, runtime) {
         : ["aborted", "interrupted"].includes(entry.state)
           && entry.createdCount === null && entry.updatedCount === null),
     { entry });
-  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("table-import-management").click();
   await page.locator(`[data-testid="import-history-row"][data-task-id="${task.taskId}"]`)
     .waitFor({ state: "visible" });
   await page.screenshot({

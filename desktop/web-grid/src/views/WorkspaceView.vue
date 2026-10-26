@@ -423,6 +423,33 @@ function openImportTarget(collection: string): void {
   onSelect(collection);
 }
 
+// 导入管理调制到表内：从数据表进入现有 imports 页时绑定来源表，页内提供
+// 一键返回；不再存在独立一级入口。
+const importsBoundTable = ref<string | null>(null);
+const importsBoundTableLabel = computed(() => {
+  const bound = importsBoundTable.value;
+  if (!bound) return null;
+  const item = workspace.collections.find((col) => col.collection === bound);
+  return item ? collectionLabelOf(bound) : null;
+});
+function collectionLabelOf(collection: string): string | null {
+  const label = workspace.displayNames[collection];
+  return typeof label === "string" && label.trim() ? label : null;
+}
+function enterImportManagement(): void {
+  importsBoundTable.value = workspace.currentTable;
+  ui.navigate("imports");
+}
+function returnToImportsBoundTable(): void {
+  const bound = importsBoundTable.value;
+  importsBoundTable.value = null;
+  if (bound && workspace.collections.some((item) => item.collection === bound)) {
+    onSelect(bound);
+  } else {
+    ui.navigate("tables");
+  }
+}
+
 /**
  * Source targets carry the Go-committed LOGICAL table id — the tbl_*
  * identity the authoritative schema catalog lists. Mapping.Collection is
@@ -1039,6 +1066,7 @@ let startupWorkspaceDecisionMade = false;
 let recoveryGeneration = 0;
 let recoveryTableLookupDirty = false;
 let stopRecoveryDataInvalidation: (() => void) | null = null;
+let stopTableModificationTouch: (() => void) | null = null;
 
 function retireRendererRecovery(): void {
   recoveryGeneration += 1;
@@ -1130,6 +1158,11 @@ function initializeBusinessConsumers(): void {
   // This listener retires only a local in-flight recovery receipt. The table
   // service still processes normal data.changed immediately.
   stopRecoveryDataInvalidation = hostBridge.on("data.changed", retireRendererRecovery);
+  // 表说明的本地最后修改时间：每个权威 data.changed（任意表）刷新一次本地
+  // 时间戳；仅展示用，不足以作为任何写入/同步依据。
+  stopTableModificationTouch = hostBridge.on("data.changed", (payload) => {
+    if (typeof payload?.tableId === "string") ui.touchTable(payload.tableId);
+  });
   // Source writes reconcile through tableService/mutationService. Target-only
   // writes refresh Relation display metadata in place; a full table reload
   // would discard cursor windows and interfere with edits awaiting receipts.
@@ -1219,6 +1252,8 @@ onBeforeUnmount(() => {
   retireRendererRecovery();
   stopRecoveryDataInvalidation?.();
   stopRecoveryDataInvalidation = null;
+  stopTableModificationTouch?.();
+  stopTableModificationTouch = null;
   stopPluginChrome();
   unregisterWorkspaceEpochReset();
   mutationService.dispose();
@@ -1332,6 +1367,16 @@ function onOpenTableFromHome(name: string) {
   onSelect(name);
 }
 
+/** Sidebar: 复制表 —— 单一闭合意图经权威服务复制，前端不做伪复制。 */
+async function onDuplicateTable(collection: string, displayName: string, scope?: import("@/contracts").TableCopyScope): Promise<void> {
+  try {
+    await tableAdminService.duplicateTable(collection, displayName, scope);
+    message.success("已复制数据表。");
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "复制数据表失败。");
+  }
+}
+
 const pageTitle = computed(() => {
   if (ui.activeView === "home") return t("nav.home");
   if (ui.activeView === "imports") return t("nav.imports");
@@ -1369,6 +1414,7 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
     ui.setWorkspaceNamespace(nextWorkspaceId);
     importManagement.retire();
     importSourceGrant.value = null;
+    importsBoundTable.value = null;
   },
 );
 
@@ -1492,6 +1538,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             @select="onSelect"
             @new-table="onNewTable"
             @request-delete="tableInteractions.dispatch({ type: 'table.requestDelete', table: $event })"
+            @duplicate="onDuplicateTable"
           />
           <main class="main">
             <AppToolbar
@@ -1501,7 +1548,6 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               :insert-row-disabled="insertRowDisabled"
               :data-io-busy="dataIoBusy"
               :data-io-progress="dataIoService.progress.value?.message"
-              :data-io-import-disabled="!canImportTableData"
               :data-io-export-disabled="!canExportTableData"
               @select-table="onSelect"
               @refresh="refreshTable"
@@ -1511,8 +1557,6 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               @open-archived-history="revisionHistoryService.open({ scope: 'archived' })"
               @open-field-manager="openFieldManager"
               @open-content="contentPanelOpen = true"
-              @import-data="importTableData"
-              @open-import-management="ui.navigate('imports')"
               @export-data="exportTableData"
               @cancel-data-task="cancelDataTask"
               @plugin-action="pluginController.dispatch({ type: 'action.open', key: $event })"
@@ -1527,6 +1571,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               :fields-active="fieldManagementOpen"
               :workspace-key="workspaceSession.activeWorkspaceId ?? ''"
               :error="presetViews.error"
+              :import-disabled="dataIoBusy || !canImportTableData"
               :date-fields="dateFieldOptions"
               :title-fields="titleFieldOptions"
               :group-fields="groupFieldOptions"
@@ -1541,6 +1586,8 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               @delete="presetViewController.dispatch({ type: 'view.delete', view: $event })"
               @set-default="presetViewController.dispatch({ type: 'view.setDefault', view: $event })"
               @reload="presetViewController.dispatch({ type: 'view.reload' })"
+              @import-data="importTableData"
+              @open-import-management="enterImportManagement"
             />
             <section
               v-if="pendingRelationCreation && workspace.currentTable === pendingRelationCreation.targetCollection"
@@ -1717,18 +1764,33 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             </div>
           </main>
         </div>
-        <ImportManagementView
-          v-if="!platformViewsHidden && ui.activeView === 'imports'"
-          v-bind="importManagementProps"
-          @new-import="startManagedImport"
-          @new-base-import="startBaseImport"
-          @cancel-source="cancelManagedImportSource"
-          @choose-target="chooseImportTarget"
-          @refresh="importManagement.refresh()"
-          @cancel-task="cancelImportTask"
-          @open-target="openImportTarget"
-          @open-source-target="openSourceImportTarget"
-        />
+        <div v-if="!platformViewsHidden && ui.activeView === 'imports'" class="imports-page">
+          <!-- 从数据表进入时绑定来源表：一键返回，不打断导入上下文。 -->
+          <section
+            v-if="importsBoundTableLabel"
+            class="imports-context-strip"
+            data-testid="imports-context-strip"
+          >
+            <span>导入管理 · 来自数据表「{{ importsBoundTableLabel }}」</span>
+            <NButton
+              size="tiny"
+              secondary
+              data-testid="imports-return-table"
+              @click="returnToImportsBoundTable"
+            >返回数据表</NButton>
+          </section>
+          <ImportManagementView
+            v-bind="importManagementProps"
+            @new-import="startManagedImport"
+            @new-base-import="startBaseImport"
+            @cancel-source="cancelManagedImportSource"
+            @choose-target="chooseImportTarget"
+            @refresh="importManagement.refresh()"
+            @cancel-task="cancelImportTask"
+            @open-target="openImportTarget"
+            @open-source-target="openSourceImportTarget"
+          />
+        </div>
         <SettingsView
           v-show="!platformViewsHidden && ui.activeView === 'settings'"
           @reconnect="openDatabase"
@@ -2004,7 +2066,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
       @cancel="cancelImportPreview"
       @cancel-task="cancelActiveImport"
       @repreview="repreviewTableImport"
-      @open-import-management="ui.navigate('imports')"
+      @open-import-management="enterImportManagement"
       @update:relation-config="setImportRelationConfig"
     />
     <ExportLookupPanel
@@ -2344,6 +2406,27 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
   font-size: var(--vt-font-caption);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+.imports-page { display: flex; min-width: 0; flex-direction: column; }
+.imports-page > :deep(.import-management) { flex: 1 1 auto; min-height: 0; }
+.imports-context-strip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--vt-color-primary-100);
+  background: var(--vt-color-primary-50);
+  color: var(--vt-fg);
+  font-size: var(--vt-font-caption);
+}
+.imports-context-strip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .table-empty {
   display: flex;

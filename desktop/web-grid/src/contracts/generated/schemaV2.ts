@@ -317,6 +317,9 @@ export interface TableCreateIntent {
   readonly displayName: string;
   readonly operationId: string;
   readonly actor: Actor;
+  readonly sourceTableId?: string;
+  readonly copyRecords?: boolean;
+  readonly copyViews?: boolean;
 }
 
 export interface TableCreateReceipt {

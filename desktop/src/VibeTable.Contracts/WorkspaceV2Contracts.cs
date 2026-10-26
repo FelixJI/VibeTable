@@ -477,7 +477,8 @@ public sealed record RetentionPolicyV2 : IWorkspaceV2Contract
             RepositoryLimitBytes == 0 ||
             SnapshotBuckets.Distinct().Count() != SnapshotBuckets.Count ||
             FileRevisionBuckets.Distinct().Count() != FileRevisionBuckets.Count ||
-            SnapshotBuckets.Any(bucket => !validBuckets.Contains(bucket)) ||
+            !(SnapshotBuckets.SequenceEqual(["smart"]) ||
+              SnapshotBuckets.All(bucket => validBuckets.Contains(bucket))) ||
             FileRevisionBuckets.Any(bucket => !validBuckets.Contains(bucket)))
             throw new JsonException("Retention policy is invalid.");
     }

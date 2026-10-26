@@ -122,7 +122,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     await chooseToolbarMore(page, "refresh");
     await page.waitForTimeout(500);
     if (managedTarget) {
-      await page.getByTestId("import-management-open").click();
+      await page.getByTestId("table-import-management").click();
       await page.getByTestId("import-management").waitFor({ state: "visible" });
       recorder.check("local base import is available and online sources are retired",
         await page.getByTestId("import-source-feishuBase").isEnabled()
@@ -132,7 +132,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
       await page.getByTestId("import-target-option")
         .filter({ hasText: managedTarget }).click();
     } else {
-      await chooseToolbarMore(page, "import");
+      await page.getByTestId("table-import-data").click();
     }
     await confirmImportPreviewThroughUi();
   };
@@ -147,7 +147,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     await selectImportSourceThroughNativeDialog();
     const pendingPicker = picker(runtime, kind);
     if (managedTarget) {
-      await page.getByTestId("import-management-open").click();
+      await page.getByTestId("table-import-management").click();
       await page.getByTestId("import-management").waitFor({ state: "visible" });
       recorder.check("local base import is available and online sources are retired",
         await page.getByTestId("import-source-feishuBase").isEnabled()
@@ -155,7 +155,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
           && await page.getByTestId("import-source-wps").count() === 0);
       await page.getByTestId("import-source-xlsx").click();
     } else {
-      await chooseToolbarMore(page, "import");
+      await page.getByTestId("table-import-data").click();
     }
     const receipt = await pendingPicker;
     nativeImportPickerReceipts[kind] = receipt;
@@ -222,7 +222,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   try {
     await selectImportSource(slowSource);
     await chooseToolbarMore(page, "refresh");
-    await chooseToolbarMore(page, "import");
+    await page.getByTestId("table-import-data").click();
     await page.getByTestId("data-io-progress").waitFor({ state: "visible", timeout: 10_000 });
     const phase = await page.getByTestId("data-io-progress").innerText();
     await page.screenshot({
@@ -286,7 +286,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   await chooseToolbarMore(page, "refresh");
   await page.waitForTimeout(500);
   await selectImportSource(unicodeSource);
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   await page.getByTestId("import-preview-panel").waitFor({ state: "visible", timeout: 60_000 });
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "35-ui-cancel-preview.png"), fullPage: true,
@@ -404,7 +404,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
       && !/[\\/]/.test(entry.sourceName)
       && !["token", "grantId", "idempotencyKey", "accessToken"].some(key => key in entry)),
     { history });
-  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("table-import-management").click();
   await page.getByTestId("import-management").waitFor({ state: "visible" });
   await page.getByTestId("import-history-refresh").click();
   for (const entry of committed) {
@@ -448,7 +448,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
         canonicalJsonText(actual) === canonicalJsonText(expected), { expected, actual });
     }
   });
-  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("table-import-management").click();
   await page.getByTestId("import-history-row").first().waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-reopened.png"), fullPage: true });
 

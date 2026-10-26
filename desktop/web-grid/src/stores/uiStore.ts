@@ -5,6 +5,8 @@ import { getLocale, setLocale, type Locale } from "@/i18n";
 export type ThemeMode = "light" | "dark" | "system";
 export type SystemBaseTheme = "light" | "dark";
 export type AppView = "home" | "tables" | "imports" | "files" | "search" | "conflicts" | "plugins" | "settings";
+/** Sections of the settings page; mirrors the settings view's closed nav set. */
+export type SettingsSection = "general" | "calendar" | "storage" | "versions" | "interaction" | "about";
 export type StartupPage = "home" | "tables";
 export type WorkspaceStartupPolicy = "lastWorkspace" | "workspaceCenter";
 export type DensityMode = "comfortable" | "compact";
@@ -28,7 +30,6 @@ export interface RecentTable {
   readonly name: string;
   readonly openedAt: number;
 }
-
 const STARTUP_KEY = "vt:startup-page";
 const WORKSPACE_STARTUP_POLICY_KEY = "vt:workspace-startup-policy";
 const QUOTE_KEY = "vt:show-daily-quote";
@@ -40,6 +41,7 @@ const ADMIN_CONFIRM_CLOSE_KEY = "vt:admin-confirm-close";
 const ADMIN_RELEASE_IDLE_KEY = "vt:admin-release-idle";
 const DENSITY_KEY = "vt:density";
 const LEGACY_RECENT_KEY = "vt:recent-tables";
+const LEGACY_MODIFIED_KEY = "vt:table-modified";
 
 function readStorage(key: string): string | null {
   try {
@@ -92,6 +94,24 @@ function recentKey(workspaceId: string | null): string {
   return workspaceId ? `vt:${workspaceId}:recent-tables` : LEGACY_RECENT_KEY;
 }
 
+function modifiedKey(workspaceId: string | null): string {
+  return workspaceId ? `vt:${workspaceId}:table-modified` : LEGACY_MODIFIED_KEY;
+}
+
+function loadTableModified(workspaceId: string | null): Readonly<Record<string, number>> {
+  try {
+    const parsed = JSON.parse(readStorage(modifiedKey(workspaceId)) ?? "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: Record<string, number> = {};
+    for (const [name, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) result[name] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 function loadRecentTables(workspaceId: string | null): RecentTable[] {
   try {
     const parsed = JSON.parse(readStorage(recentKey(workspaceId)) ?? "[]") as unknown;
@@ -137,6 +157,9 @@ export const useUiStore = defineStore("ui", () => {
   // the fixed platform enum stays untouched (AC1: no Interface entity, the
   // identity is pluginId + contributed action id).
   const activePluginApp = ref<ActivePluginApp | null>(null);
+  // Requested settings section for a deep link (e.g. home → 版本与恢复). The
+  // settings view consumes it; the navigation is not complete until then.
+  const requestedSettingsSection = ref<SettingsSection | null>(null);
   // Orders explicit navigation intents, including same-view and null-to-null departures.
   const navigationRevision = ref(0);
   function beginNavigation(): number { return ++navigationRevision.value; }
@@ -151,6 +174,9 @@ export const useUiStore = defineStore("ui", () => {
   const locale = ref<Locale>(getLocale());
   const workspaceNamespace = ref<string | null>(null);
   const recentTables = ref<RecentTable[]>(loadRecentTables(null));
+  // Local (client-side) last-modified timestamps per physical collection name;
+  // a presentation fallback for table descriptions, never an authority.
+  const tableModified = ref<Readonly<Record<string, number>>>(loadTableModified(null));
 
   function openCreate(): void {
     createModalOpen.value = true;
@@ -198,6 +224,18 @@ export const useUiStore = defineStore("ui", () => {
     beginNavigation();
     activeView.value = view;
     activePluginApp.value = null;
+    // 任何新的导航都取代未消费的设置分区意图。
+    requestedSettingsSection.value = null;
+  }
+  function openSettings(section: SettingsSection): void {
+    beginNavigation();
+    activeView.value = "settings";
+    activePluginApp.value = null;
+    requestedSettingsSection.value = section;
+  }
+  /** Clears a consumed settings deep-link request. */
+  function settleSettingsSection(): void {
+    requestedSettingsSection.value = null;
   }
   function openPluginApp(pluginId: string, actionId: string): void {
     beginNavigation();
@@ -259,9 +297,18 @@ export const useUiStore = defineStore("ui", () => {
     beginNavigation();
     workspaceNamespace.value = workspaceId;
     recentTables.value = loadRecentTables(workspaceId);
+    tableModified.value = loadTableModified(workspaceId);
+    requestedSettingsSection.value = null;
     // A different workspace has a different plugin catalog; a stale app view
     // must not survive the switch (AC4: no cross-workspace page retention).
     activePluginApp.value = null;
+  }
+  /** Records a local last-modified timestamp for a table (presentation only). */
+  function touchTable(name: string, at: number = Date.now()): void {
+    if (!name || tableModified.value[name] === at) return;
+    const next = { ...tableModified.value, [name]: at };
+    tableModified.value = next;
+    writeStorage(modifiedKey(workspaceNamespace.value), JSON.stringify(next));
   }
   function rememberTable(name: string): void {
     const next = [
@@ -287,6 +334,7 @@ export const useUiStore = defineStore("ui", () => {
     workspaceStartupPolicy,
     activeView,
     activePluginApp,
+    requestedSettingsSection,
     navigationRevision,
     beginNavigation,
     showDailyQuote,
@@ -300,6 +348,7 @@ export const useUiStore = defineStore("ui", () => {
     locale,
     workspaceNamespace,
     recentTables,
+    tableModified,
     openCreate,
     closeCreate,
     openDelete,
@@ -311,6 +360,8 @@ export const useUiStore = defineStore("ui", () => {
     setThemeMode,
     applyThemeProjection,
     navigate,
+    openSettings,
+    settleSettingsSection,
     openPluginApp,
     closePluginApp,
     setStartupPage,
@@ -326,5 +377,6 @@ export const useUiStore = defineStore("ui", () => {
     setLanguage,
     setWorkspaceNamespace,
     rememberTable,
+    touchTable,
   };
 });

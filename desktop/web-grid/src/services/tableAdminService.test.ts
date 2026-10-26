@@ -68,6 +68,44 @@ describe("tableAdminService Schema v2 bootstrap", () => {
     setActivePinia(createPinia());
   });
 
+  it("copies a table through the typed host request and accepts only a new authority identity", async () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    await useTableAdminService().duplicateTable("tbl_source", " 订单 ");
+    expect(harness.request).toHaveBeenCalledWith("tableAdmin.duplicateRequested", {
+      collection: "tbl_source", displayName: "订单", copyRecords: true, copyViews: true,
+    });
+    expect(useWorkspaceStore().collections.map((item) => item.collection)).toEqual(["tbl_opaque"]);
+  });
+
+  it("does not report an unsupported copy as completed", async () => {
+    const harness = bridgeHarness();
+    harness.request.mockRejectedValueOnce(new Error("此表暂不支持完整复制。"));
+    setHostBridgeForTesting(harness.bridge);
+    await expect(useTableAdminService().duplicateTable("tbl_source", "副本"))
+      .rejects.toThrow("此表暂不支持完整复制。");
+    expect(useWorkspaceStore().collections).toEqual([]);
+  });
+
+  it("forwards the selected copy scope without changing the default", async () => {
+    const harness=bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    await useTableAdminService().duplicateTable("tbl_source","订单",{copyRecords:false,copyViews:false});
+    expect(harness.request).toHaveBeenCalledWith("tableAdmin.duplicateRequested",{
+      collection:"tbl_source",displayName:"订单",copyRecords:false,copyViews:false,
+    });
+  });
+
+  it("rejects a reused copy identity before replacing the catalog", async () => {
+    const harness = bridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setCollections([{ collection: "tbl_opaque", metadata: {} }], { tbl_opaque: "来源" });
+    await expect(useTableAdminService().duplicateTable("tbl_opaque", "订单"))
+      .rejects.toThrow("主机未返回复制数据表的权威标识。");
+    expect(workspace.displayNames.tbl_opaque).toBe("来源");
+  });
+
   it("submits only a display name, never renderer-generated schema identities", async () => {
     const harness = bridgeHarness();
     setHostBridgeForTesting(harness.bridge);

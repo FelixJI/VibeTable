@@ -13,12 +13,14 @@
 
 import type {
   ColumnSchema,
-  FilterCondition,
+  FilterExpression,
   FilterOperator,
   SortCondition,
   TableQuery,
 } from "@/contracts";
+import { isPlainTextColumn } from "./filterFieldEditor";
 import { ungroupedFilterConditions } from "./viewQuery";
+import { headerValueFilterLeaves } from "./headerFilterMenu";
 
 /**
  * A Tabulator sort descriptor as exposed by `table.getSorters()`.
@@ -56,23 +58,69 @@ export interface QueryAdapterOptions {
 /**
  * Build a typed `TableQuery` from Tabulator's current sort/filter state.
  *
- * Header filters map to `eq` operators by default (Tabulator header filters are
- * exact-match text inputs unless a custom comparator is registered). The
- * adapter never interprets formatter output — only the raw filter value.
+ * Header filters map per column family:
+ *  - plain text columns default to `contains`, and whitespace-separated
+ *    tokens become OR-joined contains leaves (spreadsheet habit: "foo bar"
+ *    matches rows containing foo OR bar);
+ *  - whole JSON documents keep textual `contains`;
+ *  - everything else keeps exact-match `eq` on the raw value.
+ * The adapter never interprets formatter output — only the raw filter value.
  */
 export function buildQuery(options: QueryAdapterOptions): TableQuery {
   const keyword = normalizeKeyword(options.keyword);
-  const filters: FilterCondition[] = [];
+  const filters: FilterExpression[] = [];
   const columns = new Map((options.columns ?? []).map((column) => [column.name, column]));
   for (const hf of options.headerFilters ?? []) {
     if (hf.value === null || hf.value === undefined || hf.value === "") {
       continue;
     }
+    const column = columns.get(hf.field);
+    if (column?.filterInput === "multiSelect"
+      || (column?.filterOperators?.includes("contains") && !column.filterOperators.includes("eq"))) {
+      filters.push(...headerValueFilterLeaves(hf.field, Array.isArray(hf.value) ? hf.value : [hf.value], column));
+      continue;
+    }
+    // Whole JSON documents support textual containment, not scalar
+    // equality, in the authoritative QueryPort contract.
+    if (column?.dataType === "json") {
+      filters.push({
+        field: hf.field,
+        operator: "contains",
+        value: hf.value,
+        logic: "AND",
+      });
+      continue;
+    }
+    if (isPlainTextColumn(column)) {
+      const tokens = String(hf.value).trim().split(/\s+/u).filter(Boolean);
+      if (tokens.length === 0) continue;
+      if (tokens.length === 1) {
+        // 单 token 是普通叶子，不引入组。
+        filters.push({
+          field: hf.field,
+          operator: "contains",
+          value: tokens[0]!,
+          logic: "AND",
+        });
+        continue;
+      }
+      // 多 token 按列封装为 OR 条件组：平铺的 per-leaf logic 会让该列的
+      // OR 泄漏到相邻列（fieldA=a OR b AND fieldB=c…），列与列之间必须 AND。
+      // 子叶省略 logic：权威编译器要求 index>=1 的子叶 logic 与 groupLogic
+      // 一致（query.filter.conflicting_group_logic），省略由权威归一化。
+      filters.push({
+        groupLogic: "OR",
+        filters: tokens.map(token => ({
+          field: hf.field,
+          operator: "contains" as const,
+          value: token,
+        })),
+      });
+      continue;
+    }
     filters.push({
       field: hf.field,
-      // Whole JSON documents support textual containment, not scalar
-      // equality, in the authoritative QueryPort contract.
-      operator: columns.get(hf.field)?.dataType === "json" ? "contains" : "eq",
+      operator: "eq",
       value: hf.value,
       logic: "AND",
     });

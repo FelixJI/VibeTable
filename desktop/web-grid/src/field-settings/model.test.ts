@@ -15,6 +15,8 @@ import {
   draftsEqual,
   fieldDisplayNameIssues,
   fieldDraftIssues,
+  fieldServiceErrorHint,
+  findDuplicateDisplayName,
   initialDraft,
   replaceDraftType,
   relationPairPatchFromDrafts,
@@ -420,5 +422,67 @@ describe("field settings model", () => {
     expect(intent.conversionRule).toBe("");
     expect(intent.confirmation).toBe("");
     expect(intent.backupReceipt).toBe("");
+  });
+});
+
+describe("display name duplicate precheck", () => {
+  function fieldNamed(
+    fieldId: string,
+    displayName: string,
+    state: "active" | "retired" = "active",
+  ): FieldDefinitionV2 {
+    const base = field();
+    return {
+      ...base,
+      identity: { ...base.identity, fieldId },
+      displayName,
+      lifecycle: { state, retiredAt: state === "retired" ? "2026-07-01T00:00:00Z" : null },
+    };
+  }
+
+  it("detects trimmed duplicates among active fields and excludes the edited field itself", () => {
+    const self = fieldNamed("fld_self", "金额");
+    const other = fieldNamed("fld_other", "金额");
+    const retired = fieldNamed("fld_retired", "金额", "retired");
+
+    // 自身同名不算重复；停用字段不参与比较；两端空白按权威 TrimSpace 口径对齐。
+    expect(findDuplicateDisplayName("金额", [self], "fld_self")).toBeNull();
+    expect(findDuplicateDisplayName("金额", [retired], null)).toBeNull();
+    expect(findDuplicateDisplayName("  金额  ", [other], "fld_self")?.identity.fieldId)
+      .toBe("fld_other");
+    expect(findDuplicateDisplayName("", [other], null)).toBeNull();
+  });
+});
+
+describe("service error hints", () => {
+  it("maps known authoritative codes to Chinese hints and keeps unknown codes raw", () => {
+    expect(fieldServiceErrorHint("field.display_name.duplicate"))
+      .toContain("同表已存在同名");
+    expect(fieldServiceErrorHint("field.change.noop")).toContain("没有产生实际变更");
+    expect(fieldServiceErrorHint("field.auto_number.reformat")).toContain("序号保持不变");
+    expect(fieldServiceErrorHint("field.auto_date.history_unavailable"))
+      .toContain("不会回填已有记录的历史时间");
+    expect(fieldServiceErrorHint("field.unknown.code")).toBeNull();
+    expect(fieldServiceErrorHint(null)).toBeNull();
+    expect(fieldServiceErrorHint(undefined)).toBeNull();
+  });
+});
+
+describe("autoDate draft defaults", () => {
+  it("seeds a creatable autoDate draft with the createdAt role", () => {
+    const base = capability(field());
+    const autoDate: CapabilityV2 = {
+      ...base,
+      logicalType: "autoDate",
+      userCreatable: true,
+      recommended: {
+        ...base.recommended,
+        display: { ...field().display, kind: "readonly" },
+      },
+    };
+    const draft = draftFromCapability(autoDate, "创建时间");
+    expect(draft.autoDate).toEqual({ role: "createdAt" });
+    expect(replaceDraftType(draft, [autoDate], "autoDate").autoDate)
+      .toEqual({ role: "createdAt" });
   });
 });

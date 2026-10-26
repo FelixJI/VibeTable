@@ -107,7 +107,7 @@ export async function beginPicker(runtime, action) {
 async function openManagement(page) {
   const panel = page.getByTestId("import-management");
   if (!(await panel.isVisible().catch(() => false))) {
-    await page.getByTestId("import-management-open").click();
+    await page.getByTestId("table-import-management").click();
   }
   await panel.waitFor({ state: "visible", timeout: 60_000 });
 }

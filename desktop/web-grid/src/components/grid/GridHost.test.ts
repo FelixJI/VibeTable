@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises } from "@vue/test-utils";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { ref } from "vue";
 import GridHost from "./GridHost.vue";
+import * as tabulatorRuntime from "@/composables/useTabulator";
 import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
 import { useTableStore } from "@/stores/tableStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useViewQueryStore } from "@/stores/viewQueryStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NormalizedRelationDescriptor } from "@/contracts";
 import { buildColumns } from "@/grid/createGrid";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import type { HostBridge } from "@/bridge/hostBridge";
 
 interface FormatterTestCell {
   getField(): string;
@@ -34,6 +40,35 @@ function runFormatterOnRendered(
 
 describe("GridHost history selection", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it("starts the empty overlay below the measured header and follows header resizing", async () => {
+    let restore: (()=>Promise<void>) | undefined;
+    let resize!: ()=>void;
+    const disconnect=vi.fn();
+    vi.stubGlobal("ResizeObserver",class implements ResizeObserver {
+      constructor(callback:ResizeObserverCallback){resize=()=>callback([],this);}
+      observe=vi.fn();unobserve=vi.fn();disconnect=disconnect;
+    });
+    const runtime=vi.spyOn(tabulatorRuntime,"useTabulator").mockImplementation((_element,options)=>{
+      restore=options?.onPresentationRestore;
+      return {tabulator:ref(null),dataApplying:ref(false),clearHeaderFilterForMenu:vi.fn()};
+    });
+    useTableStore().setDatasetReady({table:"empty",columns:[],rows:[],offset:0,limit:100,totalRows:0,mode:"remote"});
+    const wrapper=mount(GridHost);
+    try {
+      const host=wrapper.get(".grid-host").element;
+      const header=document.createElement("div");header.className="tabulator-header";
+      wrapper.get(".tabulator-mount").element.append(header);
+      vi.spyOn(host,"getBoundingClientRect").mockReturnValue(new DOMRect(20,100,400,500));
+      const geometry=vi.spyOn(header,"getBoundingClientRect").mockReturnValue(new DOMRect(20,100,400,72));
+      await restore?.();await wrapper.vm.$nextTick();
+      const overlay=wrapper.get('[data-testid="grid-empty-state"]').element as HTMLElement;
+      expect(overlay.style.top).toBe("72px");
+      geometry.mockReturnValue(new DOMRect(20,100,400,105));resize();await wrapper.vm.$nextTick();
+      expect(overlay.style.top).toBe("105px");
+      wrapper.unmount();expect(disconnect).toHaveBeenCalled();
+    } finally {wrapper.unmount();runtime.mockRestore();vi.unstubAllGlobals();}
+  });
 
   it("mounts Tabulator below the themed grid host instead of on the host itself", () => {
     const wrapper = mount(GridHost);
@@ -515,6 +550,146 @@ describe("GridHost history selection", () => {
       x: 0,
       y: 0,
     }]);
+    wrapper.unmount();
+  });
+
+  it("表头值面板：动态权威取值、空白原始值、应用走 runtime 管道", async () => {
+    const store = useTableStore();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    store.setDatasetReady({
+      table: "orders",
+      columns: [
+        { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+      ],
+      rows: [{ rowKey: "1", note: "a" }],
+      offset: 0, limit: 100, totalRows: 1, mode: "remote",
+      revision: { databaseSessionId: "s1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    let resolveValues!: (value: unknown) => void;
+    const request = vi.fn(async () => new Promise(resolve => { resolveValues = resolve; }));
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const wrapper = mount(GridHost, { attachTo: document.body });
+
+    wrapper.get(".grid-wrapper").element.dispatchEvent(new CustomEvent("vt-header-menu", {
+      bubbles: true,
+      detail: { field: "note" },
+    }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="vt-header-menu-loading"]').exists()).toBe(true);
+    expect(request).toHaveBeenCalledWith("query.view", {
+      tableId: "orders",
+      view: {
+        query: { limit: 1, offset: 0 },
+        groups: [{ field: "note", direction: "asc", bucket: "value" }],
+        groupOffset: 0,
+        groupLimit: 100,
+      },
+    });
+
+    resolveValues({
+      page: { rows: [], snapshot: { table: "orders" } },
+      groupRows: [{ key: ["a"], count: 2, summaries: [] }, { key: [null], count: 1, summaries: [] }],
+      groupOffset: 0, hasMoreGroups: false,
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="vt-header-menu-loading"]').exists()).toBe(false);
+    expect(wrapper.findAll(".vt-header-menu__option").map(label => label.text())).toEqual(["a2", "（空白）1"]);
+
+    // 全不选：应用禁用；勾选“（空白）+ a”后应用。
+    document.querySelector<HTMLElement>('[data-testid="vt-header-menu-none"]')!.click();
+    await flushPromises();
+    expect(
+      (document.querySelector('[data-testid="vt-header-menu-apply"]') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    document.querySelector<HTMLElement>('[data-testid="vt-header-menu-option-null"]')!.click();
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="vt-header-menu-apply"]')!.click();
+    await flushPromises();
+
+    const query = wrapper.emitted("viewQueryChange")?.at(-1)?.[0] as {
+      headerFilters: readonly import("@/contracts").FilterExpression[];
+    };
+    expect(query.headerFilters).toEqual([]);
+    const viewQuery = useViewQueryStore();
+    expect(viewQuery.filters).toEqual([
+      { field: "note", operator: "is_null" },
+    ]);
+    // 真实父链：presetViewController 收到同一 payload 会调 updateRuntime，
+    // 同步后的镜像不得把旧条件加回。
+    viewQuery.updateRuntime({
+      headerFilters: query.headerFilters.map(filter => ({ ...filter })),
+      sorts: [], groups: [],
+    });
+    expect(viewQuery.filters).toEqual([
+      { field: "note", operator: "is_null" },
+    ]);
+    expect(wrapper.find('[data-testid="vt-header-menu"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("replaces and clears a checked header value through the real parent runtime callback", async () => {
+    const workspace=useWorkspaceStore();
+    workspace.setOpened([{collection:"orders",metadata:{}}],{orders:"Orders"});
+    workspace.selectTable("orders");
+    useTableStore().setDatasetReady({table:"orders",columns:[{
+      name:"status",title:"状态",dataType:"text",editable:true,nullable:true,
+      filterInput:"select",filterOptions:[{value:"a",label:"A"},{value:"b",label:"B"}],
+    }],rows:[],offset:0,limit:100,totalRows:0,mode:"remote"});
+    const view=useViewQueryStore();
+    view.replace("orders",{kind:"table",layout:"table",filters:[{field:"status",operator:"eq",value:"a"}],sorts:[],search:"",visibleFields:["status"]},["status"]);
+    const wrapper=mount(GridHost,{attachTo:document.body,props:{onViewQueryChange:query=>view.updateRuntime(query)}});
+    const open=async()=>{
+      wrapper.get(".grid-wrapper").element.dispatchEvent(new CustomEvent("vt-header-menu",{bubbles:true,detail:{field:"status"}}));
+      await flushPromises();
+    };
+    await open();
+    wrapper.getComponent({name:"HeaderFilterMenu"}).vm.$emit("apply",["s:b"]);
+    await flushPromises();
+    expect(view.filters).toEqual([{field:"status",operator:"eq",value:"b"}]);
+    await open();
+    wrapper.getComponent({name:"HeaderFilterMenu"}).vm.$emit("clear");
+    await flushPromises();
+    expect(view.filters).toEqual([]);
+    view.filters=[{field:"status",operator:"eq",value:"a"},{field:"other",operator:"eq",value:"b",logic:"OR"}];
+    await open();
+    expect(wrapper.text()).toContain("请先在高级筛选中清除或调整条件");
+    expect(wrapper.find('[data-testid="vt-header-menu-apply"]').exists()).toBe(false);
+    expect(view.filters).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it("表头值面板：换表后过期取值响应不回写", async () => {
+    const store = useTableStore();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }, { collection: "other", metadata: {} }], {});
+    workspace.selectTable("orders");
+    store.setDatasetReady({
+      table: "orders",
+      columns: [{ name: "note", title: "备注", dataType: "text", editable: true, nullable: true }],
+      rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+      revision: { databaseSessionId: "s1", schemaRevision: "schema-1", dataRevision: 1 },
+    });
+    let resolveValues!: (value: unknown) => void;
+    setHostBridgeForTesting({
+      request: vi.fn(async () => new Promise(resolve => { resolveValues = resolve; })),
+    } as unknown as HostBridge);
+    const wrapper = mount(GridHost, { attachTo: document.body });
+
+    wrapper.get(".grid-wrapper").element.dispatchEvent(new CustomEvent("vt-header-menu", {
+      bubbles: true, detail: { field: "note" },
+    }));
+    await wrapper.vm.$nextTick();
+    workspace.selectTable("other");
+    await flushPromises();
+    resolveValues({
+      page: { rows: [], snapshot: { table: "orders" } },
+      groupRows: [{ key: ["late"], count: 1, summaries: [] }],
+      groupOffset: 0, hasMoreGroups: false,
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="vt-header-menu"]').exists()).toBe(false);
     wrapper.unmount();
   });
 });

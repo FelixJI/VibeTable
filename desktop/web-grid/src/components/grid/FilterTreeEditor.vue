@@ -2,6 +2,11 @@
 import { computed, ref } from "vue";
 import { gridStateNumberText, parseGridStateJson } from "@/contracts/gridStateJson";
 import { NButton, NDatePicker, NDynamicTags, NInput, NSelect } from "naive-ui";
+import {
+  filterEditorInput,
+  filterEditorOptions,
+  isPlainTextColumn,
+} from "@/grid/filterFieldEditor";
 import type {
   ColumnSchema,
   FilterCondition,
@@ -20,7 +25,11 @@ const props = withDefaults(defineProps<{
   relations?: readonly NormalizedRelationDescriptor[];
   searchRelationTargets?: (relationId: string, query: string) => Promise<readonly RelationTargetRef[]>;
 }>(), { depth: 1 });
-const emit = defineEmits<{ update: [nodes: FilterExpression[]] }>();
+const emit = defineEmits<{
+  update: [nodes: FilterExpression[]];
+  /** 变更应立即生效（如删除条件）：携带最新节点树请求应用。 */
+  commit: [];
+}>();
 
 const capabilityColumns = computed(() => props.columns.filter(
   column => (column.filterOperators?.length ?? 0) > 0,
@@ -38,6 +47,18 @@ const operatorLabels: Record<FilterOperator, string> = {
 const operatorOptionsFor = (field: string) => {
   const operators = props.columns.find(item => item.name === field)?.filterOperators ?? [];
   return operators.map(value => ({ label: operatorLabels[value], value }));
+};
+/**
+ * 新建条件的默认操作符：普通文本列且能力包含 contains 时默认“包含”
+ * （电子表格习惯）；封闭枚举/数字等其余类型保留能力发布的首个合法操作符。
+ */
+const defaultOperatorFor = (field: string): FilterOperator | undefined => {
+  const allowed = operatorOptionsFor(field).map(option => option.value);
+  if (!allowed.length) return undefined;
+  if (allowed.includes("contains") && isPlainTextColumn(props.columns.find(item => item.name === field))) {
+    return "contains";
+  }
+  return allowed[0];
 };
 const localConditionCount = computed(() => countConditions(props.nodes));
 const conditionCount = computed(() => props.totalConditions ?? localConditionCount.value);
@@ -63,19 +84,22 @@ function updateLogic(index: number, logic: "AND" | "OR"): void {
   replace(index, { ...current, logic });
 }
 function remove(index: number): void {
-  emit("update", props.nodes.filter((_, nodeIndex) => nodeIndex !== index));
+  const remaining = props.nodes.filter((_, nodeIndex) => nodeIndex !== index);
+  // 移除条件立即生效：删除是明确意图，不需要再点“应用”。
+  emit("update", remaining);
+  emit("commit");
 }
 function addCondition(): void {
   const field = capabilityColumns.value[0]?.name;
   if (!field || atConditionLimit.value) return;
-  const operator = operatorOptionsFor(field)[0]?.value;
+  const operator = defaultOperatorFor(field);
   if (!operator) return;
   emit("update", [...props.nodes, { field, operator, value: initialValue(field, operator) }]);
 }
 function addGroup(): void {
   const field = capabilityColumns.value[0]?.name;
   if (!field || props.depth >= 3 || atConditionLimit.value) return;
-  const operator = operatorOptionsFor(field)[0]?.value;
+  const operator = defaultOperatorFor(field);
   if (!operator) return;
   emit("update", [...props.nodes, {
     groupLogic: "AND",
@@ -92,10 +116,12 @@ function updateField(index: number, field: string): void {
   if (!current || !isCondition(current)) return;
   const allowed = operatorOptionsFor(field).map(option => option.value);
   if (!allowed.length) return;
+  const keep = allowed.includes(current.operator);
+  const operator = keep ? current.operator : defaultOperatorFor(field) ?? allowed[0]!;
   updateCondition(index, {
     field,
-    operator: allowed.includes(current.operator) ? current.operator : allowed[0]!,
-    value: initialValue(field, allowed.includes(current.operator) ? current.operator : allowed[0]!),
+    operator,
+    value: initialValue(field, operator),
   });
 }
 function updateOperator(index: number, operator: FilterOperator): void {
@@ -107,10 +133,10 @@ function columnFor(field: string): ColumnSchema | undefined {
   return props.columns.find(item => item.name === field);
 }
 function filterInputFor(field: string): NonNullable<ColumnSchema["filterInput"]> {
-  return columnFor(field)?.filterInput ?? "text";
+  return filterEditorInput(columnFor(field));
 }
 function filterOptionsFor(field: string) {
-  return [...(columnFor(field)?.filterOptions ?? [])];
+  return filterEditorOptions(columnFor(field)).map(option => ({ ...option }));
 }
 function relationIdFor(field: string): string | null {
   const column = columnFor(field);
@@ -341,6 +367,7 @@ function updateDiscreteValues(index: number, values: Array<string | number>): vo
           :relations="relations"
           :search-relation-targets="searchRelationTargets"
           @update="filters => replace(index, { ...node, filters })"
+          @commit="() => emit('commit')"
         />
       </div>
     </div>

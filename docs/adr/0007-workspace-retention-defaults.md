@@ -4,6 +4,8 @@
 - 日期：2026-07-28
 - 适用格式：workspace format 1 / protocol 2.0
 
+> 2026-10-26：新工作区默认快照规则由 [ADR 0015](0015-smart-snapshot-retention.md) 替代；本文件与旧 fixture 保留为历史兼容依据。
+
 ## 决策
 
 所有新工作区只使用 `contracts/v2/fixtures/retention-policy.json` 作为产品默认值来源：

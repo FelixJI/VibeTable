@@ -496,7 +496,22 @@ export function useTabulator(
     }
   });
 
-  return { tabulator, dataApplying };
+  function clearHeaderFilterForMenu(field: string): void {
+    const grid = tabulator.value as (TabulatorFull & Parameters<typeof captureRuntimeQuery>[0] & {
+      setHeaderFilterValue(field: string, value: string): void;
+    }) | null;
+    if (!grid) return;
+    const wasRestoring = restoringPresentation;
+    restoringPresentation = true;
+    try {
+      grid.setHeaderFilterValue(field, "");
+    } finally {
+      restoringPresentation = wasRestoring;
+    }
+    lastViewQuerySignature = JSON.stringify(captureRuntimeQuery(grid));
+  }
+
+  return { tabulator, dataApplying, clearHeaderFilterForMenu };
 
   async function drainQueuedRows(): Promise<void> {
     if (

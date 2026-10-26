@@ -145,6 +145,7 @@ func decodeSchemaFieldChangeParams(method string, raw json.RawMessage) ([]byte, 
 	switch method {
 	case "schema.table.create":
 		required = []string{"displayName", "operationId", "actor"}
+		optional = []string{"sourceTableId", "copyRecords", "copyViews"}
 	case "schema.delete":
 		required = []string{"tableId", "expectedRevision"}
 	case "field.change.plan":
@@ -228,6 +229,10 @@ func decodeSchemaFieldChangeParams(method string, raw json.RawMessage) ([]byte, 
 						return nil, nil, invalid
 					}
 				}
+			}
+		} else if key == "copyRecords" || key == "copyViews" {
+			if _, ok := item.(bool); !ok {
+				return nil, nil, invalid
 			}
 		} else if key == "confirmations" {
 			confirmations, ok := item.([]any)

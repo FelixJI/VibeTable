@@ -579,6 +579,12 @@ public sealed record SchemaTableCreateIntentV2
     [JsonRequired] public required string OperationId { get; init; }
     [JsonPropertyName("actor")]
     [JsonRequired] public required FieldActorV2 Actor { get; init; }
+    [JsonPropertyName("sourceTableId")]
+    public string? SourceTableId { get; init; }
+    [JsonPropertyName("copyRecords")]
+    public bool? CopyRecords { get; init; }
+    [JsonPropertyName("copyViews")]
+    public bool? CopyViews { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

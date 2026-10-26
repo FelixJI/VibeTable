@@ -10,6 +10,8 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import type { HostBridge } from "@/bridge/hostBridge";
+import { formatDashboardDate } from "@/dashboard/format";
+import { getLocale } from "@/i18n";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import { NInputNumber, NSelect, NSwitch } from "naive-ui";
@@ -81,7 +83,7 @@ function capability(type: LogicalTypeV2): CapabilityV2 {
     },
     supportsRequired: true, supportsDefault: true, supportsUnique: true, needsPresence: false,
     displayPresets: ["plain", "currency"], conversionTargets: ["text", "number", "select"],
-    conversionRules: ["strict"], compileStrategy: "native", userCreatable: type !== "autoDate",
+    conversionRules: ["strict"], compileStrategy: "native", userCreatable: true,
   };
 }
 
@@ -298,7 +300,7 @@ describe("FieldSettingsDrawer", () => {
     }
   });
 
-  it("展示加载和带错误码的失败状态", async () => {
+  it("展示加载和中文失败状态", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();
     const wrapper = mountDrawer();
@@ -307,8 +309,8 @@ describe("FieldSettingsDrawer", () => {
     const failure = Object.assign(new Error("revision 已过期"), { code: "field.conflict.stale_revision" });
     store.fail(failure);
     await flushPromises();
-    expect(wrapper.get('[data-testid="field-settings-error"]').text()).toContain("field.conflict.stale_revision");
-    expect(wrapper.text()).toContain("revision 已过期");
+    expect(wrapper.get('[data-testid="field-settings-error"]').text()).toContain("表结构在预览后已发生变化");
+    expect(wrapper.text()).not.toContain("revision 已过期");
   });
 
   it("允许编辑已有双向关联的另一端并保留不可变目标", async () => {
@@ -460,7 +462,11 @@ describe("FieldSettingsDrawer", () => {
       expect(wrapper.find(".option-row input:not([type='color'])").attributes("value")).toBe("选项 A");
     }
     if (type === "relation") expect(wrapper.html()).toContain("tbl_customers");
-    if (type === "autoDate") expect(wrapper.html()).toContain("createdAt");
+    if (type === "autoDate") {
+      // 已有字段：角色固定，呈现中文标签而非内部 token。
+      expect((wrapper.get('[data-testid="auto-date-role"]').find("input").element as HTMLInputElement).value)
+        .toBe("创建时间");
+    }
     if (type === "formula") {
       expect(wrapper.get('[data-testid="formula-editor-entry"]').text())
         .toContain("公式工作台");
@@ -543,8 +549,9 @@ describe("FieldSettingsDrawer", () => {
     expect(wrapper.get('[data-testid="field-display-name"]').find("input").attributes("maxlength"))
       .toContain("128");
 
+    // 权威限制常驻可见：数字类型展示 binary64 值域口径，不虚构“无限”。
     expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
-      .toContain("未启用额外值限制");
+      .toContain("binary64 数值");
 
     store.patchDraft({
       constraints: { ...store.draft!.constraints, range: { min: 0, max: 100 } },
@@ -555,6 +562,169 @@ describe("FieldSettingsDrawer", () => {
       .toContain("仅整数");
     expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
       .toContain("0 ≤ 值 ≤ 100");
+  });
+
+  it("显示文本和富文本存储默认上限而不是无限制", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("text"));
+    const wrapper = mountDrawer();
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text()).toContain("默认最长 5000 字符");
+    store.beginOpen();
+    store.load(described("editor"));
+    store.patchDraft({ storage: { ...store.draft!.storage, options: { ...store.draft!.storage.options, maxSize: 0 } } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text()).toContain("5242880 字节");
+  });
+
+  it("服务诊断以中文说明替代原始编码和英文消息", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+
+    store.fail(Object.assign(
+      new Error("another active field in this table already uses this name"),
+      { code: "field.display_name.duplicate" },
+    ));
+    await flushPromises();
+    const alert = wrapper.get('[data-testid="field-settings-error"]').text();
+    expect(alert).not.toContain("field.display_name.duplicate");
+    expect(alert).not.toContain("another active field in this table already uses this name");
+    expect(wrapper.get('[data-testid="field-settings-error-hint"]').text())
+      .toContain("同表已存在同名");
+
+    // 冻结计划内的错误项与 autoDate 历史警告同样附中文说明。
+    const base = plan();
+    store.setPlan({
+      ...base,
+      canApply: false,
+      warnings: [{
+        code: "field.auto_date.history_unavailable", path: "draft.autoDate",
+        message: "existing records have no historical timestamps to backfill",
+        details: {},
+      }],
+      errors: [{
+        code: "field.constraint.existing_data_invalid", path: "draft.constraints",
+        message: "existing records do not satisfy the requested field settings",
+        details: { failed: 2, scanned: 6 },
+      }],
+    });
+    await flushPromises();
+    const planText = wrapper.get('[data-testid="field-change-plan"]').text();
+    expect(planText).toContain("已有数据不满足新约束");
+    expect(planText).toContain("不会回填已有记录的历史时间");
+    expect(planText).toContain("最后修改时间从下一次修改该记录起");
+    expect(planText).not.toContain("existing records");
+  });
+
+  it("输入期重名提示就近展示并阻断预览，结论过期后自动清除", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="field-display-name-duplicate"]').exists()).toBe(false);
+
+    store.patchDraft({ displayName: "重复名" });
+    store.beginDisplayNameCheck("重复名");
+    store.finishDisplayNameCheck("重复名", "重复名");
+    await flushPromises();
+    const hint = wrapper.get('[data-testid="field-display-name-duplicate"]').text();
+    expect(hint).toContain("名称重复");
+    expect(hint).toContain("重复名");
+    expect(wrapper.get('[data-testid="field-plan-button"]').attributes("disabled")).toBeDefined();
+
+    // 名称再次变化后，旧结论不再阻断。
+    store.patchDraft({ displayName: "不重复名" });
+    store.finishDisplayNameCheck("重复名", "重复名");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="field-display-name-duplicate"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="field-plan-button"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("冻结计划过期时刻转本地时区并解释预览语义", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described());
+    store.setPlan(plan());
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    const expected = formatDashboardDate("2026-07-28T12:00:00Z", getLocale(), "date-time");
+    const expiry = wrapper.get('[data-testid="field-plan-expiry"]').text();
+    expect(expiry).toContain(expected);
+    expect(expiry).toContain("本地时区");
+    expect(expiry).not.toContain("2026-07-28T12:00:00Z");
+    const hint = wrapper.get('[data-testid="field-plan-expiry-hint"]').text();
+    expect(hint).toContain("重新");
+    expect(hint).toContain("预览");
+    expect(hint).toContain("与数据本身的有效期无关");
+    // 可应用状态标签相对多行头部垂直居中。
+    const status = wrapper.get('[data-testid="field-plan-status"]');
+    expect(status.text()).toContain("可应用");
+    expect(status.classes()).toContain("plan-apply-status");
+  });
+
+  it("脏状态关闭确认可见并把焦点放到安全选项上", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    store.patchDraft({ displayName: "未保存修改" });
+    // 监听 focus 调用：jsdom 下 stub 掉 Teleport 后 vueuc FocusTrap 会把焦点回吸到哨兵，
+    // 直接断言 activeElement 不真实；产品行为是“确认卡片出现时对安全选项发起聚焦”。
+    const focused: HTMLElement[] = [];
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus")
+      .mockImplementation(function (this: HTMLElement) { focused.push(this); });
+    try {
+      await wrapper.get('[data-testid="field-close-button"]').trigger("click");
+      const confirmCard = wrapper.get('[data-testid="field-close-confirm"]');
+      expect(confirmCard.isVisible()).toBe(true);
+      await flushPromises();
+      const keepButton = wrapper.get('[data-testid="field-close-confirm-keep"]').element as HTMLElement;
+      expect(focused).toContain(keepButton);
+      await wrapper.get('[data-testid="field-close-confirm-keep"]').trigger("click");
+      expect(wrapper.find('[data-testid="field-close-confirm"]').exists()).toBe(false);
+      expect(wrapper.emitted("close")).toBeUndefined();
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+
+  it("新建 autoDate 可选择创建/最后修改时间，既有字段角色只读", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load({
+      ...described("autoDate"), definition: null,
+      capabilities: [capability("autoDate"), capability("number")],
+    });
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    // 创建态：能力声明 autoDate 可创建，草稿默认 createdAt 并可切换角色。
+    expect(store.draft?.logicalType).toBe("autoDate");
+    expect(store.draft?.autoDate).toEqual({ role: "createdAt" });
+    const roleSelect = wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === "auto-date-role")!;
+    const roleLabels = (roleSelect.props("options") as { label: string }[])
+      .map(option => option.label).join(";");
+    expect(roleLabels).toContain("创建时间");
+    expect(roleLabels).toContain("最后修改时间");
+    roleSelect.vm.$emit("update:value", "updatedAt");
+    await flushPromises();
+    expect(store.draft?.autoDate).toEqual({ role: "updatedAt" });
+    expect(wrapper.text()).toContain("按 UTC 存储，按显示时区呈现");
+    expect(wrapper.text()).toContain("只读");
+    // 历史时间语义：不推测补填，创建时间可能为空，最后修改时间从下一次修改起。
+    const note = wrapper.get('[data-testid="auto-date-history-note"]').text();
+    expect(note).toContain("不会推测补填历史时间");
+    expect(note).toContain("创建时间对旧记录可能为空");
+    expect(note).toContain("最后修改时间从下一次修改该记录起");
+    expect(wrapper.get('[data-testid="field-constraint-summary"]').text())
+      .toContain("历史时间不回填");
   });
 
   it("autoNumberReformat 计划确认展示人类可读文案而非内部 token", async () => {

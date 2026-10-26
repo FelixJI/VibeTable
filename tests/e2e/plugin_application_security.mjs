@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
+import { installApplication, openApplication, nativePluginInput, assertSidebarPluginReachable } from "./plugin_applications.mjs";
 
 // Location-less CSP messages must match this attack's exact URL and captured
 // directive; each fetch produces one Connecting message and one Fetch message.
@@ -132,8 +132,9 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
     await page.getByTestId("plugin-app-viewport").isVisible()
       && (await frame.evaluate(() => call("context.read"))).collection === table.tableId);
   await runtime.acknowledgePluginSecurityDiagnostics(recorder, probes, diagnosticStart);
-  await nativePluginInput(runtime, "observe", "plugin-manage", "contrast").then(result =>
-    recorder.check("native chrome remains visible over the real security test package", result.status === "completed", { result }));
+  // 旧原生插件 chrome 已移除：插件界面只从侧栏进入；安全包仍被限制在产品视口内。
+  await assertSidebarPluginReachable(page, recorder,
+    "the security package stays reachable only through the product sidebar");
   for (const mode of ["dark", "light"]) {
     await page.getByTestId("plugin-app-return").click();
     await page.getByTestId("nav-settings").click();
@@ -145,23 +146,24 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
     recorder.check(`actual Host acknowledges the application ${mode} theme`, updated.type === "appPreferences.update" && updated.payload.theme === mode, { updated });
     frame = await openApplication(page);
     await frame.waitForFunction(expected => document.documentElement.dataset.theme === expected, mode);
-    const screenshot = await nativePluginInput(runtime, "observe", "plugin-manage", mode === "dark" ? "dark" : "application");
-    recorder.check(`real WPF and plugin application remain usable in ${mode}`, screenshot.status === "completed", { screenshot });
+    recorder.check(`plugin application stays usable inside the product shell in ${mode}`,
+      await page.getByTestId("plugin-app-viewport").isVisible()
+        && await page.getByTestId("nav-plugins").isVisible());
   }
   await helpers.beginBridgeMessageCapture(page, ["appearance.changed"]);
   // This closed parent-side scope is refused locally and runs only on the
   // controlled GitHub Windows CI runner; every driver exit restores it.
-  const contrast = await nativePluginInput(runtime, "contrast-on", "plugin-manage", "contrast");
+  // 系统高对比度只能由父侧原生通道切换；contrast 动作不观察任何按钮，
+  // 请求仅要求闭合集中的身份字段（plugin-recover）与 contrast 舞台标签。
+  const contrast = await nativePluginInput(runtime, "contrast-on", "plugin-recover", "contrast");
   recorder.check("controlled runner enables high contrast through the actual system API",
     contrast.status === "completed" && (contrast.contrast.observed.flags & 1) === 1, { contrast });
   const projectedContrast = await helpers.waitForCapturedBridgeMessage(page, 10000);
   recorder.check("actual Host projects high contrast from the system notification", projectedContrast.payload.highContrast === true, { projectedContrast });
   await page.waitForFunction(() => matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
-  const contrastPainted = await nativePluginInput(runtime, "observe", "plugin-manage", "contrast");
-  recorder.check("WPF high-contrast screenshot follows the Host system projection", contrastPainted.status === "completed" && contrastPainted.observation.systemHighContrast === true, { contrastPainted });
   recorder.check("real WebView receives the operating system forced-color mode", await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
   const restoredCaptureId = await page.evaluate(installContrastRestoreProjectionCaptureInPage);
-  const restoredContrast = await nativePluginInput(runtime, "contrast-off", "plugin-manage", "contrast");
+  const restoredContrast = await nativePluginInput(runtime, "contrast-off", "plugin-recover", "contrast");
   recorder.check("controlled runner restores the recorded system contrast contract", restoredContrast.status === "completed"
     && restoredContrast.contrast.status === "restored"
     && restoredContrast.contrast.original.flags === restoredContrast.contrast.observed.flags, { restoredContrast });
@@ -169,17 +171,15 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   recorder.check("actual Host projects high contrast off after restoration", restoredProjection.payload.highContrast === false, { restoredProjection });
   await page.waitForFunction(() => !matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
   recorder.check("plugin forced colors also leave high contrast", !await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
-  const restoredChrome = await nativePluginInput(runtime, "observe", "plugin-manage", "contrast-restored");
-  recorder.check("restored native chrome is owned, visible and reachable", restoredChrome.status === "completed"
-    && restoredChrome.observation.systemHighContrast === false, { restoredChrome });
   const scaling = await page.context().newCDPSession(page);
   try {
     await scaling.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.25 });
     const scale = await page.evaluate(() => ({ pageScale: visualViewport.scale, devicePixelRatio }));
-    const nativeScaled = await nativePluginInput(runtime, "observe", "plugin-manage", "scaled");
-    recorder.check("actual 125 percent content scale leaves native security chrome reachable",
-      Math.abs(scale.pageScale - 1.25) < 0.01 && nativeScaled.status === "completed"
-        && nativeScaled.observation.dpi > 0, { scale, nativeScaled, scope: "content scale; physical DPI unchanged" });
+    recorder.check("actual 125 percent content scale keeps sidebar plugin entries reachable",
+      Math.abs(scale.pageScale - 1.25) < 0.01
+        && await page.getByTestId("nav-plugins").isVisible()
+        && await page.getByTestId("plugin-app-viewport").isVisible(),
+      { scale, scope: "content scale; physical DPI unchanged" });
   } finally { await scaling.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }); }
   const browserSession = await page.context().browser().newBrowserCDPSession();
   const before = await browserSession.send("SystemInfo.getProcessInfo");
@@ -190,17 +190,16 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const faulting = looping.processInfo.filter(item => item.type === "renderer"
     && item.cpuTime - (before.processInfo.find(prior => prior.id === item.id)?.cpuTime ?? item.cpuTime) > 0.2);
   recorder.check("actual plugin loop consumes CPU in one identified renderer", faulting.length === 1, { before, looping, faulting });
-  const stopped = await nativePluginInput(runtime, "click", "plugin-stop", "loop");
-  recorder.check("actual WPF native stop receives input while the plugin loops", stopped.status === "completed" && stopped.input === "SendInput", { stopped });
+  // 原生常驻“停止插件”入口已随顶部宿主行移除：存活但失控的渲染器由宿主
+  // 恢复路径封存（seal → drain ≤6s → rebuild），不再有原生按钮输入路径。
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("renderer recovery preserves workspace and does not auto-reopen the faulting plugin", await page.getByTestId("plugin-app-viewport").count() === 0);
   const after = await browserSession.send("SystemInfo.getProcessInfo");
   recorder.check("old faulting renderer leaves the shared browser process set",
     !after.processInfo.some(next => next.id === faulting[0].id), { before, looping, faulting, after });
-  // 恢复清空 surface 后管理按钮按契约隐藏：资格观察改用常驻 plugin-recover，禁用窗口由 helper 等待。
-  await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("actual WPF recovery screenshot remains actionable", result.status === "completed"
-    && ["plugin-stop", "plugin-return", "plugin-manage"].every(id => !result.observation.buttons.some(button => button.id === id)), { result }));
+  await assertSidebarPluginReachable(page, recorder,
+    "recovery leaves sidebar plugin entries reachable without reopening the app");
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
@@ -210,11 +209,14 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   await session.send("Page.crash").catch(error => { recorder.check("actual renderer crash closes or fails the old CDP target", /crash|closed|target|connection/i.test(String(error)), { error: String(error) }); });
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
-  await nativePluginInput(runtime, "observe", "plugin-recover", "crashed").then(result => recorder.check("actual renderer crash recovers into reachable WPF chrome", result.status === "completed", { result }));
+  // 自动恢复成功后回到 Ready 外壳：故障层断言只在故障层进行（见下），
+  // 此处验证恢复后的真实用户可达性。
+  await assertSidebarPluginReachable(page, recorder,
+    "actual renderer crash recovers into a usable product shell");
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
   recorder.check("after crash the same PocketBase business record is preserved", (await frame.locator("#rows").innerText()).includes("security original"));
   await page.getByTestId("plugin-app-return").click();
-  await fs.writeFile(path.join(runtime.evidenceDir, "49-security-observations.json"), JSON.stringify({ probes, before, looping, faulting, after, stopped }, null, 2));
+  await fs.writeFile(path.join(runtime.evidenceDir, "49-security-observations.json"), JSON.stringify({ probes, before, looping, faulting, after }, null, 2));
 }

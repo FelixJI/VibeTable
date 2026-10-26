@@ -164,6 +164,7 @@ function isNumericField(field: string): boolean {
           :relations="relations"
           :search-relation-targets="searchRelationTargets"
           @update="nodes => draftFilters = nodes"
+          @commit="() => commitPatch({ filters: cloneFilterExpressions(draftFilters) })"
         />
         <footer><NButton size="small" type="primary" data-testid="view-filter-apply" @click="() => commitPatch({ filters: cloneFilterExpressions(draftFilters) })">应用</NButton></footer>
       </div>

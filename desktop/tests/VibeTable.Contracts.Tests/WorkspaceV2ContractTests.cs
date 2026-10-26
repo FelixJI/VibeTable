@@ -20,6 +20,7 @@ public sealed class WorkspaceV2ContractTests
             ["snapshot-catalog-entry.json"] = WorkspaceV2Json.DeserializeStrict<SnapshotCatalogEntryV2>,
             ["lease-claim.json"] = WorkspaceV2Json.DeserializeStrict<LeaseClaimV2>,
             ["retention-policy.json"] = WorkspaceV2Json.DeserializeStrict<RetentionPolicyV2>,
+            ["retention-policy-smart.json"] = WorkspaceV2Json.DeserializeStrict<RetentionPolicyV2>,
             ["workspace-event.json"] = WorkspaceV2Json.DeserializeStrict<WorkspaceEventV2>,
             ["rpc-catalog.json"] = WorkspaceV2Json.DeserializeStrict<RpcContractCatalogV2>,
         };

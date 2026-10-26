@@ -624,7 +624,8 @@ func validateWorkspaceSettingsObject(raw []byte) error {
 		value.Retention.SnapshotCount == 0 ||
 		value.Retention.FileRevisionDays == 0 ||
 		value.Retention.FileRevisionCount == 0 ||
-		!validWorkspaceSettingsBuckets(value.Retention.SnapshotBuckets) ||
+		!(len(value.Retention.SnapshotBuckets) == 1 && value.Retention.SnapshotBuckets[0] == "smart" ||
+			validWorkspaceSettingsBuckets(value.Retention.SnapshotBuckets)) ||
 		!validWorkspaceSettingsBuckets(value.Retention.FileRevisionBuckets) ||
 		(value.Retention.RepositoryLimitBytes != nil &&
 			*value.Retention.RepositoryLimitBytes == 0) {

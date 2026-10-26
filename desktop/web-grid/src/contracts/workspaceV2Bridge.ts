@@ -175,6 +175,7 @@ export interface WorkspaceV2RpcParams {
   readonly "repository.applyKeyRotation": {
     readonly planId: string;
     readonly confirmed: true;
+    readonly targetMode: "protected" | "convenient";
   };
   readonly "fileHistory.import": {
     readonly pathGrant: string;
@@ -225,7 +226,7 @@ export interface WorkspaceV2RpcParams {
     readonly expectedRevision: number;
     readonly snapshotDays: number;
     readonly snapshotCount: number;
-    readonly snapshotBuckets: readonly ("hourly" | "daily" | "weekly" | "monthly")[];
+    readonly snapshotBuckets: RetentionPolicyV2["snapshotBuckets"];
     readonly fileRevisionDays: number;
     readonly fileRevisionCount: number;
     readonly fileRevisionBuckets: readonly ("hourly" | "daily" | "weekly" | "monthly")[];

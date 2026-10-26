@@ -1035,7 +1035,39 @@ describe("workspace protection UI capability gates", () => {
       params: {
         planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         confirmed: true,
+        targetMode: "protected",
       },
+    });
+    wrapper.unmount();
+  });
+
+  it.each(["convenient", "protected"] as const)("switches key mode from %s through the confirmed host plan", async encryption => {
+    useWorkspaceSessionStore().configureCapabilities([
+      "workspace.session.v2", "repository.settings.v2", "repository.key-rotation.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    protection.setStorage({
+      location: "D:\\Workspaces\\Quarter", activityRoot: "D:\\Workspaces\\Quarter",
+      mode: "direct", provider: "fixed", health: "healthy",
+      logicalSize: 4096, physicalSize: 2048, reclaimableSize: 512,
+      encryption, keyVersion: 1, pendingSync: false, replicaVerified: true,
+    });
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "storage" }, attachTo: document.body,
+    });
+    await wrapper.get('[data-testid="repository-key-mode-preview"]').trigger("click");
+    expect(wrapper.emitted("action")?.[0]?.[0]).toEqual({
+      method: "repository.previewKeyRotation", params: {},
+    });
+    protection.setKeyRotationPlan({ planId: "plan-mode", expiresAt: "2026-10-26T10:00:00Z", protectionRequired: true });
+    await wrapper.vm.$nextTick();
+    const modal = document.body.querySelector<HTMLButtonElement>('[data-testid="repository-key-rotation-apply"]')!;
+    if (encryption === "protected") expect(document.body.textContent).toContain("不能抵抗有意访问");
+    modal.click();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("action")?.[1]?.[0]).toEqual({
+      method: "repository.applyKeyRotation",
+      params: { planId: "plan-mode", confirmed: true, targetMode: encryption === "convenient" ? "protected" : "convenient" },
     });
     wrapper.unmount();
   });
@@ -1474,7 +1506,7 @@ describe("workspace protection UI capability gates", () => {
     // 恢复默认只改草稿，仍走既有保存流程确认。
     await settings.get('[data-testid="retention-reset-defaults"]').trigger("click");
     await settings.vm.$nextTick();
-    expect(numberInputs()[0]).toBe("30");
+    expect(numberInputs()[0]).toBe("730");
     expect(numberInputs()[1]).toBe("50");
     expect(settings.get('[data-testid="retention-save"]').attributes("disabled"))
       .toBeUndefined();
@@ -1483,9 +1515,9 @@ describe("workspace protection UI capability gates", () => {
       method: "retention.update",
       params: {
         expectedRevision: 4,
-        snapshotDays: 30,
+        snapshotDays: 730,
         snapshotCount: 50,
-        snapshotBuckets: ["hourly", "daily", "weekly", "monthly"],
+        snapshotBuckets: ["smart"],
         fileRevisionDays: 30,
         fileRevisionCount: 100,
         fileRevisionBuckets: ["daily", "weekly", "monthly"],

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
+import { NDropdown } from "naive-ui";
 import DataSourceViewBar from "./DataSourceViewBar.vue";
 
 describe("DataSourceViewBar", () => {
@@ -198,5 +199,96 @@ describe("DataSourceViewBar", () => {
       groupField: null,
       coverField: null,
     }]);
+  });
+
+  it("emits the in-table import intents from the view bar", async () => {
+    const wrapper = mount(DataSourceViewBar, {
+      props: {
+        collection: "orders",
+        views: [],
+        activeId: null,
+        loading: false,
+        dirty: false,
+      },
+    });
+    const button = wrapper.get('[data-testid="table-import-data"]');
+    expect(button.attributes("aria-label")).toBe("导入数据到当前表");
+    await button.trigger("click");
+    expect(wrapper.emitted("importData")).toHaveLength(1);
+
+    const management = wrapper.get('[data-testid="table-import-management"]');
+    expect(management.attributes("aria-label")).toBe("打开当前表的导入管理");
+    await management.trigger("click");
+    expect(wrapper.emitted("openImportManagement")).toHaveLength(1);
+
+    await wrapper.setProps({ loading: true });
+    // 视图列表加载不门控导入入口（导入不依赖预设列表）。
+    expect(wrapper.get('[data-testid="table-import-data"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get('[data-testid="table-import-management"]').attributes("disabled")).toBeUndefined();
+    await wrapper.setProps({ importDisabled: true });
+    expect(wrapper.get('[data-testid="table-import-data"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="table-import-management"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("prefills a unique duplicate name and blocks same-table duplicate view names", async () => {
+    const views = [
+      { id: "v1", collection: "orders", name: "本月待办", scope: "personal" as const,
+        revision: "r1", emittedEvents: [], view: { layout: "table", filters: [], sorts: [], search: "", visibleFields: [] } },
+      { id: "v2", collection: "orders", name: "本月待办 副本", scope: "personal" as const,
+        revision: "r2", emittedEvents: [], view: { layout: "table", filters: [], sorts: [], search: "", visibleFields: [] } },
+    ];
+    const wrapper = mount(DataSourceViewBar, {
+      attachTo: document.body,
+      props: { collection: "orders", views, activeId: null, loading: false, dirty: false },
+    });
+    // 打开 v1 的操作菜单选择“复制视图”。
+    const menu = wrapper.findAllComponents(NDropdown)[0]!;
+    (menu.props("onSelect") as (key: string) => void)("duplicate");
+    await wrapper.vm.$nextTick();
+    const input = document.body.querySelector<HTMLInputElement>("input");
+    // 预填名与现有视图名冲突时自动避让（本月待办 副本 → 本月待办 副本 2）。
+    expect(input?.value).toBe("本月待办 副本 2");
+
+    // 手动改回已有名称：确认禁用、提示冲突，Enter 也不得提交。
+    input!.value = "本月待办 副本";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="view-name-conflict"]')).toBeTruthy();
+    expect(
+      (document.body.querySelector('[data-testid="view-dialog-confirm"]') as HTMLButtonElement)
+        ?.disabled,
+    ).toBe(true);
+    input!.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("duplicate")).toBeFalsy();
+
+    // 改为可用名称后提交复制。
+    input!.value = "本月待办 备份";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    (
+      document.body.querySelector('[data-testid="view-dialog-confirm"]') as HTMLButtonElement
+    )?.click();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("duplicate")?.[0]?.[1]).toBe("本月待办 备份");
+  });
+
+  it("keeps an unchanged own name valid while renaming a view", async () => {
+    const views = [
+      { id: "v1", collection: "orders", name: "本月待办", scope: "personal" as const,
+        revision: "r1", emittedEvents: [], view: { layout: "table", filters: [], sorts: [], search: "", visibleFields: [] } },
+    ];
+    const wrapper = mount(DataSourceViewBar, {
+      attachTo: document.body,
+      props: { collection: "orders", views, activeId: null, loading: false, dirty: false },
+    });
+    const menu = wrapper.findAllComponents(NDropdown)[0]!;
+    (menu.props("onSelect") as (key: string) => void)("rename");
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="view-name-conflict"]')).toBeNull();
+    expect(
+      (document.body.querySelector('[data-testid="view-dialog-confirm"]') as HTMLButtonElement)
+        ?.disabled,
+    ).toBe(false);
   });
 });

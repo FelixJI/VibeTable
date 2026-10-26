@@ -26,7 +26,7 @@ import {
 } from "@lucide/vue";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import changelog from "@/generated/changelog.json";
-import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
+import { QUOTE_STYLES_BY_SOURCE, useUiStore, type SettingsSection } from "@/stores/uiStore";
 import type {
   DailyQuoteSource,
   DailyQuoteStyle,
@@ -58,7 +58,7 @@ import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
 
-type Section = "general" | "calendar" | "storage" | "versions" | "interaction" | "about";
+type Section = SettingsSection;
 type ChangelogEntry = Readonly<{
   subject: string;
   commit: string | null;
@@ -110,6 +110,18 @@ const updateProxyOptions = computed(() => [
 ]);
 
 onMounted(() => void loadAppPreferences());
+
+// 深链（如首页“查看恢复时间线”→版本与恢复）：uiStore 携带导航意图，
+// 本视图是分区状态的唯一拥有者，到达后立即消费。
+watch(
+  () => ui.requestedSettingsSection,
+  (section) => {
+    if (!section) return;
+    current.value = section;
+    ui.settleSettingsSection();
+  },
+  { immediate: true },
+);
 
 watch(current, (section) => {
   if (section === "about") void loadDiagnostics();
@@ -817,7 +829,9 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-row--tall { min-height: 82px; }
 .setting-row--nested { background: color-mix(in srgb, var(--vt-bg-subtle) 55%, transparent); }
-.setting-row > div { display: flex; flex-direction: column; }
+/* 仅文字容器采用列向堆叠；NSwitch/NSelect 的根节点也是 div，命中会破坏
+   开关/下拉的内部布局与居中（用户报告的“状态框/开关不居中”根因同类）。 */
+.setting-row > div:not(.n-switch):not(.n-select) { display: flex; flex-direction: column; }
 .setting-row strong, .setting-action strong { font-weight: 500; }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
 .setting-control { width: 170px; }
@@ -922,7 +936,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .changelog-card { margin-top: 16px; padding: 18px 20px 8px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: linear-gradient(145deg, var(--vt-bg) 0%, var(--vt-bg-subtle) 100%); }
 .update-card { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; padding: 18px 20px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .update-heading, .update-proxy-row, .update-version-line, .release-notes-list li > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.update-heading > div, .update-proxy-row > div, .release-notes-heading { display: flex; flex-direction: column; gap: 3px; }
+.update-heading > div, .update-proxy-row > div:not(.n-select), .release-notes-heading { display: flex; flex-direction: column; gap: 3px; }
 .update-heading small, .update-proxy-row small, .release-notes-heading small, .release-notes-list time { color: var(--vt-fg-muted); }
 .update-proxy-select { width: min(260px, 46%); }
 .proxy-disclosure { font-size: var(--vt-font-caption); }

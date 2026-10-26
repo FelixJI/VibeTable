@@ -180,4 +180,30 @@ describe("ViewQueryControls", () => {
       visibleFields: ["status", "amount"],
     });
   });
+
+  it("删除筛选条件立即提交生效，不等待应用按钮", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns,
+        filters: [
+          { field: "status", operator: "eq", value: "open" },
+          { field: "amount", operator: "gt", value: 5 },
+        ],
+        groups: [], summaries: [], visibleFields: ["status", "amount"],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-filter-trigger"]').trigger("click");
+    await flushPromises();
+    document.querySelectorAll<HTMLButtonElement>('button[aria-label="删除筛选条件"]')[0]!
+      .click();
+    await flushPromises();
+
+    const change = wrapper.emitted("change")?.at(-1)?.[0] as {
+      filters: Array<{ field: string }>;
+    };
+    expect(change.filters).toEqual([{ field: "amount", operator: "gt", value: 5 }]);
+    wrapper.unmount();
+  });
 });

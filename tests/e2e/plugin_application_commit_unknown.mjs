@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
+import { installApplication, openApplication } from "./plugin_applications.mjs";
 
 async function waitFile(file, predicate, seconds = 20) {
   const until = Date.now() + seconds * 1000;
@@ -32,11 +32,11 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const ready = JSON.parse(await waitFile(path.join(runtime.controlsDir, "mutation-barrier.ready.json"), text => JSON.parse(text).point === "after_record"));
   recorder.check("actual Go write reached the existing transaction barrier", ready.point === "after_record" && Number.isInteger(ready.pid ?? ready.processId), { ready });
   const oldToken = await frame.evaluate(() => window.name);
-  const stopped = await nativePluginInput(runtime, "click", "plugin-stop", "cancelled");
-  recorder.check("native stop can revoke while a commit receipt is unavailable", stopped.status === "completed", { stopped });
-  // Confirm the production recovery actually sealed sessions before releasing
-  // the write; SendInput delivery alone is not a cancellation proof.
-  await waitFile(path.join(path.dirname(runtime.dataRoot), "vibetable-trace.log"), text => text.includes("Renderer recovery sealed plugin sessions; reason=host-stop"));
+  // 原生常驻“停止插件”入口已移除：用同一渲染器恢复路径（seal → drain ≤6s →
+  // rebuild）封存会话；屏障挂起的写入在 drain 后保持 sticky-unknown，后续
+  // 断言不受影响。封存证据即下方的 sealed-sessions trace（无原生输入面）。
+  await runtime.refreshPluginProductPage();
+  await waitFile(path.join(path.dirname(runtime.dataRoot), "vibetable-trace.log"), text => text.includes("Renderer recovery sealed plugin sessions;"));
   await fs.writeFile(path.join(runtime.controlsDir, "mutation-barrier.release"), "release\n");
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
@@ -53,7 +53,9 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const later = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
   const unchanged = await query();
   recorder.check("navigation preserves unknown and never automatically repeats its write", later.payload.state === "aborted" && later.payload.error?.code === "plugin_commit_unknown" && JSON.stringify(observed.payload.rows) === JSON.stringify(unchanged.payload.rows), { later, unchanged });
-  await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("unknown commit recovery has actual WPF evidence", result.status === "completed", { result }));
+  // 恢复后的外壳可用性以真实侧栏入口验证（原生恢复行仅存在于故障层）。
+  recorder.check("unknown commit recovery leaves the product shell usable",
+    await page.getByTestId("nav-plugins").isVisible());
   await page.getByTestId("plugin-app-return").click();
   return { taskId, projectKey: opened.payload.projectKey };
 }

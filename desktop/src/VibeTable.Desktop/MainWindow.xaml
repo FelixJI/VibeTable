@@ -16,67 +16,23 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Window.Resources>
+    <!--
+        #482 之后的可用性收口：不再保留常驻的顶部原生宿主/插件 chrome 行，
+        插件界面仅通过侧栏图标进入；故障恢复的实际能力保留在两处 ——
+        渲染器故障由宿主自动触发 RecoverRendererAsync（代码路径不变），
+        手动“恢复界面”入口收敛到宿主回退层（shell 未加载/故障时可见）。
+    -->
     <Grid x:Name="RootGrid" Background="{DynamicResource VtWindowBackgroundBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        <!--
-            #482 native host chrome: an always-reachable row that no plugin DOM,
-            overlay or frozen renderer can shadow. 插件 chrome (停止插件/返回平台/
-            管理插件) only renders while a plugin surface is actually active;
-            恢复界面 stays reachable from the first renderer load onward — a
-            frozen renderer keeps State=Ready but cannot shadow this row, and
-            abnormal states (Faulted) still expose the native recovery path.
-        -->
-        <Border Grid.Row="0" Padding="10,4" BorderBrush="{DynamicResource VtSurfaceBorderBrush}" BorderThickness="0,0,0,1"
-                Background="{DynamicResource VtSurfaceBackgroundBrush}">
-            <StackPanel>
-            <DockPanel LastChildFill="True">
-                <TextBlock DockPanel.Dock="Left" Text="VibeTable 宿主" FontSize="12" FontWeight="SemiBold"
-                           Foreground="{DynamicResource VtWindowTextBrush}" VerticalAlignment="Center"/>
-                <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}" FontSize="11"
-                           Foreground="{DynamicResource VtMutedTextBrush}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <Button AutomationProperties.AutomationId="plugin-stop" Content="停止插件" Margin="4,0" Padding="10,3" FontSize="12"
-                            Visibility="{Binding IsPluginChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                            Command="{Binding StopPluginsCommand}"/>
-                    <Button AutomationProperties.AutomationId="plugin-return" Content="返回平台" Margin="4,0" Padding="10,3" FontSize="12"
-                            Visibility="{Binding IsPluginChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                            Command="{Binding ReturnToPlatformCommand}"/>
-                    <Button AutomationProperties.AutomationId="plugin-manage" Content="管理插件" Margin="4,0" Padding="10,3" FontSize="12"
-                            Visibility="{Binding IsPluginChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                            Command="{Binding ManagePluginsCommand}"/>
-                    <Button AutomationProperties.AutomationId="plugin-recover" Content="恢复界面" Margin="4,0" Padding="10,3" FontSize="12"
-                            Visibility="{Binding IsNativeRecoveryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"
-                            Command="{Binding RecoverRendererCommand}"/>
-                </StackPanel>
-            </DockPanel>
-            <TextBlock Text="{Binding RendererRecoveryError}" TextWrapping="Wrap" FontSize="12"
-                       Foreground="{DynamicResource VtWindowTextBrush}" AutomationProperties.AutomationId="renderer-recovery-error">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding RendererRecoveryError}" Value="{x:Null}">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
-            </StackPanel>
-        </Border>
         <!-- The primary app renderer is never navigated away from; recovery
              rebuilds the whole control in this row (same env/UDF, new generation). -->
         <wv2:WebView2
             x:Name="AppWebView"
-            Grid.Row="1"
             AllowExternalDrop="True"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
-        <!-- Host fallback exists only before the shell loads or after a renderer fault;
-             it never covers the native chrome row above. -->
-        <Grid Grid.Row="1" Panel.ZIndex="30" Background="{DynamicResource VtSurfaceBackgroundBrush}"
+        <!-- Host fallback exists only before the shell loads or after a renderer
+             fault; it carries the native 恢复界面 entry and the recovery error. -->
+        <Grid Panel.ZIndex="30" Background="{DynamicResource VtSurfaceBackgroundBrush}"
               Visibility="{Binding IsHostFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <StackPanel Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Border Width="44" Height="44" Background="#3370FF" CornerRadius="10" HorizontalAlignment="Center">
@@ -99,9 +55,28 @@
                         </Style>
                     </ProgressBar.Style>
                 </ProgressBar>
-                <Button Content="重试" Margin="0,22,0,0" Padding="18,7"
-                        HorizontalAlignment="Center" Command="{Binding RetryCommand}"
-                        Visibility="{Binding IsRetryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,22,0,0">
+                    <Button Content="重试" Padding="18,7" Margin="0,0,10,0"
+                            Command="{Binding RetryCommand}"
+                            Visibility="{Binding IsRetryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                    <!-- 渲染器级恢复（不重启后端）；首次渲染加载后即可用，故障态下与重试并列。 -->
+                    <Button AutomationProperties.AutomationId="plugin-recover" Content="恢复界面" Padding="18,7"
+                            Command="{Binding RecoverRendererCommand}"
+                            Visibility="{Binding IsNativeRecoveryVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                </StackPanel>
+                <TextBlock Text="{Binding RendererRecoveryError}" TextWrapping="Wrap" FontSize="12" Margin="0,14,0,0"
+                           TextAlignment="Center"
+                           Foreground="{DynamicResource VtWindowTextBrush}" AutomationProperties.AutomationId="renderer-recovery-error">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding RendererRecoveryError}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </StackPanel>
         </Grid>
     </Grid>

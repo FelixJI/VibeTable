@@ -12,6 +12,24 @@ from tests.backend.product_composition_fixture import ProductBackend
 from tests.backend.product_composition_fixture import product_backend as product_backend
 
 
+@pytest.mark.parametrize("value", [True, False, "false", 0, None, []])
+def test_table_duplicate_scope_uses_closed_booleans(value: object) -> None:
+    params = {
+        "displayName": "副本",
+        "operationId": "scope-copy",
+        "actor": {"id": "local", "kind": "user"},
+        "sourceTableId": "tbl_source",
+        "copyRecords": value,
+        "copyViews": False,
+    }
+    model = PRODUCT_RPC_REGISTRY["schema.table.create"]
+    if isinstance(value, bool):
+        assert model.model_validate(params).root["copyRecords"] is value
+    else:
+        with pytest.raises(ValidationError):
+            model.model_validate(params)
+
+
 def _formula_v2_field() -> dict[str, Any]:
     path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/field-definition.json"
     field = json.loads(path.read_text(encoding="utf-8"))

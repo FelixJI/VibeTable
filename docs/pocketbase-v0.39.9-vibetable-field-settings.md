@@ -125,7 +125,7 @@ PocketBase 自带的 `/_/` 是**PocketBase 管理后台**，不是 VibeTable 仪
 
 仓库已经具备 `autoDate` 类型、只读系统字段、查询日期映射和日期格式化等大部分基础设施；关键缺口是编译器当前把所有 `autoDate` 都写成 `onCreate=true/onUpdate=true`，因此名称为 `created_at` 的现有样例实际上也是“最后更新时间”行为。
 
-本方案将 `autoDate` 收敛为两个不可变产品角色：`createdAt -> true/false`、`updatedAt -> true/true`。两者在 VibeTable 中是只读系统字段，但底层 PocketBase `System` 必须保持 `false`，以兼容当前 Schema 重放流程。首版只允许在新表或空表创建；非空表必须先有可信回填来源，禁止把迁移时刻伪装成历史时间。
+本方案将 `autoDate` 收敛为两个不可变产品角色：`createdAt -> true/false`、`updatedAt -> true/true`。两者在 VibeTable 中是只读系统字段，但底层 PocketBase `System` 必须保持 `false`，以兼容当前 Schema 重放流程。当前支持在非空表添加：预览明确提示不会推测回填历史时间，旧记录的创建时间保持为空，最后修改时间从下一次修改记录起维护；新记录正常生成两个时间。禁止把添加字段时刻伪装成历史时间。存储序列化为 UTC，界面按字段显示时区或本地时区格式化。
 
 ---
 

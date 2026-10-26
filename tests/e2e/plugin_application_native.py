@@ -1,7 +1,12 @@
 """Owned WPF chrome observation and actual SendInput for plugin application E2E.
 
 This is parent-side QA, never a product IPC. The closed request set can only
-observe/click the current synthetic Host's declared native plugin buttons.
+observe/click the native controls the product still owns: the fault-layer
+renderer recovery entry (plugin-recover, reachable only while the host
+fallback layer is up) and the plugin confirmation dialog buttons. The former
+always-on native host chrome row (plugin-stop/plugin-return/plugin-manage)
+was removed with the table-usability rework; those flows are now exercised
+through the real web sidebar surface.
 """
 
 from __future__ import annotations
@@ -17,9 +22,6 @@ from typing import Any
 
 _ALLOWED_BUTTONS = frozenset(
     {
-        "plugin-stop",
-        "plugin-return",
-        "plugin-manage",
         "plugin-recover",
         "plugin-confirm-approve",
         "plugin-confirm-reject",
@@ -33,7 +35,7 @@ def _validate_request(request: dict[str, Any]) -> None:
     if request["action"] not in {"observe", "click", "escape", "contrast-on", "contrast-off"}:
         raise ValueError("native plugin action is invalid")
     if request["action"] in {"contrast-on", "contrast-off"} and (
-        request["buttonId"] != "plugin-manage" or request["stage"] != "contrast"
+        request["buttonId"] != "plugin-recover" or request["stage"] != "contrast"
     ):
         raise ValueError("native plugin contrast scope is invalid")
     if request["buttonId"] not in _ALLOWED_BUTTONS:

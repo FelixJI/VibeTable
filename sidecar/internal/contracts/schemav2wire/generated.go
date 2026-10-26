@@ -364,9 +364,12 @@ type FormulaPreviewRequest struct {
 }
 
 type TableCreateIntent struct {
-	DisplayName string `json:"displayName"`
-	OperationId string `json:"operationId"`
-	Actor       Actor  `json:"actor"`
+	DisplayName   string  `json:"displayName"`
+	OperationId   string  `json:"operationId"`
+	Actor         Actor   `json:"actor"`
+	SourceTableId *string `json:"sourceTableId,omitempty"`
+	CopyRecords   *bool   `json:"copyRecords,omitempty"`
+	CopyViews     *bool   `json:"copyViews,omitempty"`
 }
 
 type TableCreateReceipt struct {

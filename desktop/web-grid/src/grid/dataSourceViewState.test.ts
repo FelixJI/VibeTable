@@ -237,6 +237,35 @@ describe("dataSourceViewState", () => {
       headerFilters: [{ field: "name", value: "A" }],
     });
   });
+
+  it("contains token 组回填表头输入时用空格重新连接", async () => {
+    const applyPresentation = vi.fn();
+    const grid: DataSourceViewGrid = {
+      getColumns: () => [
+        { getField: () => "note", getWidth: () => 200, isVisible: () => true },
+      ],
+      applyPresentation,
+    };
+    await applyDataSourceView(grid, {
+      kind: "table",
+      layout: "table",
+      search: "",
+      columns: [{ name: "note", order: 0, width: 180, visible: true }],
+      sorts: [],
+      filters: [{
+        groupLogic: "OR",
+        filters: [
+          { field: "note", operator: "contains", value: "foo" },
+          { field: "note", operator: "contains", value: "bar" },
+        ],
+      }],
+    });
+    expect(applyPresentation).toHaveBeenCalledWith({
+      columns: [{ field: "note", width: 180, visible: true, frozen: false }],
+      sorters: [],
+      headerFilters: [{ field: "note", value: "foo bar" }],
+    });
+  });
   it("does not flatten an advanced filter group into incorrect header filters", async () => {
     const applyPresentation = vi.fn();
     await applyDataSourceView({
