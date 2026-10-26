@@ -499,7 +499,10 @@ def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
         observed.append((command, cwd, timeout))
         if command[1] == "list" and command[-1] == "./...":
             return 0, f"example/tests/integration\t{package_dir}\n", ""
-        if "-list" in command:
+        if command[1:4] == ["test", "-c", "-race"]:
+            Path(command[command.index("-o") + 1]).touch()
+            return 0, "", ""
+        if any(arg.startswith("-test.list=") for arg in command):
             return 0, "\n".join(names) + "\nok\tpackage\n", ""
         return 0, "ok\n", ""
 
@@ -550,7 +553,10 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
         observed.append((command, timeout))
         if command[1] == "list" and command[-1] == "./...":
             return 0, f"example/tests/integration\t{package_dir}\n", ""
-        if "-list" in command:
+        if command[1:4] == ["test", "-c", "-race"]:
+            Path(command[command.index("-o") + 1]).touch()
+            return 0, "", ""
+        if any(arg.startswith("-test.list=") for arg in command):
             return 0, "\n".join([*slow, "TestRegular"]) + "\nok\tpackage\n", ""
         return 0, "ok\n", ""
 
@@ -615,9 +621,12 @@ def test_race_stage_isolates_named_tests_in_every_package(
                 ),
                 "",
             )
-        if "-list" in command:
-            package = command[2]
-            prefix = "Migration" if package.endswith("migrations") else "Integration"
+        if command[1:4] == ["test", "-c", "-race"]:
+            Path(command[command.index("-o") + 1]).touch()
+            return 0, "", ""
+        if any(arg.startswith("-test.list=") for arg in command):
+            package = cwd
+            prefix = "Migration" if cwd == str(migration_dir) else "Integration"
             return 0, f"Test{prefix}One\nTest{prefix}Two\nok\t{package}\n", ""
         return 0, "ok\n", ""
 
@@ -693,7 +702,7 @@ def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_seri
                 ),
                 "",
             )
-        if "-list" in command:
+        if any(arg.startswith("-test.list=") for arg in command):
             return 0, "TestOne\nTestTwo\nok\tpackage\n", ""
         if command[1:4] == ["test", "-c", "-race"]:
             binary = Path(command[command.index("-o") + 1])
@@ -772,6 +781,155 @@ def test_race_package_plans_are_partitioned_once_by_recorded_duration(tmp_path: 
     assert second_names == {"medium", "small-a", "small-b"}
 
 
+def test_four_race_shards_compile_only_selected_packages_and_cover_every_name_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    split = sorted(next_gate.RACE_SPLIT_PACKAGES)
+    ordinary = ["example/known", "example/new-a", "example/new-b", "example/new-c"]
+    packages = [*split, *ordinary]
+    names = [
+        "TestAlpha",
+        "TestRaceOnly",
+        "TestBeta",
+        "Example",
+        "FuzzInput",
+        *sorted(next_gate.RACE_LONG_TESTS),
+    ]
+    observed: list[tuple[int | None, list[str], str]] = []
+    active_shard = None
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "binaries")
+
+    def run(command, *, cwd, **_kwargs):
+        observed.append((active_shard, command, cwd))
+        if command[1] == "list":
+            return (
+                0,
+                "\n".join(
+                    f"{package}\t{tmp_path / str(index)}" for index, package in enumerate(packages)
+                ),
+                "",
+            )
+        if command[1:4] == ["test", "-c", "-race"]:
+            Path(command[command.index("-o") + 1]).touch()
+            return 0, "", ""
+        if command[1].startswith("-test.list="):
+            return 0, "\n".join(reversed(names)), ""
+        return 0, "PASS", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", run)
+    expected = {
+        (str(tmp_path / str(index)), f"-test.run=^{name}$")
+        for index in range(len(packages))
+        for name in names
+    }
+    assignments = []
+    for index in range(4):
+        active_shard = index
+        code, _, stderr = next_gate._run_go_race(
+            cwd=str(tmp_path), environment={}, shard=(index, 4)
+        )
+        assert code == 0, stderr
+        assignments.append(
+            {
+                (cwd, command[-1])
+                for lane, command, cwd in observed
+                if lane == index and any(arg.startswith("-test.run=") for arg in command)
+            }
+        )
+    assert set.union(*assignments) == expected
+    assert sum(map(len, assignments)) == len(expected)
+    compiled = [
+        command[-1] for _, command, _ in observed if command[1:4] == ["test", "-c", "-race"]
+    ]
+    assert all(compiled.count(package) == (4 if package in split else 1) for package in packages)
+    assert not any("-list" in command for _, command, _ in observed)
+    assert not list((tmp_path / "binaries").iterdir())
+
+    previous = [(command, cwd) for lane, command, cwd in observed if lane == 0]
+    observed.clear()
+    active_shard = 0
+    assert next_gate._run_go_race(cwd=str(tmp_path), environment={}, shard=(0, 4))[0] == 0
+    assert [(command, cwd) for _, command, cwd in observed] == previous
+
+
+@pytest.mark.parametrize("empty_kind", ["no-files", "no-names", "missing-binary"])
+def test_race_discovery_fails_closed_when_all_packages_have_no_named_tests(
+    monkeypatch,
+    tmp_path: Path,
+    empty_kind: str,
+) -> None:
+    binary_dir = tmp_path / "binaries"
+    binary_dir.mkdir()
+    binary = binary_dir / ("package-000.exe" if os.name == "nt" else "package-000.test")
+    binary.touch()
+    commands = []
+    monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", binary_dir)
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1] == "list":
+            return 0, f"example/empty\t{tmp_path}", ""
+        if command[1:4] == ["test", "-c", "-race"]:
+            assert not binary.exists(), "stale binary must be removed before compiling"
+            if empty_kind == "no-names":
+                binary.touch()
+            return 0, "? example/empty [no test files]" if empty_kind == "no-files" else "", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(next_gate, "_run_command", run)
+    code, _, stderr = next_gate._run_go_race(cwd=str(tmp_path), environment={})
+    assert code == 1
+    assert (
+        "zero named Go tests" in stderr
+        if empty_kind != "missing-binary"
+        else "no test binary" in stderr
+    )
+    assert not binary.exists()
+    assert sum(any(arg.startswith("-test.run=") for arg in cmd) for cmd in commands) == (
+        empty_kind == "no-names"
+    )
+
+
+@pytest.mark.parametrize("failure", ["compile", "list", "run", "exception"])
+def test_race_package_failure_stops_work_and_cleans_binary(
+    monkeypatch, tmp_path: Path, failure: str
+) -> None:
+    binary = tmp_path / "race.test.exe"
+    stop = threading.Event()
+    observed = []
+
+    def run(command, **_kwargs):
+        observed.append(command)
+        if command == ["compile"]:
+            binary.touch()
+            return (42, "", "compile failed") if failure == "compile" else (0, "", "")
+        if command[1].startswith("-test.list="):
+            if failure == "exception":
+                raise OSError("list interrupted")
+            return (43, "", "list failed") if failure == "list" else (0, "TestOne\nTestTwo", "")
+        return 44, "", "run failed"
+
+    monkeypatch.setattr(next_gate, "_run_command", run)
+    kwargs = {
+        "environment": {},
+        "stop_event": stop,
+        "compile_command": ["compile"],
+        "compile_cwd": str(tmp_path),
+        "binary": binary,
+        "package_cwd": str(tmp_path),
+    }
+    if failure == "exception":
+        with pytest.raises(OSError, match="list interrupted"):
+            next_gate._run_race_package([], **kwargs)
+    else:
+        code, _, _ = next_gate._run_race_package([], **kwargs)
+        assert code == {"compile": 42, "list": 43, "run": 44}[failure]
+    assert stop.is_set()
+    assert not binary.exists()
+    assert len(observed) == {"compile": 1, "list": 2, "exception": 2, "run": 3}[failure]
+
+
 def test_measured_dominant_package_is_split_by_isolated_tests() -> None:
     package = "github.com/vibetable/vibetable/sidecar/tests/integration"
     names = ["TestAlpha", "TestBeta", "TestGamma", *sorted(next_gate.RACE_LONG_TESTS)]
@@ -814,10 +972,10 @@ def test_race_lanes_pass_distinct_shard_coordinates(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr(next_gate, "run_stage", fake_stage)
 
-    next_gate.run_lane("race-a", tmp_path, tmp_path / "candidate.zip")
-    next_gate.run_lane("race-b", tmp_path, tmp_path / "candidate.zip")
+    for lane in next_gate.RACE_LANES:
+        next_gate.run_lane(lane, tmp_path, tmp_path / "candidate.zip")
 
-    assert observed == [(0, 2), (1, 2)]
+    assert observed == [(0, 4), (1, 4), (2, 4), (3, 4)]
 
 
 def test_race_package_emits_structured_timing_for_lane_balancing(monkeypatch) -> None:
@@ -4574,9 +4732,12 @@ def test_race_discovery_uses_the_same_build_tags_as_execution(monkeypatch, tmp_p
         commands.append(command)
         if command[1] == "list":
             return 0, f"example/tagged\t{tmp_path}\n", ""
-        if "-list" in command:
-            name = "TestRaceOnly" if "-race" in command else "TestNonRaceOnly"
-            return 0, f"TestShared\n{name}\n", ""
+        if command[1:4] == ["test", "-c", "-race"]:
+            assert "-race" in command
+            Path(command[command.index("-o") + 1]).touch()
+            return 0, "", ""
+        if any(arg.startswith("-test.list=") for arg in command):
+            return 0, "TestShared\nTestRaceOnly\n", ""
         return 0, "ok", ""
 
     monkeypatch.setattr(next_gate, "_run_command", run)

@@ -78,11 +78,11 @@ RACE_BINARY_DIR = REPO_ROOT / "build" / "qa" / "race-tests"
 # Formula wall-clock budgets must not compete with unrelated race processes.
 # Race lanes remain parallel on separate runners; each lane retains every test.
 RACE_PACKAGE_WORKERS = 1
-# Candidate-bound timings from successful PR run 31102199882. They only guide
-# scheduling; new packages safely fall back to discovered test counts.
+# Candidate-bound timings from PR runs 31102199882 and 40245371188. They only
+# guide scheduling; undiscovered ordinary packages fall back to weight one.
 RACE_PACKAGE_SECONDS = {
     "github.com/vibetable/vibetable/sidecar/cmd/vibetable-pb": 50.641,
-    "github.com/vibetable/vibetable/sidecar/internal/app": 41.922,
+    "github.com/vibetable/vibetable/sidecar/internal/app": 3124.301,
     "github.com/vibetable/vibetable/sidecar/internal/attachments": 9.610,
     "github.com/vibetable/vibetable/sidecar/internal/audit": 9.687,
     "github.com/vibetable/vibetable/sidecar/internal/auditledger": 11.735,
@@ -125,12 +125,18 @@ RACE_PACKAGE_SECONDS = {
     "github.com/vibetable/vibetable/sidecar/internal/snapshotpkg": 33.968,
     "github.com/vibetable/vibetable/sidecar/internal/startup": 9.032,
     "github.com/vibetable/vibetable/sidecar/internal/workspacedb": 11.765,
-    "github.com/vibetable/vibetable/sidecar/internal/workspacev2": 741.750,
+    "github.com/vibetable/vibetable/sidecar/internal/workspacev2": 800.191,
     "github.com/vibetable/vibetable/sidecar/internal/writecoordinator": 17.344,
     "github.com/vibetable/vibetable/sidecar/migrations": 99.656,
     "github.com/vibetable/vibetable/sidecar/tests/integration": 1566.266,
 }
-RACE_SPLIT_PACKAGES = frozenset({"github.com/vibetable/vibetable/sidecar/tests/integration"})
+RACE_SPLIT_PACKAGES = frozenset(
+    {
+        "github.com/vibetable/vibetable/sidecar/internal/app",
+        "github.com/vibetable/vibetable/sidecar/internal/workspacev2",
+        "github.com/vibetable/vibetable/sidecar/tests/integration",
+    }
+)
 RACE_LONG_TEST_WEIGHT = 10.0
 RACE_LONG_TESTS = frozenset(
     {
@@ -833,6 +839,9 @@ def _run_race_package(
     compile_command: list[str] | None = None,
     compile_cwd: str | None = None,
     binary: Path | None = None,
+    package_cwd: str | None = None,
+    shard: tuple[int, int] | None = None,
+    discovered_counts: dict[str, int] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     output: list[str] = []
     errors: list[str] = []
@@ -844,6 +853,8 @@ def _run_race_package(
         if compile_command is not None:
             if compile_cwd is None:
                 raise ValueError("race package compile command requires compile cwd")
+            if binary is not None:
+                binary.unlink(missing_ok=True)
             output.append("$ " + subprocess.list2cmdline(compile_command))
             compile_code, compile_stdout, compile_stderr = _run_command(
                 compile_command,
@@ -857,6 +868,63 @@ def _run_race_package(
             if compile_code:
                 stop_event.set()
                 return compile_code, output, errors
+            if binary is None or package_cwd is None:
+                raise ValueError("race package discovery requires binary and package cwd")
+            if not binary.is_file():
+                if "[no test files]" in compile_stdout:
+                    return 0, output, errors
+                stop_event.set()
+                errors.append(f"race compile produced no test binary for {package_name}")
+                return 1, output, errors
+            list_command = [str(binary), "-test.list=^(Test|Example|Fuzz)"]
+            output.append("$ " + subprocess.list2cmdline(list_command))
+            list_code, list_stdout, list_stderr = _run_command(
+                list_command,
+                cwd=package_cwd,
+                environment=environment,
+                timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+            )
+            output.append(list_stdout)
+            errors.append(list_stderr)
+            if list_code:
+                stop_event.set()
+                return list_code, output, errors
+            names = sorted(
+                {
+                    line.strip()
+                    for line in list_stdout.splitlines()
+                    if re.fullmatch(r"(?:Test|Example|Fuzz)\w*", line.strip())
+                }
+            )
+            if discovered_counts is not None:
+                discovered_counts[package_name] = len(names)
+            commands = []
+            # An empty named list can still contain TestMain, which must execute.
+            for name in sorted(names, key=lambda name: (name in RACE_LONG_TESTS, name)) or [""]:
+                is_long = name in RACE_LONG_TESTS
+                go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
+                commands.append(
+                    (
+                        [
+                            str(binary),
+                            "-test.count=1",
+                            "-test.parallel=1",
+                            f"-test.timeout={go_timeout}",
+                            f"-test.run=^{re.escape(name)}$",
+                        ],
+                        RACE_LONG_COMMAND_TIMEOUT_SECONDS
+                        if is_long
+                        else RACE_COMMAND_TIMEOUT_SECONDS,
+                        package_cwd,
+                    )
+                )
+            if shard is not None and package_name in RACE_SPLIT_PACKAGES:
+                selected = _select_race_package_plans(
+                    [RacePackagePlan(package_name, commands, None, binary)],
+                    *shard,
+                    RACE_PACKAGE_SECONDS,
+                )
+                commands = selected[0].commands if selected else []
 
         for command, timeout, command_cwd in commands:
             if stop_event.is_set():
@@ -897,6 +965,9 @@ def _run_race_package(
                 stop_event.set()
                 return code, output, errors
         return 0, output, errors
+    except BaseException:
+        stop_event.set()
+        raise
     finally:
         output.append(
             "RACE_PACKAGE_TIMING "
@@ -962,55 +1033,8 @@ def _run_go_race(
 
     RACE_BINARY_DIR.mkdir(parents=True, exist_ok=True)
     package_plans: list[RacePackagePlan] = []
-    discovered_count = 0
-    for package_index, (package, package_dir) in enumerate(packages):
-        list_command = [
-            go,
-            "test",
-            package,
-            "-race",
-            "-list",
-            "^(Test|Example|Fuzz)",
-        ]
-        listed_code, listed_stdout, listed_stderr = _run_command(
-            list_command,
-            cwd=cwd,
-            environment=environment,
-            timeout=RACE_COMMAND_TIMEOUT_SECONDS,
-        )
-        output.extend(("$ " + subprocess.list2cmdline(list_command), listed_stdout))
-        errors.append(listed_stderr)
-        if listed_code:
-            return listed_code, "\n".join(output), "\n".join(errors)
-        names = [
-            line.strip()
-            for line in listed_stdout.splitlines()
-            if re.fullmatch(r"(?:Test|Example|Fuzz)[A-Za-z0-9_]+", line.strip())
-        ]
-        if not names:
-            package_plans.append(
-                RacePackagePlan(
-                    package=package,
-                    commands=[
-                        (
-                            [
-                                go,
-                                "test",
-                                "-race",
-                                "-count=1",
-                                "-timeout=5m",
-                                package,
-                            ],
-                            RACE_COMMAND_TIMEOUT_SECONDS,
-                            cwd,
-                        )
-                    ],
-                    compile_command=None,
-                    binary=None,
-                )
-            )
-            continue
-
+    package_dirs = dict(packages)
+    for package_index, (package, _package_dir) in enumerate(packages):
         binary_suffix = ".exe" if os.name == "nt" else ".test"
         binary = (RACE_BINARY_DIR / f"package-{package_index:03d}{binary_suffix}").resolve()
         compile_command = [
@@ -1024,49 +1048,25 @@ def _run_go_race(
             package,
         ]
 
-        discovered_count += len(names)
-        regular = [name for name in names if name not in RACE_LONG_TESTS]
-        long_running = [name for name in names if name in RACE_LONG_TESTS]
-        package_commands: list[tuple[list[str], int, str]] = []
-        for name in (*regular, *long_running):
-            is_long = name in RACE_LONG_TESTS
-            go_timeout = RACE_LONG_TEST_TIMEOUT if is_long else "5m"
-            package_commands.append(
-                (
-                    [
-                        str(binary),
-                        "-test.count=1",
-                        "-test.parallel=1",
-                        f"-test.timeout={go_timeout}",
-                        f"-test.run=^{re.escape(name)}$",
-                    ],
-                    (
-                        RACE_LONG_COMMAND_TIMEOUT_SECONDS
-                        if is_long
-                        else RACE_COMMAND_TIMEOUT_SECONDS
-                    ),
-                    package_dir,
-                )
-            )
         package_plans.append(
             RacePackagePlan(
                 package=package,
-                commands=package_commands,
+                commands=[],
                 compile_command=compile_command,
                 binary=binary,
             )
         )
-    if not discovered_count:
-        return 1, "\n".join(output), "race discovery found zero named Go tests"
-
     if shard is not None:
         shard_index, shard_count = shard
-        package_plans = _select_race_package_plans(
-            package_plans,
+        ordinary_plans = _select_race_package_plans(
+            [plan for plan in package_plans if plan.package not in RACE_SPLIT_PACKAGES],
             shard_index,
             shard_count,
             RACE_PACKAGE_SECONDS,
         )
+        package_plans = ordinary_plans + [
+            plan for plan in package_plans if plan.package in RACE_SPLIT_PACKAGES
+        ]
         if not package_plans:
             return 1, "\n".join(output), "race shard selected zero packages"
         output.append(
@@ -1082,7 +1082,10 @@ def _run_go_race(
                 sort_keys=True,
             )
         )
-    package_plans.sort(key=lambda plan: len(plan.commands), reverse=True)
+    package_plans.sort(
+        key=lambda plan: (-RACE_PACKAGE_SECONDS.get(plan.package, 1.0), plan.package)
+    )
+    discovered_counts: dict[str, int] = {}
     stop_event = Event()
     worker_count = min(RACE_PACKAGE_WORKERS, len(package_plans))
     with ThreadPoolExecutor(
@@ -1099,6 +1102,9 @@ def _run_go_race(
                 compile_command=plan.compile_command,
                 compile_cwd=cwd,
                 binary=plan.binary,
+                package_cwd=package_dirs[plan.package],
+                shard=shard,
+                discovered_counts=discovered_counts,
             )
             for plan in package_plans
         ]
@@ -1109,6 +1115,9 @@ def _run_go_race(
         errors.extend(package_errors)
         if code and not returncode:
             returncode = code
+    if not returncode and not sum(discovered_counts.values()):
+        returncode = 1
+        errors.append("race discovery found zero named Go tests")
     return returncode, "\n".join(output), "\n".join(errors)
 
 

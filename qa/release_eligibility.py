@@ -50,7 +50,7 @@ REQUIRED_STAGES = (
     "workbench-qualification",
     "smoke",
 )
-RACE_LANES = ("race-a", "race-b")
+RACE_LANES = ("race-a", "race-b", "race-c", "race-d")
 LANE_STAGES = {
     "core": (
         "version",
@@ -72,6 +72,8 @@ LANE_STAGES = {
     ),
     "race-a": ("go-race",),
     "race-b": ("go-race",),
+    "race-c": ("go-race",),
+    "race-d": ("go-race",),
     "resilience": (
         "fault-injection",
         "product-e2e",
