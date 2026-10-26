@@ -17,6 +17,9 @@ VibeTable 是一个通用的建表与文件管理桌面工具。本目录存放�
   当前缺陷、验收空白、用户能力可见性与冻结退出证据。
 - [Node 开发工具链](node-toolchain.md)：锁定版本、来源、恢复方式和发布包边界。
 - [插件开发、打包与 GitHub Release 安装](plugin-development.md)：插件 SDK、权限边界、发布和远程安装约定。
+- [Plugin API 3.x 参考](plugin-api.md)：方法、分页、单表写入、任务、错误与取消语义。
+- [插件 UI 规范 v1](plugin-ui.md)：主题 token、密度、布局、表单、状态反馈与可访问交互；ERP 为参考实现。
+- [简化 ERP 示例](../examples/plugins/simple-erp/README.md)：商品、客户、订单界面及可构建的 TypeScript 代码。
 - [自我更新能力与安全边界](self-update-assessment.md)：应用更新的信任、下载与代理边界。
 
 ## 计划与历史材料

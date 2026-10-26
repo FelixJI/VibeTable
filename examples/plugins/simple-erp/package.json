@@ -1,0 +1,14 @@
+{
+  "name": "@vibetable/example-simple-erp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "build": "uv run --frozen --no-sync --project ../../.. python ../../../scripts/vibetable_plugin.py build ."
+  },
+  "devDependencies": { "esbuild": "0.28.2", "typescript": "7.0.2" },
+  "packageManager": "npm@12.2.0",
+  "engines": { "node": ">=26 <27" }
+}

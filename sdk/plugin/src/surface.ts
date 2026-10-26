@@ -68,6 +68,9 @@ export interface SurfaceCapabilities {
      * acknowledged releaseCursor, whose failure keeps it for explicit retry or
      * dispose. The 64-handle budget itself never widens. */
     query(request: DataQueryRequest, signal?: AbortSignal): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>;
+    /** Iterate an exact query lazily. Exhaustion, break, consumer failure and cancelled queries
+     * release the remaining cursor; errors propagate and are never retried. */
+    pages(request: Omit<DataQueryRequest, "cursor">, signal?: AbortSignal): AsyncGenerator<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }, void>;
     /** Release an owned opaque cursor; no existence disclosure. Failed releases retain ownership for explicit retry/dispose. */
     releaseCursor(cursor: string): Promise<void>;
     subscribe(request: { readonly collection: string }, listener: (event: SurfaceDataEvent) => void, signal?: AbortSignal): Promise<SurfaceSubscription>;
@@ -444,6 +447,17 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     tasks: presentation.tasks,
     ui: presentation.ui,
     data: { describe: request => call("data.describe", request), query, releaseCursor, subscribe, unsubscribe,
+      async *pages(request, signal) {
+        const snapshot = structuredClone(request);
+        let cursor: string | undefined;
+        try {
+          do {
+            const page = await query({ ...snapshot, ...(cursor ? { cursor } : {}) }, signal);
+            cursor = page.nextCursor ?? undefined;
+            yield page;
+          } while (cursor);
+        } finally { if (cursor) await releaseCursor(cursor); }
+      },
       previewImport: request => {
         // Upsert requires its approved key up front: a null key would otherwise be
         // silently normalized as updates until the authoritative mint rejects it.
