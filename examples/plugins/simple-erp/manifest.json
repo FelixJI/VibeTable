@@ -1,0 +1,25 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.simple-erp",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "简化 ERP" },
+  "description": { "zh-CN": "商品、客户和单商品订单；整数分计价，所有保存经宿主确认，不自动扣库存。安装前按 README 配置三张表的稳定 ID。" },
+  "compatibility": { "minHostVersion": "0.5.5", "pluginApi": "3.x" },
+  "permissions": {
+    "data": [
+      { "collection": "erp_products", "operations": ["read", "query", "create", "update"], "fields": ["*"] },
+      { "collection": "erp_customers", "operations": ["read", "query", "create", "update"], "fields": ["*"] },
+      { "collection": "erp_orders", "operations": ["read", "query", "create", "update"], "fields": ["*"] }
+    ],
+    "privateStorage": false,
+    "files": ["pickWrite"],
+    "network": { "domains": [], "methods": [] }
+  },
+  "actions": [{
+    "actionId": "open-erp", "displayName": { "zh-CN": "打开简化 ERP" },
+    "description": { "zh-CN": "管理商品、客户及订单，预览保存并导出当前业务表。" },
+    "mode": "local", "risk": "write", "invocation": "manual", "placements": [],
+    "presentation": "application", "entry": "ui/index.html"
+  }],
+  "ui": { "customViews": [] }
+}

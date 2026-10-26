@@ -2,6 +2,70 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sdk } from "./load-sdk.mjs";
 
+test("pages follows one exact query lazily and releases on early break", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-a", transport);
+  const request = { contract: "vibetable.plugin-query.v2", collection: "products", fields: ["id"], pageSize: 1 };
+  const pages = client.data.pages(request);
+  assert.equal(transport.calls.length, 0);
+  const first = pages.next();
+  transport.reply(transport.calls.at(-1), { items: [{ id: "a" }], nextCursor: "cursor-a" });
+  assert.equal((await first).value.items[0].id, "a");
+  request.fields.push("changed-after-start");
+  const second = pages.next();
+  assert.deepEqual(transport.calls.at(-1).params.fields, ["id"]);
+  assert.equal(transport.calls.at(-1).params.cursor, "cursor-a");
+  transport.reply(transport.calls.at(-1), { items: [{ id: "b" }], nextCursor: "cursor-b" });
+  await second;
+  const closed = pages.return();
+  await Promise.resolve();
+  assert.equal(transport.calls.at(-1).method, "data.releaseCursor");
+  assert.deepEqual(transport.calls.at(-1).params, { cursor: "cursor-b" });
+  transport.reply(transport.calls.at(-1), { released: true });
+  await closed;
+  client.dispose();
+});
+
+test("pages releases the outstanding handle when cancelled between pages", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-a", transport);
+  const abort = new AbortController();
+  const pages = client.data.pages({ contract: "vibetable.plugin-query.v2", collection: "products", fields: ["id"] }, abort.signal);
+  const first = pages.next();
+  transport.reply(transport.calls.at(-1), { items: [], nextCursor: "cursor-a" });
+  await first;
+  abort.abort();
+  const next = pages.next();
+  const rejected = assert.rejects(next, error => error.code === "plugin_cancel_requested");
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(transport.calls.at(-1).method, "data.releaseCursor");
+  transport.reply(transport.calls.at(-1), { released: true });
+  await rejected;
+  client.dispose();
+});
+
+test("pages propagates consumer errors and exhausted pages allocate no cleanup request", async () => {
+  for (const cursor of [null, "cursor-a"]) {
+    const transport = channel();
+    const client = sdk.createSurfaceClient("surface-a", transport);
+    const work = (async () => {
+      for await (const page of client.data.pages({ contract: "vibetable.plugin-query.v2", collection: "products", fields: ["id"] })) {
+        if (page.nextCursor) throw new Error("consumer failed");
+      }
+    })();
+    const settled = cursor ? assert.rejects(work, /consumer failed/) : work;
+    transport.reply(transport.calls.at(-1), { items: [], nextCursor: cursor });
+    if (cursor) {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(transport.calls.at(-1).method, "data.releaseCursor");
+      transport.reply(transport.calls.at(-1), { released: true });
+    }
+    await settled;
+    if (!cursor) assert.equal(transport.calls.length, 1);
+    client.dispose();
+  }
+});
+
 function channel() {
   const listeners = new Set();
   const calls = [];

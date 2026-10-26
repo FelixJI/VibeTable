@@ -1,5 +1,12 @@
 # VibeTable 插件开发与 GitHub 发布
 
+按接口查阅请看 [Plugin API 3.x 参考](plugin-api.md)；业务应用开发可从
+[简化 ERP 示例](../examples/plugins/simple-erp/README.md)开始，包含商品、客户、订单三页和单表确认保存。
+新建或修改可见页面应遵循[插件 UI 规范 v1](plugin-ui.md)：应用首次主题与密度、使用宿主 token、
+提供字段校验和可访问状态反馈。该规范由插件实现，不代表 SDK 自动提供组件或布局。
+SDK `data.pages(request, signal?)` 现在提供惰性异步分页，自动释放退出时剩余的游标；
+它复用现有 `data.query` / `data.releaseCursor`，不改变 Host 授权与消息协议。
+
 VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离 WebView2 frame 的闭集 SDK 读取数据、
 保留草稿并请求 MutationPlan 预览/保存；Host 展示精确计划并一次确认，Go 完成事务。
 旧 1.x/2.x Worker 执行链已退役（#486）：旧包只保留只读解析、迁移诊断与保全，不再构建、安装或执行。

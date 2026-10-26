@@ -15,6 +15,7 @@
 [快速开始](#快速开始) ·
 [源码导读](docs/source-reading-guide.md) ·
 [插件开发](docs/plugin-development.md) ·
+[API 参考](docs/plugin-api.md) ·
 [质量门禁](docs/quality-gates.md)
 
 </div>
@@ -50,7 +51,21 @@ VibeTable 将 WPF/WebView2 界面、Python BFF 和固定版本的 PocketBase sid
 | 文档工作区 | 文档版本、发布、修订历史，以及与业务记录的本地关联 |
 | 实时更新 | 本地 sidecar SSE 更新、断线续传和事件去重 |
 | 版本与恢复 | 工作区级 Snapshot、文件修订树、完整性验证和可审计恢复 |
-| 插件边界 | read 返回 PluginResult，write 返回带预览与行保护的 MutationPlan，由 Host 最终确认后提交；支持本地包、开发目录和公共 GitHub Release |
+| 插件应用 | API 3.x 隔离页面支持授权查询、实时失效通知、带行保护的写入计划、导入导出与宿主界面服务；保存由 Host 确认，支持本地包、开发目录和公共 GitHub Release |
+
+### 用插件构建简化 ERP
+
+[简化 ERP 示例](examples/plugins/simple-erp/README.md)提供商品、客户、单商品订单三个页面：
+新增与编辑、列表搜索、订单价格快照和整数分金额计算、状态变更、宿主确认及 CSV 导出。
+准备三张业务表并配置 manifest 的真实表 ID 后，可构建安装；数据仍由工作区 PocketBase 管理。
+示例不自动扣库存，也不承诺跨表原子事务；每表最多 1000 条，超过上限明确拒绝截断展示。
+
+插件作者可从 [API 方法与错误参考](docs/plugin-api.md)、[ERP 业务代码](examples/plugins/simple-erp/src/erp.ts)
+和[界面入口](examples/plugins/simple-erp/src/app.ts)开始。SDK 新增 `data.pages()` 异步迭代接口，
+在分页耗尽、提前退出或失败时自动释放剩余游标；没有新增数据库或通用 RPC 通道。
+
+[插件 UI 规范](docs/plugin-ui.md)统一主题 token、密度、布局、字段校验和状态反馈。
+ERP 示例已应用首次主题及动态切换、字段错误定位、草稿离开确认和持续的未知结果警示。
 
 ## 快速开始
 
@@ -236,6 +251,9 @@ changelog PR。不要直接编辑多个版本源、手打正式 tag 或手建 Re
 - [跨进程 seam 索引](docs/architecture/interprocess-seams.md)
 - [质量门禁说明](docs/quality-gates.md)
 - [插件开发、打包与 GitHub Release 安装](docs/plugin-development.md)
+- [Plugin API 3.x 参考与调用示例](docs/plugin-api.md)
+- [插件 UI 规范：主题、布局、表单与状态反馈](docs/plugin-ui.md)
+- [简化 ERP：商品、客户、订单](examples/plugins/simple-erp/README.md)
 - [架构决策记录](docs/adr/)
 - [全部文档索引](docs/README.md)
 

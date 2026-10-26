@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>简化 ERP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><div><span class="eyebrow">VIBETABLE / 示例业务应用</span><h1>简化 ERP</h1></div><button id="back" type="button">返回平台</button></header>
+  <nav aria-label="业务导航">
+    <button type="button" data-section="products" aria-pressed="true">商品</button>
+    <button type="button" data-section="customers" aria-pressed="false">客户</button>
+    <button type="button" data-section="orders" aria-pressed="false">订单</button>
+  </nav>
+  <main>
+    <p class="notice">单商品订单 · 人民币整数分计价 · 保存需宿主确认 · 不自动扣库存</p>
+    <p id="status" role="status" aria-live="polite">正在连接工作区…</p>
+    <p id="error" class="sr-only" role="alert" aria-atomic="true"></p>
+    <p id="uncertain" class="notice-panel" hidden><strong>提交结果未知，写入已锁定。</strong>请在平台表格和宿主任务核对实际结果，再重新打开应用；刷新不会解除锁定。</p>
+    <p id="stale" role="status" hidden>数据已变化。请刷新后再编辑；未保存表单将保留到你选择丢弃。</p>
+    <div id="workspace-content" aria-busy="true">
+    <section class="toolbar" aria-label="列表工具">
+      <h2 id="title">商品</h2><span id="count"></span>
+      <label class="search">搜索当前表 <input id="search" type="search" placeholder="编码、名称或订单号"></label>
+      <button id="reload" type="button">刷新</button><button id="export" type="button">导出 CSV</button>
+      <button id="new" type="button" class="primary">新增</button>
+    </section>
+    <div id="list" class="table-wrap" tabindex="0" role="region" aria-labelledby="title"></div>
+    <section id="editor" hidden aria-labelledby="editor-title">
+      <h2 id="editor-title">编辑</h2>
+      <form id="form" novalidate><div id="fields" class="fields"></div>
+        <div class="form-actions"><button type="submit" class="primary">预览并请求保存</button><button id="discard" type="button">关闭表单</button></div>
+      </form>
+    </section>
+    <section id="leave" hidden role="group" aria-label="未保存表单">
+      <p>表单有未保存内容。是否丢弃后继续？</p>
+      <button id="leave-cancel" type="button">保留表单</button><button id="leave-confirm" type="button">丢弃并继续</button>
+    </section>
+    </div>
+    <details><summary>宿主任务回执</summary><ul id="tasks"><li>暂无本页面任务。</li></ul></details>
+  </main>
+  <script type="module" src="../dist/app.js"></script>
+</body>
+</html>
