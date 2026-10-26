@@ -612,7 +612,7 @@ def _prepare_smoke_lane(lane: str) -> None:
             node_env = _node_environment()
             for project in NPM_PROJECTS[1:]:
                 _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
-    elif lane in {"race-a", "race-b"}:
+    elif lane in {"race-a", "race-b", "race-c", "race-d"}:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
@@ -718,7 +718,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lane",
-        choices=("core", "race-a", "race-b", "resilience", "data-io", "file-io", "release"),
+        choices=(
+            "core",
+            "race-a",
+            "race-b",
+            "race-c",
+            "race-d",
+            "resilience",
+            "data-io",
+            "file-io",
+            "release",
+        ),
     )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--reports-dir", type=Path)
