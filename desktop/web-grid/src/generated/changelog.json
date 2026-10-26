@@ -1,6 +1,16 @@
 {
-  "version": "0.5.5",
+  "version": "0.5.6",
   "entries": [
+    {
+      "subject": "feat(plugin): 完善 ERP 示例与插件 UI 规范 (#523)",
+      "commit": "ae3d3808",
+      "category": "changes"
+    },
+    {
+      "subject": "perf(ci): 优化 Go race 四分片调度与编译复用 (#522)",
+      "commit": "86f7cf56",
+      "category": "changes"
+    },
     {
       "subject": "fix(desktop): 修复字段视图、数据编辑与设置交互 (#520)",
       "commit": "4a47a343",

@@ -1,5 +1,19 @@
 # VibeTable 0.4.0
 
+## 0.5.6
+
+### Features
+
+- **plugin:** 完善 ERP 示例与插件 UI 规范 (#523) (ae3d380)
+
+### Bug Fixes
+
+- **desktop:** 修复字段视图、数据编辑与设置交互 (#520) (4a47a34)
+
+### Performance
+
+- **ci:** 优化 Go race 四分片调度与编译复用 (#522) (86f7cf5)
+
 ## 0.5.5
 
 ### Bug Fixes
