@@ -332,6 +332,38 @@ describe("viewQueryStore", () => {
     expect(store.headerFilters).toEqual([]);
   });
 
+  it("同字段 OR/AND 组并存：仅排序的 updateRuntime 绝不误删高级 AND 组", () => {
+    const store = useViewQueryStore();
+    const columns: readonly ColumnSchema[] = [
+      { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+    ];
+    const orLeaves = [
+      { field: "note", operator: "contains" as const, value: "foo" },
+      { field: "note", operator: "contains" as const, value: "bar" },
+    ];
+    const orGroup = { groupLogic: "OR" as const, filters: orLeaves.map(filter => ({ ...filter })) };
+    const andGroup = { groupLogic: "AND" as const, filters: orLeaves.map(filter => ({ ...filter })) };
+    store.replace("orders", {
+      kind: "table", layout: "table",
+      filters: [orGroup, andGroup],
+      sorts: [], search: "", visibleFields: ["note"],
+    }, ["note"], columns);
+    // 只有列级 OR token 组被镜像托管；高级 AND 组不镜像。
+    expect(store.headerFilters).toEqual(orLeaves.map(filter => ({ ...filter })));
+
+    // 用户仅排序：捕获等于镜像的往返形态（buildQuery 重建列级 OR 组）。
+    store.updateRuntime({
+      headerFilters: [{ groupLogic: "OR", filters: orLeaves.map(filter => ({ ...filter })) }],
+      sorts: [{ field: "note", direction: "asc" }],
+      groups: [],
+    });
+    // 旧实现按叶子多重集从后向前误删 AND 组，保存语义变成两个 OR 组。
+    expect(store.filters).toEqual([
+      andGroup,
+      { groupLogic: "OR", filters: orLeaves.map(filter => ({ ...filter })) },
+    ]);
+  });
+
   it("勾选面板同步 managed 镜像：外层 runtime.changed 不会把旧表头叶子加回", () => {
     const store = useViewQueryStore();
     // 既有状态：eq status=a 既是高级条件也是表头镜像。

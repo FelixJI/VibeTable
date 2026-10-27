@@ -88,6 +88,10 @@ function withoutManagedHeaderFilters(
       continue;
     }
     if (!isFieldValueGroup(entry)) continue;
+    // 镜像组只承载列级 OR 语义（勾选面板 OR 组 / 分词 token 组）：叶子
+    // 相同但布尔结构不同的高级 AND 组，以及顶层 OR 耦合的组，绝不因
+    // 镜像而被移除，否则仅排序的 runtime 更新就会改写保存语义。
+    if (entry.groupLogic !== "OR" || entry.logic === "OR") continue;
     const groupField = entry.filters[0]!.field;
     const managed = managedByField.get(groupField) ?? [];
     if (managed.length > 0 && sameLeafMultiset(entry.filters, managed)) {
