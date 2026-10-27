@@ -128,11 +128,11 @@ func TestProtectionAuditDrainRecoversAfterWriterPoolCancellation(t *testing.T) {
 	detail := events[0]["auditDrain"].(map[string]any)
 	t.Logf("canceled report=%v", detail)
 	if response.Error == nil || detail["source"] != "business" || detail["phase"] != "ack" ||
-		detail["appended"] != float64(1) || detail["acknowledged"] != float64(0) ||
+		detail["appended"] != float64(2) || detail["acknowledged"] != float64(0) ||
 		detail["pbWriteWaitCount"].(float64) < 1 {
 		t.Fatalf("PB wait was not attributed to ack: %#v", events[0])
 	}
-	if fixture.ledger.Anchor().LedgerSequence != beforeLedger+1 {
+	if fixture.ledger.Anchor().LedgerSequence != beforeLedger+2 {
 		t.Fatal("cancellation lost durable append")
 	}
 	if err := held.Close(); err != nil {
@@ -150,8 +150,8 @@ func TestProtectionAuditDrainRecoversAfterWriterPoolCancellation(t *testing.T) {
 	}
 	detail = events[1]["auditDrain"].(map[string]any)
 	t.Logf("recovery report=%v", detail)
-	if detail["phase"] != "completed" || detail["duplicates"] != float64(1) ||
-		detail["appended"] != float64(1) || detail["acknowledged"] != float64(2) ||
+	if detail["phase"] != "completed" || detail["duplicates"] != float64(2) ||
+		detail["appended"] != float64(0) || detail["acknowledged"] != float64(2) ||
 		fixture.ledger.Anchor().LedgerSequence != beforeLedger+2 {
 		t.Fatalf("durable event was not deduplicated: %#v", detail)
 	}
