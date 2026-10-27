@@ -1,6 +1,7 @@
 import { seedLegacyLayoutProduct, resumeLegacyLayoutProduct, rejectLegacyRoutes, runRetiredNativeOutput } from "./legacy_layout_product.mjs";
 import { runRecordManagerProduct } from "./record_manager_product.mjs";
 import { runCapabilityServices } from "./plugin_capability_services.mjs";
+import { runPluginSurfaceOutputs } from "./plugin_surface_outputs.mjs";
 import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
 import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
@@ -12129,6 +12130,7 @@ const scenarios = {
   }),
   "52-plugin-capability-services": (page, recorder, _network, runtime) => runCapabilityServices(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
   "53-record-manager": (page, recorder, _network, runtime) => runRecordManagerProduct(page, recorder, runtime, { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest }),
+  "55-plugin-surface-outputs": (page, recorder, _network, runtime) => runPluginSurfaceOutputs(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
 
 };
 

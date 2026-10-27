@@ -598,3 +598,40 @@ await client.ui.notifications.show("操作请求已发送，最终结果请见�
 // 用户请求离开时：await client.ui.navigation.back();
 // 卸载时：stopTheme(); stopTasks(); client.dispose();
 ```
+
+### 插件产物：保存、归档与原样重印
+
+`client.output.create(bytes, { suggestedName, mediaType, source })` 接收插件生成的二进制产物，
+与现有 `output.print()` 并存。普通 `file` 和附件读取仍为 1 MiB；产物独立预算为 1 字节至
+32 MiB，每块最多 256 KiB，每个页面最多持有 2 个输出（合计最多 64 MiB），10 分钟后回收。
+Host→Go 归档暂存同样最多 2 个、合计 64 MiB，5 分钟后回收；过期缓存按后续请求惰性清理，
+页面关闭主动取消并释放宿主缓存。普通 JSON 消息预算没有扩大；旧 Host 不认识该能力时明确拒绝。
+
+`source` 必须含 `templateVersion`、`dataVersion` 和 `purpose`，每项非空且最多256字符。
+它们是插件声明的来源版本，平台不验证模板内容、业务金额或声明版本是否真实。
+SDK 在第一次异步操作前复制 bytes 和来源元数据；Host 校验总长度后 seal，之后不能改变该
+`outputId` 的字节或来源。改变模板、业务/数据集版本或用途应创建新实例。
+
+`output.save(saveId, signal?)` 显示原生保存选择，只有同目录临时文件写完、刷盘并通过当前
+工作区/页面 gate 后才原子替换目标。取消、授权失效、关页面或磁盘故障在提交前保留原文件；
+成功回执具有粘滞性。每个输出最多保留16个保存尝试；重复同一 `saveId` 返回原回执，
+不会重新显示选择器或重复写入。丢失回执应调用 `output.status(saveId)`，不能自动换ID重放。
+SDK 在页面关闭或传输中断时报告未知提交；关闭后无法从内存恢复的尝试不能宣称已取消或已保存。
+本机保存不产生业务提交，也不自动归档。
+
+`output.previewArchive({ collection, recordId, fieldId, expectedDigest })` 把冻结字节送入 Go/PocketBase
+权威附件路径，只返回现有 mutation preview。插件再显式调用 `client.mutation.submit(planId)`，
+当次 Host 精确确认及行 guard 通过后，附件引用和不可改的 `output.archived` 来源事件在同一
+业务事务内提交。重放同一提交不会添加第二份附件；同一输出ID不能覆盖已签发来源。归档遵守
+目标字段原有文件大小、数量、MIME 与安装数据权限，32 MiB 产物预算不会放宽字段约束。
+
+保留归档返回的 opaque `artifactId`，使用 `client.output.reopen(artifactId)` 在新页面重开，
+再用新 `saveId` 原样重印。它重新核对当前安装、工作区及附件字段读取权限，读取权威原字节，
+不按当前模板或业务记录重新生成，不返回本机路径或内部 storedName。来源事件随既有插件审计
+保存，升级不改写，卸载不删除；重新安装得到新安装ID后不能读取原安装产物。只有来源事件和
+对应的当前附件引用都还在时可重开；附件已移除、工作区已恢复到不含该证据的版本或权限失效时
+明确拒绝。仅保存到本机但未归档的旧实例不保证跨关闭恢复，用户可通过普通原生文件选择读取。
+
+可运行示例为 `examples/plugins/output-conformance`；真实 WebView2 验收场景
+`55-plugin-surface-outputs` 生成普通及大于1 MiB 的合成 XLSX，保存、确认归档、关页面重开、
+原样重印及新模板版本输出，再由 Python ZIP/XML reader 校验真实保存内容。
