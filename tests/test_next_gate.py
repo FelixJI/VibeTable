@@ -3975,6 +3975,44 @@ S54_PHASE_EVIDENCE = {
 }
 
 
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_model_native_diagnostics_are_retained_only_for_failed_phases(
+    tmp_path: Path, status: str
+) -> None:
+    run = tmp_path / "source" / "20261027T050000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "scenarios": [{"scenario": "54-plugin-models", "status": status}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed = (
+        "model-native-combos.json",
+        "plugin-native-result.json",
+        "plugin-native-observation.json",
+    )
+    for phase, names in S54_PHASE_EVIDENCE.items():
+        directory = run / "54-plugin-models" / phase / "20261027T050001Z"
+        directory.mkdir(parents=True)
+        for name in (*names, *fixed, "workspace.db", "unrelated.json"):
+            (directory / name).write_bytes(f"{phase}:{name}".encode())
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    for phase in S54_PHASE_EVIDENCE:
+        destination = retained / "54-plugin-models" / phase / "20261027T050001Z"
+        for name in fixed:
+            if status == "failed":
+                assert (destination / name).read_bytes() == f"{phase}:{name}".encode()
+            else:
+                assert not (destination / name).exists()
+        assert not (destination / "workspace.db").exists()
+        assert not (destination / "unrelated.json").exists()
+
+
 SCENARIO_SCREENSHOTS = {
     "07-attachment-history": ("07-named-comparison.png", "07-named-revisions.png"),
     "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),

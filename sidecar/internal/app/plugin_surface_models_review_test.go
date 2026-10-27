@@ -250,71 +250,118 @@ func TestPluginModelPartialRevisionChangeReconfirmsOnlyRemainingObjects(t *testi
 }
 
 func TestPluginModelFailureWaiterCannotDowngradeConcurrentCompletion(t *testing.T) {
-	pb, workspace, input, domain := modelFixture(t)
-	result, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "create"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	preview := result.(modelPreview)
-	waiting, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
-	var failed atomic.Bool
-	domain.gates = []businessWriteGate{func(ctx context.Context, kind, id string, write func(context.Context) error) error {
-		if kind == "field.change.apply" && failed.CompareAndSwap(false, true) {
-			return errors.New("first caller interrupted")
-		}
-		if kind == "plugin.model.failure" {
-			close(waiting)
-			<-release
-		}
-		return write(ctx)
-	}}
-	type completion struct {
-		state any
-		err   error
-	}
-	first := make(chan completion, 1)
-	go func() {
-		result, err := modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": preview.RequestID})
-		first <- completion{result, err}
-	}()
-	select {
-	case <-waiting:
-	case <-time.After(5 * time.Second):
-		t.Fatal("failure writer did not reach gate")
-	}
-	result, err = modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": preview.RequestID})
-	if err != nil || result.(pluginmodel.State).Status != "completed" {
-		t.Fatalf("second caller: %+v %v", result, err)
-	}
-	once.Do(func() { close(release) })
-	select {
-	case reply := <-first:
-		if reply.err != nil || reply.state.(pluginmodel.State).Status != "completed" {
-			t.Fatalf("first caller did not recover completion: %+v %v", reply.state, reply.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("failure writer did not settle")
-	}
-	result, err = modelCall(t, pb, workspace, input, domain, "model.status", map[string]any{"requestId": preview.RequestID})
-	if err != nil || result.(pluginmodel.State).Status != "completed" {
-		t.Fatalf("public status downgraded: %+v %v", result, err)
-	}
-	states, err := pluginmodel.States(context.Background(), pb, input.ProjectKey, input.PluginID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	completed, highWater := false, 0
-	for _, state := range states {
-		if state.RequestID != preview.RequestID {
-			continue
-		}
-		if state.Completed < highWater || completed && state.Status != "completed" {
-			t.Fatalf("durable state regressed: %+v", state)
-		}
-		highWater = state.Completed
-		completed = state.Status == "completed"
+	for _, admission := range []string{"admitted", "expired"} {
+		t.Run(admission, func(t *testing.T) {
+			pb, workspace, input, domain := modelFixture(t)
+			result, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "create"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview := result.(modelPreview)
+			waiting, release := make(chan context.Context, 1), make(chan struct{})
+			callbackResult, settled := make(chan error, 1), make(chan struct{})
+			var once sync.Once
+			t.Cleanup(func() {
+				once.Do(func() { close(release) })
+				select {
+				case <-settled:
+				case <-time.After(5 * time.Second):
+					t.Error("failure caller did not stop before fixture cleanup")
+				}
+			})
+			interrupted := errors.New("first caller interrupted")
+			var failed, failureWaiting atomic.Bool
+			domain.gates = []businessWriteGate{func(ctx context.Context, kind, id string, write func(context.Context) error) error {
+				if kind == "field.change.apply" && failed.CompareAndSwap(false, true) {
+					return interrupted
+				}
+				if kind == "plugin.model.failure" && failureWaiting.CompareAndSwap(false, true) {
+					waiting <- ctx
+					<-release
+					// The barrier orders callers; it is not production queue admission.
+					// Test callback reads with a live budget or a deterministically spent one.
+					callbackContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					if admission == "expired" {
+						cancel()
+						callbackContext, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
+					}
+					defer cancel()
+					err := write(callbackContext)
+					callbackResult <- err
+					return err
+				}
+				return write(ctx)
+			}}
+			type completion struct {
+				state any
+				err   error
+			}
+			first := make(chan completion, 1)
+			go func() {
+				defer close(settled)
+				result, err := modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": preview.RequestID})
+				first <- completion{result, err}
+			}()
+			select {
+			case recovery := <-waiting:
+				if deadline, ok := recovery.Deadline(); !ok || time.Until(deadline) > 5*time.Second {
+					t.Error("production recovery must retain its five-second total budget")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("failure writer did not reach gate")
+			}
+			result, err = modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": preview.RequestID})
+			if err != nil || result.(pluginmodel.State).Status != "completed" {
+				t.Errorf("second caller: %+v %v", result, err)
+			}
+			before, err := pluginmodel.States(context.Background(), pb, input.ProjectKey, input.PluginID)
+			if err != nil {
+				t.Errorf("completion audit: %v", err)
+			}
+			once.Do(func() { close(release) })
+			select {
+			case reply := <-first:
+				state := reply.state.(pluginmodel.State)
+				if admission == "admitted" {
+					if reply.err != nil || state.Status != "completed" {
+						t.Errorf("admitted caller did not recover completion: %+v %v", state, reply.err)
+					}
+				} else if !errors.Is(reply.err, interrupted) || state.Status != "partial" || state.Completed != 3 || state.Total != preview.Total {
+					t.Errorf("expired recovery must retain original failure and local progress: %+v %v", state, reply.err)
+				}
+				readErr := <-callbackResult
+				if admission == "admitted" && readErr != nil || admission == "expired" && !errors.Is(readErr, context.DeadlineExceeded) {
+					t.Errorf("unexpected recovery read outcome: %v", readErr)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("failure writer did not settle")
+			}
+			result, err = modelCall(t, pb, workspace, input, domain, "model.status", map[string]any{"requestId": preview.RequestID})
+			if err != nil || result.(pluginmodel.State).Status != "completed" {
+				t.Errorf("public status downgraded: %+v %v", result, err)
+			}
+			states, err := pluginmodel.States(context.Background(), pb, input.ProjectKey, input.PluginID)
+			if err != nil {
+				t.Errorf("durable progress: %v", err)
+			}
+			if len(states) != len(before) {
+				t.Error("failure recovery appended progress after concurrent completion")
+			}
+			completed, highWater := false, 0
+			for _, state := range states {
+				if state.RequestID != preview.RequestID {
+					continue
+				}
+				if state.Completed < highWater || completed && state.Status != "completed" {
+					t.Errorf("durable state regressed: %+v", state)
+				}
+				highWater = state.Completed
+				completed = state.Status == "completed"
+			}
+			if !completed || highWater != preview.Total {
+				t.Error("durable completion was not retained")
+			}
+		})
 	}
 }
 

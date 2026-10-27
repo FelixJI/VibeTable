@@ -125,6 +125,7 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
     monkeypatch.setattr(model_native, "_send_input", send)
     monkeypatch.setattr(model_native.time, "monotonic", lambda: state["now"])
     monkeypatch.setattr(model_native.time, "sleep", sleep)
+    diagnostic = {}
 
     def run():
         model_native._map_model_choices(
@@ -136,16 +137,17 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
             input_owned=lambda: None,
             evidence=tmp_path,
             deadline=3,
+            diagnostic=diagnostic,
         )
 
-    return run, state, inputs, selected
+    return run, state, inputs, selected, diagnostic
 
 
 @pytest.mark.parametrize("popup", [False, True])
 def test_model_mapping_waits_for_async_fields_and_verifies_every_selected_label(
     tmp_path, monkeypatch, popup
 ):
-    run, state, inputs, selected = mapping_harness(
+    run, state, inputs, selected, diagnostic = mapping_harness(
         monkeypatch, tmp_path, "owned-popup" if popup else None
     )
     run()
@@ -154,6 +156,8 @@ def test_model_mapping_waits_for_async_fields_and_verifies_every_selected_label(
     assert sum("x" in item for item in inputs) == 9
     assert sum(item.get("vkeys") == [0x73] for item in inputs) == 9
     assert all(item.get("vkeys") in (None, [0x09], [0x73]) for item in inputs)
+    assert diagnostic["wait"] == "complete"
+    assert diagnostic["lastCombo"]["id"] == "PluginModelField_assets_quantity"
 
 
 @pytest.mark.parametrize(
@@ -162,13 +166,20 @@ def test_model_mapping_waits_for_async_fields_and_verifies_every_selected_label(
 def test_model_mapping_fails_closed_for_missing_readiness_or_ambiguous_choices(
     tmp_path, monkeypatch, fault
 ):
-    run, _state, inputs, _selected = mapping_harness(monkeypatch, tmp_path, fault)
+    run, _state, inputs, _selected, diagnostic = mapping_harness(monkeypatch, tmp_path, fault)
     with pytest.raises((OSError, ValueError)):
         run()
     if fault in {"foreign", "never-ready"}:
         assert inputs == []
     if fault in {"ambiguous", "obscured"}:
         assert not any("x" in item for item in inputs)
+    assert diagnostic["stage"] == "mapping"
+    assert diagnostic["controlId"] == "PluginModelTable_people"
+    if fault == "never-ready":
+        assert diagnostic["wait"] == "control-ready"
+        assert diagnostic["lastCombo"]["enabled"] is False
+        retained = json.loads((tmp_path / "model-native-combos.json").read_text(encoding="utf-8"))
+        assert retained["mapping"]["wait"] == "control-ready"
 
 
 @pytest.mark.parametrize("fault", ["indices", "foreign-control", "missing-label"])
@@ -241,3 +252,75 @@ def test_model_native_rechecks_live_owner_after_observation(tmp_path, monkeypatc
         request(), host_scope=scope, evidence=tmp_path
     )
     assert result["status"] == "failed"
+
+
+@pytest.mark.parametrize("stage", ["initial-chrome", "mapping", "final-chrome"])
+def test_model_native_failure_keeps_exact_phase_and_bounded_uia_stderr(
+    tmp_path, monkeypatch, stage
+):
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=7),
+        snapshot=lambda: SimpleNamespace(members=[SimpleNamespace(pid=7, identity_verified=True)]),
+    )
+    native = SimpleNamespace(
+        windows=lambda: [{"hwnd": 8, "pid": 7, "visible": True, "title": "映射插件数据模型"}],
+        owner=lambda _hwnd: 7,
+        foreground=lambda *_: None,
+        user32=SimpleNamespace(GetForegroundWindow=lambda: 8),
+    )
+    failure = model_native.subprocess.TimeoutExpired(
+        ["observer.exe", "--buttons" if stage == "mapping" else "--screenshot", "8"],
+        0.3,
+        output="PRIVATE_STDOUT_MUST_NOT_BE_RETAINED",
+        stderr=b"UIA_STAGE plugin-tree begin\n" + b"x" * 5000,
+    )
+    chrome_calls = 0
+
+    def chrome(*_args, **_kwargs):
+        nonlocal chrome_calls
+        chrome_calls += 1
+        if stage == "initial-chrome" or (stage == "final-chrome" and chrome_calls == 2):
+            raise failure
+        return {}, {"x": 10, "y": 10, "width": 20, "height": 20}
+
+    def run(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+    monkeypatch.setattr(model_native, "_observe_owned_chrome", chrome)
+    monkeypatch.setattr(model_native.subprocess, "run", run)
+    monkeypatch.setattr(
+        model_native,
+        "_send_input",
+        lambda *_args, **_kwargs: pytest.fail("no input after failed observation"),
+    )
+    if stage == "final-chrome":
+        monkeypatch.setattr(model_native, "_map_model_choices", lambda *_args, **_kwargs: None)
+    result = model_native.handle_plugin_model_request(
+        {
+            "requestId": "owned-map",
+            "action": "map",
+            "buttonId": "plugin-model-preview",
+            "stage": "map",
+            "selections": [
+                {"controlId": control_id, "label": "Expected"}
+                for control_id in model_native._MODEL_CONTROLS
+            ],
+        },
+        host_scope=scope,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["diagnostic"]["stage"] == stage
+    if stage == "mapping":
+        assert result["diagnostic"]["controlId"] == "PluginModelTable_people"
+        assert result["diagnostic"]["wait"] == "focus"
+    else:
+        assert result["diagnostic"]["controlId"] is None
+    assert result["uiaFailure"]["timeoutSeconds"] == 0.3
+    assert result["uiaFailure"]["stderr"].startswith("UIA_STAGE plugin-tree begin")
+    assert len(result["uiaFailure"]["stderr"]) == 4096
+    assert "PRIVATE_STDOUT" not in json.dumps(result)

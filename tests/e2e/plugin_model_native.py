@@ -36,10 +36,12 @@ def _map_model_choices(
     input_owned: Callable[[], None],
     evidence: Path,
     deadline: float,
+    diagnostic: dict[str, Any],
 ) -> None:
     def observe() -> list[dict[str, Any]]:
         input_owned()
         remaining = deadline - time.monotonic()
+        diagnostic["remainingSeconds"] = round(max(remaining, 0), 3)
         if remaining <= 0:
             raise OSError("model mapping controls did not settle within the request budget")
         result = subprocess.run(
@@ -59,6 +61,19 @@ def _map_model_choices(
             or value["automationId"] != "PluginModelWindow"
         ):
             raise ValueError("model combo observation belongs to a different window")
+        diagnostic["observations"] = diagnostic.get("observations", 0) + 1
+        diagnostic["focusedControls"] = [item["id"] for item in value["combos"] if item["focused"]]
+        matches = [item for item in value["combos"] if item["id"] == diagnostic["controlId"]]
+        if len(matches) == 1:
+            current = matches[0]
+            diagnostic["lastCombo"] = {
+                key: current[key]
+                for key in ("id", "pid", "enabled", "focused", "expanded", "selected")
+            }
+            diagnostic["lastCombo"]["choiceNames"] = [
+                item["name"][:200] for item in current["choices"][:32]
+            ]
+        value["mapping"] = diagnostic.copy()
         (evidence / "model-native-combos.json").write_text(json.dumps(value), encoding="utf-8")
         return value["combos"]
 
@@ -73,6 +88,9 @@ def _map_model_choices(
 
     for selection in selections:
         control_id, label = selection["controlId"], selection["label"]
+        diagnostic.update(
+            stage="mapping", controlId=control_id, expectedLabel=label, wait="focus", lastCombo=None
+        )
         tabs = 0
         while True:
             combos = observe()
@@ -80,6 +98,7 @@ def _map_model_choices(
             if not target["enabled"] or any(
                 not item["enabled"] for item in combos if item["id"].startswith("PluginModelTable_")
             ):
+                diagnostic["wait"] = "control-ready"
                 poll()
                 continue
             if target["focused"]:
@@ -90,15 +109,19 @@ def _map_model_choices(
             input_owned()
             _send_input(native, vkeys=[0x09])
             tabs += 1
+            diagnostic["wait"] = "focus-change"
             while [item["id"] for item in observe() if item["focused"]] == previous_focus:
                 poll()
         input_owned()
         _send_input(native, vkeys=[0x73])  # F4 opens the actual focused ComboBox.
+        diagnostic["wait"] = "expanded"
         while True:
             target = control(observe(), control_id)
             if not target["expanded"]:
+                diagnostic["wait"] = "expanded"
                 poll()
                 continue
+            diagnostic["wait"] = "unique-choice"
             matches = [item for item in target["choices"] if item["name"] == label]
             if len(matches) > 1:
                 raise ValueError("model choice label is ambiguous")
@@ -117,6 +140,7 @@ def _map_model_choices(
                 or option["width"] <= 0
                 or option["height"] <= 0
             ):
+                diagnostic["wait"] = "visible-choice"
                 poll()
                 continue
             x, y = option["x"] + option["width"] / 2, option["y"] + option["height"] / 2
@@ -137,11 +161,13 @@ def _map_model_choices(
             input_owned()
             _send_input(native, x=x, y=y)
             break
+        diagnostic["wait"] = "selection-and-load"
         while True:
             target = control(observe(), control_id)
             if target["enabled"] and not target["expanded"] and target["selected"] == label:
                 break
             poll()
+    diagnostic["wait"] = "all-selections"
     combos = observe()
     if any(
         not control(combos, item["controlId"])["enabled"]
@@ -149,6 +175,7 @@ def _map_model_choices(
         for item in selections
     ):
         raise ValueError("model mapping does not contain every expected selection")
+    diagnostic["wait"] = "complete"
 
 
 def handle_plugin_model_request(
@@ -156,6 +183,14 @@ def handle_plugin_model_request(
 ) -> dict[str, Any]:
     from tests.e2e import product_e2e_runner as runner
 
+    diagnostic: dict[str, Any] = {
+        "stage": "validation",
+        "action": request.get("action"),
+        "requestStage": request.get("stage"),
+        "buttonId": request.get("buttonId"),
+        "requestId": request.get("requestId"),
+        "controlId": None,
+    }
     try:
         if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("CI") != "true":
             raise ValueError("model native input requires controlled GitHub CI runner")
@@ -198,6 +233,7 @@ def handle_plugin_model_request(
 
         job_owned()
         native = runner._DocumentNativeWindows()
+        diagnostic["stage"] = "window-discovery"
         title = (
             "映射插件数据模型"
             if request["buttonId"] == "plugin-model-preview"
@@ -219,6 +255,7 @@ def handle_plugin_model_request(
         if len(windows) != 1:
             raise OSError("expected one owned native model window")
         hwnd = windows[0]["hwnd"]
+        diagnostic.update(hwnd=hwnd, pid=host_pid, stage="foreground")
         job_owned()
         native.foreground(hwnd, host_pid)
 
@@ -238,6 +275,7 @@ def handle_plugin_model_request(
             job_owned()
 
         screenshot = evidence / f"54-model-native-{request['stage']}.png"
+        diagnostic.update(stage="initial-chrome", controlId=None, wait="screenshot")
         observed, button = _observe_owned_chrome(
             native,
             runner.NATIVE_UIA_OBSERVER_EXE,
@@ -258,7 +296,9 @@ def handle_plugin_model_request(
                 input_owned=input_owned,
                 evidence=evidence,
                 deadline=deadline,
+                diagnostic=diagnostic,
             )
+            diagnostic.update(stage="final-chrome", controlId=None, wait="screenshot")
             observed, button = _observe_owned_chrome(
                 native,
                 runner.NATIVE_UIA_OBSERVER_EXE,
@@ -269,6 +309,7 @@ def handle_plugin_model_request(
                 deadline=deadline,
             )
         if request["action"] in {"click", "map"}:
+            diagnostic.update(stage="click", controlId=request["buttonId"], wait="button-input")
             input_owned()
             if (
                 native._root_at(
@@ -289,4 +330,23 @@ def handle_plugin_model_request(
             "screenshot": str(screenshot),
         }
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        return {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
+        failure = {
+            "requestId": request.get("requestId"),
+            "status": "failed",
+            "error": str(error),
+            "diagnostic": diagnostic,
+        }
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            stderr = error.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            failure["uiaFailure"] = {
+                "stderr": stderr[:4096],
+                "returnCode": error.returncode
+                if isinstance(error, subprocess.CalledProcessError)
+                else None,
+                "timeoutSeconds": error.timeout
+                if isinstance(error, subprocess.TimeoutExpired)
+                else None,
+            }
+        return failure

@@ -1958,6 +1958,13 @@ def persist_product_e2e_evidence(
                         f"{scenario_id}.png",
                     ):
                         _copy_if_file(phase_run / filename, retained / filename)
+                    if scenario_id == "54-plugin-models":
+                        for filename in (
+                            "model-native-combos.json",
+                            "plugin-native-result.json",
+                            "plugin-native-observation.json",
+                        ):
+                            _copy_if_file(phase_run / filename, retained / filename)
                     if scenario_id == "48-plugin-applications":
                         for filename in (
                             "48-plugin-print-preview.json",

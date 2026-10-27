@@ -6973,7 +6973,7 @@ internal static class Program
         }
         window.Loaded += (_, _) => window.Dispatcher.BeginInvoke(new Action(() =>
         {
-            if (modelCombo is not null) modelCombo.IsDropDownOpen = true;
+            if (modelCombo is not null) modelCombo.Focus();
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {
                 hwnd = new WindowInteropHelper(window).Handle.ToInt64(),
                 pid = Environment.ProcessId, apartment = "STA"
@@ -7117,28 +7117,142 @@ def test_native_model_combo_observer_reads_real_selection_and_popup_options(
         native,
         hwnd,
     ):
-        result = subprocess.run(
-            [str(runner.NATIVE_UIA_OBSERVER_EXE), "--buttons", str(hwnd)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-            timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        observation = json.loads(result.stdout)
-        assert observation["automationId"] == "PluginModelWindow"
-        assert observation["hwnd"] == hwnd
-        assert observation["pid"] == native.owner(hwnd)
-        assert len(observation["combos"]) == 1
+
+        def observe(timeout: float):
+            result = subprocess.run(
+                [str(runner.NATIVE_UIA_OBSERVER_EXE), "--buttons", str(hwnd)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            value = json.loads(result.stdout)
+            assert value["automationId"] == "PluginModelWindow"
+            assert value["hwnd"] == hwnd
+            assert value["pid"] == native.owner(hwnd)
+            assert len(value["combos"]) == 1
+            assert value["combos"][0]["id"] == "PluginModelTable_people"
+            return value
+
+        observation = observe(5)
         combo = observation["combos"][0]
-        assert combo["id"] == "PluginModelTable_people"
-        assert combo["enabled"] is True
-        assert combo["expanded"] is True
+        assert combo["expanded"] is False
         assert combo["selected"] == "实际模型表二"
+        native.foreground(hwnd, observation["pid"])
+        active = observe(5)
+        assert active["pid"] == observation["pid"]
+        combo = active["combos"][0]
+        assert combo["enabled"] is True
+        assert combo["focused"] is True
+        assert native.owner(hwnd) == observation["pid"]
+        assert int(native.user32.GetForegroundWindow() or 0) == hwnd
+        from tests.e2e.plugin_application_native import _send_input
+
+        # Open only after the fixture's exact root passed the single-window handshake.
+        _send_input(native, vkeys=[0x73])
+        deadline = runner.time.monotonic() + 5
+        while True:
+            remaining = deadline - runner.time.monotonic()
+            assert remaining > 0, "owned ComboBox popup did not become observable"
+            observation = observe(remaining)
+            combo = observation["combos"][0]
+            if (
+                combo["expanded"]
+                and len(combo["choices"]) == 2
+                and all(
+                    not item["offscreen"] and item["width"] > 0 and item["height"] > 0
+                    for item in combo["choices"]
+                )
+            ):
+                break
+            runner.time.sleep(min(0.05, max(0, deadline - runner.time.monotonic())))
         assert {item["name"] for item in combo["choices"]} == {"实际模型表一", "实际模型表二"}
         assert all(item["pid"] == observation["pid"] for item in combo["choices"])
         assert all(item["width"] > 0 and item["height"] > 0 for item in combo["choices"])
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_model_combo_fixture_opens_popup_after_exact_root_check(monkeypatch, foreign):
+    from tests.e2e import plugin_application_native
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    state = {"verified": False, "opened": False, "reads": 0, "owner": 7}
+    native = SimpleNamespace(
+        owner=lambda _hwnd: state["owner"],
+        user32=SimpleNamespace(GetForegroundWindow=lambda: 8),
+    )
+
+    def foreground(hwnd, pid):
+        assert (hwnd, pid) == (8, 7)
+        if foreign:
+            state["owner"] = 9
+
+    native.foreground = foreground
+
+    @contextmanager
+    def window(_command):
+        assert state["opened"] is False
+        state["verified"] = True
+        yield native, 8
+
+    def read(*_args, **_kwargs):
+        state["reads"] += 1
+        expanded = state["opened"] and state["reads"] >= 5
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "automationId": "PluginModelWindow",
+                    "hwnd": 8,
+                    "pid": 7,
+                    "combos": [
+                        {
+                            "id": "PluginModelTable_people",
+                            "enabled": True,
+                            "focused": True,
+                            "expanded": expanded,
+                            "selected": "实际模型表二",
+                            "choices": [
+                                {
+                                    "name": name,
+                                    "pid": 7,
+                                    "offscreen": False,
+                                    "width": 20,
+                                    "height": 20,
+                                }
+                                for name in ("实际模型表一", "实际模型表二")
+                            ]
+                            if expanded
+                            else [],
+                        }
+                    ],
+                }
+            )
+        )
+
+    def send(_native, *, vkeys):
+        assert state["verified"] is True
+        assert state["reads"] == 2
+        assert vkeys == [0x73]
+        state["opened"] = True
+
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(f"{__name__}._owned_native_uia_window", window)
+    monkeypatch.setattr(subprocess, "run", read)
+    monkeypatch.setattr(plugin_application_native, "_send_input", send)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    if foreign:
+        with pytest.raises(AssertionError):
+            test_native_model_combo_observer_reads_real_selection_and_popup_options(
+                Path("mock-only")
+            )
+        assert state["opened"] is False
+    else:
+        test_native_model_combo_observer_reads_real_selection_and_popup_options(Path("mock-only"))
+        assert state["opened"] is True
+        assert state["reads"] == 5
 
 
 def _uia_stage_timeline(stderr: str) -> tuple[list[str], list[int]]:
