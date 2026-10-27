@@ -1628,13 +1628,15 @@ def persist_product_e2e_evidence(
                 "46-dashboard-native-output-trace.zip",
             ),
             "49-plugin-application-security": (
-                "48-native-dark.png",
-                "48-native-scaled.png",
-                "48-native-contrast.png",
-                "48-native-contrast-restored.png",
-                "48-native-loop.png",
-                "48-native-recovered.png",
-                "48-native-crashed.png",
+                "49-application-dark.png",
+                "49-application-light.png",
+                "49-application-scaled.png",
+                "49-application-contrast.png",
+                "49-application-contrast-restored.png",
+                "49-loop-recovered.png",
+                "49-crash-recovered.png",
+                "plugin-contrast-original.json",
+                "plugin-contrast-restoration.json",
                 "49-security-observations.json",
                 "49-plugin-application-security-trace.zip",
             ),
@@ -1667,12 +1669,13 @@ def persist_product_e2e_evidence(
                 "52-confirm-import-approved.png",
             ),
             "51-plugin-application-commit-unknown": (
-                "48-native-cancelled.png",
-                "48-native-recovered.png",
+                "48-native-approved.png",
+                "51-commit-recovered.png",
+                "51-unknown-commit.json",
                 "51-plugin-application-commit-unknown-trace.zip",
             ),
             "50-plugin-headless-budget": (
-                "48-native-recovered.png",
+                "50-headless-recovered.png",
                 "50-plugin-headless-budget-trace.zip",
             ),
             "47-plugin-surface-api": (
@@ -1749,9 +1752,9 @@ def persist_product_e2e_evidence(
                     raise ValueError(f"passing S42 report lacks native evidence: {filename}")
         phase_evidence = {
             "48-plugin-applications": {
-                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
                 "resume": (
-                    "48-native-application.png",
+                    "48-application-sidebar.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
                     "48-plugin-print-scope.png",

@@ -93,6 +93,7 @@ public sealed class WebMessageRouter
         "history.applyRestoreRequested",
         // Table management (web sidebar).
         "tableAdmin.createRequested",
+        "tableAdmin.duplicateRequested",
         "tableAdmin.deleteRequested",
         "contentProfile.load",
         "contentProfile.commit",

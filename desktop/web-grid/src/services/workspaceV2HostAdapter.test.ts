@@ -1007,7 +1007,7 @@ describe("workspace v2 production host adapter", () => {
     expect(protection.extractPlan).toBeNull();
     await port.request({ method: "repository.verify", params: {} });
     await port.request({ method: "repository.previewKeyRotation", params: {} });
-    await port.request({ method: "repository.applyKeyRotation", params: { planId: "plan-key", confirmed: true } });
+    await port.request({ method: "repository.applyKeyRotation", params: { planId: "plan-key", confirmed: true, targetMode: "protected" } });
     expect(protection.keyRotationPlan).toBeNull();
     await port.request({ method: "fileHistory.readTree", params: { documentId: "document-1" } });
     await port.request({ method: "fileHistory.queryDocuments", params: { logic: "and", filters: [], sort: [], limit: 50, cursor: null } });

@@ -128,6 +128,8 @@ export type WorkspaceTableIntent =
   | { readonly type: "table.delete" }
   | { readonly type: "table.cancelCreate" }
   | { readonly type: "table.cancelDelete" }
+  /** 复制数据表：单一闭合意图，由 tableAdminService 走权威 duplicate 接口。 */
+  | { readonly type: "table.duplicate"; readonly collection: string; readonly displayName: string }
   | { readonly type: "paste.confirm" }
   | { readonly type: "paste.cancel" }
   | { readonly type: "keyboard.copy" }
@@ -183,7 +185,7 @@ export interface WorkspaceTableInteractionDependencies {
   readonly paste: Pick<ReturnType<typeof usePasteStore>, "plan" | "setOverflow" | "reset">;
   readonly pasteService: Pick<PasteService, "preview" | "apply">;
   readonly mutationService: Pick<MutationService, "deleteRows">;
-  readonly tableAdminService: Pick<TableAdminService, "createTable" | "deleteTable">;
+  readonly tableAdminService: Pick<TableAdminService, "createTable" | "deleteTable" | "duplicateTable">;
   readonly grid: TableInteractionGridPort;
   readonly readClipboard: () => Promise<string>;
   readonly writeClipboard: (text: string) => Promise<void>;
@@ -334,6 +336,14 @@ export function createWorkspaceTableInteractionController(
       case "table.cancelDelete":
         dependencies.ui.closeDelete();
         dependencies.admin.close();
+        return;
+      case "table.duplicate":
+        // 复制 UI 属导航 Owner；这里只把闭合意图路由到权威 duplicate 服务，
+        // 不做任何前端逐行伪复制。
+        await dependencies.tableAdminService.duplicateTable(
+          intent.collection,
+          intent.displayName,
+        );
         return;
       case "paste.confirm": {
         const plan = dependencies.paste.plan;

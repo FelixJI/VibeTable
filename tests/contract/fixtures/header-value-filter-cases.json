@@ -1,0 +1,24 @@
+[
+  {
+    "name": "multiple-columns-with-or-terms",
+    "query": {
+      "filters": [
+        {"groupLogic": "OR", "filters": [{"field": "name", "operator": "contains", "value": "foo"}, {"field": "name", "operator": "contains", "value": "bar"}]},
+        {"groupLogic": "OR", "filters": [{"field": "status", "operator": "contains", "value": "open"}, {"field": "status", "operator": "contains", "value": "paused"}]}
+      ],
+      "sorts": [], "offset": 0, "limit": 100
+    },
+    "expectedIds": ["a", "d"]
+  },
+  {
+    "name": "blank-or-value-with-another-column",
+    "query": {
+      "filters": [
+        {"field": "status", "operator": "eq", "value": "open", "logic": "AND"},
+        {"groupLogic": "OR", "filters": [{"field": "notes", "operator": "is_null"}, {"field": "notes", "operator": "eq", "value": "ok"}]}
+      ],
+      "sorts": [], "offset": 0, "limit": 100
+    },
+    "expectedIds": ["a", "c"]
+  }
+]

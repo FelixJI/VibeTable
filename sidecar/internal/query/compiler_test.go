@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -247,6 +248,53 @@ func TestExistingTableQueryGoldenDecodesWithEquivalentSemantics(t *testing.T) {
 	}
 	if plan.CountSQL != `SELECT COUNT(*) FROM "orders" WHERE ((((instr(CAST("name" AS TEXT), {:p0}) > 0) AND ("amount" > {:p1})) OR ("status" IN ({:p2}, {:p3}))) AND ("created_at" BETWEEN {:p4} AND {:p5})) AND (("notes" IS NULL OR "notes" = ''))` {
 		t.Fatalf("golden count SQL changed: %s", plan.CountSQL)
+	}
+}
+
+func TestHeaderValueFiltersExecuteWithColumnLocalOr(t *testing.T) {
+	raw, err := os.ReadFile("../../../tests/contract/fixtures/header-value-filter-cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name        string           `json:"name"`
+		Query       query.TableQuery `json:"query"`
+		ExpectedIDs []string         `json:"expectedIds"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	db, err := stdsql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	database := dbx.NewFromDB(db, "sqlite")
+	_, err = database.NewQuery(`CREATE TABLE orders (id TEXT PRIMARY KEY, name TEXT, status TEXT, notes TEXT, amount REAL, created_at TEXT);
+		INSERT INTO orders (id,name,status,notes) VALUES
+		('a','foo','open',NULL),('b','bar','closed','ok'),('c','none','open','ok'),('d','bar','open','bad');`).Execute()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range cases {
+		t.Run(item.Name, func(t *testing.T) {
+			plan, err := query.Compile(descriptorFixture(), item.Query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []dbx.NullStringMap
+			if err := database.NewQuery(plan.SQL).Bind(dbx.Params(plan.Params)).All(&rows); err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]string, 0, len(rows))
+			for _, row := range rows {
+				ids = append(ids, row["id"].String)
+			}
+			if !reflect.DeepEqual(ids, item.ExpectedIDs) {
+				t.Fatalf("rows=%v want=%v", ids, item.ExpectedIDs)
+			}
+		})
 	}
 }
 

@@ -6,6 +6,8 @@ import {
   buildOptions,
   buildTabulatorColumns,
   activateEditorForKeyStroke,
+  headerMenuTitleFormatter,
+  HEADER_MENU_EVENT,
   jsonHeaderFilter,
   jsonValueFormatter,
   ROW_KEY_FIELD,
@@ -82,6 +84,60 @@ it("allows actual column reordering while retaining authoritative remote queries
   expect(options.movableColumns).toBe(true);
   expect(options.sortMode).toBe("remote");
   expect(options.filterMode).toBe("remote");
+  // 排序三态：升序 → 降序 → 清除。
+  expect(options.headerSortTristate).toBe(true);
+});
+
+describe("header value menu trigger", () => {
+  const selectColumn = (extra: Partial<TablePage["columns"][number]> = {}) => ({
+    name: "status",
+    title: "状态",
+    dataType: "text" as const,
+    editable: false,
+    nullable: true,
+    display: displaySpec({ kind: "select", preset: "standard" }),
+    enumOptions: [
+      { optionId: "open", label: "进行中", color: "", order: 0, state: "active" as const },
+      { optionId: "done", label: "完成", color: "", order: 1, state: "active" as const },
+    ],
+    ...extra,
+  });
+
+  it("每个数据列都在字段名旁生成值筛选按钮", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [selectColumn(), ...samplePage().columns.slice(1)],
+    };
+    const columns = buildTabulatorColumns(page);
+    const status = columns.find(column => column.field === "status");
+    const name = columns.find(column => column.field === "name");
+    expect(typeof status?.titleFormatter).toBe("function");
+    expect(status?.titleFormatterParams).toEqual({ field: "status" });
+    expect(typeof name?.titleFormatter).toBe("function");
+    expect(name?.titleFormatterParams).toEqual({ field: "name" });
+    const rowNumber = columns.find(column => column.field === "__vt_row_number");
+    expect(rowNumber?.titleFormatter).toBeUndefined();
+  });
+
+  it("按钮点击只冒泡菜单事件，不触发排序；按 mock cell 入参取标题", () => {
+    // Tabulator（Format.js）以 mock cell 调用 titleFormatter：
+    // cell.getValue() 返回标题，直接按 string 入参会渲染 [object Object]。
+    const element = headerMenuTitleFormatter(
+      { getValue: () => "状态" },
+      { field: "status" },
+    );
+    expect(element.querySelector(".vt-header-title__text")?.textContent).toBe("状态");
+    const trigger = element.querySelector<HTMLButtonElement>(".vt-header-menu-trigger");
+    expect(trigger).not.toBeNull();
+    expect(trigger!.dataset.field).toBe("status");
+    const events: CustomEvent[] = [];
+    element.addEventListener(HEADER_MENU_EVENT, event => events.push(event as CustomEvent));
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    trigger!.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.detail).toEqual({ field: "status" });
+  });
 });
 
 describe("authoritative column display formatting", () => {

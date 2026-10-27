@@ -42,6 +42,7 @@ interface MockTabulator {
   off: ReturnType<typeof vi.fn>;
   getSorters: ReturnType<typeof vi.fn>;
   getHeaderFilters: ReturnType<typeof vi.fn>;
+  setHeaderFilterValue: ReturnType<typeof vi.fn>;
   getRanges: ReturnType<typeof vi.fn>;
   getColumns: ReturnType<typeof vi.fn>;
   addRange: ReturnType<typeof vi.fn>;
@@ -68,6 +69,7 @@ vi.mock("@/grid/createGrid", async (importOriginal) => ({
       off: vi.fn(),
       getSorters: vi.fn().mockReturnValue([]),
       getHeaderFilters: vi.fn().mockReturnValue([]),
+      setHeaderFilterValue: vi.fn(),
       getRanges: vi.fn().mockReturnValue([]),
       getColumns: vi.fn().mockReturnValue([]),
       addRange: vi.fn(),
@@ -284,6 +286,46 @@ describe("useTabulator", () => {
     moved(); expect(changed).toHaveBeenCalledOnce();
     wrapper.unmount();
     expect(lastMock!.off).toHaveBeenCalledWith("columnMoved", moved);
+  });
+
+  it("preserves menu filters through real runtime capture on sorting and clearing another header", async () => {
+    useWorkspaceStore().selectTable("users");
+    useTableStore().appendPage(makePage([], [makeColumn("status"), makeColumn("other")]));
+    const query=useViewQueryStore();
+    query.replace("users",{layout:"table",search:"",visibleFields:["status","other"],sorts:[],filters:[
+      {field:"status",operator:"eq",value:"a",logic:"AND"},
+      {field:"other",operator:"eq",value:"x",logic:"AND"},
+    ]},["status","other"]);
+    const changed=vi.fn(value=>query.updateRuntime(value));
+    let clearMenuFilter!: (field:string)=>void;
+    const wrapper=mount(defineComponent({setup(){
+      const runtime=useTabulator(ref(document.createElement("div")),{onViewQueryChanged:changed});
+      clearMenuFilter=runtime.clearHeaderFilterForMenu;
+      return ()=>h("div");
+    }}));
+    await flushPromises();
+    lastMock!.on.mock.calls.find(([event])=>event==="tableBuilt")![1]();
+    await flushPromises();
+    const filtered=lastMock!.on.mock.calls.find(([event])=>event==="dataFiltered")![1];
+    const sorted=lastMock!.on.mock.calls.find(([event])=>event==="dataSorted")![1];
+    let inputs=[{field:"status",value:"a"},{field:"other",value:"x"}];
+    lastMock!.getHeaderFilters.mockImplementation(()=>inputs);
+    lastMock!.setHeaderFilterValue.mockImplementation((field:string)=>{
+      inputs=inputs.filter(input=>input.field!==field);
+      filtered();
+    });
+    query.applyHeaderValueFilter("status",["b"]);
+    clearMenuFilter("status");
+    expect(lastMock!.setHeaderFilterValue).toHaveBeenCalledWith("status","");
+    expect(changed).not.toHaveBeenCalled();
+    query.updateRuntime({headerFilters:query.headerFilters,sorts:[],groups:[]});
+    lastMock!.getSorters.mockReturnValue([{field:"status",dir:"desc"}]);
+    sorted();
+    expect(query.filters).toContainEqual({field:"status",operator:"eq",value:"b"});
+    inputs=[];
+    filtered();
+    expect(query.filters).toEqual([{field:"status",operator:"eq",value:"b"}]);
+    wrapper.unmount();
   });
 
   it("keeps full query semantics through restore echoes and a subsequent real header edit", async () => {

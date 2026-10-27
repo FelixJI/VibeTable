@@ -216,11 +216,9 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsPluginChromeVisible => _pluginSurfaceActive && State == StartupState.Ready;
 
     /// <summary>
-    /// Whether the native 恢复界面 entry is shown. Once a renderer load has
-    /// been issued the entry stays reachable — including the Ready state a
-    /// frozen renderer keeps — because a plugin DOM or hung renderer cannot
-    /// shadow the native row. It stays visible through Faulted so the
-    /// abnormal state still offers the native recovery path.
+    /// Whether the fallback layer can show its native recovery button.
+    /// Ready-state recovery remains reachable from the native window menu,
+    /// even while a hung renderer prevents web navigation.
     /// </summary>
     public bool IsNativeRecoveryVisible => _rendererLoadStarted;
 

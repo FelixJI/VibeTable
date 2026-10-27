@@ -318,6 +318,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "recordDocumentLink.repair",
   "recordDocumentLink.delete",
   "query.page",
+  "query.view",
   "query.cursorOpen",
   "query.cursorFetch",
   "mutation.preview",
@@ -440,6 +441,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "recordDocumentLink.repair",
   "recordDocumentLink.delete",
   "query.page",
+  "query.view",
   "query.cursorOpen",
   "query.cursorFetch",
   "mutation.preview",
@@ -513,6 +515,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "history.applyRestoreRequested",
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
+  "tableAdmin.duplicateRequested",
   "tableAdmin.deleteRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
@@ -584,6 +587,7 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "history.previewRestoreRequested": ["history.restorePreviewReady"],
   "history.applyRestoreRequested": ["history.restoreApplied"],
   "tableAdmin.createRequested": ["database.collectionsChanged"],
+  "tableAdmin.duplicateRequested": ["database.collectionsChanged"],
   "tableAdmin.deleteRequested": ["database.collectionsChanged"],
   "legacyLayout.reportRequested": ["legacyLayout.reportLoaded"],
   "legacyLayout.exportRequested": ["legacyLayout.exportCompleted"],
@@ -615,6 +619,7 @@ const HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS = new Set([
 ]);
 const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "tableAdmin.createRequested",
+  "tableAdmin.duplicateRequested",
   "tableAdmin.deleteRequested",
 ]);
 // Requests whose terminal state the Host owns (native dialog, wizard, or a

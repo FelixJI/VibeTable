@@ -48,6 +48,44 @@ describe("uiStore", () => {
     expect(s.shortcutsOpen).toBe(false);
   });
 
+  it("openSettings lands on the settings view with the requested section and retires plugin apps", () => {
+    const s = useUiStore();
+    s.openPluginApp("com.example.erp", "app");
+    s.openSettings("versions");
+    expect(s.activeView).toBe("settings");
+    expect(s.activePluginApp).toBeNull();
+    expect(s.requestedSettingsSection).toBe("versions");
+    // 消费后清除；普通 navigate 不携带分区意图。
+    s.settleSettingsSection();
+    expect(s.requestedSettingsSection).toBeNull();
+    s.openSettings("storage");
+    s.navigate("tables");
+    expect(s.requestedSettingsSection).toBeNull();
+    s.openSettings("storage");
+    // 工作区切换时残留意图不得存活。
+    s.setWorkspaceNamespace("11111111-1111-4111-8111-111111111111");
+    expect(s.requestedSettingsSection).toBeNull();
+  });
+
+  it("touchTable persists local last-modified times per workspace namespace", () => {
+    const s = useUiStore();
+    expect(s.tableModified).toEqual({});
+    const at = 1_780_000_000_000;
+    s.touchTable("vt_t_01abc", at);
+    expect(s.tableModified["vt_t_01abc"]).toBe(at);
+    expect(JSON.parse(localStorage.getItem("vt:table-modified")!)).toEqual({ "vt_t_01abc": at });
+
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    s.setWorkspaceNamespace(workspaceId);
+    expect(s.tableModified).toEqual({});
+    s.touchTable("vt_t_02def", at + 5);
+    expect(JSON.parse(localStorage.getItem(`vt:${workspaceId}:table-modified`)!))
+      .toEqual({ "vt_t_02def": at + 5 });
+    // 非法输入不落盘。
+    s.touchTable("", at);
+    expect(Object.keys(s.tableModified)).toEqual(["vt_t_02def"]);
+  });
+
   it("setThemeMode is a local projection and never writes storage", () => {
     const s = useUiStore();
     s.setThemeMode("dark");

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { isFilterCondition } from "./viewQuery";
 import {
   buildQuery,
   isNullaryOperator,
@@ -7,6 +9,17 @@ import {
 import type { TableQuery } from "@/contracts";
 
 describe("buildQuery", () => {
+  it("uses only allowed membership operators for multi-select header filters", () => {
+    const query=buildQuery({columns:[{name:"tags",title:"标签",dataType:"json",editable:true,nullable:true,filterInput:"multiSelect",filterOperators:["contains","is_null","is_not_null"]}],headerFilters:[{field:"tags",value:["a","b"]}]});
+    expect(query.filters).toEqual([{groupLogic:"OR",filters:[{field:"tags",operator:"contains",value:"a"},{field:"tags",operator:"contains",value:"b"}]}]);
+  });
+  it("matches the shared Go compiler fixture for column-local OR terms", () => {
+    const cases = JSON.parse(readFileSync("../../tests/contract/fixtures/header-value-filter-cases.json", "utf8")) as {name:string;query:TableQuery}[];
+    expect(buildQuery({
+      columns: ["name", "status"].map(name => ({name,title:name,dataType:"text" as const,editable:true,nullable:true})),
+      headerFilters: [{field:"name",value:"foo bar"},{field:"status",value:"open paused"}],
+    })).toEqual(cases.find(item => item.name === "multiple-columns-with-or-terms")!.query);
+  });
   it("maps Tabulator sorters to the AST with nullsLast", () => {
     const q = buildQuery({
       sorters: [{ field: "amount", dir: "desc" }],
@@ -34,6 +47,99 @@ describe("buildQuery", () => {
     });
     expect(q.filters).toEqual([
       { field: "payload", operator: "contains", value: "8", logic: "AND" },
+    ]);
+  });
+
+  it("纯文本字段空白分词为列级 OR 条件组，单 token 为普通叶子", () => {
+    const q = buildQuery({
+      columns: [
+        { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+      ],
+      headerFilters: [{ field: "note", value: "memo" }],
+    });
+    expect(q.filters).toEqual([
+      { field: "note", operator: "contains", value: "memo", logic: "AND" },
+    ]);
+
+    const multi = buildQuery({
+      columns: [
+        { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+      ],
+      headerFilters: [{ field: "note", value: "  foo   bar " }],
+    });
+    expect(multi.filters).toEqual([{
+      groupLogic: "OR",
+      filters: [
+        { field: "note", operator: "contains", value: "foo" },
+        { field: "note", operator: "contains", value: "bar" },
+      ],
+    }]);
+    // 权威编译器契约（query/compiler.go）：index>=1 的子叶 logic 必须与
+    // groupLogic 一致或省略；省略由权威归一化，绝不发送 logic:"AND"。
+    const group = multi.filters![0]!;
+    expect(isFilterCondition(group)).toBe(false);
+    if (!isFilterCondition(group)) expect(group.filters.every(leaf => leaf.logic === undefined)).toBe(true);
+  });
+
+  it("两列各自分词的 OR 组之间保持 AND：任一列的 OR 不得泄漏到另一列", () => {
+    const q = buildQuery({
+      columns: [
+        { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+        { name: "title", title: "标题", dataType: "text", editable: true, nullable: true },
+        { name: "amount", title: "金额", dataType: "decimal", editable: true, nullable: true },
+      ],
+      headerFilters: [
+        { field: "note", value: "foo bar" },
+        { field: "title", value: "x" },
+        { field: "amount", value: 5 },
+      ],
+    });
+    expect(q.filters).toEqual([
+      {
+        groupLogic: "OR",
+        filters: [
+          { field: "note", operator: "contains", value: "foo" },
+          { field: "note", operator: "contains", value: "bar" },
+        ],
+      },
+      { field: "title", operator: "contains", value: "x", logic: "AND" },
+      { field: "amount", operator: "eq", value: 5, logic: "AND" },
+    ]);
+    // 列间 AND：note 的组内 OR 不会绕过 title/amount 的约束。
+    const [noteGroup] = q.filters as [{ filters: unknown[] }];
+    expect(noteGroup.filters.every(leaf => (leaf as { field: string }).field === "note"))
+      .toBe(true);
+  });
+
+  it("枚举 select 字段保持 eq：自由文本不回退包含语义", () => {
+    const enumColumn = {
+      name: "status", title: "状态", dataType: "text" as const, editable: true, nullable: true,
+      display: {
+        kind: "select" as const, preset: "standard", displayScale: 0, scaleMode: "fixed" as const,
+        trimTrailingZeros: false, useGrouping: false, currency: "", percentStorage: "ratio" as const,
+        unit: null, precision: "exact" as const, timezone: "system", mode: "standard",
+        trueLabel: "", falseLabel: "",
+      },
+      enumOptions: [{ optionId: "open", label: "进行中", color: "", order: 0, state: "active" as const }],
+    };
+    const q = buildQuery({
+      columns: [enumColumn],
+      headerFilters: [{ field: "status", value: "open" }],
+    });
+    expect(q.filters).toEqual([
+      { field: "status", operator: "eq", value: "open", logic: "AND" },
+    ]);
+  });
+
+  it("非文本字段（数字/布尔）仍为 eq 且不分词", () => {
+    const q = buildQuery({
+      columns: [
+        { name: "amount", title: "金额", dataType: "decimal", editable: true, nullable: true },
+      ],
+      headerFilters: [{ field: "amount", value: "10 20" }],
+    });
+    expect(q.filters).toEqual([
+      { field: "amount", operator: "eq", value: "10 20", logic: "AND" },
     ]);
   });
 

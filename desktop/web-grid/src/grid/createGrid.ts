@@ -117,6 +117,12 @@ export interface GridColumnDefinition {
   readonly visible?: boolean;
   readonly frozen?: boolean;
   readonly headerSort?: boolean;
+  readonly headerSortTristate?: boolean;
+  readonly titleFormatter?: (
+    cell: { getValue(): unknown },
+    params: Record<string, unknown>,
+  ) => HTMLElement;
+  readonly titleFormatterParams?: Record<string, unknown>;
   readonly headerFilter?: boolean | string;
   readonly headerFilterPlaceholder?: string;
   readonly headerFilterParams?: Record<string, unknown>;
@@ -187,6 +193,44 @@ type GridCellFormatter = (
   formatterParams?: Record<string, unknown>,
   onRendered?: (callback: () => void) => void,
 ) => HTMLElement;
+
+/** DOM 事件名：表头字段名旁的勾选值面板触发按钮向上冒泡。 */
+export const HEADER_MENU_EVENT = "vt-header-menu";
+
+/**
+ * 表头标题 = 字段名 + 值筛选按钮（所有数据列）。Tabulator 以 mock cell
+ * 调用 titleFormatter（cell.getValue() 返回标题），不能按 string 入参。
+ * 按钮点击只冒泡 `HEADER_MENU_EVENT`，由 GridHost 打开 Excel 式勾选面板，
+ * 不参与排序。
+ */
+export function headerMenuTitleFormatter(
+  cell: { getValue(): unknown },
+  params: Record<string, unknown>,
+): HTMLElement {
+  const title = String(cell.getValue() ?? "");
+  const wrapper = document.createElement("span");
+  wrapper.className = "vt-header-title";
+  const text = document.createElement("span");
+  text.className = "vt-header-title__text";
+  text.textContent = title;
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "vt-header-menu-trigger";
+  trigger.dataset.field = String(params.field ?? "");
+  trigger.dataset.testid = "vt-header-menu-trigger";
+  trigger.setAttribute("aria-haspopup", "dialog");
+  trigger.setAttribute("aria-label", `按值筛选 ${title}`);
+  trigger.addEventListener("click", event => {
+    event.stopPropagation();
+    event.preventDefault();
+    trigger.dispatchEvent(new CustomEvent(HEADER_MENU_EVENT, {
+      bubbles: true,
+      detail: { field: params.field },
+    }));
+  });
+  wrapper.append(text, trigger);
+  return wrapper;
+}
 
 function interactiveFormatter(
   formatter: (cell: { getValue(): unknown }) => HTMLElement,
@@ -359,6 +403,10 @@ function toColumnDef(
     ...(col.nullable !== undefined ? { nullable: col.nullable } : {}),
     // 行 ID 默认隐藏：保持与视图默认可见列一致，可由视图重新显示。
     ...(isRowIdColumn(col) ? { visible: false } : {}),
+    // 每个数据列的字段名旁都有值筛选入口；选项来源由面板按权威
+    // schema（封闭枚举）或 query.view 分组取值决定。
+    titleFormatter: headerMenuTitleFormatter,
+    titleFormatterParams: { field: col.name },
   };
 
   if (col.kind === "attachment") {
@@ -853,6 +901,8 @@ export function buildOptions(
     // reorder the currently loaded page. useTabulator forwards the events to
     // the host/Lookup authoritative full-dataset query pipeline.
     sortMode: "remote",
+    // 排序三态：升序 → 降序 → 不排序（清除后由后端默认稳定序接管）。
+    headerSortTristate: true,
     filterMode: "remote",
     movableColumns: true,
   };

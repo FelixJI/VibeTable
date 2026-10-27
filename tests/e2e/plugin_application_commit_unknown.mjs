@@ -32,14 +32,15 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const ready = JSON.parse(await waitFile(path.join(runtime.controlsDir, "mutation-barrier.ready.json"), text => JSON.parse(text).point === "after_record"));
   recorder.check("actual Go write reached the existing transaction barrier", ready.point === "after_record" && Number.isInteger(ready.pid ?? ready.processId), { ready });
   const oldToken = await frame.evaluate(() => window.name);
-  const stopped = await nativePluginInput(runtime, "click", "plugin-stop", "cancelled");
-  recorder.check("native stop can revoke while a commit receipt is unavailable", stopped.status === "completed", { stopped });
-  // Confirm the production recovery actually sealed sessions before releasing
-  // the write; SendInput delivery alone is not a cancellation proof.
-  await waitFile(path.join(path.dirname(runtime.dataRoot), "vibetable-trace.log"), text => text.includes("Renderer recovery sealed plugin sessions; reason=host-stop"));
+  const recovering = await nativePluginInput(runtime, "recover", "plugin-recover", "cancelled");
+  recorder.check("native window menu begins recovery while the approved write is pending", recovering.status === "completed", { recovering });
+  // Tokens must die before the blocked authority write resumes. A single
+  // recovery creates one new page, so release after sealing and wait once.
+  await waitFile(path.join(path.dirname(runtime.dataRoot), "vibetable-trace.log"), text => text.includes("Renderer recovery sealed plugin sessions;"));
   await fs.writeFile(path.join(runtime.controlsDir, "mutation-barrier.release"), "release\n");
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "51-commit-recovered.png") });
   const terminal = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
   recorder.check("lost commit receipt is unknown rather than rolled back or replayed", terminal.payload.state === "aborted" && terminal.payload.error?.code === "plugin_commit_unknown", { terminal });
   const query = () => helpers.rawBridgeRequest(page, "query.page", { tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
@@ -53,7 +54,13 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const later = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
   const unchanged = await query();
   recorder.check("navigation preserves unknown and never automatically repeats its write", later.payload.state === "aborted" && later.payload.error?.code === "plugin_commit_unknown" && JSON.stringify(observed.payload.rows) === JSON.stringify(unchanged.payload.rows), { later, unchanged });
-  await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("unknown commit recovery has actual WPF evidence", result.status === "completed", { result }));
+  // 恢复后的外壳可用性以真实侧栏入口验证（原生恢复行仅存在于故障层）。
+  recorder.check("unknown commit recovery leaves the product shell usable",
+    await page.getByTestId("nav-plugins").isVisible());
   await page.getByTestId("plugin-app-return").click();
+  await fs.writeFile(path.join(runtime.evidenceDir, "51-unknown-commit.json"), JSON.stringify({
+    taskId, recovery: recovering, terminal: terminal.payload, observed: observed.payload,
+    later: later.payload, unchanged: unchanged.payload,
+  }, null, 2));
   return { taskId, projectKey: opened.payload.projectKey };
 }

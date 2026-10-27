@@ -230,7 +230,7 @@ export async function runRelationLookupDataIo(page, recorder, runtime, helpers) 
   // explicitly (a real user action) before importing.
   await chooseToolbarMore(page, "refresh");
   await page.waitForTimeout(500);
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   await page.getByTestId("import-preview-panel").waitFor({ state: "visible", timeout: 60_000 });
   await page.getByTestId("relation-mapping-add").waitFor({ state: "visible", timeout: 60_000 });
   await page.getByTestId("relation-mapping-add").click();

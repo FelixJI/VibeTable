@@ -9,7 +9,8 @@ import {
 } from "./base_file_envelope.mjs";
 import {
   assertPreSubmissionTerminal, awaitSourceImportEntryReady, buildCodeIndex,
-  resolveFieldColumns, verifyMigrationReceipt, withRendererOffline,
+  openManagementEntry as openManagement, resolveFieldColumns, verifyMigrationReceipt,
+  withRendererOffline,
 } from "./source_import_journey.mjs";
 
 // #436/#437 formal .base file import regression on the real WPF wizard.
@@ -102,14 +103,6 @@ export async function beginPicker(runtime, action) {
     }
     throw new Error("real .base picker deadline");
   };
-}
-
-async function openManagement(page) {
-  const panel = page.getByTestId("import-management");
-  if (!(await panel.isVisible().catch(() => false))) {
-    await page.getByTestId("import-management-open").click();
-  }
-  await panel.waitFor({ state: "visible", timeout: 60_000 });
 }
 
 async function clickBaseFileEntry(page) {

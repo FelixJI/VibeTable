@@ -515,7 +515,7 @@ async function createEmptyTable(page, displayName) {
     has: page.getByTestId("sidebar-table-name").filter({ hasText: displayName }),
   }).last();
   await row.waitFor();
-  const tableId = (await row.locator("small").innerText()).trim();
+  const tableId = ((await row.getAttribute("data-table-id")) ?? "").trim();
   if (!tableId.startsWith("tbl_")) {
     throw new Error(`host did not expose an opaque table identity for ${displayName}: ${tableId}`);
   }
@@ -823,6 +823,13 @@ async function scenario01(page, recorder, network, runtime) {
     { processNetwork },
   );
   recorder.check("startup gate is no longer present", await page.getByTestId("startup-gate").count() === 0);
+  await page.getByTestId("nav-tables").click();
+  await page.getByTestId("table-empty-import").waitFor();
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "01-empty-workspace-import.png"), fullPage: true });
+  await page.getByTestId("table-empty-import").click();
+  await page.getByTestId("import-management").waitFor();
+  recorder.check("an empty workspace can start a Feishu base import without an unrelated table",
+    await page.getByTestId("import-source-feishuBase").isEnabled());
 }
 
 async function scenario02(page, recorder, _network, runtime) {
@@ -2028,7 +2035,7 @@ async function scenario02(page, recorder, _network, runtime) {
     .locator('[data-testid="sidebar-table-list"] .table-row')
     .evaluateAll(rows => rows.map(row => ({
       name: row.querySelector('[data-testid="sidebar-table-name"]')?.textContent?.trim() ?? "",
-      id: row.querySelector("small")?.textContent?.trim() ?? "",
+      id: row.dataset.tableId ?? "",
     })));
   const deleteRow = (displayName) => page
     .locator('[data-testid="sidebar-table-list"] .table-row')
@@ -2255,7 +2262,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await selectTable(page, "E2E Relation Target V2");
   const activeRowIds = await page
     .locator('[data-testid="sidebar-table-list"] .table-item--active')
-    .evaluateAll(rows => rows.map(row => row.querySelector("small")?.textContent?.trim()));
+    .evaluateAll(rows => rows.map(row => row.dataset.tableId ?? ""));
   recorder.check("02 a remaining table stays selectable through the real sidebar after reopen",
     activeRowIds.includes(target.tableId), { activeRowIds });
   await page.screenshot({
@@ -3519,7 +3526,7 @@ async function scenario04(page, recorder, _network, runtime) {
     `${jsonField}\n"${importedJson}"\n`,
     "utf8",
   );
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const importConfirmation = await confirmImportPreview(page);
   const importOutcome = await waitForImportSuccess(page, 1);
   recorder.check("JSON import completed with one explicitly reported committed row",
@@ -4266,9 +4273,12 @@ async function editRelationPairScenario(page, recorder, authors, articleTableId,
   await openRelationPairEditor(page, relation.physicalName, "作者文章");
   await selectVisibleNOption(page, "relation-source-cardinality", "单条");
   const blocked = await planRelationPairThroughUi(page);
+  const conflictMessage = blocked.errors
+    ?.find(error => error.code === "relation.cardinality.conflict")?.message;
   recorder.check("many-to-one conflict is visible and cannot discard existing links",
-    blocked.canApply === false && blocked.errors?.some(error => error.code === "relation.cardinality.conflict")
-      && (await page.getByTestId("field-change-plan").innerText()).includes("relation.cardinality.conflict")
+    blocked.canApply === false && Boolean(conflictMessage)
+      // 抽屉未收录该 code 的友好提示，回退展示后端原始 message。
+      && (await page.getByTestId("field-change-plan").innerText()).includes(conflictMessage)
       && await page.getByTestId("field-apply-button").isDisabled()
       && canonicalJsonText(conflictBefore) === canonicalJsonText(
         await readRelationPairAuthority(page, articleTableId, relation.fieldId),
@@ -6261,8 +6271,8 @@ async function waitForMutationBarrier(runtime, timeoutMs = 60_000) {
 }
 
 async function chooseToolbarMore(page, key) {
+  // 导入入口在视图栏按钮，工具栏菜单仅保留导出/刷新等。
   const labels = {
-    import: /导入数据|Import data/i,
     "export-csv": /导出 CSV|Export CSV/i,
     "export-xlsx": /导出 XLSX|Export XLSX/i,
     refresh: /刷新|Refresh/i,
@@ -6533,7 +6543,7 @@ async function scenario09(page, recorder, _network, runtime) {
     `${rows.join("\n")}\n`,
     "utf8",
   );
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const importFaultCapture = await beginImportFaultOutcomeCapture(page);
   let importFaultPrimaryError = null;
   let confirmation;
@@ -11877,7 +11887,7 @@ async function scenario36(page, recorder, _network, runtime) {
   for (let index = 0; index < 1_000; index += 1) rows.push(`backend-exit-${index}`);
   await fs.writeFile(path.join(runtime.controlsDir, "import-source.csv"),
     `${rows.join("\n")}\n`, "utf8");
-  await chooseToolbarMore(page, "import");
+  await page.getByTestId("table-import-data").click();
   const capture = await beginImportFaultOutcomeCapture(page);
   let task;
   let barrier;
@@ -11943,7 +11953,7 @@ async function scenario36(page, recorder, _network, runtime) {
         : ["aborted", "interrupted"].includes(entry.state)
           && entry.createdCount === null && entry.updatedCount === null),
     { entry });
-  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("table-import-management").click();
   await page.locator(`[data-testid="import-history-row"][data-task-id="${task.taskId}"]`)
     .waitFor({ state: "visible" });
   await page.screenshot({
@@ -12038,7 +12048,7 @@ const scenarios = {
   ),
   "35-data-io-interoperability": (page, recorder, _network, runtime) => runDataIoInteroperability(
     page, recorder, runtime, {
-      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
+      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, selectTable,
       parseCsv, canonicalJsonText, chooseToolbarMore,
       openWorkspaceCenterFromSwitcher, replicaUiMethod,
       beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,

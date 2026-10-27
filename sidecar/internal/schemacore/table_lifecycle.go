@@ -85,6 +85,9 @@ func (lifecycle *TableLifecycle) CreateWithCommit(
 					message: "operationId was already used for another table",
 				}
 			}
+			if err := lifecycle.validateCreateReplay(txApp, intent); err != nil {
+				return err
+			}
 			return nil
 		}
 		if !errors.Is(findErr, sql.ErrNoRows) {
@@ -134,6 +137,11 @@ func (lifecycle *TableLifecycle) CreateWithCommit(
 		record.Set("primary_display_field_id", "")
 		if err := txApp.Save(record); err != nil {
 			return fmt.Errorf("save table metadata: %w", err)
+		}
+		if intent.SourceTableID != "" {
+			if err := duplicateTableContents(ctx, txApp, intent, record, collection, lifecycle.clock().UTC()); err != nil {
+				return err
+			}
 		}
 		afterHash := tableReceiptHash(receipt)
 		if err := saveTableCreateAudit(
@@ -315,6 +323,9 @@ func (lifecycle *TableLifecycle) FindReplay(
 		return v2.TableCreateReceipt{}, false,
 			errors.New("schema.table.operation_conflict")
 	}
+	if err := lifecycle.validateCreateReplay(lifecycle.app, intent); err != nil {
+		return v2.TableCreateReceipt{}, false, err
+	}
 	return receipt, true, nil
 }
 
@@ -438,6 +449,9 @@ func validateArchivePolicy(
 }
 
 func validateTableCreateIntent(intent v2.TableCreateIntent) (string, error) {
+	if intent.SourceTableID == "" && (intent.CopyRecords != nil || intent.CopyViews != nil) {
+		return "", &schemaerror.ProductError{Code: "schema.table.intent_invalid", Path: "sourceTableId", Message: "copy scope requires a source table"}
+	}
 	name := strings.TrimSpace(intent.DisplayName)
 	if name == "" || len([]rune(name)) > 128 {
 		return "", errors.New("schema.table.display_name_invalid")
@@ -491,7 +505,7 @@ func saveTableCreateAudit(
 	actorRaw, _ := json.Marshal(intent.Actor)
 	record := core.NewRecord(collection)
 	record.Set("operation_id", intent.OperationID)
-	record.Set("plan_id", "table-create:"+intent.OperationID)
+	record.Set("plan_id", tableCreatePlanID(intent))
 	record.Set("action", "table.create")
 	record.Set("table_id", receipt.TableID)
 	record.Set("field_id", "")
@@ -505,7 +519,7 @@ func saveTableCreateAudit(
 	}
 	return schemaaudit.SaveOutbox(ctx, app, schemaaudit.Event{
 		OperationID:    intent.OperationID,
-		PlanID:         "table-create:" + intent.OperationID,
+		PlanID:         tableCreatePlanID(intent),
 		Action:         "table.create",
 		TableID:        receipt.TableID,
 		SchemaRevision: receipt.SchemaRevision,

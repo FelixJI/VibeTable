@@ -263,8 +263,9 @@ function makeBaseImportHistoryPayload() {
 
 /**
  * Mounts WorkspaceView with an open workspace-v2 session, opens the import
- * management page, and settles its initial unified-history projection so the
- * cloud-wizard regressions observe only traffic they trigger themselves.
+ * management page through the real in-table entry (view bar), and settles its
+ * initial unified-history projection so the cloud-wizard regressions observe
+ * only traffic they trigger themselves.
  */
 async function mountImportsPage(record: {
   posted: Outbound[];
@@ -277,7 +278,7 @@ async function mountImportsPage(record: {
   useUiStore().navigate("tables");
   const wrapper = mountView();
   await flushPromises();
-  await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+  await wrapper.get('[data-testid="table-import-management"]').trigger("click");
   await flushPromises();
   const initialHistory = record.posted.find((item) => item.type === "data.importHistory")!;
   record.emit({
@@ -294,6 +295,8 @@ vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
   buildTabulatorColumns: () => [],
   ROW_NUMBER_FIELD: "__vt_row_number",
+  // GridHost 挂载时订阅该常量事件（Grid Owner 的表头筛选面板）；仅提供事件名。
+  HEADER_MENU_EVENT: "vt-header-menu",
 }));
 
 let testPinia: Pinia;
@@ -480,7 +483,7 @@ describe("WorkspaceView", () => {
     expect(wrapper.get(".tables-view").isVisible()).toBe(true);
   });
 
-  it("routes the managed import flow from the fixed entry to the original preview panel", async () => {
+  it("routes the managed import flow from the in-table entry to the original preview panel", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -490,7 +493,7 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await wrapper.get('[data-testid="table-import-management"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
     expect(posted.some((item) => item.type === "data.importHistory")).toBe(true);
@@ -717,7 +720,7 @@ describe("WorkspaceView", () => {
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await wrapper.get('[data-testid="table-import-management"]').trigger("click");
     await flushPromises();
     expect(ui.activeView).toBe("imports");
     const historyRequest = [...posted].reverse().find((item) => item.type === "data.importHistory")!;
@@ -770,7 +773,7 @@ describe("WorkspaceView", () => {
 
     // The exact-match guard stays: a receipt target outside the catalog is
     // reported but never navigates or fabricates a selection.
-    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await wrapper.get('[data-testid="table-import-management"]').trigger("click");
     await flushPromises();
     expect(ui.activeView).toBe("imports");
     await wrapper.get('[data-testid="source-import-detail-job-src-2"]').trigger("click");
@@ -2556,9 +2559,9 @@ describe("WorkspaceView", () => {
     await flushPromises();
     posted.length = 0;
 
-    const toolbar = wrapper.findComponent(AppToolbar);
-    expect(toolbar.props("dataIoImportDisabled")).toBe(false);
-    toolbar.vm.$emit("importData");
+    const viewBar = wrapper.findComponent(DataSourceViewBar);
+    expect(viewBar.props("importDisabled")).toBe(false);
+    viewBar.vm.$emit("importData");
     await flushPromises();
 
     expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
@@ -2576,8 +2579,43 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     const toolbar = wrapper.findComponent(AppToolbar);
-    expect(toolbar.props("dataIoImportDisabled")).toBe(true);
     expect(toolbar.props("dataIoExportDisabled")).toBe(true);
+    // 导入入口已随表内视图栏提供；schema 上下文缺失时同样不可用。
+    expect(wrapper.findComponent(DataSourceViewBar).props("importDisabled")).toBe(true);
+  });
+
+  it("无当前表（新工作区/删除最后一表）空状态保留导入管理入口，有表时不重复", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    // 新工作区：没有任何数据表，飞书 .base 导入只需活动工作区且会自建表。
+    workspace.setOpened([], {});
+    ui.navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.findComponent(DataSourceViewBar).exists()).toBe(false);
+    await wrapper.get('[data-testid="table-empty-import"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+    expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
+
+    // 有表：保留既有表内入口，空状态入口消失（不恢复常驻多余入口）。
+    ui.navigate("tables");
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    await flushPromises();
+    expect(wrapper.findComponent(DataSourceViewBar).exists()).toBe(true);
+    expect(wrapper.find('[data-testid="table-empty-import"]').exists()).toBe(false);
+
+    // 删除最后一表：回到无表空状态，入口恢复可用。
+    workspace.setCollections([], {});
+    await flushPromises();
+    expect(wrapper.find('[data-testid="table-empty"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="table-empty-import"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
   });
 
   it("runs a validated import and refreshes the active table", async () => {
@@ -2596,7 +2634,7 @@ describe("WorkspaceView", () => {
     await flushPromises();
     posted.length = 0;
 
-    wrapper.findComponent(AppToolbar).vm.$emit("importData");
+    wrapper.findComponent(DataSourceViewBar).vm.$emit("importData");
     await flushPromises();
     let request = posted.at(-1)!;
     emit({
@@ -2710,8 +2748,8 @@ describe("WorkspaceView", () => {
     await flushPromises();
     posted.length = 0;
 
-    // Open the preview through the legacy toolbar path (E2E36's flow).
-    wrapper.findComponent(AppToolbar).vm.$emit("importData");
+    // Open the preview through the in-table view bar path (E2E36's flow).
+    wrapper.findComponent(DataSourceViewBar).vm.$emit("importData");
     await flushPromises();
     let request = posted.at(-1)!;
     emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "orders.csv" } });
@@ -4864,7 +4902,7 @@ describe("WorkspaceView", () => {
         dataRevision: 1,
       };
       posted.length = 0;
-      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      wrapper.findComponent(DataSourceViewBar).vm.$emit("importData");
       await flushPromises();
       let request = posted.find(item => item.type === "data.importSourceRequested")!;
       emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "users.csv" } });
@@ -4927,7 +4965,7 @@ describe("WorkspaceView", () => {
         schemaRevision: "schema-1",
         dataRevision: 1,
       };
-      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      wrapper.findComponent(DataSourceViewBar).vm.$emit("importData");
       await flushPromises();
       expect(posted.some(item => item.type === "data.importSourceRequested")).toBe(true);
     }
@@ -5342,5 +5380,100 @@ describe("WorkspaceView", () => {
       expect(useHistoryStore().writeUncertain).toBe(false);
       expect(activeSubscriptions).toBe(baselineActive);
     });
+  });
+
+  it("deep-links a settings section request onto the settings navigation", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    const ui = useUiStore();
+    mountView();
+    await flushPromises();
+
+    // 首页“查看恢复时间线”直达“版本与恢复”分区：意图由 SettingsView 直接
+    // 消费（ui.requestedSettingsSection），本集成用例验证真实入口语义。
+    ui.openSettings("versions");
+    await flushPromises();
+    const versions = document.body.querySelector<HTMLElement>(
+      '[data-testid="settings-nav-versions"]',
+    );
+    expect(versions?.classList.contains("active")).toBe(true);
+    expect(
+      document.body
+        .querySelector<HTMLElement>('[data-testid="settings-nav-general"]')
+        ?.classList.contains("active"),
+    ).toBe(false);
+    // 意图已消费，后续普通导航不再触发分区跳转。
+    expect(ui.requestedSettingsSection).toBeNull();
+  });
+
+  it("binds the import management entry to the current table and returns in one click", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened(
+      [{ collection: "orders" }, { collection: "invoices" }],
+      { orders: "订单", invoices: "发票" },
+    );
+    workspace.selectTable("orders");
+    const ui = useUiStore();
+    ui.navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+
+    // 从数据表视图栏进入导入管理：页内展示来源表并一键返回。
+    await wrapper.get('[data-testid="table-import-management"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+    const strip = wrapper.get('[data-testid="imports-context-strip"]');
+    expect(strip.text()).toContain("订单");
+
+    await wrapper.get('[data-testid="imports-return-table"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("tables");
+    expect(workspace.currentTable).toBe("orders");
+    // 返回后解除绑定；再次进入重新绑定当前表。
+    expect(wrapper.find('[data-testid="imports-context-strip"]').exists()).toBe(false);
+    workspace.selectTable("invoices");
+    await wrapper.get('[data-testid="table-import-management"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="imports-context-strip"]').text()).toContain("发票");
+  });
+
+  it("records the local last-modified time whenever authoritative data changes", async () => {
+    const { bridge, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    // 隔离：同文件既有用例也会发 data.changed（tableId=orders），残留的本地
+    // 修改时间不得影响本用例的前置断言。
+    localStorage.removeItem("vt:table-modified");
+    const ui = useUiStore();
+    mountView();
+    await flushPromises();
+    expect(ui.tableModified["orders"]).toBeUndefined();
+
+    emit({
+      type: "data.changed",
+      payload: {
+        contractVersion: "2.0",
+        topic: "data.changed",
+        eventId: "event-1",
+        sequence: 1,
+        occurredAt: "2026-10-04T08:00:00Z",
+        schemaRevision: "schema-1",
+        dataRevision: "2",
+        changeSetId: "changeset-1",
+        tableId: "orders",
+        recordIds: ["record-1"],
+        operation: "update",
+      },
+    });
+    await flushPromises();
+
+    expect(typeof ui.tableModified["orders"]).toBe("number");
+    expect(ui.tableModified["orders"]).toBeGreaterThan(0);
   });
 });

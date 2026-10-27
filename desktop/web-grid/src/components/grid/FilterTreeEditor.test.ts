@@ -253,8 +253,9 @@ describe("FilterTreeEditor", () => {
       .filter(item => item.attributes("aria-label") === "筛选字段");
     fields[1]!.vm.$emit("update:value", "note");
     await wrapper.vm.$nextTick();
+    // 切到普通文本列 note：默认操作符变为包含（保留 eq 能力但非默认）。
     expect(wrapper.emitted("update")?.at(-1)?.[0]).toMatchObject([
-      {}, { field: "note", operator: "eq", value: "" },
+      {}, { field: "note", operator: "contains", value: "" },
     ]);
 
     const operators = wrapper.findAllComponents(NSelect)
@@ -359,5 +360,107 @@ describe("FilterTreeEditor", () => {
     });
     await text.get('[aria-label="筛选值"] input').setValue("memo");
     expect(text.emitted("update")?.at(-1)?.[0]).toMatchObject([{ value: "memo" }]);
+  });
+
+  it("未发布 filterInput/filterOptions 的 select 字段从权威 enumOptions 派生选项（修复等于/不等于/包含选项空白）", () => {
+    const column = {
+      name: "status", title: "状态", dataType: "text" as const, editable: true, nullable: true,
+      display: {
+        kind: "select" as const, preset: "standard", displayScale: 0, scaleMode: "fixed" as const,
+        trimTrailingZeros: false, useGrouping: false, currency: "", percentStorage: "ratio" as const,
+        unit: null, precision: "exact" as const, timezone: "system", mode: "standard",
+        trueLabel: "", falseLabel: "",
+      },
+      enumOptions: [
+        { optionId: "open", label: "进行中", color: "", order: 0, state: "active" as const },
+        { optionId: "done", label: "完成", color: "", order: 1, state: "active" as const },
+      ],
+      filterOperators: ["eq", "ne", "contains", "in", "is_null", "is_not_null"] as const,
+    } satisfies ColumnSchema;
+    for (const operator of ["eq", "ne", "contains"] as const) {
+      const wrapper = mount(FilterTreeEditor, {
+        props: { nodes: [{ field: "status", operator, value: "" }], columns: [column] },
+      });
+      const select = wrapper.findAllComponents(NSelect)
+        .find(item => item.attributes("aria-label") === "选项筛选值");
+      expect(select, operator).toBeDefined();
+      expect(select?.props("options")).toEqual([
+        { value: "open", label: "进行中" },
+        { value: "done", label: "完成" },
+      ]);
+      wrapper.unmount();
+    }
+  });
+
+  it("删除条件时同时 emit update 与 commit：由外层立即应用", async () => {
+    const wrapper = mount(FilterTreeEditor, {
+      props: {
+        nodes: [
+          { field: "amount", operator: "eq", value: 1 },
+          { field: "note", operator: "contains", value: "x" },
+        ],
+        columns,
+      },
+    });
+    await wrapper.findAll('button[aria-label="删除筛选条件"]')[0]!.trigger("click");
+    const updates = wrapper.emitted("update") ?? [];
+    expect(updates.at(-1)?.[0]).toHaveLength(1);
+    expect(wrapper.emitted("commit")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("嵌套条件组内删除同样冒泡 commit", async () => {
+    const wrapper = mount(FilterTreeEditor, {
+      props: {
+        nodes: [{
+          groupLogic: "AND",
+          filters: [{ field: "note", operator: "contains", value: "old" }],
+        }],
+        columns,
+      },
+    });
+    const child = wrapper.findAllComponents(FilterTreeEditor).at(-1)!;
+    await child.findAll('button[aria-label="删除筛选条件"]')[0]!.trigger("click");
+    expect(wrapper.emitted("commit")).toHaveLength(1);
+    // 组内最后一个条件被删后保留空组壳（既有语义：删组用组头×）。
+    expect(wrapper.emitted("update")?.at(-1)?.[0]).toEqual([
+      { groupLogic: "AND", filters: [] },
+    ]);
+    wrapper.unmount();
+  });
+
+  it("新建条件默认操作符：普通文本列优先包含，枚举/数字保留首个合法操作符", async () => {
+    const textDefault = mount(FilterTreeEditor, { props: { nodes: [], columns } });
+    await textDefault.findAllComponents(NButton)
+      .find(button => button.text().includes("＋ 条件"))!.trigger("click");
+    // capabilityColumns 首列 amount（decimal，无 contains）保持 eq。
+    expect(textDefault.emitted("update")?.[0]?.[0]).toEqual([
+      { field: "amount", operator: "eq", value: "" },
+    ]);
+    textDefault.unmount();
+
+    const enumColumn = {
+      name: "status", title: "状态", dataType: "text" as const, editable: true, nullable: true,
+      filterOperators: ["eq", "ne", "contains"] as const,
+      filterInput: "select" as const,
+      filterOptions: [{ value: "open", label: "进行中" }],
+    } satisfies ColumnSchema;
+    const enumDefault = mount(FilterTreeEditor, {
+      props: { nodes: [], columns: [enumColumn, columns[1]!] },
+    });
+    await enumDefault.findAllComponents(NButton)
+      .find(button => button.text().includes("＋ 条件"))!.trigger("click");
+    expect(enumDefault.emitted("update")?.[0]?.[0]).toMatchObject([
+      { field: "status", operator: "eq" },
+    ]);
+    enumDefault.unmount();
+
+    const textOnly = mount(FilterTreeEditor, { props: { nodes: [], columns: [columns[1]!] } });
+    await textOnly.findAllComponents(NButton)
+      .find(button => button.text().includes("＋ 条件"))!.trigger("click");
+    expect(textOnly.emitted("update")?.[0]?.[0]).toMatchObject([
+      { field: "note", operator: "contains", value: "" },
+    ]);
+    textOnly.unmount();
   });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { NButton, NIcon, NTooltip } from "naive-ui";
 import {
   HelpCircle,
@@ -12,7 +12,6 @@ import {
   GitCompareArrows,
   Settings,
   Table2,
-  ArrowDownToLine,
 } from "@lucide/vue";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -29,7 +28,7 @@ export interface PluginAppNavEntry {
 const ui = useUiStore();
 const workspaceSession = useWorkspaceSessionStore();
 const protection = useWorkspaceProtectionStore();
-defineProps<{
+const props = defineProps<{
   pluginApps?: readonly PluginAppNavEntry[];
   activePluginAppKey?: string | null;
 }>();
@@ -43,7 +42,7 @@ const emit = defineEmits<{
 const primary = computed(() => [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
-  { view: "imports" as const, icon: ArrowDownToLine, label: "nav.imports", testid: "import-management-open" },
+  // 导入不是一级入口：导入/导入管理全部调制到数据表内（DataSourceViewBar）。
   { view: "files" as const, icon: Files, label: "nav.files" },
   { view: "search" as const, icon: Search, label: "nav.search" },
   ...(workspaceSession.conflictEnabled ? [{
@@ -55,7 +54,32 @@ const primary = computed(() => [
 ]);
 
 function navigate(view: AppView) {
+  // 任何平台导航都会接管插件应用视口；乐观高亮同时退位。
+  pendingPluginAppKey.value = null;
   emit("navigate", view);
+}
+
+// 插件应用入口的打开是异步的（先 describeAction 再授权视口）。点击即高亮：
+// 点击意图（pending）优先于当前真实键——已有 A 打开时点击 B，往返期间高亮
+// 跟随点击的 B；成功（真实键变为 B）或用户导航离开后由真实状态接管/清除。
+// 打开失败时仅保留乐观态直至下一次导航（错误提示由容器统一弹出）。
+const pendingPluginAppKey = ref<string | null>(null);
+const effectivePluginAppKey = computed(() =>
+  pendingPluginAppKey.value ?? props.activePluginAppKey ?? null);
+watch(() => props.activePluginAppKey, (key) => {
+  if (key) pendingPluginAppKey.value = null;
+});
+watch(() => ui.activePluginApp, () => {
+  pendingPluginAppKey.value = null;
+});
+watch(() => props.pluginApps, (apps) => {
+  if (pendingPluginAppKey.value && !apps?.some((item) => item.key === pendingPluginAppKey.value)) {
+    pendingPluginAppKey.value = null;
+  }
+});
+function openPluginApp(key: string) {
+  pendingPluginAppKey.value = key;
+  emit("openPluginApp", key);
 }
 </script>
 
@@ -96,11 +120,11 @@ function navigate(view: AppView) {
           <NButton
             quaternary
             class="nav-button nav-button--plugin-app"
-            :class="{ 'nav-button--active': activePluginAppKey === item.key }"
+            :class="{ 'nav-button--active': effectivePluginAppKey === item.key }"
             :aria-label="item.label"
-            :aria-current="activePluginAppKey === item.key ? 'page' : undefined"
+            :aria-current="effectivePluginAppKey === item.key ? 'page' : undefined"
             :data-testid="`nav-plugin-app-${item.key}`"
-            @click="emit('openPluginApp', item.key)"
+            @click="openPluginApp(item.key)"
           >
             <template #icon><NIcon :size="17"><LayoutTemplate /></NIcon></template>
           </NButton>

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { NDropdown } from "naive-ui";
 import AppToolbar from "./AppToolbar.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useUiStore } from "@/stores/uiStore";
 
 describe("AppToolbar", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -54,15 +55,23 @@ describe("AppToolbar", () => {
     expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("选择一张数据表");
   });
 
-  it("shows the selected table label while preserving the physical key as secondary text", () => {
+  it("shows the table label with the local last-modified time instead of the physical id", async () => {
     const workspace = useWorkspaceStore();
+    const ui = useUiStore();
     workspace.setOpened([
       { collection: "vt_t_01abc", metadata: {} },
     ], { vt_t_01abc: "客户清单" });
     workspace.selectTable("vt_t_01abc");
     const wrapper = mount(AppToolbar);
     expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("客户清单");
-    expect(wrapper.text()).toContain("vt_t_01abc");
+    // 无本机修改记录时不展示物理 id。
+    expect(wrapper.text()).not.toContain("vt_t_01abc");
+
+    ui.touchTable("vt_t_01abc");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="toolbar-table-description"]').text())
+      .toContain("本机修改");
+    expect(wrapper.get('[data-testid="toolbar-table-description"]').text()).toContain("刚刚");
   });
 
   it("provides a compact accessible table switcher with every table on narrow layouts", () => {
@@ -102,14 +111,10 @@ describe("AppToolbar", () => {
     );
     expect(dropdown).toBeTruthy();
     const select = dropdown!.props("onSelect") as (key: string) => void;
-    select("import");
-    select("import-management");
     select("export-csv");
     select("export-xlsx");
     select("refresh");
     select("help");
-    expect(wrapper.emitted("importData")).toHaveLength(1);
-    expect(wrapper.emitted("openImportManagement")).toHaveLength(1);
     expect(wrapper.emitted("exportData")).toEqual([["csv"], ["xlsx"]]);
     expect(wrapper.emitted("refresh")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
@@ -127,8 +132,6 @@ describe("AppToolbar", () => {
 
     expect(keys).toEqual([
       "cancel-data-task",
-      "import",
-      "import-management",
       "export-csv",
       "export-xlsx",
       "refresh",
@@ -136,20 +139,14 @@ describe("AppToolbar", () => {
     ]);
   });
 
-  it("keeps the import management entry available even while a data task is busy", () => {
-    const workspace = useWorkspaceStore();
-    workspace.selectTable("orders");
-    const wrapper = mount(AppToolbar, { props: { dataIoBusy: true } });
-    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
-      (candidate.props("options") as Array<{ key: string }>).some(
-        (option) => option.key === "import-management",
-      ),
-    );
-    const options = dropdown!.props("options") as Array<{ key: string; disabled?: boolean }>;
-    expect(options.find((option) => option.key === "import-management")?.disabled).toBeFalsy();
+  it("keeps import management out of the toolbar More menu", () => {
+    // 导入入口已全部调制到数据表内（视图栏），顶栏不再保留导入项。
+    const wrapper = mount(AppToolbar);
+    expect(wrapper.text()).not.toContain("导入管理");
+    expect(wrapper.text()).not.toContain("导入数据");
   });
 
-  it("prevents starting another import or export while a data task is active", () => {
+  it("prevents starting another export while a data task is active", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
     const wrapper = mount(AppToolbar, { props: { dataIoBusy: true } });
@@ -161,27 +158,8 @@ describe("AppToolbar", () => {
     const options = dropdown!.props("options") as Array<{ key: string; disabled: boolean }>;
 
     expect(options.find((option) => option.key === "cancel-data-task")?.disabled).toBe(false);
-    expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
     expect(options.find((option) => option.key === "export-csv")?.disabled).toBe(true);
     expect(options.find((option) => option.key === "export-xlsx")?.disabled).toBe(true);
-  });
-
-  it("keeps export available when only the import schema is unavailable", () => {
-    const workspace = useWorkspaceStore();
-    workspace.selectTable("orders");
-    const wrapper = mount(AppToolbar, {
-      props: { dataIoImportDisabled: true, dataIoExportDisabled: false },
-    });
-    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
-      (candidate.props("options") as Array<{ key: string }>).some(
-        (option) => option.key === "cancel-data-task",
-      ),
-    );
-    const options = dropdown!.props("options") as Array<{ key: string; disabled: boolean }>;
-
-    expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
-    expect(options.find((option) => option.key === "export-csv")?.disabled).toBe(false);
-    expect(options.find((option) => option.key === "export-xlsx")?.disabled).toBe(false);
   });
 
   it("provides an accessible tooltip trigger for More", () => {

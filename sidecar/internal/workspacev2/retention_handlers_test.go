@@ -148,6 +148,26 @@ func TestRetentionPolicyMapsOnlyEnabledSnapshotBuckets(t *testing.T) {
 	}
 }
 
+func TestDefaultRetentionKeepsSparseLongTermSnapshots(t *testing.T) {
+	t.Parallel()
+	policy := retentionPolicy(defaultRetentionPolicy())
+	if policy.KeepHourlyFor != 24*time.Hour ||
+		policy.KeepDailyFor != 30*24*time.Hour ||
+		policy.KeepWeeklyFor != 180*24*time.Hour ||
+		policy.KeepMonthlyFor != 730*24*time.Hour || policy.MinimumRecent != 50 {
+		t.Fatalf("smart retention windows = %#v", policy)
+	}
+}
+
+func TestSmartRetentionRequiresExclusiveSelection(t *testing.T) {
+	t.Parallel()
+	if !validSnapshotRetentionBuckets([]string{"smart"}) ||
+		validSnapshotRetentionBuckets([]string{"smart", "daily"}) ||
+		validRetentionBuckets([]string{"smart"}) {
+		t.Fatal("smart retention must be exclusive and limited to snapshots")
+	}
+}
+
 func TestBackgroundRetentionPersistsReportsAndClearsMaintenanceFailures(
 	t *testing.T,
 ) {

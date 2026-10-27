@@ -885,7 +885,7 @@ func TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterResta
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restoredSettings.SnapshotDays != 30 ||
+	if restoredSettings.SnapshotDays != 730 ||
 		restoredSettings.SnapshotCount != 50 ||
 		restoredSettings.FileRevisionDays != 30 ||
 		restoredSettings.FileRevisionCount != 100 {

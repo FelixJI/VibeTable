@@ -440,7 +440,7 @@
   {
     "id": "49-plugin-application-security",
     "title": "完整插件应用真实安全壳与renderer恢复",
-    "requirement": "同包真实WebView2 CSP跨插件脚本/fetch/内联/编码穿越、顶层导航、伪造消息与宿主对象拒绝；合成死循环后真实WPF SendInput停止与同env恢复、旧renderer释放和token拒绝；真实renderer崩溃自动恢复且数据保留；实际明暗主题、受控GitHub runner系统高对比及finally恢复、125%内容scale与实际DPI观察，截图来自原生窗口。",
+    "requirement": "同包真实WebView2 CSP跨插件脚本/fetch/内联/编码穿越、顶层导航、伪造消息与宿主对象拒绝；合成死循环后真实WPF SendInput停止与同env恢复、旧renderer释放和token拒绝；真实renderer崩溃自动恢复且数据保留；实际明暗主题、受控GitHub runner系统高对比及finally恢复、125%内容scale与实际DPI观察；截图记录真实WebView应用及恢复侧栏，原生菜单SendInput、系统对比度回执与CPU前后进程另存原始证据。",
     "capabilities": [
       "plugin.applications",
       "plugin.isolation",

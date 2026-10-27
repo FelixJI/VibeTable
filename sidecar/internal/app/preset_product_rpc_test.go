@@ -360,6 +360,40 @@ func TestPresetProductConcurrentCASAndCoordinatorCancellation(t *testing.T) {
 	}
 }
 
+func TestPresetNamesAreUniqueWithinTableAndRenameExcludesSelf(t *testing.T) {
+	pb := schemaProductStore(t)
+	service := metadata.NewPreset(pb)
+	ctx := context.Background()
+	request := metadata.PresetRequest{Collection: "orders", Name: "默认视图", View: map[string]any{}, OperationID: "unique-view-1"}
+	saved, err := service.Save(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := presetCounts(t, pb)
+	request.OperationID = "unique-view-2"
+	_, err = service.Save(ctx, request)
+	var duplicate *metadata.PresetError
+	if !errors.As(err, &duplicate) || duplicate.Code != "preset_name_duplicate" || !reflect.DeepEqual(before, presetCounts(t, pb)) {
+		t.Fatalf("duplicate must fail without writes: %v", err)
+	}
+	request.Name, request.OperationID = " 默认视图 ", "unique-view-whitespace"
+	if _, err := service.Save(ctx, request); !errors.As(err, &duplicate) || duplicate.Code != "preset_name_duplicate" {
+		t.Fatalf("whitespace duplicate: %v", err)
+	}
+	request.Name = "默认视图"
+	id, revision := saved["id"].(string), saved["revision"].(string)
+	request.PresetID, request.ExpectedRevision = &id, &revision
+	request.OperationID = "unique-view-update"
+	if _, err := service.Save(ctx, request); err != nil {
+		t.Fatalf("same view: %v", err)
+	}
+	request.Collection, request.OperationID = "customers", "unique-view-other-table"
+	request.PresetID, request.ExpectedRevision = nil, nil
+	if _, err := service.Save(ctx, request); err != nil {
+		t.Fatalf("different table: %v", err)
+	}
+}
+
 func TestPresetProductHTTPPreservesLargeIntegersAcrossPersistenceAndReplay(t *testing.T) {
 	pb := schemaProductStore(t)
 	mux := presetProductMux(t, pb)

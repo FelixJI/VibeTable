@@ -16,6 +16,7 @@ import {
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
+import { localModifiedLabel } from "@/components/layout/tableDescription";
 import { t } from "@/i18n";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import { formatDateKey, formatMonthKey } from "@/calendar/workCalendar";
@@ -82,6 +83,13 @@ const searchResults = computed(() => {
     )
     .slice(0, 6);
 });
+const searchDescriptions = computed(() => new Map(searchResults.value.map((item) => [
+  item.collection,
+  localModifiedLabel(ui.tableModified[item.collection]),
+])));
+function searchDescription(collection: string): string | null {
+  return searchDescriptions.value.get(collection) ?? null;
+}
 
 const defaultQuotes = [
   "home.quote.1",
@@ -241,7 +249,8 @@ function openTable(name: string) {
           >
             <NIcon :size="16"><Table2 /></NIcon>
             <span>{{ collectionLabel(item, displayNames) }}</span>
-            <small v-if="collectionLabel(item, displayNames) !== item.collection">{{ item.collection }}</small>
+            <!-- 表说明：备注或本地最后修改时间；物理 id 不再展示。 -->
+            <small v-if="searchDescription(item.collection)">{{ searchDescription(item.collection) }}</small>
           </button>
           <p v-if="searchResults.length === 0">{{ t("home.search.empty") }}</p>
         </div>
@@ -266,7 +275,7 @@ function openTable(name: string) {
         <span class="status-icon"><Clock3 :size="16" /></span>
         <p><small>{{ t("workspaceV2.home.session") }}</small><strong>{{ workspaceSession.provisional ? t("workspaceV2.switch.provisional") : workspaceSession.writable ? t("workspaceV2.home.writable") : t("workspaceV2.switch.readOnly") }}</strong></p>
       </div>
-      <NButton size="small" quaternary @click="ui.navigate('settings')">{{ t("workspaceV2.home.openTimeline") }}</NButton>
+      <NButton size="small" quaternary data-testid="home-open-timeline" @click="ui.openSettings('versions')">{{ t("workspaceV2.home.openTimeline") }}</NButton>
     </section>
 
     <div class="home-grid">

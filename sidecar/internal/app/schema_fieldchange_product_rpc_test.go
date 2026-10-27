@@ -50,6 +50,16 @@ func TestSchemaFieldChangeParamsMatchFrozenPython(t *testing.T) {
 	}
 }
 
+func TestTableDuplicateScopeParamsAreClosedBooleans(t *testing.T) {
+	for _, scope := range []string{`false`, `true`, `"false"`, `0`, `null`, `[]`} {
+		raw := json.RawMessage(`{"displayName":"copy","operationId":"scope","actor":{},"sourceTableId":"tbl_source","copyRecords":` + scope + `,"copyViews":true}`)
+		_, _, err := decodeSchemaFieldChangeParams("schema.table.create", raw)
+		if (scope == "false" || scope == "true") != (err == nil) {
+			t.Fatalf("scope=%s error=%v", scope, err)
+		}
+	}
+}
+
 func TestSchemaFieldChangePlanDoesNotPrematurelyValidateDomain(t *testing.T) {
 	raw := json.RawMessage(`{"action":"create","tableId":"orders","fieldId":"","expectedSchemaRevision":"schema_1","expectedDataRevision":null,"draft":{},"actor":{},"conversionRule":"","confirmation":"","backupReceipt":""}`)
 	if _, _, err := decodeSchemaFieldChangeParams("field.change.plan", raw); err != nil {
@@ -172,6 +182,22 @@ func TestSchemaFieldChangeRealProducerAndWriteAdmission(t *testing.T) {
 	if _, err := domain.core.Describe(context.Background(), table.TableID); err != nil {
 		t.Fatalf("stale delete removed table: %v", err)
 	}
+	copyIntent := v2.TableCreateIntent{DisplayName: "订单副本", SourceTableID: table.TableID, OperationID: "schema-product-duplicate", Actor: actor}
+	blocked = true
+	if _, err := invoke("schema.table.create", copyIntent); err == nil {
+		t.Fatal("duplicate bypassed the business write gate")
+	}
+	blocked = false
+	copied, err := invoke("schema.table.create", copyIntent)
+	if err != nil || copied.(v2.TableCreateReceipt).TableID == table.TableID {
+		t.Fatalf("duplicate=%#v %v", copied, err)
+	}
+	blocked = true
+	copyReplay, err := invoke("schema.table.create", copyIntent)
+	if err != nil || copyReplay != copied {
+		t.Fatalf("duplicate replay=%#v %v", copyReplay, err)
+	}
+	blocked = false
 	value, err = invoke("schema.delete", map[string]string{"tableId": table.TableID, "expectedRevision": receipt.SchemaRevision})
 	if err != nil || !value.(schemaapi.DeleteResult).Deleted {
 		t.Fatalf("delete=%v %v", value, err)

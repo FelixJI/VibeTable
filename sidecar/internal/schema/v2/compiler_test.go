@@ -139,3 +139,27 @@ func TestCompileUniqueIndexIgnoresMissingButIncludesExplicitZero(t *testing.T) {
 		t.Fatalf("partial unique index = %q", index)
 	}
 }
+
+func TestUserCanCreateAutomaticallyMaintainedTimestampFields(t *testing.T) {
+	t.Parallel()
+	capability, err := v2.CapabilityFor(v2.LogicalAutoDate)
+	if err != nil || !capability.UserCreatable || capability.SupportsDefault {
+		t.Fatalf("timestamp capability = %#v, %v", capability, err)
+	}
+	for _, role := range []string{"createdAt", "updatedAt"} {
+		definition := validNumberDefinition()
+		recommended, _ := v2.RecommendedDefaults(v2.LogicalAutoDate)
+		definition.LogicalType = v2.LogicalAutoDate
+		definition.Value, definition.Constraints = recommended.Value, recommended.Constraints
+		definition.Storage, definition.Display = recommended.Storage, recommended.Display
+		definition.AutoDate = &v2.AutoDateSpec{Role: role}
+		compiled, err := v2.CompileField(definition, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		field, ok := compiled.Value.(*core.AutodateField)
+		if !ok || !field.OnCreate || field.OnUpdate != (role == "updatedAt") {
+			t.Fatalf("%s timestamp = %#v", role, compiled.Value)
+		}
+	}
+}

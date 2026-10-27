@@ -102,7 +102,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     await fs.writeFile(target, `\uFEFF${[columns, ...rows].map(row => row.map(cell).join(",")).join("\r\n")}\r\n`, "utf8");
     await fs.writeFile(path.join(runtime.controlsDir, "import-source.txt"), `${target}\r\n`, "utf8");
     await chooseToolbarMore(page, "refresh");
-    await chooseToolbarMore(page, "import");
+    await page.getByTestId("table-import-data").click();
     await page.getByTestId("import-preview-panel").waitFor({ timeout: 60_000 });
     // Follow the existing preview acknowledgement flow. Full-value oracle
     // checks below still reject dropped, mis-mapped or partially imported data.

@@ -20,6 +20,8 @@ const (
 )
 
 type keyRotationHostIntent struct {
+	ReplicaRoot          string          `json:"replicaRoot,omitempty"`
+	TargetMode           string          `json:"targetMode,omitempty"`
 	FormatVersion        int             `json:"formatVersion"`
 	OperationID          string          `json:"operationId"`
 	PlanID               string          `json:"planId"`
@@ -107,6 +109,12 @@ func readKeyRotationIntent(
 }
 
 func validateKeyRotationIntent(intent keyRotationHostIntent) error {
+	if intent.ReplicaRoot != "" && !filepath.IsAbs(intent.ReplicaRoot) {
+		return errors.New("repository.key_rotation_intent_corrupt")
+	}
+	if intent.TargetMode != "" && intent.TargetMode != "protected" && intent.TargetMode != "convenient" {
+		return errors.New("repository.key_rotation_intent_corrupt")
+	}
 	if intent.FormatVersion != 1 ||
 		!validUUID(intent.OperationID) ||
 		!validUUID(intent.PlanID) ||

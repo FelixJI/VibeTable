@@ -32,9 +32,9 @@ func defaultRetentionPolicy() RetentionPolicy {
 	return RetentionPolicy{
 		ContractVersion:     "2.0",
 		PolicyRevision:      1,
-		SnapshotDays:        30,
+		SnapshotDays:        730,
 		SnapshotCount:       50,
-		SnapshotBuckets:     []string{"hourly", "daily", "weekly", "monthly"},
+		SnapshotBuckets:     []string{"smart"},
 		FileRevisionDays:    30,
 		FileRevisionCount:   100,
 		FileRevisionBuckets: []string{"daily", "weekly", "monthly"},
@@ -205,7 +205,7 @@ func openStateStore(path string) (*stateStore, error) {
 			snapshot_buckets_json, file_revision_days, file_revision_count,
 			file_revision_buckets_json, repository_limit_bytes, mutation_revision
 		) VALUES (
-			1, 1, 30, 50, '["hourly","daily","weekly","monthly"]',
+			1, 1, 730, 50, '["smart"]',
 			30, 100, '["daily","weekly","monthly"]', NULL, 0
 		)
 		ON CONFLICT(singleton) DO NOTHING
@@ -937,7 +937,7 @@ func (store *stateStore) retention(ctx context.Context) (RetentionPolicy, uint64
 	}
 	if json.Unmarshal([]byte(snapshotBuckets), &policy.SnapshotBuckets) != nil ||
 		json.Unmarshal([]byte(fileBuckets), &policy.FileRevisionBuckets) != nil ||
-		!validRetentionBuckets(policy.SnapshotBuckets) ||
+		!validSnapshotRetentionBuckets(policy.SnapshotBuckets) ||
 		!validRetentionBuckets(policy.FileRevisionBuckets) {
 		return RetentionPolicy{}, 0, errors.New("retention.policy_corrupt")
 	}
@@ -1012,6 +1012,10 @@ func validRetentionBuckets(values []string) bool {
 		seen[value] = true
 	}
 	return true
+}
+
+func validSnapshotRetentionBuckets(values []string) bool {
+	return len(values) == 1 && values[0] == "smart" || validRetentionBuckets(values)
 }
 
 func (store *stateStore) close() error {

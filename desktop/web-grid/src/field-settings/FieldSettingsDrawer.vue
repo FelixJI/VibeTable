@@ -38,11 +38,13 @@ import {
   type AutoNumberDraftSpec,
   type AutoNumberToken,
   FIELD_DISPLAY_NAME_MAX_LENGTH,
+  fieldServiceErrorHint,
 } from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { formatNumberDisplay } from "@/number/numberDisplay";
 import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
+import { formatDashboardDate } from "@/dashboard/format";
 import { getLocale } from "@/i18n";
 
 const emit = defineEmits<{
@@ -73,6 +75,14 @@ const jsonSchemaText = ref("{}");
 const jsonEditorError = ref("");
 const planCard = ref<HTMLElement | null>(null);
 const closeConfirm = ref(false);
+const closeConfirmCard = ref<HTMLElement | null>(null);
+// 确认卡片可见后立即聚焦安全选项“继续编辑”（卡片内首个按钮）：
+// 聚焦会把卡片滚入视口，保证用户在长表单底部关闭时也能看到确认提示。
+watch(closeConfirm, async (visible) => {
+  if (!visible) return;
+  await nextTick();
+  closeConfirmCard.value?.querySelector<HTMLElement>("button")?.focus();
+});
 watch(() => store.open, (open) => {
   if (open) {
     rootTab.value = store.result?.definition?.lifecycle.state === "retired"
@@ -109,7 +119,7 @@ watch(rootTab, (value) => {
 watch(() => store.plan?.planId, async (planId, previousPlanId) => {
   if (!planId || planId === previousPlanId) return;
   await nextTick();
-  planCard.value?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  planCard.value?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
 });
 watch(
   () => [
@@ -264,6 +274,23 @@ const formulaRelations = computed(() => (store.formulaSourceSchema?.columns ?? [
 function patch(patchValue: Partial<FieldDraftV2>): void {
   store.patchDraft(patchValue);
 }
+
+/** 服务诊断的中文友好说明；未收录编码回退原始 code/message。 */
+const errorHint = computed(() => fieldServiceErrorHint(store.errorCode));
+
+/** 输入期重名提示：只呈现与当前草稿名称一致的核对结果。 */
+const duplicateNameHint = computed(() => {
+  if (!store.displayNameDuplicate) return "";
+  const conflict = store.displayNameCheck.conflictWith;
+  return conflict
+    ? `名称重复：同表已有名为“${conflict}”的字段，请修改后再预览`
+    : "名称重复：同表已有同名字段，请修改后再预览";
+});
+
+/** 冻结计划过期时刻：转为用户本地时区展示，不直接输出 ISO 字符串。 */
+const planExpiresAtLocal = computed(() => store.plan
+  ? formatDashboardDate(store.plan.expiresAt, getLocale(), "date-time")
+  : "");
 
 /** 脏状态关闭确认：真实未保存值必须由用户显式放弃，不用浏览器原生 confirm。 */
 function requestClose(): void {
@@ -738,16 +765,32 @@ const constraintSummary = computed<string[]>(() => {
     const { min, max } = draft.constraints.length;
     if (typeof min === "number" && min > 0) summary.push(`最短 ${min} 字符`);
     if (typeof max === "number" && max > 0) summary.push(`最长 ${max} 字符`);
+    else if (draft.logicalType === "text") summary.push("默认最长 5000 字符");
     if (draft.constraints.pattern.enabled && draft.constraints.pattern.value) {
       summary.push("正则限制");
     }
   }
   if (draft.logicalType === "number") {
+    summary.push("binary64 数值");
     if (draft.storage.options.onlyInt) summary.push("仅整数");
     const { min, max } = draft.constraints.range;
     if (typeof min === "number" && typeof max === "number") summary.push(`${min} ≤ 值 ≤ ${max}`);
     else if (typeof min === "number") summary.push(`值 ≥ ${min}`);
     else if (typeof max === "number") summary.push(`值 ≤ ${max}`);
+  }
+  if (["date", "dateTime", "time"].includes(draft.logicalType)) {
+    const { min, max } = draft.constraints.range;
+    if (typeof min === "string" && min) summary.push(`最早 ${min}`);
+    if (typeof max === "string" && max) summary.push(`最晚 ${max}`);
+  }
+  if (draft.logicalType === "editor") {
+    summary.push(`存储上限 ${draft.storage.options.maxSize > 0 ? draft.storage.options.maxSize : 5 * 1024 * 1024} 字节`);
+  }
+  if (draft.logicalType === "json" && draft.json) {
+    summary.push(`最大 ${draft.json.maxSize} 字节`);
+  }
+  if (draft.logicalType === "file" && draft.file) {
+    summary.push(`最多 ${draft.file.maxFiles} 个文件 · 单文件 ≤ ${draft.file.maxBytesPerFile} 字节`);
   }
   if (["select", "multiSelect"].includes(draft.logicalType)) {
     const options = draft.select?.options.filter(option => option.state === "active") ?? [];
@@ -759,8 +802,30 @@ const constraintSummary = computed<string[]>(() => {
   if (draft.logicalType === "autoNumber" && draft.autoNumber) {
     summary.push(`前缀 ≤ 64 字符 · 补零宽度 1–16 · 序列固定不回收`);
   }
+  if (draft.logicalType === "autoDate") {
+    summary.push("系统只读时间 · UTC 存储，按显示时区呈现 · 历史时间不回填");
+  }
   return summary;
 });
+
+/** autoDate 角色的中文说明；仅新建时可选择，创建后固定。 */
+const AUTO_DATE_ROLE_LABELS: Record<string, string> = {
+  createdAt: "创建时间",
+  updatedAt: "最后修改时间",
+};
+const autoDateRoleOptions = [
+  { label: "创建时间（记录首次保存时写入）", value: "createdAt" },
+  { label: "最后修改时间（每次保存时更新）", value: "updatedAt" },
+];
+const autoDateRoleLabel = computed(() =>
+  AUTO_DATE_ROLE_LABELS[store.draft?.autoDate?.role ?? ""]
+  ?? store.draft?.autoDate?.role ?? "");
+
+function patchAutoDateRole(value: string): void {
+  if (!store.draft?.autoDate) return;
+  if (value !== "createdAt" && value !== "updatedAt") return;
+  patch({ autoDate: { ...store.draft.autoDate, role: value } });
+}
 
 function typeLabel(type: LogicalTypeV2): string {
   const labels: Partial<Record<LogicalTypeV2, string>> = {
@@ -809,8 +874,8 @@ function isTextual(type: LogicalTypeV2): boolean {
         class="top-alert"
         data-testid="field-settings-error"
       >
-        <strong>{{ store.errorCode ?? "字段变更失败" }}</strong>
-        <div>{{ store.error }}</div>
+        <strong>字段变更失败</strong>
+        <div data-testid="field-settings-error-hint">{{ errorHint ?? store.error }}</div>
       </NAlert>
 
       <NAlert
@@ -826,6 +891,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 
       <section
         v-if="closeConfirm"
+        ref="closeConfirmCard"
         class="close-confirm"
         data-testid="field-close-confirm"
         role="alertdialog"
@@ -867,6 +933,9 @@ function isTextual(type: LogicalTypeV2): boolean {
                   data-testid="field-display-name"
                   @update:value="patch({ displayName: $event })"
                 />
+                <small v-if="duplicateNameHint" class="name-duplicate-hint" data-testid="field-display-name-duplicate">
+                  {{ duplicateNameHint }}
+                </small>
                 <small data-testid="field-display-name-hint">
                   最多 {{ FIELD_DISPLAY_NAME_MAX_LENGTH }} 个字符，不能包含换行或控制字符；同表字段名称不可重复
                 </small>
@@ -1249,9 +1318,32 @@ function isTextual(type: LogicalTypeV2): boolean {
                   </div>
                 </section>
 
-                <section v-if="store.draft.logicalType === 'autoDate' && store.draft.autoDate" class="settings-section">
-                  <div class="section-title"><div><strong>系统时间角色</strong><small>只读字段，由记录生命周期维护</small></div></div>
-                  <NInput :value="store.draft.autoDate.role" readonly />
+                <section v-if="store.draft.logicalType === 'autoDate' && store.draft.autoDate" class="settings-section" data-testid="auto-date-settings">
+                  <div class="section-title">
+                    <div>
+                      <strong>系统时间</strong>
+                      <small>由系统在记录保存时自动写入，只读；按 UTC 存储，按显示时区呈现</small>
+                    </div>
+                  </div>
+                  <label v-if="!store.isExisting">
+                    <span>记录时间</span>
+                    <NSelect
+                      data-testid="auto-date-role"
+                      :value="store.draft.autoDate.role"
+                      :options="autoDateRoleOptions"
+                      @update:value="patchAutoDateRole"
+                    />
+                    <small>选择该字段记录的时间角色；创建后固定，不能修改</small>
+                  </label>
+                  <label v-else>
+                    <span>记录时间</span>
+                    <NInput :value="autoDateRoleLabel" readonly data-testid="auto-date-role" />
+                    <small>时间角色在创建时固定；值由系统维护，不能手动编辑</small>
+                  </label>
+                  <small data-testid="auto-date-history-note">
+                    已有记录不会推测补填历史时间：创建时间对旧记录可能为空；
+                    最后修改时间从下一次修改该记录起才有值
+                  </small>
                 </section>
 
                 <section v-if="store.draft.formula" class="settings-section">
@@ -1631,12 +1723,20 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <div>
                   <span class="eyebrow">FROZEN PLAN</span>
                   <strong>{{ store.plan.intent.action }} · {{ store.plan.classes.join(" / ") }}</strong>
-                  <small>有效期至 {{ store.plan.expiresAt }}</small>
+                  <small data-testid="field-plan-expiry">有效期至 {{ planExpiresAtLocal }}（本地时区）</small>
                 </div>
-                <NTag :type="store.plan.canApply ? 'success' : 'error'" size="small">
+                <NTag
+                  :type="store.plan.canApply ? 'success' : 'error'"
+                  size="small"
+                  class="plan-apply-status"
+                  data-testid="field-plan-status"
+                >
                   {{ store.plan.canApply ? "可应用" : "已阻止" }}
                 </NTag>
               </div>
+              <small class="plan-expiry-hint" data-testid="field-plan-expiry-hint">
+                这是预览方案的有效期：过期后需重新点击“预览变更”才能继续保存，与数据本身的有效期无关
+              </small>
               <NAlert
                 v-if="store.plan.before?.relation?.pairId && store.plan.intent.action !== 'update'"
                 type="warning"
@@ -1684,10 +1784,10 @@ function isTextual(type: LogicalTypeV2): boolean {
                 </div>
               </NAlert>
               <NAlert v-for="warning in store.plan.warnings" :key="warning.code + warning.path" type="warning" :show-icon="false">
-                <strong>{{ warning.code }}</strong> · {{ warning.message }}
+                  {{ fieldServiceErrorHint(warning.code) ?? warning.message }}
               </NAlert>
               <NAlert v-for="item in store.plan.errors" :key="item.code + item.path" type="error" :show-icon="false">
-                <strong>{{ item.code }}</strong> · {{ item.message }}
+                  {{ fieldServiceErrorHint(item.code) ?? item.message }}
               </NAlert>
               <NCheckbox
                 v-for="item in store.plan.confirmations"
@@ -1766,7 +1866,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 .drawer-heading,.section-title,.drawer-footer,.recycle-head,.switch-row {
   display:flex;align-items:center;justify-content:space-between;gap:16px;
 }
-.drawer-heading>div,.section-title>div,.recycle-head>div,.switch-row>div {
+.drawer-heading>div:not(.n-tag),.section-title>div:not(.n-tag):not(.n-switch),.recycle-head>div:not(.n-tag):not(.n-switch),.switch-row>div:not(.n-tag):not(.n-switch) {
   display:flex;flex-direction:column;gap:3px;
 }
 .drawer-heading strong{font-size:18px}.eyebrow{font-size:10px;letter-spacing:.14em;color:var(--vt-fg-accent);font-weight:800}
@@ -1792,6 +1892,9 @@ label{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:650}
 .drawer-footer{width:100%;font-size:12px;color:var(--vt-fg-muted)}.dirty-dot{color:#d97706}
 .close-confirm{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:14px;border:1px solid color-mix(in srgb,#d97706 45%,var(--vt-border));border-radius:14px;background:color-mix(in srgb,#d97706 7%,var(--vt-bg-elevated))}
 .close-confirm>div{display:flex;flex-direction:column;gap:3px}
+.name-duplicate-hint{color:#d97706}
+/* 计划状态标签相对多行头部垂直居中，且不被 >div 列布局破自身的内部居中。 */
+.plan-apply-status{align-self:center}
 .auto-number-sample{font-family:Consolas,"SFMono-Regular",monospace;font-size:13px}
 @media(max-width:720px){.identity-card,.two-column{grid-template-columns:1fr}.wide{grid-column:auto}.impact-grid{grid-template-columns:1fr 1fr}.drawer-footer{align-items:flex-start;flex-direction:column}}
 </style>

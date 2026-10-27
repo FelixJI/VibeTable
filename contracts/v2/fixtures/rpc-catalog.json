@@ -3966,7 +3966,8 @@
         "additionalProperties": false,
         "required": [
           "planId",
-          "confirmed"
+          "confirmed",
+          "targetMode"
         ],
         "properties": {
           "planId": {
@@ -3974,6 +3975,13 @@
           },
           "confirmed": {
             "type": "boolean"
+          },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "protected",
+              "convenient"
+            ]
           }
         }
       },
@@ -4010,7 +4018,8 @@
         },
         "params": {
           "planId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "confirmed": true
+          "confirmed": true,
+          "targetMode": "protected"
         }
       },
       "success": {

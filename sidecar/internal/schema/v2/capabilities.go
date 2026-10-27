@@ -48,9 +48,7 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		capability.SupportsDefault = false
 		capability.SupportsUnique = false
 		capability.DangerSettings = []string{"retire"}
-		// autoDate is system-owned. Formula and Lookup use typed editors in the
-		// unified drawer and still cross the same FieldChangePlanner boundary.
-		capability.UserCreatable = logicalType != LogicalAutoDate
+		// Users may add computed fields; their values remain authority-owned.
 	}
 	// File bytes are uploaded against an existing record identity. Until the
 	// product supports one atomic pre-insert multipart mutation, a file field

@@ -1149,7 +1149,11 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         "workspace",
         "ApplyRepositoryKeyRotationParams",
         "RepositoryKeyRotationResult",
-        {"planId": OPERATION_ID, "confirmed": True},
+        {
+            "planId": OPERATION_ID,
+            "confirmed": True,
+            "targetMode": enum_string("protected", "protected", "convenient"),
+        },
         {
             "operationId": OPERATION_ID,
             "state": "hostRestartRequired",

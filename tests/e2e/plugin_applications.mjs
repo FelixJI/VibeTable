@@ -6,6 +6,14 @@ const A = "com.vibetable.e2e.application-a";
 const B = "com.vibetable.e2e.application-b";
 const APP = (id, actionId = "open-app") => `nav-plugin-app-${id}/${actionId}`;
 
+// 旧原生宿主行（停止插件/返回平台/管理插件）已移除：插件管理入口只存在于
+// 真实侧栏。用面向用户的侧栏可达性取代原生 chrome 观察。
+export async function assertSidebarPluginReachable(page, recorder, checkName) {
+  const entry = page.getByTestId(APP(A, "open-app"));
+  recorder.check(checkName, await page.getByTestId("nav-plugins").isVisible()
+    && await entry.isVisible(), { });
+}
+
 // Observe the one UI-approved lease; hiding the plan is not a Host terminal.
 export function installPluginUpgradeCaptureInPage(plan) {
   const webview = window.chrome.webview;
@@ -428,8 +436,9 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     state.crossWorkspace = isolated.crossWorkspace;
     state.sessionEpoch = isolated.sessionEpoch;
   }
-  await nativePluginInput(runtime, "observe", "plugin-manage", "application").then(result =>
-    recorder.check("actual WPF management chrome is visible and reachable", result.status === "completed", { result }));
+  await assertSidebarPluginReachable(page, recorder,
+    "actual plugin management stays reachable from the sidebar while the app is open");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "48-application-sidebar.png") });
 
   if (!statePath) {
     const began = Date.now();
@@ -587,11 +596,14 @@ export async function runHeadlessBudget(page, recorder, runtime, helpers) {
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("native headless deadline recovers even without a module finish signal", Date.now() - began >= 120000 && await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "50-headless-recovered.png") });
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Budget Tasks");
   const frame = await openApplication(page);
   const denied = await frame.evaluate(async token => { try { await call("context.read", {}, token); return "accepted"; } catch (e) { return e.code; } }, oldToken);
   recorder.check("timed-out headless authorization is dead after recovery", denied === "plugin_source_denied", { denied });
-  await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("timeout recovery remains native and visible", result.status === "completed", { result }));
+  // 原生常驻恢复行已移除：恢复后的产品外壳可用性以真实侧栏入口验证。
+  await assertSidebarPluginReachable(page, recorder,
+    "timeout recovery returns a usable shell with sidebar plugin entries");
   await page.getByTestId("plugin-app-return").click();
 }

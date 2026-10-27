@@ -104,9 +104,9 @@ export async function locateProductPage({
 
 export async function activateCreatedTable(page, row, tableId) {
   await row.locator("button.table-select").click();
-  const activeTableId = (
-    await page.locator(".table-row.table-item--active small").innerText()
-  ).trim();
+  const activeTableId = ((
+    await page.locator(".table-row.table-item--active").getAttribute("data-table-id")
+  ) ?? "").trim();
   if (activeTableId !== tableId) {
     throw new Error(
       `created table activation changed identity: expected ${tableId}, observed ${activeTableId}`,
@@ -128,7 +128,7 @@ export async function createFirstTable(page) {
     has: page.getByTestId("sidebar-table-name").filter({ hasText: displayName }),
   }).last();
   await row.waitFor({ state: "visible", timeout: 30_000 });
-  const tableId = (await row.locator("small").innerText()).trim();
+  const tableId = ((await row.getAttribute("data-table-id")) ?? "").trim();
   if (!tableId.startsWith("tbl_")) {
     throw new Error(`host did not expose an opaque first table identity: ${tableId}`);
   }
@@ -149,9 +149,9 @@ async function runProbe(cdpUrl) {
   return requireStableFirstTable({
     expectedTableId: tableId,
     sample: async () => {
-      const activeTableId = (
-        await page.locator(".table-row.table-item--active small").innerText()
-      ).trim();
+      const activeTableId = ((
+        await page.locator(".table-row.table-item--active").getAttribute("data-table-id")
+      ) ?? "").trim();
       return {
         tableId,
         activeTableId,

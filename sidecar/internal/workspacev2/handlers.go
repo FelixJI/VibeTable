@@ -668,7 +668,7 @@ func (runtime *Runtime) updateRetention(
 		params.SnapshotCount == 0 ||
 		params.FileRevisionDays == 0 ||
 		params.FileRevisionCount == 0 ||
-		!validRetentionBuckets(params.SnapshotBuckets) ||
+		!validSnapshotRetentionBuckets(params.SnapshotBuckets) ||
 		!validRetentionBuckets(params.FileRevisionBuckets) ||
 		(params.RepositoryLimitBytes != nil &&
 			*params.RepositoryLimitBytes == 0) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,8 +35,8 @@ func (runtime *Runtime) previewRepositoryKeyRotation(
 	if _, err := decodeStrict[struct{}](paramsRaw); err != nil {
 		return nil, errors.New("repository.key_rotation_request_invalid")
 	}
-	if objectrepo.EncryptionMode(runtime.manifest.EncryptionMode) !=
-		objectrepo.EncryptionProtected {
+	if runtime.manifest.EncryptionMode != string(objectrepo.EncryptionProtected) &&
+		runtime.manifest.EncryptionMode != string(objectrepo.EncryptionConvenient) {
 		return nil, errors.New("repository.protected_mode_required")
 	}
 	if runtime.requestShutdown == nil {
@@ -92,8 +93,9 @@ func (runtime *Runtime) previewRepositoryKeyRotation(
 }
 
 type applyRepositoryKeyRotationParams struct {
-	PlanID    string `json:"planId"`
-	Confirmed bool   `json:"confirmed"`
+	PlanID     string `json:"planId"`
+	Confirmed  bool   `json:"confirmed"`
+	TargetMode string `json:"targetMode,omitempty"`
 }
 
 func (runtime *Runtime) applyRepositoryKeyRotation(
@@ -108,6 +110,17 @@ func (runtime *Runtime) applyRepositoryKeyRotation(
 	params, err := decodeStrict[applyRepositoryKeyRotationParams](paramsRaw)
 	if err != nil || !validUUID(params.PlanID) || !params.Confirmed {
 		return nil, errors.New("repository.key_rotation_request_invalid")
+	}
+	if params.TargetMode == "" {
+		params.TargetMode = string(objectrepo.EncryptionProtected)
+	}
+	if params.TargetMode != string(objectrepo.EncryptionProtected) &&
+		params.TargetMode != string(objectrepo.EncryptionConvenient) {
+		return nil, errors.New("repository.key_rotation_request_invalid")
+	}
+	if runtime.manifest.EncryptionMode != string(objectrepo.EncryptionProtected) &&
+		runtime.manifest.EncryptionMode != string(objectrepo.EncryptionConvenient) {
+		return nil, errors.New("repository.protected_mode_required")
 	}
 	if runtime.requestShutdown == nil {
 		return nil, errors.New("repository.key_rotation_host_unavailable")
@@ -146,6 +159,13 @@ func (runtime *Runtime) applyRepositoryKeyRotation(
 	if catalogRevision != plan.CatalogRevision {
 		return nil, errors.New("repository.key_rotation_plan_stale")
 	}
+	var replicaRoot string
+	if runtime.replicaConflict != nil && runtime.replicaConflict.selectedRoot != "" {
+		replicaRoot = filepath.Clean(runtime.replicaConflict.selectedRoot)
+	}
+	if _, err := rotationReplicaManifest(runtime.manifest, runtime.paths, replicaRoot, runtime.manifest.EncryptionMode, params.TargetMode, false); err != nil {
+		return nil, err
+	}
 	protection, err := runtime.protectionSnapshotForOperation(
 		ctx,
 		token,
@@ -176,6 +196,8 @@ func (runtime *Runtime) applyRepositoryKeyRotation(
 		return nil, err
 	}
 	intent := keyRotationHostIntent{
+		ReplicaRoot:          replicaRoot,
+		TargetMode:           params.TargetMode,
 		FormatVersion:        1,
 		OperationID:          wire.OperationID,
 		PlanID:               plan.PlanID,

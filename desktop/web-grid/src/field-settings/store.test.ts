@@ -420,4 +420,34 @@ describe("field settings store", () => {
     expect(store.recycled).toEqual([]);
     expect(store.error).toBeNull();
   });
+
+  it("blocks planning on a live duplicate-name check result and drops stale verdicts", () => {
+    const store = useFieldSettingsStore();
+    store.load(described());
+    expect(store.canPlan).toBe(false); // 未修改时不允许重复 plan
+    store.patchDraft({ displayName: "重复名" });
+    expect(store.canPlan).toBe(true);
+
+    // 与当前草稿名称一致的重复结论阻断预览。
+    store.beginDisplayNameCheck("重复名");
+    store.finishDisplayNameCheck("重复名", "重复名");
+    expect(store.displayNameCheck).toEqual({
+      status: "duplicate", name: "重复名", conflictWith: "重复名",
+    });
+    expect(store.displayNameDuplicate).toBe(true);
+    expect(store.canPlan).toBe(false);
+
+    // 过期结论（核对后名称又改了）不阻断。
+    store.patchDraft({ displayName: "不重复名" });
+    expect(store.displayNameDuplicate).toBe(false);
+    expect(store.canPlan).toBe(true);
+
+    // 可用结论同样只对同名草稿生效；重置会清除。
+    store.beginDisplayNameCheck("不重复名");
+    store.finishDisplayNameCheck("不重复名", null);
+    expect(store.displayNameCheck.status).toBe("available");
+    expect(store.canPlan).toBe(true);
+    store.beginOpen();
+    expect(store.displayNameCheck).toEqual({ status: "idle", name: "", conflictWith: null });
+  });
 });

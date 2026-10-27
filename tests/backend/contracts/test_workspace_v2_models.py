@@ -39,11 +39,22 @@ MODEL_BY_FIXTURE = {
     "snapshot-catalog-entry.json": SnapshotCatalogEntry,
     "lease-claim.json": LeaseClaim,
     "retention-policy.json": RetentionPolicy,
+    "retention-policy-smart.json": RetentionPolicy,
     "workspace-event.json": WorkspaceEvent,
     "rpc-catalog.json": RpcContractCatalog,
 }
 
 NEGATIVE_CASES = json.loads(NEGATIVE_FIXTURES.read_text(encoding="utf-8"))["cases"]
+
+
+def test_smart_retention_is_exclusive_and_preserves_custom_policies() -> None:
+    payload = json.loads((FIXTURES / "retention-policy.json").read_text(encoding="utf-8"))
+    assert RetentionPolicy.model_validate(payload).snapshot_buckets == payload["snapshotBuckets"]
+    payload["snapshotBuckets"] = ["smart"]
+    assert RetentionPolicy.model_validate(payload).snapshot_buckets == ["smart"]
+    payload["snapshotBuckets"] = ["smart", "daily"]
+    with pytest.raises(ValidationError):
+        RetentionPolicy.model_validate(payload)
 
 
 @pytest.mark.parametrize(("fixture_name", "model"), MODEL_BY_FIXTURE.items())

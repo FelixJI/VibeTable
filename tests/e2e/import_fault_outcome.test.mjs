@@ -10,28 +10,47 @@ import {
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 
-test("failed import UI reads each menu body's disabled state", async (t) => {
+test("failed import UI closes the menu through its trigger and waits for it to hide", async (t) => {
   for (const [importDisabled, cancelDisabled] of [[false, true], [true, true], [false, false]]) {
     await t.test(`import disabled=${importDisabled}, cancel disabled=${cancelDisabled}`, async () => {
-      const element = {
+      const clicks = [];
+      const panel = {
         isVisible: async () => true,
-        innerText: async () => "Import failed",
-        isDisabled: async () => false,
-        click: async () => {},
-        waitFor: async () => {},
+        waitFor: async (options) => { clicks.push(`panel:${options?.state ?? "visible"}`); },
       };
+      const error = { isVisible: async () => true, innerText: async () => "Import failed" };
+      const confirm = { isDisabled: async () => false };
+      const importCancel = {
+        isDisabled: async () => false,
+        click: async () => { clicks.push("import-cancel"); },
+      };
+      const importButton = {
+        waitFor: async () => { clicks.push("import-button-wait"); },
+        isEnabled: async () => !importDisabled,
+      };
+      const toolbarMore = { click: async () => { clicks.push("toolbar-more"); } };
       const page = {
-        getByTestId: () => element,
-        keyboard: { press: async () => {} },
+        getByTestId: (testId) => {
+          if (testId === "import-preview-panel") return panel;
+          if (testId === "import-apply-error") return error;
+          if (testId === "import-confirm") return confirm;
+          if (testId === "import-cancel") return importCancel;
+          if (testId === "table-import-data") return importButton;
+          if (testId === "toolbar-more") return toolbarMore;
+          throw new Error(`unexpected data-testid: ${testId}`);
+        },
+        keyboard: { press: async () => { clicks.push("escape"); } },
+        mouse: { move: async (x, y) => { clicks.push(`mouse:${x},${y}`); } },
         locator: selector => {
           assert.equal(selector, ".n-dropdown-option-body");
           return { filter: ({ hasText }) => ({ last: () => {
-            const disabled = hasText.test("导入数据") ? importDisabled : cancelDisabled;
+            const disabled = hasText.test("取消数据任务") ? cancelDisabled : false;
             return {
-              waitFor: async () => {},
-              getAttribute: async () => `n-dropdown-option-body${disabled ? " n-dropdown-option-body--disabled" : ""}`,
-              // Naive UI's parent does not carry the disabled modifier.
-              locator: () => ({ getAttribute: async () => "n-dropdown-option" }),
+              waitFor: async (options) => {
+                clicks.push(`cancel-option:${options?.state ?? "visible"}`);
+              },
+              getAttribute: async () =>
+                `n-dropdown-option-body${disabled ? " n-dropdown-option-body--disabled" : ""}`,
             };
           } }) };
         },
@@ -39,6 +58,19 @@ test("failed import UI reads each menu body's disabled state", async (t) => {
       const state = await waitForFailedImportUi(page, Date.now() + 1000);
       assert.equal(state.newImportAvailable, !importDisabled);
       assert.equal(state.cancelTaskAvailable, !cancelDisabled);
+      // 收尾必须用触发器实际关闭菜单并等它隐藏后再移开 hover，
+      // 不再依赖 Escape：残留 overlay 会拦截视图栏入口的 pointer。
+      assert.deepEqual(clicks, [
+        "import-cancel",
+        "panel:hidden",
+        "import-button-wait",
+        "toolbar-more",
+        "cancel-option:visible",
+        "toolbar-more",
+        "cancel-option:hidden",
+        "mouse:0,0",
+      ]);
+      assert.ok(!clicks.includes("escape"));
     });
   }
 });

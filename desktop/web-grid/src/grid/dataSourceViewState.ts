@@ -1,4 +1,5 @@
 import type {
+  ColumnSchema,
   ColumnState,
   FilterCondition,
   FilterExpression,
@@ -163,6 +164,7 @@ export function captureDataSourceView(
 export async function applyDataSourceView(
   grid: DataSourceViewGrid | null,
   view: DataSourceViewState,
+  schema?: readonly ColumnSchema[],
 ): Promise<void> {
   if (!grid || typeof grid.getColumns !== "function" || !Array.isArray(view.columns)) return;
   const currentColumns = grid.getColumns()
@@ -205,6 +207,23 @@ export async function applyDataSourceView(
     column: typeof sort.field === "string" ? sort.field : "",
     dir: sort.direction === "desc" ? "desc" as const : "asc" as const,
   })).filter((sort) => currentFields.has(sort.column));
+  // contains token 组（空白分词 OR）回填到表头输入时重新用空格连接：
+  // 查询适配器会再次按空白分词，语义与保存时完全一致。columns 提供时
+  // 只回填可经输入往返的条件（普通文本列 eq 会被适配器改写成
+  // contains/OR，绝不回填）。
+  const headerFilterValues = new Map<string, unknown>();
+  for (const leaf of headerFilterConditions(view.filters, schema)
+    .filter(filter => currentFields.has(filter.field))) {
+    if (leaf.operator === "contains" && typeof leaf.value === "string") {
+      const previous = headerFilterValues.get(leaf.field);
+      headerFilterValues.set(
+        leaf.field,
+        typeof previous === "string" ? `${previous} ${leaf.value}` : leaf.value,
+      );
+    } else {
+      headerFilterValues.set(leaf.field, leaf.value);
+    }
+  }
   await grid.applyPresentation?.({
     columns: columns.map((column) => ({
       field: column.name,
@@ -213,8 +232,6 @@ export async function applyDataSourceView(
       frozen: column.frozen ?? false,
     })),
     sorters,
-    headerFilters: headerFilterConditions(view.filters)
-      .filter(filter => currentFields.has(filter.field))
-      .map(({ field, value }) => ({ field, value })),
+    headerFilters: [...headerFilterValues].map(([field, value]) => ({ field, value })),
   });
 }

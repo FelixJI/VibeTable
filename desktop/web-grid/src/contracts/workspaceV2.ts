@@ -583,7 +583,7 @@ export interface RetentionPolicyV2 {
   readonly policyRevision: number;
   readonly snapshotDays: number;
   readonly snapshotCount: number;
-  readonly snapshotBuckets: readonly ("hourly" | "daily" | "weekly" | "monthly")[];
+  readonly snapshotBuckets: readonly ("smart" | "hourly" | "daily" | "weekly" | "monthly")[];
   readonly fileRevisionDays: number;
   readonly fileRevisionCount: number;
   readonly fileRevisionBuckets: readonly ("hourly" | "daily" | "weekly" | "monthly")[];
@@ -617,7 +617,9 @@ export function parseRetentionPolicyV2(value: unknown): RetentionPolicyV2 {
     policyRevision: integer(source.policyRevision, "policyRevision", 1),
     snapshotDays: integer(source.snapshotDays, "snapshotDays", 1),
     snapshotCount: integer(source.snapshotCount, "snapshotCount", 1),
-    snapshotBuckets: buckets(source.snapshotBuckets, "snapshotBuckets"),
+    snapshotBuckets: Array.isArray(source.snapshotBuckets)
+      && source.snapshotBuckets.length === 1 && source.snapshotBuckets[0] === "smart"
+      ? ["smart"] : buckets(source.snapshotBuckets, "snapshotBuckets"),
     fileRevisionDays: integer(source.fileRevisionDays, "fileRevisionDays", 1),
     fileRevisionCount: integer(source.fileRevisionCount, "fileRevisionCount", 1),
     fileRevisionBuckets: buckets(source.fileRevisionBuckets, "fileRevisionBuckets"),
