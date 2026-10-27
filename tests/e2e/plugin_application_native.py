@@ -462,7 +462,10 @@ def handle_plugin_native_request(
         if len(windows) != 1:
             raise OSError("expected one current owned native plugin window")
         hwnd = windows[0]["hwnd"]
-        if request["action"] == "observe" and request["stage"] in {"contrast", "contrast-restored"}:
+        if request["action"] in {"observe", "contrast-on", "contrast-off"} and request["stage"] in {
+            "contrast",
+            "contrast-restored",
+        }:
             native.foreground(hwnd, host_pid, settle_deadline=deadline)
         else:
             native.foreground(hwnd, host_pid)
