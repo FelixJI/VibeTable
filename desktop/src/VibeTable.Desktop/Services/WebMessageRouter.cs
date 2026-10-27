@@ -50,111 +50,14 @@ public sealed class WebMessageRouter
     /// <c>table.queryRequested</c> (debounced remote query) and
     /// <c>gridState.get</c> / <c>gridState.save</c> (Host-owned presentation).
     /// </summary>
-    private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
-    {
-        "app.ready",
-        "legacyLayout.reportRequested",
-        "legacyLayout.exportRequested",
-        "legacyLayout.cancelRequested",
-        "pluginPreservation.exportRequested",
-        "pluginPreservation.cancelRequested",
-        "host.startupRetryRequested",
-        "host.startupCancelRequested",
-        "database.openRequested",
-        "table.selected",
-        // B1 mutation requests.
-        "table.updateCellRequested",
-        "table.insertRowRequested",
-        "table.deleteRowsRequested",
-        // B3 query + state requests.
-        "table.queryRequested",
-        "gridState.get",
-        "gridState.save",
-        // B2 paste preview + apply requests.
-        "table.previewPasteRequested",
-        "table.applyPasteRequested",
-        "data.importSourceRequested",
-        "data.exportTargetRequested",
-        "dailyQuote.fetch",
-        "diagnostics.get",
-        "clipboard.readText",
-        "clipboard.writeText",
-        "appPreferences.get",
-        "appPreferences.update",
-        "settings.readDevice",
-        "settings.saveDevice",
-        "sourceImport.open",
-        "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
-        "update.check",
-        "update.install",
-        // G1 history query + two-phase safe restore.
-        "history.queryRequested",
-        "history.previewRestoreRequested",
-        "history.applyRestoreRequested",
-        // Table management (web sidebar).
-        "tableAdmin.createRequested",
-        "tableAdmin.duplicateRequested",
-        "tableAdmin.deleteRequested",
-        "contentProfile.load",
-        "contentProfile.commit",
-        "contentProfile.delete",
-        "recordDocumentLink.list",
-        "recordDocumentLink.commit",
-        "recordDocumentLink.repair",
-        "recordDocumentLink.delete",
-        "document.listRequested",
-        "document.importRequested",
-        "document.externalDropRequested",
-        "document.dragOutRequested",
-        "document.openRequested",
-        "document.previewRequested",
-        "document.diffRequested",
-        "document.diffCancelRequested",
-        "document.diffPageRequested",
-        "document.diffCloseRequested",
-        "document.revealRequested",
-        "document.relinkRequested",
-        // Native-file attachment actions. File paths arrive only as WebView2
-        // AdditionalObjects and are never accepted in renderer JSON.
-        "file.uploadRequested",
-        "file.replaceRequested",
-        "file.removeRequested",
-        "file.previewRequested",
-        "file.downloadRequested",
-        // Local-worker plugin platform. Each entry is a complete use case; no
-        // generic rpc.invoke bridge is accepted.
-        "plugin.catalog.list",
-        "plugin.audit.list",
-        "plugin.cleanup.listPending",
-        "plugin.install.inspect",
-        "plugin.install.github.inspect",
-        "plugin.install.commit",
-        "plugin.install.cancel",
-        "plugin.lifecycle.setEnabled",
-        "plugin.lifecycle.upgrade",
-        "plugin.lifecycle.rollback",
-        "plugin.lifecycle.uninstall",
-        "plugin.action.describe",
-        "plugin.action.start",
-        "plugin.interaction.resolve",
-        "plugin.task.cancel",
-        "plugin.task.get",
-        "plugin.surface.event",
-        // Open the embedded data administration surface in this webview.
-        "admin.openRequested",
-        // Single closed bridge for the generated workspace-v2 RPC catalog.
-        "workspace.v2.request",
-    };
+    private static readonly HashSet<string> WebRequestWhitelist = new(HostBridgeCatalog.RouterWebRequestTypes, StringComparer.Ordinal);
 
     // These use cases remain in the internal plugin/workspace catalogs so
     // producers and correlated host responses stay typed. They are not yet a
     // public renderer capability because no packaged-host scenario proves
     // their complete lifecycle.
     private static readonly HashSet<string> RendererInternalOnlyRequestTypes =
-        new(StringComparer.Ordinal)
-        {
-            "plugin.lifecycle.rollback",
-        };
+        new(HostBridgeCatalog.RendererInternalOnlyRequestTypes, StringComparer.Ordinal);
 
     /// <summary>
     /// #485 (Goal #480): the retired visual layout builder's public bridge
@@ -164,24 +67,7 @@ public sealed class WebMessageRouter
     /// unaffected: it flows through the plugin surface API, not these types.
     /// </summary>
     private static readonly HashSet<string> RetiredLayoutRequestTypes =
-        new(StringComparer.Ordinal)
-        {
-            "dashboard.listRequested",
-            "dashboard.readRequested",
-            "dashboard.manifestRequested",
-            "dashboard.queryRequested",
-            "dashboard.saveRequested",
-            "dashboard.deleteRequested",
-            "dashboard.cancelRequested",
-            "dashboard.exportTargetRequested",
-            "dashboard.exportRetireRequested",
-            "dashboard.printRequested",
-            "interface.listRequested",
-            "interface.loadRequested",
-            "interface.commitRequested",
-            "interface.deleteRequested",
-            "interface.cancelRequested",
-        };
+        new(HostBridgeCatalog.RetiredRequestTypes, StringComparer.Ordinal);
 
     /// <summary>
     /// The host -&gt; web notification types. Phase A defines the framework;
@@ -189,105 +75,18 @@ public sealed class WebMessageRouter
     /// results (no new outbound type needed since the page DTO carries the
     /// snapshot/revision).
     /// </summary>
-    private static readonly HashSet<string> HostNotificationWhitelist = new(StringComparer.Ordinal)
-    {
-        "host.startupStateChanged",
-        "legacyLayout.reportLoaded",
-        "legacyLayout.exportCompleted",
-        "pluginPreservation.exportCompleted",
-        // #482 native host chrome → trusted web shell (stop plugins, return
-        // to platform, open plugin management) without plugin involvement.
-        "host.pluginChrome",
-        // Host-appearance projection: initial snapshot after app.ready plus
-        // system/preference change notifications.
-        "appearance.changed",
-        "database.opened",
-        "database.openCancelled",
-        "plugin.projectContext.unavailable",
-        "table.pageLoaded",
-        "table.datasetReady",
-        "gridState.get",
-        "gridState.save",
-        "operation.failed",
-        // B1 mutation notifications.
-        "table.editSchemaLoaded",
-        "table.editCommitted",
-        "table.editRejected",
-        "table.rowsInserted",
-        "table.rowsDeleted",
-        // Provider-neutral, permission-filtered realtime invalidation.
-        "data.changed",
-        "task.changed",
-        "realtime.recovered",
-        // B2 paste preview + apply outcomes.
-        "table.pastePreviewReady",
-        "table.pasteApplied",
-        "data.importSourceRequested",
-        "data.exportTargetRequested",
-        "dailyQuote.fetch",
-        "diagnostics.get",
-        "clipboard.readText",
-        "clipboard.writeText",
-        "appPreferences.get",
-        "appPreferences.update",
-        "settings.readDevice",
-        "settings.saveDevice",
-        "sourceImport.open",
-        "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
-        "update.check",
-        "update.install",
-        // G1 history query + two-phase safe restore outcomes.
-        "history.pageLoaded",
-        "history.restorePreviewReady",
-        "history.restoreApplied",
-        // Table management: host pushes refreshed collection list after create/delete.
-        "database.collectionsChanged",
-        "document.listLoaded",
-        "document.actionCompleted",
-        "document.diffCompleted",
-        "document.diffCancelCompleted",
-        "document.diffPageCompleted",
-        "document.diffCloseCompleted",
-        "document.operationFailed",
-        "document.workspaceChanged",
-        // Correlated native attachment action acknowledgements.
-        "file.uploadRequested",
-        "file.replaceRequested",
-        "file.removeRequested",
-        "file.previewRequested",
-        "file.downloadRequested",
-        // Versioned plugin domain events and local surface messages.
-        "plugin.catalog.changed",
-        "plugin.task.changed",
-        "plugin.interaction.requested",
-        "plugin.surface.message",
-        // Correlated responses reuse the closed request type and requestId.
-        "plugin.catalog.list",
-        "plugin.audit.list",
-        "plugin.cleanup.listPending",
-        "plugin.install.inspect",
-        "plugin.install.github.inspect",
-        "plugin.install.commit",
-        "plugin.install.cancel",
-        "plugin.lifecycle.setEnabled",
-        "plugin.lifecycle.upgrade",
-        "plugin.lifecycle.rollback",
-        "plugin.lifecycle.uninstall",
-        "plugin.action.describe",
-        "plugin.action.start",
-        "plugin.interaction.resolve",
-        "plugin.task.cancel",
-        "plugin.task.get",
-        "plugin.surface.event",
-        "workspace.v2.response",
-        "workspace.v2.bootstrap",
-        "workspace.v2.event",
-    };
+    private static readonly HashSet<string> HostNotificationWhitelist = new(HostBridgeCatalog.RouterHostNotificationTypes, StringComparer.Ordinal);
 
     static WebMessageRouter()
     {
         WebRequestWhitelist.UnionWith(ProductDataRpcRegistry.RequestTypes);
         HostNotificationWhitelist.UnionWith(ProductDataRpcRegistry.RequestTypes);
+        // The app-settings family (appPreferences get/update + the
+        // appearance.changed projection) is generated from
+        // contracts/v2/app-settings-contract.json; correlated replies reuse
+        // the closed request type and the push is host-only.
+        WebRequestWhitelist.UnionWith(AppSettingsWireMethods.WebRequestTypes);
+        HostNotificationWhitelist.UnionWith(AppSettingsWireMethods.HostNotificationTypes);
         // Correlated relation/Lookup responses reuse the closed request type.
         // The endpoint names are registered once together with their payload
         // validator and typed gateway binding.
@@ -391,7 +190,7 @@ public sealed class WebMessageRouter
 
             string type = typeEl.GetString() ?? string.Empty;
 
-            if (!IsReady && !string.Equals(type, "app.ready", StringComparison.Ordinal))
+            if (!IsReady && !string.Equals(type, HostBridgeCatalog.BootstrapRequestType, StringComparison.Ordinal))
             {
                 return BuildOperationFailed(
                     requestId,

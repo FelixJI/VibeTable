@@ -1,3 +1,10 @@
+import {
+  RELEASE_UPDATE_HOST_MESSAGE_TYPES,
+  RELEASE_UPDATE_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
+
+export { RELEASE_UPDATE_HOST_MESSAGE_TYPES, RELEASE_UPDATE_WEB_MESSAGE_TYPES };
+
 export interface ReleaseUpdateNote {
   readonly version: string;
   readonly title: string;
@@ -22,16 +29,8 @@ export interface ReleaseUpdateInstallResult {
   readonly status: "restarting";
 }
 
-export const RELEASE_UPDATE_WEB_MESSAGE_TYPES = [
-  "update.check",
-  "update.install",
-] as const;
-
 export type ReleaseUpdateWebMessageType =
   (typeof RELEASE_UPDATE_WEB_MESSAGE_TYPES)[number];
-
-export const RELEASE_UPDATE_HOST_MESSAGE_TYPES =
-  RELEASE_UPDATE_WEB_MESSAGE_TYPES;
 
 export type ReleaseUpdateHostMessageType =
   (typeof RELEASE_UPDATE_HOST_MESSAGE_TYPES)[number];

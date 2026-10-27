@@ -120,13 +120,10 @@ public sealed class WebMessageRouterTests
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
 
-        foreach (string type in new[]
-        {
-            "appPreferences.get",
-            "appPreferences.update",
-            "update.check",
-            "update.install",
-        })
+        // The settings family comes from the generated contract projection
+        // (contracts/v2/app-settings-contract.json); the test must not keep a
+        // second hand-written copy of the same names.
+        foreach (string type in AppSettingsWireMethods.WebRequestTypes)
         {
             HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
             {
@@ -140,8 +137,57 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
         }
 
-        Assert.AreEqual(4, dispatched.Count);
+        Assert.AreEqual(AppSettingsWireMethods.WebRequestTypes.Length, dispatched.Count);
+        Assert.IsTrue(router.IsHostNotificationAllowed(
+            AppSettingsWireMethods.AppearanceChanged));
+        // update.check/install come from the generated bridge supplement.
+        foreach (string type in new[] { "update.check", "update.install" })
+        {
+            Assert.IsNull(router.Route(JsonSerializer.Serialize(new
+            {
+                type,
+                requestId = $"request-{type}",
+                payload = new { },
+            })), type);
+        }
         Assert.IsFalse(router.IsHostNotificationAllowed("appPreferences.delete"));
+    }
+
+    [TestMethod]
+    public void GeneratedCatalog_ComposesExactDirectionalRouterSets()
+    {
+        var expectedWeb = new HashSet<string>(HostBridgeCatalog.RouterWebRequestTypes);
+        expectedWeb.UnionWith(ProductDataRpcRegistry.RequestTypes);
+        expectedWeb.UnionWith(RelationLookupRpcRegistry.RequestTypes);
+        expectedWeb.UnionWith(AppSettingsWireMethods.WebRequestTypes);
+        var expectedHost = new HashSet<string>(HostBridgeCatalog.RouterHostNotificationTypes);
+        expectedHost.UnionWith(ProductDataRpcRegistry.RequestTypes);
+        expectedHost.UnionWith(RelationLookupRpcRegistry.RequestTypes);
+        expectedHost.UnionWith(AppSettingsWireMethods.HostNotificationTypes);
+
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+        var web = typeof(WebMessageRouter).GetField("WebRequestWhitelist", flags)?.GetValue(null)
+            as HashSet<string>;
+        var host = typeof(WebMessageRouter).GetField("HostNotificationWhitelist", flags)?.GetValue(null)
+            as HashSet<string>;
+        Assert.IsNotNull(web);
+        Assert.IsNotNull(host);
+        Assert.IsTrue(expectedWeb.SetEquals(web));
+        Assert.IsTrue(expectedHost.SetEquals(host));
+        Assert.IsFalse(web.Contains(AppSettingsWireMethods.AppearanceChanged));
+        Assert.IsTrue(host.Contains(AppSettingsWireMethods.AppearanceChanged));
+        Console.WriteLine($"Effective router sets: web={web.Count}, host={host.Count}");
+
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        var reply = router.Route(JsonSerializer.Serialize(new
+        {
+            type = AppSettingsWireMethods.AppearanceChanged,
+            requestId = "push-as-request",
+            payload = new { },
+        }));
+        Assert.AreEqual("UNKNOWN_TYPE", reply?.Payload?.Code);
+        Assert.AreEqual(0, dispatched.Count);
     }
 
     [TestMethod]

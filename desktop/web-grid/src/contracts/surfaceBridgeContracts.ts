@@ -16,6 +16,20 @@ export type PreservationHostMessageType =
   | "legacyLayout.exportCompleted"
   | "pluginPreservation.exportCompleted";
 
+import {
+  PRESERVATION_HOST_MESSAGE_TYPES,
+  PRESERVATION_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
+
+export { PRESERVATION_HOST_MESSAGE_TYPES, PRESERVATION_WEB_MESSAGE_TYPES };
+
+// Compile-time coupling to the payload-map unions above (replaces the old
+// inline `satisfies` now that the names are catalog-owned).
+export const PRESERVATION_WEB_NAMES_ASSIGNABLE: readonly PreservationWebMessageType[] =
+  PRESERVATION_WEB_MESSAGE_TYPES;
+export const PRESERVATION_HOST_NAMES_ASSIGNABLE: readonly PreservationHostMessageType[] =
+  PRESERVATION_HOST_MESSAGE_TYPES;
+
 export interface LegacyLayoutDiagnostic {
   readonly code: string;
   readonly message: string;
@@ -79,20 +93,6 @@ export interface PreservationHostPayloadMap {
   "legacyLayout.reportLoaded": LegacyLayoutReport;
   "legacyLayout.exportCompleted": LegacyLayoutExportResult;
 }
-
-export const PRESERVATION_WEB_MESSAGE_TYPES = [
-  "pluginPreservation.exportRequested",
-  "pluginPreservation.cancelRequested",
-  "legacyLayout.reportRequested",
-  "legacyLayout.exportRequested",
-  "legacyLayout.cancelRequested",
-] as const satisfies readonly PreservationWebMessageType[];
-
-export const PRESERVATION_HOST_MESSAGE_TYPES = [
-  "pluginPreservation.exportCompleted",
-  "legacyLayout.reportLoaded",
-  "legacyLayout.exportCompleted",
-] as const satisfies readonly PreservationHostMessageType[];
 
 export interface PreservationRequestResults {
   "pluginPreservation.exportRequested": PluginPreservationExportResult;

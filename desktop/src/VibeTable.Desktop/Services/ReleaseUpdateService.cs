@@ -13,6 +13,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
@@ -98,8 +99,8 @@ internal static class UpdateDownloadProxy
     private static readonly IReadOnlyDictionary<string, Uri> FixedPrefixes =
         new Dictionary<string, Uri>(StringComparer.Ordinal)
         {
-            [UpdateProxyOptions.GhProxyNet] = new("https://ghproxy.net/"),
-            [UpdateProxyOptions.GhProxyCom] = new("https://gh-proxy.com/"),
+            [AppSettingsUpdateProxyOption.GhproxyNet] = new("https://ghproxy.net/"),
+            [AppSettingsUpdateProxyOption.GhProxyCom] = new("https://gh-proxy.com/"),
         };
 
     public static Uri Rewrite(
@@ -115,10 +116,10 @@ internal static class UpdateDownloadProxy
                 "GitHub 返回了不受信任的更新下载地址。",
                 "UPDATE_DOWNLOAD_URL_UNTRUSTED");
         }
-        if (proxy == UpdateProxyOptions.Direct) return directDownloadUri;
+        if (proxy == AppSettingsUpdateProxyOption.Direct) return directDownloadUri;
 
         Uri prefix;
-        if (proxy == UpdateProxyOptions.Custom)
+        if (proxy == AppSettingsUpdateProxyOption.Custom)
         {
             prefix = ParseCustomPrefix(customProxyUrl);
         }

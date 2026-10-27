@@ -979,6 +979,14 @@ def test_contract_gate_runs_generation_and_all_runtime_consumers(
             automation_project.REPO_ROOT,
         ),
         (
+            ("uv", "run", "python", "contracts/v2/app_settings_contract.py", "--check"),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            ("uv", "run", "python", "contracts/v2/host_bridge_catalog.py", "--check"),
+            automation_project.REPO_ROOT,
+        ),
+        (
             (
                 "uv",
                 "run",
@@ -1029,6 +1037,8 @@ def test_contract_gate_runs_generation_and_all_runtime_consumers(
                 "tests/contract/test_product_contracts.py",
                 "tests/contract/test_product_runtime_inventory.py",
                 "tests/contract/test_product_rpc_capability_policy.py",
+                "tests/contract/test_app_settings_contract.py",
+                "tests/contract/test_host_bridge_catalog.py",
                 "tests/contract/test_workspace_rpc_capability_manifest.py",
                 "tests/contract/test_schema_v2_dto_codegen.py",
                 "tests/contract/test_workbench_dto_codegen.py",
@@ -1115,7 +1125,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:13]] == [
+    assert [command for command, _cwd in observed[:15]] == [
         ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
         ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
         (
@@ -1139,6 +1149,8 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "contracts/v2/product_rpc_capability_policy.py",
             "--check",
         ),
+        ("uv", "run", "python", "contracts/v2/app_settings_contract.py", "--check"),
+        ("uv", "run", "python", "contracts/v2/host_bridge_catalog.py", "--check"),
         (
             "uv",
             "run",
@@ -1177,6 +1189,8 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "tests/contract/test_product_contracts.py",
             "tests/contract/test_product_runtime_inventory.py",
             "tests/contract/test_product_rpc_capability_policy.py",
+            "tests/contract/test_app_settings_contract.py",
+            "tests/contract/test_host_bridge_catalog.py",
             "tests/contract/test_workspace_rpc_capability_manifest.py",
             "tests/contract/test_schema_v2_dto_codegen.py",
             "tests/contract/test_workbench_dto_codegen.py",

@@ -110,6 +110,10 @@ rg -n 'schema\.getTable' desktop backend contracts tests
 - `desktop/web-grid/src/bridge/hostBridge.ts` 只允许闭集中的消息，并用 `requestId` 关联响应、错误和超时。
 - `desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs` 在宿主侧检查消息大小、JSON 形状、type 和 payload。
 - `desktop/src/VibeTable.Desktop/Services/ProductDataRpcRegistry.cs` 进一步验证 `schema.getTable` 的参数闭集。
+- 闭集消息先看 `contracts/v2/host-bridge-message-catalog.json`：已有 Product 方法/事件使用 `reference.source: product` 与 `method`/`topic` 引用，`host_bridge_catalog.py` 调用 `product_rpc_capability_policy.py` 的 manifest builder 解析，沿用原 policy/catalog/runtime inventory 的 method/topic、audience、owner、scope、effect 权威。补充表只维护缺失的 wire 名和两侧边界投影，不复制 Product 元数据；引用失效、public audience 降级或把已有权威名改为独立声明都会失败。新 Product public 方法不会自动进入 bridge。
+- `uv run python contracts/v2/host_bridge_catalog.py` 生成 C# `Generated/HostBridgeCatalog.g.cs` 与 TS `contracts/generated/hostBridgeCatalog.ts`；router/bridge 及五个消息族模块实际消费它，`--check` 拒绝陈旧投影。`routerWeb/routerHost` 是静态 seed，router 继续组合原 Product/relation typed registry 并执行运行时 guard；`data.applyImport` 的 seed 为 false 不代表最终禁用。四侧投影有意不对称，不能取并集开放。内部 rollback 和退役消息保留稳定拒绝。
+- Workspace 内层方法仍由 `generate_rpc_catalog.py` 的 `RPC_REGISTRY` 与 `workspace-rpc-capability-policy.json` 经 `generate_workspace_rpc_capability_manifest.py` 生成原 manifest/TS 投影；它们与补充表无同名方法，`workspace.v2.request` 只是外层 envelope，不另建内层目录。
+- 设置族纵切（`appPreferences.get/update`、`appearance.changed`）的单一权威是 `contracts/v2/app-settings-contract.json`；`uv run python contracts/v2/app_settings_contract.py` 生成 TS/C# 两端投影，`--check` 拒绝陈旧产物，共享 fixture 在 `contracts/v2/fixtures/app-settings-conformance.json`。设置成功/appearance 与 `operation.failed` 在实际 bridge 严格解码：错误 `message` 必须是 string，`code/operation/operationId` 允许缺省、null 或 string；未知 code 保留。畸形成功或错误均为 `AppSettingsProtocolError`、结果未知，不据此推断未提交或自动重放。其它消息族的 payload 继续使用现有契约，本轮不宣称全仓统一。
 
 阅读对应的 `hostBridge.test.ts`、`WebMessageRouterTests.cs` 和
 `ProductDataRpcRegistryTests.cs`，至少找出一条成功用例和一条拒绝非法输入的用例。

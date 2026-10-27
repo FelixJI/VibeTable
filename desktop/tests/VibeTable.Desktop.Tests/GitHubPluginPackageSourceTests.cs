@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -64,7 +65,7 @@ public sealed class GitHubPluginPackageSourceTests
         {
             using var source = new GitHubPluginPackageSource(
                 root,
-                () => new AppPreferences(false, false, UpdateProxyOptions.GhProxyNet),
+                () => new AppPreferences(false, false, AppSettingsUpdateProxyOption.GhproxyNet),
                 http);
             string path;
             using (DownloadedPluginPackage lease = await source.DownloadLatestAsync(

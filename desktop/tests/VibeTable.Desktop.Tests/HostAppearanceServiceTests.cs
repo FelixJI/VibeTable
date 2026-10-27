@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -81,15 +82,15 @@ public sealed class HostAppearanceServiceTests
 
         // Explicit light/dark overrides the OS; the projection carries the
         // explicit value so the Web layer can show the selected mode.
-        service.SetPreferredTheme(AppThemeOptions.Light);
+        service.SetPreferredTheme(AppSettingsThemeOption.Light);
         Assert.AreEqual("light", service.EffectiveTheme);
-        Assert.AreEqual(AppThemeOptions.Light, service.Projection.Preference);
+        Assert.AreEqual(AppSettingsThemeOption.Light, service.Projection.Preference);
 
         // Explicit "system" stays distinct from unconfigured while following
         // the OS: the projection must keep the "system" marker.
-        service.SetPreferredTheme(AppThemeOptions.System);
+        service.SetPreferredTheme(AppSettingsThemeOption.System);
         Assert.AreEqual("dark", service.EffectiveTheme);
-        Assert.AreEqual(AppThemeOptions.System, service.Projection.Preference);
+        Assert.AreEqual(AppSettingsThemeOption.System, service.Projection.Preference);
 
         // An unknown value resets to unconfigured, never to a fake default.
         service.SetPreferredTheme("unknown");
@@ -124,9 +125,9 @@ public sealed class HostAppearanceServiceTests
         Assert.AreEqual("dark", projections[1].Effective);
 
         // A repeated SetPreferredTheme with the same value stays silent.
-        service.SetPreferredTheme(AppThemeOptions.Dark);
+        service.SetPreferredTheme(AppSettingsThemeOption.Dark);
         Assert.AreEqual(3, projections.Count);
-        service.SetPreferredTheme(AppThemeOptions.Dark);
+        service.SetPreferredTheme(AppSettingsThemeOption.Dark);
         Assert.AreEqual(3, projections.Count);
     }
 
@@ -215,7 +216,7 @@ public sealed class HostAppearanceServiceTests
 
         // A second apply swaps instead of stacking dictionaries.
         HostThemeResources.Apply(target,
-            new HostThemeProjection(AppThemeOptions.Light, "light", HighContrast: false));
+            new HostThemeProjection(AppSettingsThemeOption.Light, "light", HighContrast: false));
         Assert.AreEqual(1, ThemedMergedCount(target));
         StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
             dictionary.Source is not null).Source.AbsoluteUri,
@@ -248,11 +249,11 @@ public sealed class HostAppearanceServiceTests
         try
         {
             HostThemeResources.Apply(window.Resources,
-                new HostThemeProjection(AppThemeOptions.Dark, "dark", HighContrast: false));
+                new HostThemeProjection(AppSettingsThemeOption.Dark, "dark", HighContrast: false));
             Assert.AreEqual(0, DwmGetWindowAttribute(handle, 20, out int dark, sizeof(int)));
             Assert.AreEqual(1, dark);
             HostThemeResources.Apply(window.Resources,
-                new HostThemeProjection(AppThemeOptions.Light, "light", HighContrast: false));
+                new HostThemeProjection(AppSettingsThemeOption.Light, "light", HighContrast: false));
             Assert.AreEqual(0, DwmGetWindowAttribute(handle, 20, out int light, sizeof(int)));
             Assert.AreEqual(0, light);
         }

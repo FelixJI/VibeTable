@@ -1,3 +1,13 @@
+import {
+  RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
+
+export {
+  RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+};
+
 export interface RuntimeDiagnostics {
   readonly bundleVersion: string;
   readonly generatedAt: string;
@@ -31,15 +41,8 @@ export interface RuntimeDiagnostics {
   }[];
 }
 
-export const RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES = [
-  "diagnostics.get",
-] as const;
-
 export type RuntimeDiagnosticsWebMessageType =
   (typeof RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES)[number];
-
-export const RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES =
-  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES;
 
 export type RuntimeDiagnosticsHostMessageType =
   (typeof RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES)[number];

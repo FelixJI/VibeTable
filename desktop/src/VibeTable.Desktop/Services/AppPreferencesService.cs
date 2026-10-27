@@ -2,29 +2,19 @@ using System;
 using System.IO;
 using System.Security;
 using System.Text.Json;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
 internal sealed record AppPreferences(
     bool MinimizeToTrayOnClose,
     bool StartWithWindows,
-    string UpdateProxy = UpdateProxyOptions.Direct,
+    string UpdateProxy = AppSettingsUpdateProxyOption.Direct,
     string? CustomUpdateProxyUrl = null,
     string? Theme = null)
 {
     public static AppPreferences Default { get; } = new(false, false);
 }
-
-internal sealed record AppPreferencesPatch(
-    bool? MinimizeToTrayOnClose,
-    bool? StartWithWindows,
-    string? UpdateProxy = null,
-    string? CustomUpdateProxyUrl = null,
-    bool HasCustomUpdateProxyUrl = false,
-    string? Theme = null,
-    bool HasTheme = false,
-    string? AdoptLegacyTheme = null,
-    bool HasAdoptLegacyTheme = false);
 
 internal sealed record PersistedAppPreferences(
     bool MinimizeToTrayOnClose,
@@ -34,37 +24,8 @@ internal sealed record PersistedAppPreferences(
 {
     public static PersistedAppPreferences Default { get; } = new(
         false,
-        UpdateProxyOptions.Direct,
+        AppSettingsUpdateProxyOption.Direct,
         null);
-}
-
-/// <summary>Theme preference values persisted in AppPreferences. A null
-/// theme means "not configured yet" and is distinct from an explicit
-/// <see cref="System"/> choice; only a known value is persisted.</summary>
-internal static class AppThemeOptions
-{
-    public const string Light = "light";
-    public const string Dark = "dark";
-    public const string System = "system";
-
-    public static bool IsKnown(string? value) => value is Light or Dark or System;
-}
-
-internal static class UpdateProxyOptions
-{
-    public const string Direct = "direct";
-    public const string GhProxyNet = "ghproxyNet";
-    public const string GhProxyCom = "ghProxyCom";
-    public const string Custom = "custom";
-
-    public static bool IsKnown(string value) => value is
-        Direct or GhProxyNet or GhProxyCom or Custom;
-
-    public static string? NormalizeCustomUrl(string? value)
-    {
-        string? trimmed = value?.Trim();
-        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
-    }
 }
 
 internal interface IAppPreferencesStore
@@ -100,17 +61,17 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
             {
                 return PersistedAppPreferences.Default;
             }
-            string proxy = UpdateProxyOptions.IsKnown(stored.UpdateProxy ?? "")
+            string proxy = AppSettingsUpdateProxyOption.IsKnown(stored.UpdateProxy ?? "")
                 ? stored.UpdateProxy!
-                : UpdateProxyOptions.Direct;
+                : AppSettingsUpdateProxyOption.Direct;
             // An unknown or corrupt theme falls back to "not configured"
             // (null) instead of blocking startup; every other preference
             // keeps its stored value under the same safe-load rule.
-            string? theme = AppThemeOptions.IsKnown(stored.Theme) ? stored.Theme : null;
+            string? theme = AppSettingsThemeOption.IsKnown(stored.Theme) ? stored.Theme : null;
             return new PersistedAppPreferences(
                 stored.MinimizeToTrayOnClose,
                 proxy,
-                UpdateProxyOptions.NormalizeCustomUrl(stored.CustomUpdateProxyUrl),
+                AppPreferencesService.NormalizeCustomUrl(stored.CustomUpdateProxyUrl),
                 theme);
         }
         catch (FileNotFoundException)
@@ -207,7 +168,7 @@ internal sealed class AppPreferencesService
     {
         bool minimizeToTrayOnClose = false;
         bool startWithWindows = false;
-        string updateProxy = UpdateProxyOptions.Direct;
+        string updateProxy = AppSettingsUpdateProxyOption.Direct;
         string? customUpdateProxyUrl = null;
         string? theme = null;
         try
@@ -240,7 +201,7 @@ internal sealed class AppPreferencesService
             theme);
     }
 
-    public AppPreferences Update(AppPreferencesPatch patch)
+    public AppPreferences Update(AppSettingsPreferencesPatch patch)
     {
         AppPreferences current = Read();
         AppPreferences updated = new(
@@ -248,16 +209,16 @@ internal sealed class AppPreferencesService
             patch.StartWithWindows ?? current.StartWithWindows,
             patch.UpdateProxy ?? current.UpdateProxy,
             patch.HasCustomUpdateProxyUrl
-                ? UpdateProxyOptions.NormalizeCustomUrl(patch.CustomUpdateProxyUrl)
+                ? NormalizeCustomUrl(patch.CustomUpdateProxyUrl)
                 : current.CustomUpdateProxyUrl,
-            patch.HasTheme && AppThemeOptions.IsKnown(patch.Theme)
+            patch.HasTheme && AppSettingsThemeOption.IsKnown(patch.Theme)
                 ? patch.Theme
                 : current.Theme);
-        if (!UpdateProxyOptions.IsKnown(updated.UpdateProxy))
+        if (!AppSettingsUpdateProxyOption.IsKnown(updated.UpdateProxy))
         {
             throw new ArgumentException("Unknown update proxy.", nameof(patch));
         }
-        if (patch.HasTheme && !AppThemeOptions.IsKnown(patch.Theme))
+        if (patch.HasTheme && !AppSettingsThemeOption.IsKnown(patch.Theme))
         {
             throw new ArgumentException("Unknown theme.", nameof(patch));
         }
@@ -305,7 +266,7 @@ internal sealed class AppPreferencesService
     /// </summary>
     public AppPreferences AdoptLegacyTheme(string theme)
     {
-        if (!AppThemeOptions.IsKnown(theme))
+        if (!AppSettingsThemeOption.IsKnown(theme))
         {
             throw new ArgumentException("Unknown theme.", nameof(theme));
         }
@@ -321,6 +282,14 @@ internal sealed class AppPreferencesService
             updated.CustomUpdateProxyUrl,
             updated.Theme));
         return updated;
+    }
+
+    /// <summary>Trims a custom proxy URL; an empty value normalizes to null
+    /// (business rule kept beside the service that owns persistence).</summary>
+    internal static string? NormalizeCustomUrl(string? value)
+    {
+        string? trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
 
     private static bool IsNonCriticalReadFailure(Exception exception) =>
