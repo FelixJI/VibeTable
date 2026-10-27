@@ -3082,9 +3082,9 @@ def _prepare_complete_product_reports(
             _write_s35_audit_drain_log(run_root, ("business", "file"))
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
-                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
                 "resume": (
-                    "48-native-application.png",
+                    "48-application-sidebar.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
                     "48-plugin-print-scope.png",
@@ -3956,17 +3956,22 @@ SCENARIO_SCREENSHOTS = {
     "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),
     "32-shared-work-calendar": ("32-shared-work-calendar.png",),
     "49-plugin-application-security": (
-        "48-native-dark.png",
-        "48-native-scaled.png",
-        "48-native-contrast.png",
-        "48-native-contrast-restored.png",
-        "48-native-loop.png",
-        "48-native-recovered.png",
-        "48-native-crashed.png",
+        "49-application-dark.png",
+        "49-application-light.png",
+        "49-application-scaled.png",
+        "49-application-contrast.png",
+        "49-application-contrast-restored.png",
+        "49-loop-recovered.png",
+        "49-crash-recovered.png",
+        "plugin-contrast-original.json",
+        "plugin-contrast-restoration.json",
         "49-security-observations.json",
         "49-plugin-application-security-trace.zip",
     ),
-    "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "50-plugin-headless-budget": (
+        "50-headless-recovered.png",
+        "50-plugin-headless-budget-trace.zip",
+    ),
     "53-record-manager": (
         "53-record-manager.json",
         "53-record-manager-overview.png",
@@ -3996,8 +4001,9 @@ SCENARIO_SCREENSHOTS = {
         "52-confirm-import-approved.png",
     ),
     "51-plugin-application-commit-unknown": (
-        "48-native-cancelled.png",
-        "48-native-recovered.png",
+        "48-native-approved.png",
+        "51-commit-recovered.png",
+        "51-unknown-commit.json",
         "51-plugin-application-commit-unknown-trace.zip",
     ),
     "02-all-field-schema": (
@@ -4131,6 +4137,74 @@ def test_scenario_screenshots_missing_image_rejects_passed_report(
     (run / scenario_id / filename).unlink()
     with pytest.raises(ValueError, match=filename):
         next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "current", "retired"),
+    [
+        ("49-plugin-application-security", "49-application-dark.png", "48-native-dark.png"),
+        ("50-plugin-headless-budget", "50-headless-recovered.png", "48-native-recovered.png"),
+        (
+            "51-plugin-application-commit-unknown",
+            "51-unknown-commit.json",
+            "48-native-cancelled.png",
+        ),
+    ],
+)
+def test_plugin_current_surface_and_raw_outcome_cannot_be_replaced_by_retired_chrome(
+    tmp_path: Path, scenario_id: str, current: str, retired: str
+) -> None:
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "passed")
+    (run / scenario_id / current).unlink()
+    (run / scenario_id / retired).write_bytes(b"obsolete native host row")
+    with pytest.raises(ValueError, match=current):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_plugin_application_restart_archives_current_sidebar_and_native_confirmations(
+    tmp_path: Path,
+) -> None:
+    scenario_id = "48-plugin-applications"
+    run = tmp_path / "source" / "20261027T050000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "passed", "scenarios": [{"scenario": scenario_id, "status": "passed"}]}
+        ),
+        encoding="utf-8",
+    )
+    phases = {
+        "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
+        "resume": (
+            "48-application-sidebar.png",
+            "48-native-approved.png",
+            "48-native-rejected.png",
+            "48-plugin-print-scope.png",
+            "48-plugin-print-dialog-opened.png",
+            "48-plugin-print-preview-second.png",
+            "48-plugin-print-preview.json",
+            "48-plugin-applications-trace.zip",
+        ),
+    }
+    expected = {"product-e2e-report.json"}
+    for phase, names in phases.items():
+        directory = run / scenario_id / phase / "20261027T050001Z"
+        directory.mkdir(parents=True)
+        for name in names:
+            (directory / name).write_bytes(f"{phase}:{name}".encode())
+            expected.add(f"{scenario_id}/{phase}/{directory.name}/{name}")
+        (directory / "48-native-application.png").write_bytes(b"obsolete native host row")
+        (directory / "workspace.db").write_bytes(b"private workspace")
+
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert {
+        file.relative_to(retained).as_posix() for file in retained.rglob("*") if file.is_file()
+    } == expected
+    # A restart phase must have its own new surface; the old row image cannot stand in for it.
+    (run / scenario_id / "resume/20261027T050001Z/48-application-sidebar.png").unlink()
+    with pytest.raises(ValueError, match=r"48-application-sidebar\.png"):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "missing-sidebar")
 
 
 def test_scenario_screenshots_preserve_partial_failed_evidence(tmp_path: Path) -> None:

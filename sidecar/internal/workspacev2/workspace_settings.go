@@ -101,7 +101,7 @@ func validWorkspaceRetentionSettings(value workspaceRetentionSettings) bool {
 		value.SnapshotCount != 0 &&
 		value.FileRevisionDays != 0 &&
 		value.FileRevisionCount != 0 &&
-		validRetentionBuckets(value.SnapshotBuckets) &&
+		validSnapshotRetentionBuckets(value.SnapshotBuckets) &&
 		validRetentionBuckets(value.FileRevisionBuckets) &&
 		(value.RepositoryLimitBytes == nil ||
 			*value.RepositoryLimitBytes != 0)

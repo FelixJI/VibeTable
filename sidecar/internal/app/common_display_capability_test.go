@@ -28,6 +28,10 @@ func withCommonDisplayPresets(t *testing.T, snapshot v2.SchemaSnapshot) v2.Schem
 			t.Fatal(err)
 		}
 		historical := current
+		// Timestamp creation is checked/upgraded by withAutoNumberCapability next.
+		if old.LogicalType == v2.LogicalAutoDate {
+			historical.UserCreatable = false
+		}
 		if old.LogicalType == v2.LogicalText || old.LogicalType == v2.LogicalNumber {
 			historical.DisplayPresets = withoutCommonDisplayPresets(current.DisplayPresets)
 		}

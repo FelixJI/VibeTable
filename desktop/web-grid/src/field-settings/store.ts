@@ -45,6 +45,15 @@ export interface RelationTableOption {
   readonly displayName: string;
 }
 
+export type DisplayNameCheckStatus = "idle" | "checking" | "duplicate" | "available";
+
+/** 输入期重名预检结果；name 记录核对时的名称，用于丢弃过期结果。 */
+export interface DisplayNameCheckState {
+  readonly status: DisplayNameCheckStatus;
+  readonly name: string;
+  readonly conflictWith: string | null;
+}
+
 export const useFieldSettingsStore = defineStore("field-settings", () => {
   const open = ref(false);
   const inspectionTarget = shallowRef<{ readonly tableId: string; readonly fieldId: string } | null>(null);
@@ -99,6 +108,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const formulaPreviewing = ref(false);
   const formulaPreviewError = ref<string | null>(null);
   const formulaPreviewNote = ref<string | null>(null);
+  const displayNameCheck = shallowRef<DisplayNameCheckState>(
+    { status: "idle", name: "", conflictWith: null },
+  );
 
   const capabilities = computed<readonly CapabilityV2[]>(
     () => result.value?.capabilities ?? [],
@@ -118,12 +130,18 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const isExisting = computed(() => result.value?.definition !== null);
   /** 前端可判定的草稿问题（名称长度/字符类型、各类型默认值限制）；空数组可预览。 */
   const draftIssues = computed<readonly string[]>(() => fieldDraftIssues(draft.value));
+  /** 重名预检结果只对仍与当前草稿名称一致的核对生效，防止过期异步结果误伤。 */
+  const displayNameDuplicate = computed(() =>
+    displayNameCheck.value.status === "duplicate"
+    && !!draft.value
+    && draft.value.displayName.trim() === displayNameCheck.value.name);
   const canPlan = computed(() =>
     !!result.value
     && (action.value !== "update" || dirty.value)
     && phase.value !== "loading"
     && phase.value !== "planning"
     && phase.value !== "applying"
+    && !displayNameDuplicate.value
     && draftIssues.value.length === 0
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.targetTableId)
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
@@ -160,6 +178,20 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const confirmationsComplete = computed(() =>
     plan.value?.confirmations.every((item) => confirmations.value.includes(item)) ?? false,
   );
+
+  function beginDisplayNameCheck(name: string): void {
+    displayNameCheck.value = { status: "checking", name, conflictWith: null };
+  }
+
+  function finishDisplayNameCheck(name: string, conflictWith: string | null): void {
+    displayNameCheck.value = conflictWith
+      ? { status: "duplicate", name, conflictWith }
+      : { status: "available", name, conflictWith: null };
+  }
+
+  function clearDisplayNameCheck(): void {
+    displayNameCheck.value = { status: "idle", name: "", conflictWith: null };
+  }
 
   function resetCatalogState(): void {
     lookupCurrentFields.value = [];
@@ -207,6 +239,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     draft.value = null;
     open.value = true;
     phase.value = "loading";
+    clearDisplayNameCheck();
     conversionRule.value = "";
     confirmation.value = "";
     backupReceipt.value = "";
@@ -561,6 +594,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     inspectionTarget.value = null;
     open.value = false;
     resetCatalogState();
+    clearDisplayNameCheck();
     phase.value = "idle";
     result.value = null;
     original.value = null;
@@ -593,6 +627,8 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaPreviewError, formulaPreviewNote,
     capabilities, capability, sourceCapability, dirty, isExisting, canPlan, draftIssues,
     confirmationsComplete, canApply, beginOpen, load, changeType, patchDraft,
+    displayNameCheck, displayNameDuplicate, beginDisplayNameCheck,
+    finishDisplayNameCheck, clearDisplayNameCheck,
     restoreRecommended, patchRelationPair, setRelationTables, beginRelationCatalog,
     setRelationSchema, failRelationCatalog,
     beginLookupCatalog, setLookupSchemas, setLookupMaxDepth, failLookupCatalog,

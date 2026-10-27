@@ -449,9 +449,12 @@ type SchemaSnapshot struct {
 }
 
 type TableCreateIntent struct {
-	DisplayName string `json:"displayName"`
-	OperationID string `json:"operationId"`
-	Actor       Actor  `json:"actor"`
+	DisplayName   string `json:"displayName"`
+	OperationID   string `json:"operationId"`
+	Actor         Actor  `json:"actor"`
+	SourceTableID string `json:"sourceTableId,omitempty"`
+	CopyRecords   *bool  `json:"copyRecords,omitempty"`
+	CopyViews     *bool  `json:"copyViews,omitempty"`
 }
 
 type TableCreateReceipt struct {

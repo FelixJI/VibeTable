@@ -230,120 +230,129 @@ func TestProtectedKeyRotationRecoversKillAfterKopiaChangeBeforeJournal(
 }
 
 func TestKeyRotationRPCStagesProtectionAndHostIntent(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir:  dataDir,
-		HideStartBanner: true,
-	})
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	createAuditOutbox(t, app)
-	defer app.ResetBootstrapState()
-	ledger, err := auditledger.Open(
-		filepath.Join(root, ".vibetable", "audit"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ledger.Close()
-	shutdown := false
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir,
-		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
-		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		RequestShutdown: func() {
-			shutdown = true
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Close(ctx)
-	// The handler's repository-mode gate is independent of the repository
-	// adapter; using the convenient test repository avoids touching the real
-	// Windows credential vault in the test process.
-	runtime.manifest.EncryptionMode = "protected"
-	preview := dispatch(
-		t,
-		runtime,
-		1,
-		"repository.previewKeyRotation",
-		`{}`,
-	)
-	if preview.Error != nil {
-		t.Fatalf("preview error = %#v", preview.Error)
-	}
-	planID := preview.Result.(map[string]any)["planId"].(string)
-	params, _ := json.Marshal(map[string]any{
-		"planId": planID, "confirmed": true,
-	})
-	applied := dispatch(
-		t,
-		runtime,
-		2,
-		"repository.applyKeyRotation",
-		string(params),
-	)
-	if applied.Error != nil {
-		t.Fatalf("apply error = %#v", applied.Error)
-	}
-	result := applied.Result.(map[string]any)
-	if result["state"] != "hostRestartRequired" ||
-		result["newRecoveryKeyAvailable"] != false ||
-		!shutdown {
-		t.Fatalf("apply result = %#v shutdown=%v", result, shutdown)
-	}
-	paths, _ := resolvePaths(dataDir)
-	intent, found, err := readKeyRotationIntent(paths)
-	if err != nil || !found ||
-		intent.State != keyRotationIntentRequested ||
-		intent.ProtectionSnapshotID == "" {
-		t.Fatalf("host intent = %#v %v %v", intent, found, err)
-	}
-	// Simulate process death after the durable host intent was written but
-	// before Dispatch committed its generic receipt.
-	if _, err := runtime.state.db.Exec(
-		`DELETE FROM rpc_operation_receipts
+	for _, source := range []string{"protected", "convenient"} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			root := createWorkspace(t, testWorkspaceID)
+			dataDir := filepath.Join(root, ".vibetable", "data")
+			app := pocketbase.NewWithConfig(pocketbase.Config{
+				DefaultDataDir:  dataDir,
+				HideStartBanner: true,
+			})
+			if err := app.Bootstrap(); err != nil {
+				t.Fatal(err)
+			}
+			createAuditOutbox(t, app)
+			defer app.ResetBootstrapState()
+			ledger, err := auditledger.Open(
+				filepath.Join(root, ".vibetable", "audit"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ledger.Close()
+			shutdown := false
+			runtime, err := Open(ctx, Options{
+				App: app, DataDir: dataDir,
+				WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+				FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+				RequestShutdown: func() {
+					shutdown = true
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Close(ctx)
+			// The handler's repository-mode gate is independent of the repository
+			// adapter; using the convenient test repository avoids touching the real
+			// Windows credential vault in the test process.
+			runtime.manifest.EncryptionMode = source
+			target := "protected"
+			if source == "protected" {
+				target = "convenient"
+			}
+			preview := dispatch(
+				t,
+				runtime,
+				1,
+				"repository.previewKeyRotation",
+				`{}`,
+			)
+			if preview.Error != nil {
+				t.Fatalf("preview error = %#v", preview.Error)
+			}
+			planID := preview.Result.(map[string]any)["planId"].(string)
+			params, _ := json.Marshal(map[string]any{
+				"planId": planID, "confirmed": true, "targetMode": target,
+			})
+			applied := dispatch(
+				t,
+				runtime,
+				2,
+				"repository.applyKeyRotation",
+				string(params),
+			)
+			if applied.Error != nil {
+				t.Fatalf("apply error = %#v", applied.Error)
+			}
+			result := applied.Result.(map[string]any)
+			if result["state"] != "hostRestartRequired" ||
+				result["newRecoveryKeyAvailable"] != false ||
+				!shutdown {
+				t.Fatalf("apply result = %#v shutdown=%v", result, shutdown)
+			}
+			paths, _ := resolvePaths(dataDir)
+			intent, found, err := readKeyRotationIntent(paths)
+			if err != nil || !found ||
+				intent.State != keyRotationIntentRequested ||
+				intent.TargetMode != target ||
+				intent.ProtectionSnapshotID == "" {
+				t.Fatalf("host intent = %#v %v %v", intent, found, err)
+			}
+			// Simulate process death after the durable host intent was written but
+			// before Dispatch committed its generic receipt.
+			if _, err := runtime.state.db.Exec(
+				`DELETE FROM rpc_operation_receipts
 		  WHERE workspace_id = ? AND operation_id = ?`,
-		testWorkspaceID,
-		intent.OperationID,
-	); err != nil {
-		t.Fatal(err)
-	}
-	intent.State = keyRotationIntentCompleted
-	if err := writeKeyRotationIntent(paths, intent); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := Open(ctx, Options{
-		App: app, DataDir: dataDir,
-		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
-		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		RequestShutdown: func() {},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close(ctx)
-	replay := dispatch(
-		t,
-		reopened,
-		2,
-		"repository.applyKeyRotation",
-		string(params),
-	)
-	if replay.Error != nil ||
-		replay.Result.(map[string]any)["state"] !=
-			"hostRestartRequired" {
-		t.Fatalf("intent receipt replay = %#v", replay)
-	}
-	if _, found, err := readKeyRotationIntent(paths); err != nil || found {
-		t.Fatalf("completed intent was not consumed: found=%v err=%v", found, err)
+				testWorkspaceID,
+				intent.OperationID,
+			); err != nil {
+				t.Fatal(err)
+			}
+			intent.State = keyRotationIntentCompleted
+			if err := writeKeyRotationIntent(paths, intent); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(ctx, Options{
+				App: app, DataDir: dataDir,
+				WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+				FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+				RequestShutdown: func() {},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close(ctx)
+			replay := dispatch(
+				t,
+				reopened,
+				2,
+				"repository.applyKeyRotation",
+				string(params),
+			)
+			if replay.Error != nil ||
+				replay.Result.(map[string]any)["state"] !=
+					"hostRestartRequired" {
+				t.Fatalf("intent receipt replay = %#v", replay)
+			}
+			if _, found, err := readKeyRotationIntent(paths); err != nil || found {
+				t.Fatalf("completed intent was not consumed: found=%v err=%v", found, err)
+			}
+		})
 	}
 }
 

@@ -86,6 +86,7 @@ const exportCredential = ref("");
 const extractTarget = ref<SnapshotTimelineItem | null>(null);
 const extractDocumentId = ref<string | null>(null);
 const convenientPasswordCopied = ref(false);
+const keyRotationTarget = ref<"protected" | "convenient">("protected");
 const storageConfirmation = ref("");
 
 watch(
@@ -119,7 +120,7 @@ const emptyRetentionDraft = () => ({
   snapshotBuckets: [] as RetentionBucket[],
   fileRevisionDays: 0,
   fileRevisionCount: 0,
-  fileRevisionBuckets: [] as RetentionBucket[],
+  fileRevisionBuckets: [] as RetentionPolicyV2["fileRevisionBuckets"][number][],
   repositoryLimitBytes: null as number | null,
 });
 const retentionDraft = ref(emptyRetentionDraft());
@@ -210,6 +211,12 @@ const retentionBucketOptions = computed(() =>
     value,
     label: t(`workspaceV2.retention.bucket.${value}`),
   })));
+const smartRetention = computed({
+  get: () => retentionDraft.value.snapshotBuckets.includes("smart"),
+  set: (enabled: boolean) => {
+    retentionDraft.value.snapshotBuckets = enabled ? ["smart"] : ["hourly", "daily", "weekly", "monthly"];
+  },
+});
 const extractDocumentOptions = computed(() =>
   protection.documents.map((document) => ({
     value: document.documentId,
@@ -445,7 +452,8 @@ async function copyConvenientPassword(): Promise<void> {
   }
 }
 
-function previewKeyRotation(): void {
+function previewKeyRotation(target: "protected" | "convenient" = "protected"): void {
+  keyRotationTarget.value = target;
   protection.setKeyRotationPlan(null);
   emit("action", {
     method: "repository.previewKeyRotation",
@@ -462,7 +470,7 @@ function applyKeyRotation(): void {
   if (!plan) return;
   emit("action", {
     method: "repository.applyKeyRotation",
-    params: { planId: plan.planId, confirmed: true },
+    params: { planId: plan.planId, confirmed: true, targetMode: keyRotationTarget.value },
   });
 }
 
@@ -578,6 +586,9 @@ function applyStoragePlan(): void {
       {{ protection.operationError }}
     </NAlert>
 
+    <NAlert type="info" data-testid="snapshot-schedule-rules">
+      有改动后空闲 5 分钟自动创建快照；持续编辑时最长间隔 30 分钟。手动快照默认固定，恢复前也会创建保护快照。以下时间按本地时区显示。
+    </NAlert>
     <div class="timeline-workbench">
       <section
         class="snapshot-timeline"
@@ -987,6 +998,7 @@ function applyStoragePlan(): void {
           <strong>{{ t(`workspaceV2.storage.encryptionNotice.${protection.storage.encryption}`) }}</strong>
           <small>{{ t(`workspaceV2.storage.encryptionDetail.${protection.storage.encryption}`) }}</small>
         </div>
+        <div class="key-actions">
         <NButton
           v-if="protection.storage.encryption === 'convenient'"
           size="small"
@@ -997,16 +1009,27 @@ function applyStoragePlan(): void {
           {{ convenientPasswordCopied ? t("common.copied") : t("common.copy") }}
         </NButton>
         <NButton
-          v-else-if="protection.storage.encryption === 'protected'
+          v-if="protection.storage.encryption === 'protected'
             && session.capabilities.includes('repository.key-rotation.v2')"
           size="small"
           :disabled="busy || session.isTransitioning || protection.storage.pendingSync"
           data-testid="repository-key-rotation-preview"
-          @click="previewKeyRotation"
+          @click="previewKeyRotation()"
         >
           <template #icon><NIcon><RefreshCw /></NIcon></template>
           {{ t("workspaceV2.key.preview") }}
         </NButton>
+        <NButton
+          v-if="['convenient', 'protected'].includes(protection.storage.encryption)
+            && session.capabilities.includes('repository.key-rotation.v2')"
+          size="small"
+          :disabled="busy || session.isTransitioning || protection.storage.pendingSync"
+          data-testid="repository-key-mode-preview"
+          @click="previewKeyRotation(protection.storage.encryption === 'convenient' ? 'protected' : 'convenient')"
+        >
+          {{ t(protection.storage.encryption === 'convenient' ? 'workspaceV2.key.enableProtected' : 'workspaceV2.key.enableConvenient') }}
+        </NButton>
+        </div>
       </div>
       <footer>
         <NButton
@@ -1079,9 +1102,11 @@ function applyStoragePlan(): void {
         }) }}
       </NAlert>
       <div class="retention-grid">
+        <label class="bucket-field"><span>快照保留方式</span><NSelect :value="smartRetention ? 'smart' : 'custom'" :options="[{ label: '智能保留（推荐）', value: 'smart' }, { label: '自定义时间分桶', value: 'custom' }]" :disabled="!protection.retentionHydrated" @update:value="value => smartRetention = value === 'smart'" /></label>
+        <p v-if="smartRetention" class="bucket-field" data-testid="smart-retention-rules">24 小时内每小时、30 天内每天、180 天内每周、更早每月保留一个快照，最长不超过下方快照天数；同时保留最近指定数量，固定快照始终保留。时间分桶以 UTC 为准。</p>
         <label><span>{{ t("workspaceV2.retention.snapshotDays") }}</span><NInputNumber v-model:value="retentionDraft.snapshotDays" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label><span>{{ t("workspaceV2.retention.snapshotCount") }}</span><NInputNumber v-model:value="retentionDraft.snapshotCount" :min="1" :disabled="!protection.retentionHydrated" /></label>
-        <label class="bucket-field"><span>{{ t("workspaceV2.retention.snapshotBuckets") }}</span><NSelect v-model:value="retentionDraft.snapshotBuckets" multiple :options="retentionBucketOptions" :disabled="!protection.retentionHydrated" /></label>
+        <label v-if="!smartRetention" class="bucket-field"><span>{{ t("workspaceV2.retention.snapshotBuckets") }}</span><NSelect v-model:value="retentionDraft.snapshotBuckets" multiple :options="retentionBucketOptions" :disabled="!protection.retentionHydrated" /></label>
         <label><span>{{ t("workspaceV2.retention.fileDays") }}</span><NInputNumber v-model:value="retentionDraft.fileRevisionDays" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label><span>{{ t("workspaceV2.retention.fileCount") }}</span><NInputNumber v-model:value="retentionDraft.fileRevisionCount" :min="1" :disabled="!protection.retentionHydrated" /></label>
         <label class="bucket-field"><span>{{ t("workspaceV2.retention.fileBuckets") }}</span><NSelect v-model:value="retentionDraft.fileRevisionBuckets" multiple :options="retentionBucketOptions" :disabled="!protection.retentionHydrated" /></label>
@@ -1098,6 +1123,7 @@ function applyStoragePlan(): void {
           />
         </label>
       </div>
+      <p class="retention-history-note">文件历史目前保留当前已发布版本树引用的全部修订；下方清理预览以实际可安全回收的对象为准，不会仅因超过天数删除仍被引用的版本。</p>
       <NAlert
         v-if="repositoryLimitGiB !== null"
         type="info"
@@ -1216,8 +1242,9 @@ function applyStoragePlan(): void {
       @update:show="show => { if (!show) closeKeyRotation() }"
     >
       <NAlert type="warning" :title="t('workspaceV2.key.planWarning')">
-        {{ t("workspaceV2.key.planHint") }}
+        {{ t(keyRotationTarget === 'convenient' ? "workspaceV2.key.convenientHint" : "workspaceV2.key.planHint") }}
       </NAlert>
+      <p>{{ t("workspaceV2.key.target", { mode: t(`workspaceV2.storage.encryption.${keyRotationTarget}`) }) }}</p>
       <p v-if="protection.keyRotationPlan" class="plan-expiry">
         {{ t("workspaceV2.key.planExpiry", {
           time: formatDate(protection.keyRotationPlan.expiresAt),
@@ -1363,8 +1390,8 @@ function applyStoragePlan(): void {
 .policy-card { border: 1px solid var(--vt-border); border-radius: 12px; background: var(--vt-bg); }
 .policy-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; border-bottom: 1px solid var(--vt-border); }
 .storage-mode-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--vt-border); }
-.policy-heading > div,
-.policy-title > div,
+.policy-heading > div:not(.n-tag),
+.policy-title > div:not(.n-tag),
 .key-card > div:nth-child(2) { display: flex; min-width: 0; flex-direction: column; }
 .policy-control { width: min(240px, 42%); }
 .policy-card footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; }
@@ -1372,7 +1399,9 @@ function applyStoragePlan(): void {
 .retention-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 10px 16px 14px; }
 .retention-grid label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .retention-grid .bucket-field { grid-column: span 2; }
+.retention-history-note { margin: 0; padding: 0 16px 14px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .key-card { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 10px; padding: 14px 16px; }
+.key-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .plan-summary { margin: 14px 0; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); }
 @media (max-width: 1120px) {
   /* settings-inner--workspace-v2 最宽 1080px：加上导航与内边距，双列时间线在 960-1100px 视口溢出。 */

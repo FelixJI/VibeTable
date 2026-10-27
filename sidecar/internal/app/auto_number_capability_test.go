@@ -26,6 +26,12 @@ func withAutoNumberCapability(t *testing.T, snapshot v2.SchemaSnapshot) v2.Schem
 			snapshot.Capabilities = append(snapshot.Capabilities, expected)
 			continue
 		}
+		if kind == v2.LogicalAutoDate {
+			if old[i].UserCreatable || !expected.UserCreatable {
+				t.Fatal("autoDate creation capability upgrade is missing")
+			}
+			old[i].UserCreatable = true
+		}
 		if !reflect.DeepEqual(old[i], expected) {
 			t.Fatalf("historical capability %s changed", kind)
 		}
@@ -46,6 +52,12 @@ func assertAndStripAutoNumberCapability(t *testing.T, snapshot map[string]any) {
 	}
 	for _, raw := range caps {
 		entry := raw.(map[string]any)
+		if entry["logicalType"] == "autoDate" {
+			if entry["userCreatable"] != true {
+				t.Fatal("autoDate must be user creatable")
+			}
+			entry["userCreatable"] = false
+		}
 		if entry["logicalType"] != "autoNumber" {
 			kept = append(kept, raw)
 			continue

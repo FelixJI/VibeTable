@@ -51,6 +51,10 @@ func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 			_, err := DecodeStrict[RetentionPolicy](raw)
 			return err
 		},
+		"retention-policy-smart.json": func(raw []byte) error {
+			_, err := DecodeStrict[RetentionPolicy](raw)
+			return err
+		},
 		"workspace-event.json": func(raw []byte) error {
 			_, err := DecodeStrict[WorkspaceEvent](raw)
 			return err

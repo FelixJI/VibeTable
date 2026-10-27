@@ -633,7 +633,10 @@
       "properties": {
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
         "operationId": {"type": "string", "minLength": 1},
-        "actor": {"$ref": "#/$defs/Actor"}
+        "actor": {"$ref": "#/$defs/Actor"},
+        "sourceTableId": {"type": "string", "minLength": 1},
+        "copyRecords": {"type": "boolean"},
+        "copyViews": {"type": "boolean"}
       }
     },
     "TableCreateReceipt": {

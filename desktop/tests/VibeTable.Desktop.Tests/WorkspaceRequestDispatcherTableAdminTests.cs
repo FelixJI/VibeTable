@@ -55,7 +55,12 @@ public sealed class WorkspaceTableRequestControllerTests
     }
 
     [TestMethod]
-    public async Task CreateTable_IgnoresRendererIdentitiesAndBootstrapsAnEmptyOpaqueTable()
+    [DataRow(false, true, true)]
+    [DataRow(true, true, true)]
+    [DataRow(true, false, false)]
+    [DataRow(true, false, true)]
+    [DataRow(true, true, false)]
+    public async Task CreateTable_IgnoresRendererIdentitiesAndUsesAnOpaqueTable(bool duplicate, bool copyRecords, bool copyViews)
     {
         var tableGateway = new FakeTableRpcGateway
         {
@@ -76,20 +81,17 @@ public sealed class WorkspaceTableRequestControllerTests
         await using var client = new JsonRpcClient(transport);
         using var productGateway = new JsonRpcProductDataGateway(client);
         currentGateway = productGateway;
-        using var payload = JsonDocument.Parse(
-            """
-            {
-              "displayName": "  Orders  ",
-              "tableId": "renderer_controlled",
-              "physicalName": "renderer_controlled",
-              "fields": [{"fieldId":"renderer_controlled"}]
-            }
-            """);
+        JsonElement payload = JsonSerializer.SerializeToElement(new
+        {
+            displayName = "  Orders  ", collection = "tbl_source", copyRecords, copyViews,
+            tableId = "renderer_controlled", physicalName = "renderer_controlled",
+            fields = new[] { new { fieldId = "renderer_controlled" } },
+        });
 
         await controller.DispatchAsync(new RoutedWebRequest(
-            "tableAdmin.createRequested",
+            duplicate ? "tableAdmin.duplicateRequested" : "tableAdmin.createRequested",
             "create-1",
-            payload.RootElement.Clone(),
+            payload,
             string.Empty));
 
         FakeWebReplySink.Reply? changed =
@@ -128,6 +130,14 @@ public sealed class WorkspaceTableRequestControllerTests
         Assert.IsFalse(intent.TryGetProperty("tableId", out _));
         Assert.IsFalse(intent.TryGetProperty("physicalName", out _));
         Assert.IsFalse(intent.TryGetProperty("fields", out _));
+        if (duplicate)
+        {
+            Assert.AreEqual("tbl_source", intent.GetProperty("sourceTableId").GetString());
+            Assert.AreEqual(copyRecords, intent.GetProperty("copyRecords").GetBoolean());
+            Assert.AreEqual(copyViews, intent.GetProperty("copyViews").GetBoolean());
+        }
+        else
+            Assert.IsFalse(intent.TryGetProperty("sourceTableId", out _));
     }
 
     [TestMethod]

@@ -396,6 +396,9 @@ class TableCreateIntent(SchemaV2WireModel):
     display_name: Annotated[str, Field(min_length=1, max_length=128)]
     operation_id: Annotated[str, Field(min_length=1)]
     actor: Actor
+    source_table_id: Annotated[str, Field(min_length=1)] | None = None
+    copy_records: bool | None = None
+    copy_views: bool | None = None
 
 
 class TableCreateReceipt(SchemaV2WireModel):

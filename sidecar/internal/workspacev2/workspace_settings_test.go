@@ -22,7 +22,7 @@ func TestWorkspaceSettingsSnapshotUsesOnlyAuthoritativeRetention(t *testing.T) {
 		t.Fatalf("decode settings = %#v, err=%v", settings, err)
 	}
 	if settings.FormatVersion != 1 ||
-		settings.Retention.SnapshotDays != 30 ||
+		settings.Retention.SnapshotDays != 730 ||
 		settings.Retention.FileRevisionCount != 100 {
 		t.Fatalf("settings projection = %#v", settings)
 	}

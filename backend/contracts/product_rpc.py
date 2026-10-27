@@ -222,9 +222,23 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     ),
     "schema.table.create": _closed_params(
         "SchemaTableCreateParams",
-        allowed=("displayName", "operationId", "actor"),
+        allowed=(
+            "displayName",
+            "operationId",
+            "actor",
+            "sourceTableId",
+            "copyRecords",
+            "copyViews",
+        ),
         required=("displayName", "operationId", "actor"),
-        field_types={"displayName": (str,), "operationId": (str,), "actor": (dict,)},
+        field_types={
+            "displayName": (str,),
+            "operationId": (str,),
+            "actor": (dict,),
+            "sourceTableId": (str,),
+            "copyRecords": (bool,),
+            "copyViews": (bool,),
+        },
     ),
     "schema.delete": _closed_params(
         "SchemaDeleteParams",

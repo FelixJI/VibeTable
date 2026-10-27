@@ -543,7 +543,10 @@
         "snapshotBuckets": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly"]}
+          "anyOf": [
+            {"const": ["smart"]},
+            {"items": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly"]}}
+          ]
         },
         "fileRevisionDays": {"type": "integer", "minimum": 1},
         "fileRevisionCount": {"type": "integer", "minimum": 1},

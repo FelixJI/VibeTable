@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { NAlert, NButton, NDropdown, NIcon, NInput, NModal, NSelect, NTag } from "naive-ui";
 import {
+  ArrowDownToLine,
   CalendarDays,
   Check,
   GalleryHorizontal,
@@ -10,6 +11,7 @@ import {
   MoreHorizontal,
   Plus,
   Table2,
+  Upload,
 } from "@lucide/vue";
 import type { PresetEntry } from "@/contracts";
 import { t } from "@/i18n";
@@ -23,6 +25,7 @@ const props = defineProps<{
   fieldsActive?: boolean;
   workspaceKey?: string;
   error?: string | null;
+  importDisabled?: boolean;
   dateFields?: readonly { label: string; value: string }[];
   titleFields?: readonly { label: string; value: string }[];
   groupFields?: readonly { label: string; value: string }[];
@@ -48,6 +51,8 @@ const emit = defineEmits<{
   reload: [];
   reset: [];
   fields: [];
+  importData: [];
+  openImportManagement: [];
 }>();
 
 const order = ref<string[]>([]);
@@ -112,10 +117,31 @@ const options = [
   { label: t("views.action.delete"), key: "delete" },
 ];
 
+/** Existing view names (same collection) for the duplicate-name guard. */
+const takenViewNames = computed(() =>
+  new Set(props.views.map((view) => view.name.trim())));
+
+function uniqueCopyName(source: string): string {
+  const base = `${source} ${t("views.copySuffix")}`;
+  if (!takenViewNames.value.has(base)) return base;
+  let index = 2;
+  while (takenViewNames.value.has(`${base} ${index}`)) index += 1;
+  return `${base} ${index}`;
+}
+
 watch(() => props.collection, () => {
   dialog.value = null;
   target.value = null;
   input.value = "";
+});
+
+const nameConflict = computed(() => {
+  if (dialog.value !== "create" && dialog.value !== "duplicate" && dialog.value !== "rename") return false;
+  const name = input.value.trim();
+  if (!name) return false;
+  // 重命名保持原名不算冲突。
+  if (dialog.value === "rename" && target.value && target.value.name.trim() === name) return false;
+  return takenViewNames.value.has(name);
 });
 
 function open(kind: typeof dialog.value, view: PresetEntry | null = null): void {
@@ -125,7 +151,7 @@ function open(kind: typeof dialog.value, view: PresetEntry | null = null): void 
   input.value = kind === "rename"
     ? view?.name ?? ""
     : kind === "duplicate"
-      ? `${view?.name ?? ""} ${t("views.copySuffix")}`
+      ? view ? uniqueCopyName(view.name) : ""
       : "";
   if (kind === "create") {
     viewKind.value = "table";
@@ -149,7 +175,7 @@ function confirm(): void {
   if (dialog.value === "delete" && target.value) emit("delete", target.value);
   else {
     const name = input.value.trim();
-    if (!name) return;
+    if (!name || nameConflict.value) return;
     if (dialog.value === "create") emit("create", {
       name,
       kind: viewKind.value,
@@ -197,10 +223,34 @@ function confirm(): void {
     <NButton size="tiny" quaternary :disabled="loading || !collection" data-testid="view-create" @click="open('create')">
       <template #icon><NIcon><Plus /></NIcon></template>{{ t("views.create") }}
     </NButton>
+    <!-- 导入功能整体调制到表内：一次性导入 + 导入管理（现有 imports 页）。
+         导入不依赖视图预设列表：不受视图 loading 门控，仅数据任务/能力门控。 -->
+    <NButton
+      size="tiny"
+      quaternary
+      class="view-bar-import"
+      :disabled="importDisabled"
+      aria-label="导入数据到当前表"
+      data-testid="table-import-data"
+      @click="emit('importData')"
+    >
+      <template #icon><NIcon><Upload /></NIcon></template>导入数据
+    </NButton>
+    <NButton
+      size="tiny"
+      quaternary
+      class="view-bar-import"
+      aria-label="打开当前表的导入管理"
+      data-testid="table-import-management"
+      @click="emit('openImportManagement')"
+    >
+      <template #icon><NIcon><ArrowDownToLine /></NIcon></template>导入管理
+    </NButton>
     <NModal :show="dialog !== null" preset="card" class="view-dialog" :title="dialog ? t(`views.dialog.${dialog}`) : ''" @update:show="show => { if (!show) dialog = null }">
       <p v-if="dialog === 'delete'">{{ t("views.deleteConfirm", { name: target?.name ?? '' }) }}</p>
       <div v-else class="view-dialog-fields">
         <NInput v-model:value="input" autofocus :placeholder="t('views.namePlaceholder')" @keyup.enter="confirm" />
+        <small v-if="nameConflict" class="view-name-conflict" data-testid="view-name-conflict">已存在同名视图</small>
         <template v-if="dialog === 'create'">
           <div class="view-kind-options" :aria-label="t('views.kind.label')">
             <button type="button" :class="{ active: viewKind === 'table' }" :aria-pressed="viewKind === 'table'" data-testid="view-kind-table" @click="viewKind = 'table'"><Table2 :size="17" />{{ t("views.kind.table") }}</button>
@@ -226,7 +276,7 @@ function confirm(): void {
           <small v-if="viewKind === 'kanban' && !groupFields?.length" class="view-kind-hint">{{ t("views.kind.noGroupFields") }}</small>
         </template>
       </div>
-      <template #footer><div class="dialog-actions"><NButton @click="dialog = null">{{ t("common.cancel") }}</NButton><NButton :type="dialog === 'delete' ? 'error' : 'primary'" :disabled="dialog !== 'delete' && (!input.trim() || (dialog === 'create' && createConfigurationMissing))" data-testid="view-dialog-confirm" @click="confirm">{{ t("common.confirm") }}</NButton></div></template>
+      <template #footer><div class="dialog-actions"><NButton @click="dialog = null">{{ t("common.cancel") }}</NButton><NButton :type="dialog === 'delete' ? 'error' : 'primary'" :disabled="dialog !== 'delete' && (!input.trim() || nameConflict || (dialog === 'create' && createConfigurationMissing))" data-testid="view-dialog-confirm" @click="confirm">{{ t("common.confirm") }}</NButton></div></template>
     </NModal>
     </nav>
   </div>
@@ -247,6 +297,8 @@ function confirm(): void {
 .view-dirty-indicator { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--vt-color-warning); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .view-dialog-fields { display: grid; gap: 14px; }
+.view-name-conflict { color: var(--vt-color-danger); }
+.view-bar-import { flex: 0 0 auto; margin-left: 2px; color: var(--vt-fg-muted); }
 .view-kind-options { display: grid; grid-template-columns: repeat(5, minmax(76px, 1fr)); gap: 8px; }
 .view-kind-options button { display: flex; min-height: 64px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--vt-fg-muted); border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg); cursor: pointer; }
 .view-kind-options button.active { color: var(--vt-fg-accent-strong); border-color: var(--vt-color-primary-500); background: var(--vt-color-primary-50); }

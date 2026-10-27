@@ -4,7 +4,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { collectionsFromChanged } from "./collectionsProjection";
-import type { CollectionsChangedPayload } from "@/contracts";
+import type { CollectionsChangedPayload, TableCopyScope } from "@/contracts";
 
 /**
  * tableAdminService wires `tableAdminStore` to the host bridge:
@@ -27,6 +27,7 @@ export function useTableAdminService(): {
   dispose: () => void;
   createTable: () => Promise<void>;
   deleteTable: (name: string) => Promise<void>;
+  duplicateTable: (collection: string, displayName: string, scope?: TableCopyScope) => Promise<void>;
   openAdmin: () => void;
 } {
   const bridge = useHostBridge();
@@ -147,6 +148,45 @@ export function useTableAdminService(): {
     }
   }
 
+  /**
+   * 复制数据表：单一闭合意图 `tableAdmin.duplicateRequested`
+   * 结构必选，记录与视图按 scope 选择，由主机在同一权威事务中复制。
+   * 前端不做任何逐行伪复制；主机回复权威目录快照（含 createdTableId）。
+   */
+  async function duplicateTable(
+    collection: string,
+    displayName: string,
+    scope: TableCopyScope = { copyRecords: true, copyViews: true },
+  ): Promise<void> {
+    if (disposed || !collection || !displayName.trim()) return;
+    const sequence = ++operationSequence;
+    const sessionIsCurrent = ownsSession();
+    const existingIds = new Set(
+      workspace.collections.map((item) => item.collection),
+    );
+    try {
+      const changed = await bridge.request("tableAdmin.duplicateRequested", {
+        collection,
+        displayName: displayName.trim(),
+        copyRecords: scope.copyRecords,
+        copyViews: scope.copyViews,
+      }) as CollectionsChangedPayload;
+      if (sequence !== operationSequence || !sessionIsCurrent()) return;
+      const createdTableId = changed.createdTableId;
+      if (!createdTableId
+        || existingIds.has(createdTableId)
+        || !changed.tables.includes(createdTableId)
+        || changed.displayNames[createdTableId] !== displayName.trim()) {
+        throw new Error("主机未返回复制数据表的权威标识。");
+      }
+      applyCatalog(changed);
+    } catch (error) {
+      if (sequence !== operationSequence || !sessionIsCurrent()) return;
+      // 主机可能已提交；不声称回滚，也不自动重试，交由用户重试。
+      throw error instanceof Error ? error : new Error("复制数据表失败。");
+    }
+  }
+
   function openAdmin(): void {
     if (disposed) return;
     bridge.notify("admin.openRequested", {
@@ -156,5 +196,5 @@ export function useTableAdminService(): {
     });
   }
 
-  return { init, dispose, createTable, deleteTable, openAdmin };
+  return { init, dispose, createTable, deleteTable, duplicateTable, openAdmin };
 }

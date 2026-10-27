@@ -164,7 +164,7 @@ public sealed class WorkspaceRepositoryOnboardingService
             "key-rotation-intent.json"));
     }
 
-    public async Task<string> RotatePendingKeyAsync(
+    public async Task<string?> RotatePendingKeyAsync(
         WorkspaceRegistryEntryV2 workspace,
         CancellationToken cancellationToken)
     {
@@ -189,7 +189,6 @@ public sealed class WorkspaceRepositoryOnboardingService
             .Select(property => property.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        string recoveryKey = RequiredString(root, "recoveryKey");
         if (!names.SequenceEqual(
                 ["recoveryKey", "rotated", "workspaceId"],
                 StringComparer.Ordinal)
@@ -200,6 +199,16 @@ public sealed class WorkspaceRepositoryOnboardingService
         {
             throw InvalidOutput();
         }
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace));
+        if (!root.TryGetProperty("recoveryKey", out JsonElement key)
+            || key.ValueKind != JsonValueKind.String)
+            throw InvalidOutput();
+        string recoveryKey = key.GetString()!;
+        if (manifest.EncryptionMode == WorkspaceEncryptionMode.Convenient)
+            return recoveryKey.Length == 0 ? null : throw InvalidOutput();
+        if (manifest.EncryptionMode != WorkspaceEncryptionMode.Protected)
+            throw InvalidOutput();
         ValidateRecoveryKey(recoveryKey);
         return recoveryKey;
     }
@@ -238,6 +247,9 @@ public sealed class WorkspaceRepositoryOnboardingService
         WorkspacePaths paths = WorkspaceLayout.Paths(
             ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace));
         start.Environment["VIBETABLE_SIDECAR_DATA_DIR"] = paths.Data;
+        if (!string.IsNullOrWhiteSpace(workspace.ActivityRoot))
+            start.Environment["VIBETABLE_REPLICA_ROOT"] =
+                Path.GetFullPath(workspace.SelectedRoot);
         start.Environment["VIBETABLE_SIDECAR_SESSION_SECRET"] =
             Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         start.Environment["VIBETABLE_WORKSPACE_ID"] =
@@ -599,13 +611,14 @@ public sealed class WorkspaceKeyRotationPreOpenHook(
     {
         if (!_onboarding.HasPendingKeyRotation(workspace))
             return;
-        string recoveryKey = await _onboarding.RotatePendingKeyAsync(
+        string? recoveryKey = await _onboarding.RotatePendingKeyAsync(
             workspace,
             cancellationToken);
         // This is the only presentation boundary for the new recovery key.
         // It never enters a Web message, log, argv, or environment variable.
-        _recoveryUi.ConfirmRecoveryKey(
-            workspace.DisplayName,
-            recoveryKey);
+        if (recoveryKey is not null)
+            _recoveryUi.ConfirmRecoveryKey(
+                workspace.DisplayName,
+                recoveryKey);
     }
 }

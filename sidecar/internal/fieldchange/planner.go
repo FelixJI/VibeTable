@@ -691,6 +691,10 @@ func (planner *Planner) definitionFromDraft(
 	before *v2.FieldDefinition,
 	draft *v2.FieldDraft,
 ) (*v2.FieldDefinition, error) {
+	if before != nil && before.LogicalType == v2.LogicalAutoDate && draft != nil &&
+		!reflect.DeepEqual(before.AutoDate, draft.AutoDate) {
+		return nil, productError("field.auto_date.immutable", "draft.autoDate", "创建时间或最后修改时间角色在创建后不可更改", nil)
+	}
 	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil {
 		if before.AutoNumber == nil || draft.AutoNumber == nil {
 			return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot be removed after creation", nil)

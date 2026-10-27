@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
@@ -113,6 +114,23 @@ func (service *PresetService) Save(ctx context.Context, request PresetRequest) (
 		}
 		if (current == nil && expected != "") || (current != nil && expected != current.Revision) {
 			return nil, nil, &PresetError{"preset_edit_conflict", "Preset changed elsewhere.", "expectedRevision"}
+		}
+		items, err := New(tx).List(ctx, NamespacePresets)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, item := range items {
+			if item.LogicalID == id {
+				continue
+			}
+			other, err := decodePresetObject(item.Payload)
+			if err != nil {
+				return nil, nil, storageError()
+			}
+			otherName, _ := other["name"].(string)
+			if other["scope"] == request.Collection && strings.TrimSpace(otherName) == strings.TrimSpace(request.Name) {
+				return nil, nil, &PresetError{"preset_name_duplicate", "此表中已存在同名视图。", "name"}
+			}
 		}
 		payload := map[string]any{}
 		if current != nil {

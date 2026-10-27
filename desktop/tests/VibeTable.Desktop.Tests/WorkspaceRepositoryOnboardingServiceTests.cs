@@ -87,7 +87,7 @@ public sealed class WorkspaceRepositoryOnboardingServiceTests
 
         Assert.IsTrue(
             fixture.Service.HasPendingKeyRotation(fixture.Workspace));
-        string actual = await fixture.Service.RotatePendingKeyAsync(
+        string? actual = await fixture.Service.RotatePendingKeyAsync(
             fixture.Workspace,
             CancellationToken.None);
 
@@ -99,6 +99,48 @@ public sealed class WorkspaceRepositoryOnboardingServiceTests
         Assert.IsFalse(fixture.Runner.StartInfo.Environment.Any(pair =>
             pair.Value?.Contains(recoveryKey, StringComparison.Ordinal)
             == true));
+    }
+
+    [TestMethod]
+    public async Task ConvenientRotationDoesNotRequestRecoveryKeyPresentation()
+    {
+        using var fixture = new OnboardingFixture(WorkspaceEncryptionMode.Convenient);
+        fixture.Runner.Next = new TrustedSidecarProcessResult(
+            0,
+            $$"""{"workspaceId":"{{fixture.Workspace.WorkspaceId:D}}","rotated":true,"recoveryKey":""}""");
+
+        Assert.IsNull(await fixture.Service.RotatePendingKeyAsync(
+            fixture.Workspace, CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task ProtectedRotationRejectsMissingRecoveryKey()
+    {
+        using var fixture = new OnboardingFixture(WorkspaceEncryptionMode.Protected);
+        fixture.Runner.Next = new TrustedSidecarProcessResult(
+            0,
+            $$"""{"workspaceId":"{{fixture.Workspace.WorkspaceId:D}}","rotated":true,"recoveryKey":""}""");
+
+        await Assert.ThrowsAsync<WorkspaceRegistryException>(() => fixture.Service.RotatePendingKeyAsync(
+            fixture.Workspace, CancellationToken.None));
+    }
+
+    [TestMethod]
+    public void MirroredRotationPassesSelectedRootOnlyThroughTrustedEnvironment()
+    {
+        using var fixture = new OnboardingFixture(WorkspaceEncryptionMode.Protected);
+        WorkspaceRegistryEntryV2 workspace = fixture.Workspace with
+        {
+            ActivityRoot = Path.Combine(fixture.Root, "activity"),
+        };
+        ProcessStartInfo start = WorkspaceRepositoryOnboardingService.CreateStartInfo(
+            new PocketBaseLaunchOptions { ExecutablePath = Path.Combine(fixture.Root, "vibetable-pb.exe") },
+            workspace,
+            "--rotate-workspace-repository",
+            new WorkspaceRepositoryAuthority(1, Guid.NewGuid()));
+
+        Assert.AreEqual(fixture.Root, start.Environment["VIBETABLE_REPLICA_ROOT"]);
+        CollectionAssert.AreEqual(new[] { "--rotate-workspace-repository" }, start.ArgumentList.ToArray());
     }
 
     private static string Base64Url(byte[] value)

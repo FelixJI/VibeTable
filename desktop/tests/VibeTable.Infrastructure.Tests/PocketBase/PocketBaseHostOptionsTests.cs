@@ -74,6 +74,7 @@ public sealed class PocketBaseHostOptionsTests
             Convert.ToHexString(SHA256.HashData(manifest)).ToLowerInvariant(),
             options.ExpectedIdentity!.MigrationHash);
         Assert.AreEqual("3", options.ExpectedIdentity.SchemaVersion);
+        Assert.AreEqual("0.40.5", options.ExpectedIdentity.PocketBaseVersion);
     }
 
     [TestMethod]

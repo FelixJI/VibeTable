@@ -22,6 +22,7 @@ function setup(
     "clipboardGuard" | "reportClipboardFailure" | "canExecuteGridCommand">> = {},
 ) {
   const deleteRows = vi.fn();
+  const duplicateTable = vi.fn(async () => {});
   const reportClipboardFailure = vi.fn();
   const pasteService: WorkspaceTableInteractionDependencies["pasteService"] = {
     preview: vi.fn(),
@@ -59,7 +60,7 @@ function setup(
     paste: usePasteStore(),
     pasteService,
     mutationService,
-    tableAdminService: { createTable: vi.fn(), deleteTable: vi.fn() },
+    tableAdminService: { createTable: vi.fn(), deleteTable: vi.fn(), duplicateTable },
     grid,
     readClipboard: vi.fn(async () => ""),
     writeClipboard: vi.fn(async () => undefined),
@@ -73,6 +74,7 @@ function setup(
     controller: createWorkspaceTableInteractionController(dependencies),
     dependencies,
     deleteRows,
+    duplicateTable,
     grid,
     pasteService,
     reportClipboardFailure,
@@ -398,5 +400,18 @@ describe("workspaceTableInteractionController", () => {
 
     expect(tableAdminService.createTable).toHaveBeenCalledOnce();
     expect(tableAdminService.deleteTable).toHaveBeenCalledWith("orders");
+  });
+
+  it("复制数据表意图只路由到权威 duplicate seam，不做前端伪复制", async () => {
+    const { controller, duplicateTable } = setup(null);
+
+    await controller.dispatch({
+      type: "table.duplicate",
+      collection: "orders",
+      displayName: "订单 副本",
+    });
+
+    expect(duplicateTable).toHaveBeenCalledTimes(1);
+    expect(duplicateTable).toHaveBeenCalledWith("orders", "订单 副本");
   });
 });

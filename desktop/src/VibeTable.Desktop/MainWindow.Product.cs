@@ -83,6 +83,7 @@ public partial class MainWindow : Window
     private WorkspaceDocumentOsAdapter? _documentWorkspace;
     private ShellBootstrapResult? _shellBootstrapResult;
     private TrayIconController? _trayIcon;
+    private RendererRecoveryMenu? _rendererRecoveryMenu;
     private bool _explicitExitRequested;
     private bool _nativeCloseDrainPending;
     private bool _nativeCloseDrainCompleted;
@@ -538,6 +539,10 @@ public partial class MainWindow : Window
         _pluginResources.SurfacesChanged += UpdateNativePluginChrome;
         UpdateNativePluginChrome();
 
+        SourceInitialized += (_, _) => _rendererRecoveryMenu = new RendererRecoveryMenu(
+            (System.Windows.Interop.HwndSource?)System.Windows.PresentationSource.FromVisual(this)
+                ?? throw new InvalidOperationException("无法绑定原生界面恢复菜单。"),
+            _viewModel.RecoverRendererCommand);
         Loaded += OnLoaded;
         Closing += OnClosing;
         Closed += OnClosed;
@@ -1430,6 +1435,7 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs args)
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
+        _rendererRecoveryMenu?.Dispose();
         _webBridge.Realtime.Retire();
         _appearance.ProjectionChanged -= OnAppearanceProjectionChanged;
         HostThemeResources.Remove(Application.Current.Resources);

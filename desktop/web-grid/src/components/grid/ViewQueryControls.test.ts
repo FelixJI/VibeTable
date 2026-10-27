@@ -93,6 +93,79 @@ describe("ViewQueryControls", () => {
     expect(change.visibleFields).toEqual(["status", "amount"]);
   });
 
+  it("冻结列后的同值新数组回显不得重置未应用的显示字段草稿", async () => {
+    // 33-host-grid-presentation 复现：冻结列 → 异步保存回显（父组件把
+    // filters/groups/summaries/visibleFields 全部换成同值新数组）发生在
+    // 用户已取消勾选 Status 但尚未应用之间。
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns,
+        filters: [{ field: "status", operator: "eq", value: "open" }],
+        groups: [], summaries: [], visibleFields: ["status", "amount"],
+        frozenFields: [],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    // 用户搜索并批量隐藏“状态”（仅取消 Status，未应用）。
+    const search = document.querySelector<HTMLInputElement>('[data-testid="view-hidden-search"] input')!;
+    search.value = "状态";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-hide-filtered"]')!.click();
+    await flushPromises();
+
+    // 冻结列的异步保存回显：全部 props 同值新数组 + frozenFields 更新。
+    await wrapper.setProps({
+      filters: [{ field: "status", operator: "eq", value: "open" }],
+      groups: [],
+      summaries: [],
+      visibleFields: ["status", "amount"],
+      frozenFields: ["status"],
+    });
+    await flushPromises();
+
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+    expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({
+      visibleFields: ["amount"],
+    });
+    wrapper.unmount();
+  });
+
+  it("visibleFields 同集合新数组回显不覆盖草稿；语义确变仍同步", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: { columns, filters: [], groups: [], summaries: [], visibleFields: ["status", "amount"] },
+    });
+
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    const search = document.querySelector<HTMLInputElement>('[data-testid="view-hidden-search"] input')!;
+    search.value = "状态";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-hide-filtered"]')!.click();
+    await flushPromises();
+
+    // 同集合新数组（仅换引用）：不覆盖草稿。
+    await wrapper.setProps({ visibleFields: ["amount", "status"] });
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+    expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({ visibleFields: ["amount"] });
+
+    // 语义确变（别处隐藏了 amount）：草稿同步新值。
+    await wrapper.setProps({ visibleFields: ["status"] });
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="view-hidden-apply"]')!.click();
+    await flushPromises();
+    expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({ visibleFields: ["status"] });
+    wrapper.unmount();
+  });
+
   it("keeps applied filters untouched when only visibility is applied", async () => {
     const wrapper = mount(ViewQueryControls, {
       attachTo: document.body,
@@ -179,5 +252,31 @@ describe("ViewQueryControls", () => {
     expect(wrapper.emitted("change")?.at(-1)?.[0]).toMatchObject({
       visibleFields: ["status", "amount"],
     });
+  });
+
+  it("删除筛选条件立即提交生效，不等待应用按钮", async () => {
+    const wrapper = mount(ViewQueryControls, {
+      attachTo: document.body,
+      props: {
+        columns,
+        filters: [
+          { field: "status", operator: "eq", value: "open" },
+          { field: "amount", operator: "gt", value: 5 },
+        ],
+        groups: [], summaries: [], visibleFields: ["status", "amount"],
+      },
+    });
+
+    await wrapper.get('[data-testid="view-filter-trigger"]').trigger("click");
+    await flushPromises();
+    document.querySelectorAll<HTMLButtonElement>('button[aria-label="删除筛选条件"]')[0]!
+      .click();
+    await flushPromises();
+
+    const change = wrapper.emitted("change")?.at(-1)?.[0] as {
+      filters: Array<{ field: string }>;
+    };
+    expect(change.filters).toEqual([{ field: "amount", operator: "gt", value: 5 }]);
+    wrapper.unmount();
   });
 });

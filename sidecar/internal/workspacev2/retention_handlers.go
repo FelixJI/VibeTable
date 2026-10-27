@@ -721,6 +721,11 @@ func retentionPolicy(policy RetentionPolicy) retention.Policy {
 	}
 	for _, bucket := range policy.SnapshotBuckets {
 		switch bucket {
+		case "smart":
+			result.KeepHourlyFor = min(window, 24*time.Hour)
+			result.KeepDailyFor = min(window, 30*24*time.Hour)
+			result.KeepWeeklyFor = min(window, 180*24*time.Hour)
+			result.KeepMonthlyFor = window
 		case "hourly":
 			result.KeepHourlyFor = window
 		case "daily":

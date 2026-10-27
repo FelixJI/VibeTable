@@ -12,21 +12,25 @@ export async function waitForFailedImportUi(page, deadlineAt) {
       if (errorLength > 0 && confirmEnabled && cancelEnabled) {
         await page.getByTestId("import-cancel").click();
         await panel.waitFor({ state: "hidden", timeout: Math.max(1, deadlineAt - Date.now()) });
+        // 导入入口在视图栏按钮；取消数据任务仍在工具栏菜单。
+        const importButton = page.getByTestId("table-import-data");
+        await importButton.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        const newImportAvailable = await importButton.isEnabled();
         await page.getByTestId("toolbar-more").click();
-        const importOption = page.locator(".n-dropdown-option-body")
-          .filter({ hasText: /导入数据|Import data/i }).last();
-        await importOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
-        const optionClass = await importOption.getAttribute("class");
         const cancelOption = page.locator(".n-dropdown-option-body")
           .filter({ hasText: /取消数据任务|Cancel data task/i }).last();
         await cancelOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
         const cancelClass = await cancelOption.getAttribute("class");
-        await page.keyboard.press("Escape");
+        // Naive 点击菜单对 Escape 关闭不可靠：残留 overlay 会拦截视图栏入口
+        // 的 pointer。用触发器实际关闭菜单、等菜单消失后移开 hover。
+        await page.getByTestId("toolbar-more").click();
+        await cancelOption.waitFor({ state: "hidden", timeout: Math.max(1, deadlineAt - Date.now()) });
+        await page.mouse.move(0, 0);
         return {
           errorLength,
           confirmEnabled,
           cancelEnabled,
-          newImportAvailable: !optionClass?.includes("--disabled"),
+          newImportAvailable,
           cancelTaskAvailable: !cancelClass?.includes("--disabled"),
         };
       }

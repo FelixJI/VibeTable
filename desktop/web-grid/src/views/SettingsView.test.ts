@@ -102,6 +102,23 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("启动页面");
   });
 
+  it("consumes the requested section deep link and settles it", async () => {
+    const ui = useUiStore();
+    const wrapper = mount(SettingsView);
+    expect(wrapper.get('[data-testid="settings-nav-general"]').classes()).toContain("active");
+
+    // 首页“查看恢复时间线”携帯的导航意图：直达“版本与恢复”分区。
+    ui.openSettings("versions");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="settings-nav-versions"]').classes()).toContain("active");
+    expect(wrapper.get('[data-testid="settings-nav-general"]').classes()).not.toContain("active");
+    // 意图消费后清除，不再影响后续手动分区切换。
+    expect(ui.requestedSettingsSection).toBeNull();
+    await wrapper.get('[data-testid="settings-nav-general"]').trigger("click");
+    expect(wrapper.get('[data-testid="settings-nav-general"]').classes()).toContain("active");
+    expect(wrapper.get('[data-testid="settings-nav-versions"]').classes()).not.toContain("active");
+  });
+
   it("persists the device-level Workspace Center startup preference", async () => {
     const wrapper = mount(SettingsView);
     const startup = wrapper.findAllComponents(NSelect)

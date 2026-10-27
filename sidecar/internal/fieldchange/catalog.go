@@ -443,6 +443,22 @@ func (catalog *Catalog) Check(
 	impact := v2.Impact{
 		Failures: []v2.FailureSample{}, Dependencies: []v2.DependencyRef{},
 	}
+	if before == nil && after != nil && after.AutoDate != nil {
+		table, err := catalog.tableRecord(catalog.app, intent.TableID)
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		impact.Records, err = catalog.app.CountRecords(table.GetString("collection_id"))
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		if impact.Records > 0 {
+			return impact, []v2.Diagnostic{{
+				Code: "field.auto_date.history_unavailable", Path: "draft.autoDate",
+				Message: "历史时间不会推测补填；已有记录的创建时间保持为空，最后修改时间从下一次修改起记录。",
+			}}, []v2.Diagnostic{}, nil
+		}
+	}
 	if before != nil && after != nil && before.AutoNumber != nil && after.AutoNumber != nil &&
 		!reflect.DeepEqual(before.AutoNumber, after.AutoNumber) {
 		table, err := catalog.tableRecord(catalog.app, intent.TableID)

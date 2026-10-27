@@ -46,6 +46,10 @@ def test_application_packages_have_real_worker_free_entry_members(tmp_path: Path
     [
         {"action": "invoke"},
         {"buttonId": "foreign-admin-button"},
+        # 已移除的旧原生宿主行按钮（停止/返回/管理插件）不再是合法 QA 目标。
+        {"buttonId": "plugin-stop"},
+        {"buttonId": "plugin-return"},
+        {"buttonId": "plugin-manage"},
         {"stage": "../outside"},
         {"requestId": ""},
         {"path": "outside.png"},
@@ -55,12 +59,109 @@ def test_native_plugin_input_rejects_outside_the_closed_qa_request(change: dict[
     request = {
         "requestId": "owned-request",
         "action": "observe",
-        "buttonId": "plugin-manage",
+        "buttonId": "plugin-recover",
         "stage": "application",
     }
     request.update(change)
     with pytest.raises(ValueError, match="native plugin"):
         _validate_request(request)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"buttonId": "plugin-confirm-approve"}, {"stage": "application"}],
+)
+def test_native_menu_recovery_rejects_other_controls_and_stages(change):
+    request = {
+        "requestId": "owned-recovery",
+        "action": "recover",
+        "buttonId": "plugin-recover",
+        "stage": "loop",
+    }
+    request.update(change)
+    with pytest.raises(ValueError, match="recovery scope"):
+        _validate_request(request)
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background", "dpi"])
+def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia(
+    tmp_path, monkeypatch, failure
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    sent = []
+
+    def menu_string(_menu, index, text, _length, _flags):
+        text.value = "恢复界面(&U)" if index == 1 and failure != "missing" else "Close"
+        return len(text.value)
+
+    api = SimpleNamespace(
+        GetSystemMenu=lambda *_args: 88,
+        GetMenuItemCount=lambda *_args: 2,
+        GetMenuStringW=menu_string,
+        GetMenuState=lambda *_args: 1 if failure == "disabled" else 0,
+        GetMenuItemID=lambda *_args: 4096,
+        GetForegroundWindow=lambda: 99 if failure == "background" else 14,
+        GetDpiForWindow=lambda _hwnd: 0 if failure == "dpi" else 144,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_native_uia_observer",
+        lambda: pytest.fail("hung renderer UIA is not needed"),
+    )
+    monkeypatch.setattr(native, "_send_input", lambda _native, **kwargs: sent.append(kwargs))
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            user32=api,
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *_args: None,
+            foreground_observation={"hostHwnd": 14, "hostPid": 12},
+            owner=lambda _hwnd: 99 if failure == "foreign" else 12,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "owned-recovery",
+            "action": "recover",
+            "buttonId": "plugin-recover",
+            "stage": "loop",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    if failure:
+        assert result["status"] == "failed"
+        assert not sent
+    else:
+        assert result["status"] == "completed"
+        assert result["menu"] == {"id": 4096, "label": "恢复界面(&U)"}
+        assert result["input"] == "SendInput"
+        assert result["dpi"] == 144
+        assert sent == [{"recovery_menu": True}]
+
+
+def test_recovery_input_opens_the_system_menu_and_releases_modifiers():
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    events = []
+
+    def send(count, inputs, _size):
+        events.extend(
+            (inputs[index].payload.keyboard.vk, inputs[index].payload.keyboard.flags)
+            for index in range(count)
+        )
+        return count
+
+    native._send_input(SimpleNamespace(user32=SimpleNamespace(SendInput=send)), recovery_menu=True)
+    assert events == [(0x12, 0), (0x20, 0), (0x20, 2), (0x12, 2), (0x55, 0), (0x55, 2)]
 
 
 def test_system_contrast_is_refused_outside_controlled_github_runner(monkeypatch) -> None:
@@ -173,7 +274,7 @@ def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monk
         {
             "requestId": "restoration-request",
             "action": "contrast-off",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "contrast",
         },
         host_pid=12,
@@ -369,7 +470,7 @@ def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_
     from tests.e2e import plugin_application_native as native
 
     button = {
-        "id": "plugin-manage",
+        "id": "plugin-recover",
         "pid": 12,
         "enabled": True,
         "x": 10,
@@ -396,7 +497,7 @@ def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_
         tmp_path / "observer",
         14,
         12,
-        {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+        {"action": "observe", "stage": "contrast", "buttonId": "plugin-recover"},
         tmp_path / "capture.png",
         deadline=native.time.monotonic() + 15,
     )
@@ -424,7 +525,7 @@ def test_native_chrome_foreign_owner_fails_without_observation_retry(tmp_path, m
             tmp_path / "observer",
             14,
             12,
-            {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+            {"action": "observe", "stage": "contrast", "buttonId": "plugin-recover"},
             tmp_path / "capture.png",
             deadline=native.time.monotonic() + 15,
         )
@@ -558,7 +659,8 @@ def test_native_recovery_settle_fails_at_once_when_a_foreign_window_owns_the_ent
 
 
 @pytest.mark.parametrize(
-    ("stage", "button_id"), [("crashed", "plugin-manage"), ("recovered", "plugin-stop")]
+    ("stage", "button_id"),
+    [("crashed", "plugin-confirm-approve"), ("recovered", "plugin-confirm-reject")],
 )
 def test_native_recovery_stages_do_not_wait_for_other_plugin_buttons(
     tmp_path, monkeypatch, stage, button_id
@@ -646,7 +748,7 @@ def test_native_plugin_observer_failure_keeps_bounded_stage_stderr_without_input
         {
             "requestId": "observer-failure",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,
@@ -734,7 +836,7 @@ def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp
         {
             "requestId": "restored-owner",
             "action": "observe",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "contrast-restored",
         },
         host_pid=12,
@@ -765,7 +867,7 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
                     "hwnd": 14,
                     "buttons": [
                         {
-                            "id": "plugin-manage",
+                            "id": "plugin-recover",
                             "pid": 12,
                             "enabled": True,
                             "focused": False,
@@ -796,7 +898,7 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
         {
             "requestId": "zero-bounds-click",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,
@@ -847,7 +949,7 @@ def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
         {
             "requestId": "null-transition",
             "action": "observe",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": stage,
         },
         host_pid=12,
@@ -950,7 +1052,7 @@ def test_native_input_is_rejected_after_request_deadline(tmp_path, monkeypatch):
         {
             "requestId": "expired",
             "action": "click",
-            "buttonId": "plugin-manage",
+            "buttonId": "plugin-recover",
             "stage": "application",
         },
         host_pid=12,

@@ -69,6 +69,8 @@ function specializedDefaults(
           displayFieldId: "",
         },
       };
+    case "autoDate":
+      return { autoDate: { role: "createdAt" } };
     case "autoNumber":
       return { autoNumber: { prefix: "", start: 1, width: 6 } };
     case "formula":
@@ -144,6 +146,63 @@ export function fieldDisplayNameIssues(displayName: string): string[] {
     issues.push("显示名称不能包含换行或控制字符");
   }
   return issues;
+}
+
+/**
+ * 输入期重名预检：按权威 planner 的口径（TrimSpace + 仅活动字段）
+ * 在同表现有字段里查找同名冲突；selfFieldId 用于编辑时排除自身。
+ * 找不到冲突返回 null，绝不猜测远端状态。
+ */
+export function findDuplicateDisplayName(
+  displayName: string,
+  fields: readonly FieldDefinitionV2[],
+  selfFieldId: string | null,
+): FieldDefinitionV2 | null {
+  const name = (displayName ?? "").trim();
+  if (!name) return null;
+  for (const field of fields) {
+    if (selfFieldId && field.identity.fieldId === selfFieldId) continue;
+    if (field.lifecycle.state !== "active") continue;
+    if (field.displayName.trim() === name) return field;
+  }
+  return null;
+}
+
+/**
+ * 服务端稳定错误码的中文友好说明；未收录的编码返回 null，
+ * 由界面回退展示原始 code/message 以保留诊断信息。
+ * 编码清单核对自 sidecar fieldchange/fieldvalue 权威实现。
+ */
+const FIELD_SERVICE_ERROR_HINTS: Readonly<Record<string, string>> = {
+  "field.display_name.duplicate": "同表已存在同名的活动字段；请换一个显示名称后重试",
+  "field.conflict.stale_revision": "表结构在预览后已发生变化；请关闭抽屉重新打开后再试",
+  "field.change.schema_conflict": "表结构已被其他操作更新；请重新预览变更",
+  "field.change.data_conflict": "表数据在预览后已发生变化；请重新预览变更",
+  "field.change.noop": "本次设置与当前字段一致，没有产生实际变更",
+  "field.change.confirmation_required": "该操作需要按提示输入确认文字后才能执行",
+  "field.change.operation_conflict": "同一操作正在处理中；请稍候重试，不要重复点击",
+  "field.capability.unsupported": "当前字段类型不支持该设置或该类型转换",
+  "field.conversion.rule_required": "该类型转换需要先选择明确的转换规则",
+  "field.contract.invalid": "请求内容与当前契约不一致；请刷新后重试",
+  "field.relation.pair_required": "关联字段缺少另一端设置；请补全双向关联信息",
+  "field.auto_number.immutable": "自动编号的该规则创建后不可修改",
+  "field.auto_number.backfill": "将按当前编号规则为已有记录回填编号",
+  "field.auto_number.reformat": "将按新规则重排已有记录编号，序号保持不变",
+  "field.auto_date.history_unavailable": "不会回填已有记录的历史时间：旧记录的创建时间可能为空，最后修改时间从下一次修改该记录起才有值",
+  "field.auto_date.immutable": "创建时间或最后修改时间角色在创建后不可更改",
+  "field.default.invalid": "默认值不符合当前字段约束；请调整默认值或约束",
+  "field.constraint.existing_data_invalid": "已有数据不满足新约束；请先处理列出的不兼容记录",
+  "field.lookup.target_invalid": "查找引用的目标字段不可用；请重新选择",
+  "field.value.invalid": "值不符合字段限制",
+  "field.value.required": "该字段为必填",
+  "field.value.read_only": "该字段由系统维护，不能手动填写",
+};
+
+export function fieldServiceErrorHint(
+  code: string | null | undefined,
+): string | null {
+  if (!code) return null;
+  return FIELD_SERVICE_ERROR_HINTS[code] ?? null;
 }
 
 function fixedTemporalDefault(draft: FieldDraftV2): unknown {

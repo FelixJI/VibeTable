@@ -1745,4 +1745,121 @@ describe("field settings service", () => {
     service.dispose();
   });
 
+  function tableSnapshot(fields: readonly FieldDefinitionV2[]): Record<string, unknown> {
+    return {
+      contract: "vibetable.schema.v2",
+      tableId: "tbl_opaque",
+      displayName: "订单",
+      kind: "base",
+      schemaRevision: "schema_7",
+      dataRevision: 12,
+      archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+      fields,
+      capabilities: [],
+    };
+  }
+
+  function fieldNamed(fieldId: string, displayName: string): FieldDefinitionV2 {
+    return { ...definition(), identity: { ...definition().identity, fieldId }, displayName };
+  }
+
+  it("debounces duplicate-name prechecks against the authoritative table fields", async () => {
+    request
+      .mockResolvedValueOnce(describeResult(true))
+      .mockResolvedValueOnce(tableSnapshot([
+        // 自身也叫“已有名称”：排除自身后仍应命中另一字段。
+        fieldNamed(definition().identity.fieldId, "已有名称"),
+        fieldNamed("fld_other", "已有名称"),
+      ]));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    const originalName = store.draft!.displayName;
+    // 打开时名称未改：不发起重名预检。
+    expect(store.displayNameCheck.status).toBe("idle");
+
+    store.patchDraft({ displayName: "已有名称" });
+    expect(store.displayNameCheck.status).toBe("checking");
+    await vi.advanceTimersByTimeAsync(299);
+    expect(request.mock.calls.filter(([method]) => method === "schema.getTable"))
+      .toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenLastCalledWith("schema.getTable", { tableId: "tbl_opaque" });
+    expect(store.displayNameCheck).toEqual({
+      status: "duplicate", name: "已有名称", conflictWith: "已有名称",
+    });
+    expect(store.displayNameDuplicate).toBe(true);
+    expect(store.canPlan).toBe(false);
+
+    // 改回原名称：无需预检，结论立即清空。
+    store.patchDraft({ displayName: originalName });
+    expect(store.displayNameCheck.status).toBe("idle");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(request.mock.calls.filter(([method]) => method === "schema.getTable"))
+      .toHaveLength(1);
+    service.dispose();
+  });
+
+  it("drops stale precheck responses after the name changes again", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    let resolveFirst!: (value: unknown) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+
+    store.patchDraft({ displayName: "名称甲" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.displayNameCheck).toEqual({
+      status: "checking", name: "名称甲", conflictWith: null,
+    });
+
+    store.patchDraft({ displayName: "名称乙" });
+    // 甲的过期响应到达后不得覆盖乙的核对状态。
+    resolveFirst(tableSnapshot([fieldNamed("fld_a", "名称甲")]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.displayNameCheck).toEqual({
+      status: "checking", name: "名称乙", conflictWith: null,
+    });
+
+    request.mockResolvedValueOnce(tableSnapshot([fieldNamed("fld_b", "名称乙")]));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.displayNameCheck).toEqual({
+      status: "duplicate", name: "名称乙", conflictWith: "名称乙",
+    });
+    service.dispose();
+  });
+
+  it("cancels pending prechecks when the drawer closes", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+
+    store.patchDraft({ displayName: "待确认名称" });
+    service.requestClose();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(request.mock.calls.filter(([method]) => method === "schema.getTable"))
+      .toHaveLength(0);
+    expect(store.displayNameCheck.status).toBe("idle");
+    service.dispose();
+  });
+
+  it("treats a failed precheck as non-blocking and leaves the verdict to the plan phase", async () => {
+    request
+      .mockResolvedValueOnce(describeResult(true))
+      .mockRejectedValueOnce(new Error("bridge unavailable"));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+
+    store.patchDraft({ displayName: "任意名称" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.displayNameCheck).toEqual({
+      status: "available", name: "任意名称", conflictWith: null,
+    });
+    expect(store.displayNameDuplicate).toBe(false);
+    service.dispose();
+  });
+
 });

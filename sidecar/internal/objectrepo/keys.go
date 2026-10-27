@@ -152,9 +152,23 @@ func (provider *KeyProvider) PreviewProtectedRotation(
 	ctx context.Context,
 	workspaceID string,
 ) (KeyRotationPlan, error) {
-	current, err := provider.Open(ctx, workspaceID, EncryptionProtected)
+	return provider.PreviewModeRotation(ctx, workspaceID, EncryptionProtected, EncryptionProtected)
+}
+
+func (provider *KeyProvider) PreviewModeRotation(
+	ctx context.Context, workspaceID string, source, target EncryptionMode,
+) (KeyRotationPlan, error) {
+	if (source != EncryptionProtected && source != EncryptionConvenient) ||
+		(target != EncryptionProtected && target != EncryptionConvenient) {
+		return KeyRotationPlan{}, ErrKeyModeInvalid
+	}
+	current, err := provider.Open(ctx, workspaceID, source)
 	if err != nil {
 		return KeyRotationPlan{}, err
+	}
+	if target == EncryptionConvenient {
+		return KeyRotationPlan{WorkspaceID: workspaceID, CurrentPassword: current.Password,
+			NewPassword: []byte(ConvenientPassword)}, nil
 	}
 	next := make([]byte, 32)
 	if _, err := rand.Read(next); err != nil {

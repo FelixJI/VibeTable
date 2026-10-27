@@ -70,12 +70,23 @@ const filteredFields = computed(() => {
   return props.columns.filter(column => column.title.toLocaleLowerCase().includes(keyword));
 });
 
-watch(() => [props.filters, props.groups, props.summaries, props.visibleFields] as const, () => {
+watch(() => [props.filters, props.groups, props.summaries] as const, () => {
   draftFilters.value = cloneFilterExpressions(props.filters);
   draftGroups.value = [...props.groups];
   draftSummaries.value = [...props.summaries];
-  draftVisible.value = [...props.visibleFields];
 }, { immediate: true, deep: true });
+
+// 冻结列等异步保存回显会把全部 props 换成同值新数组：可见草稿若随上面
+// 一起重置，用户未应用的显示勾选会被回显静默吞掉；只有集合语义确变
+// 才同步。源取副本使 in-place 变更也能拿到旧集合。
+watch(() => [...props.visibleFields], (fields, previous) => {
+  if (previous !== undefined) {
+    const previousSet = new Set(previous);
+    if (fields.length === previous.length && previousSet.size === fields.length
+      && fields.every(field => previousSet.has(field))) return;
+  }
+  draftVisible.value = [...fields];
+}, { immediate: true });
 
 /**
  * 每个面板只提交自己的关注点：任一面板应用时，其他已生效状态
@@ -164,6 +175,7 @@ function isNumericField(field: string): boolean {
           :relations="relations"
           :search-relation-targets="searchRelationTargets"
           @update="nodes => draftFilters = nodes"
+          @commit="() => commitPatch({ filters: cloneFilterExpressions(draftFilters) })"
         />
         <footer><NButton size="small" type="primary" data-testid="view-filter-apply" @click="() => commitPatch({ filters: cloneFilterExpressions(draftFilters) })">应用</NButton></footer>
       </div>

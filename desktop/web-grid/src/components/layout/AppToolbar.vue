@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload, ArrowDownToLine } from "@lucide/vue";
+import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2 } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { ExportFormat } from "@/contracts";
 import { collectionLabel } from "./collectionLabel";
+import { localModifiedLabel } from "./tableDescription";
 import { t } from "@/i18n";
 
 const workspace = useWorkspaceStore();
+const ui = useUiStore();
 const props = withDefaults(defineProps<{
   pluginActions?: readonly {
     key: string;
@@ -20,7 +23,6 @@ const props = withDefaults(defineProps<{
   insertRowDisabled?: boolean;
   dataIoBusy?: boolean;
   dataIoProgress?: string;
-  dataIoImportDisabled?: boolean;
   dataIoExportDisabled?: boolean;
 }>(), { pluginActions: () => [] });
 
@@ -33,8 +35,6 @@ const emit = defineEmits<{
   openArchivedHistory: [];
   openFieldManager: [];
   openContent: [];
-  importData: [];
-  openImportManagement: [];
   exportData: [format: ExportFormat];
   cancelDataTask: [];
   pluginAction: [key: string];
@@ -45,6 +45,10 @@ const currentLabel = computed(() => {
   const item = workspace.collections.find((col) => col.collection === workspace.currentTable);
   return item ? collectionLabel(item, displayNames.value) : t("toolbar.noTable");
 });
+// 表说明：本机最后修改时间；物理 id 不再作为标题副行展示。
+const currentDescription = computed(() => localModifiedLabel(
+  workspace.currentTable ? ui.tableModified[workspace.currentTable] : undefined,
+));
 const tableOptions = computed(() => workspace.collections.map((collection) => ({
   key: collection.collection,
   label: collectionLabel(collection, displayNames.value),
@@ -55,17 +59,6 @@ const moreOptions = computed(() => [
     label: "取消数据任务",
     key: "cancel-data-task",
     disabled: !props.dataIoBusy,
-  },
-  {
-    label: "导入数据",
-    key: "import",
-    icon: () => h(Upload),
-    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoImportDisabled,
-  },
-  {
-    label: t("toolbar.importManagement"),
-    key: "import-management",
-    icon: () => h(ArrowDownToLine),
   },
   {
     label: "导出 CSV",
@@ -101,8 +94,6 @@ const historyOptions = computed(() => [{
 function onMore(key: string) {
   if (key === "refresh") emit("refresh");
   if (key === "help") emit("openHelp");
-  if (key === "import") emit("importData");
-  if (key === "import-management") emit("openImportManagement");
   if (key === "export-csv") emit("exportData", "csv");
   if (key === "export-xlsx") emit("exportData", "xlsx");
   if (key === "cancel-data-task") emit("cancelDataTask");
@@ -122,7 +113,10 @@ function onSelectTable(key: string) {
     <div class="table-heading desktop-table-heading">
       <NIcon :size="16"><Table2 /></NIcon>
       <strong data-testid="toolbar-table-title">{{ currentLabel }}</strong>
-      <span v-if="workspace.currentTable && currentLabel !== workspace.currentTable">{{ workspace.currentTable }}</span>
+      <span
+        v-if="currentDescription"
+        data-testid="toolbar-table-description"
+      >{{ currentDescription }}</span>
     </div>
     <div class="compact-table-switcher">
       <NDropdown

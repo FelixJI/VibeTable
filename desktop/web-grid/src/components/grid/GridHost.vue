@@ -13,7 +13,7 @@
  * range for the copy/paste/delete keyboard shortcuts (Task M5) without lifting
  * the entire useTabulator call out of GridHost.
  */
-import { inject, ref } from "vue";
+import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Ref } from "vue";
 import { NButton, NIcon } from "naive-ui";
 import { Plus } from "@lucide/vue";
@@ -22,7 +22,22 @@ import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";
 import type { ColumnSchema, LookupSourcePageIntent, LookupValueProvenance, NormalizedRelationDescriptor } from "@/contracts";
 import type { FilterExpression, GroupCondition, SortCondition } from "@/contracts";
-import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
+import { HEADER_MENU_EVENT, ROW_NUMBER_FIELD } from "@/grid/createGrid";
+import {
+  canEditHeaderValueFilter,
+  headerMenuOptionsFromPage,
+  headerMenuSelection,
+  headerMenuSelectionValues,
+  headerMenuSource,
+  headerValueFilterError,
+  headerValueLabel,
+  resolveMenuSelectionValues,
+  type HeaderMenuOption,
+} from "@/grid/headerFilterMenu";
+import { headerValueKey } from "@/services/headerFilterValues";
+import { useHeaderFilterValuesService } from "@/services/headerFilterValues";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { cloneFilterExpressions, useViewQueryStore } from "@/stores/viewQueryStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
@@ -30,6 +45,7 @@ import { TABULATOR_INJECTION_KEY, GRID_PRESENTATION_KEY } from "./tabulatorInjec
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 import LookupGroupPanel from "@/components/grid/LookupGroupPanel.vue";
+import HeaderFilterMenu from "./HeaderFilterMenu.vue";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -75,12 +91,220 @@ const emit = defineEmits<{
 const gridEl = ref<HTMLElement | null>(null);
 const store = useTableStore();
 const ui = useUiStore();
+const workspaceStore = useWorkspaceStore();
+const viewQuery = useViewQueryStore();
 const relationLookup = useRelationLookupStore();
+const headerFilterValues = useHeaderFilterValuesService();
 const tabulator = inject<Ref<TabulatorFull | null>>(TABULATOR_INJECTION_KEY);
 const presentation = inject(GRID_PRESENTATION_KEY, null);
-const { dataApplying } = useTabulator(gridEl, {
-  onPresentationRestore: () => presentation?.restoreGrid() ?? Promise.resolve(),
-  onPresentationChanged: () => presentation?.changed(),
+const wrapperEl = ref<HTMLElement | null>(null);
+const emptyStateTop = ref(0);
+let emptyHeader: HTMLElement | null = null;
+let emptyHeaderObserver: ResizeObserver | null = null;
+
+function syncEmptyStateTop(): void {
+  const header = gridEl.value?.querySelector<HTMLElement>(".tabulator-header") ?? null;
+  const host = gridEl.value?.parentElement;
+  if (!header || !host) return;
+  emptyStateTop.value = Math.max(0, header.getBoundingClientRect().bottom - host.getBoundingClientRect().top);
+  if (header !== emptyHeader) {
+    emptyHeaderObserver?.disconnect();
+    emptyHeader = header;
+    emptyHeaderObserver = new ResizeObserver(syncEmptyStateTop);
+    emptyHeaderObserver.observe(header);
+  }
+}
+
+interface HeaderMenuState {
+  readonly field: string;
+  readonly title: string;
+  readonly status: "ready" | "loading" | "error" | "unavailable";
+  readonly options: readonly HeaderMenuOption[];
+  readonly selection: readonly string[] | null;
+  readonly hasMore: boolean;
+  readonly loadingMore: boolean;
+  readonly limitation: string | null;
+  /** 选项来自权威完整枚举（封闭枚举 schema 或已无更多分页）。 */
+  readonly sourceComplete: boolean;
+  readonly x: number;
+  readonly y: number;
+}
+const headerMenu = ref<HeaderMenuState | null>(null);
+/** 菜单会话代：过期响应（换表/重开/关闭）绝不回写面板。 */
+let headerMenuSession = 0;
+
+function menuPosition(target: EventTarget | null): { x: number; y: number } {
+  const rect = target instanceof HTMLElement ? target.getBoundingClientRect() : null;
+  return { x: rect?.left ?? 0, y: rect?.bottom ?? 0 };
+}
+
+/** 表头字段名旁按钮冒泡的打开事件。 */
+function onHeaderMenuEvent(event: Event): void {
+  const detail = (event as CustomEvent<{ readonly field?: unknown }>).detail;
+  const field = typeof detail?.field === "string" ? detail.field : "";
+  if (!field || field === ROW_NUMBER_FIELD) return;
+  const column = store.schema?.find(item => item.name === field);
+  if (!column) return;
+  const session = ++headerMenuSession;
+  const position = menuPosition(event.target);
+  const selection = headerMenuSelection(viewQuery.filters, field, column);
+  if (!canEditHeaderValueFilter(viewQuery.filters, field)) {
+    headerMenu.value = {
+      field, title: column.title, status: "unavailable", options: [], selection: null,
+      hasMore: false, loadingMore: false, sourceComplete: false,
+      limitation: "该列参与高级组合条件，请先在高级筛选中清除或调整条件", ...position,
+    };
+    return;
+  }
+  const source = headerMenuSource(column);
+  if (!source) {
+    headerMenu.value = {
+      field, title: column.title, status: "unavailable", options: [], selection,
+      hasMore: false, loadingMore: false, limitation: null, sourceComplete: true, ...position,
+    };
+    return;
+  }
+  if (source.kind === "enum") {
+    headerMenu.value = {
+      field, title: column.title, status: "ready", options: source.options, selection,
+      hasMore: false, loadingMore: false, limitation: null, sourceComplete: true, ...position,
+    };
+    return;
+  }
+  // 动态取值：非 groupable 字段明确说明限制。
+  if (column.groupable === false) {
+    headerMenu.value = {
+      field, title: column.title, status: "unavailable", options: [], selection,
+      hasMore: false, loadingMore: false, sourceComplete: false,
+      limitation: "该字段类型暂不支持按值筛选", ...position,
+    };
+    return;
+  }
+  const tableId = workspaceStore.currentTable;
+  if (!tableId) return;
+  headerMenu.value = {
+    field, title: column.title, status: "loading", options: [], selection,
+    hasMore: false, loadingMore: false, limitation: null, sourceComplete: false, ...position,
+  };
+  void loadMenuValues(session, tableId, field, 0, []);
+}
+
+async function loadMenuValues(
+  session: number,
+  tableId: string,
+  field: string,
+  offset: number,
+  previous: readonly HeaderMenuOption[],
+): Promise<void> {
+  try {
+    const page = await headerFilterValues.loadFieldValues(tableId, field, offset);
+    // 过期响应（重开/关闭/换表/换字段）不回写面板。
+    if (session !== headerMenuSession
+      || headerMenu.value?.field !== field
+      || workspaceStore.currentTable !== tableId) return;
+    const options = [...previous, ...headerMenuOptionsFromPage(page.options)];
+    headerMenu.value = {
+      ...headerMenu.value,
+      status: "ready",
+      options,
+      // 初始未筛选时草稿随首页全选；加载更多后未筛选态继续全选新页。
+      hasMore: page.hasMore,
+      sourceComplete: !page.hasMore,
+      loadingMore: false,
+    };
+  } catch {
+    if (session !== headerMenuSession || headerMenu.value?.field !== field) return;
+    headerMenu.value = { ...headerMenu.value, status: "error", loadingMore: false };
+  }
+}
+
+function closeHeaderMenu(): void {
+  headerMenuSession += 1;
+  headerMenu.value = null;
+}
+
+function loadMoreHeaderMenu(): void {
+  const menu = headerMenu.value;
+  const tableId = workspaceStore.currentTable;
+  if (!menu || menu.status !== "ready" || !menu.hasMore || menu.loadingMore || !tableId) return;
+  const session = headerMenuSession;
+  headerMenu.value = { ...menu, loadingMore: true };
+  void loadMenuValues(session, tableId, menu.field, menu.options.length, menu.options);
+}
+
+/**
+ * 提交/校验用选项：既有条件中未加载分页的勾选值补成可解析选项，
+ * 否则应用会静默丢弃这些无法展示、也无法取消勾选的值。
+ */
+function headerMenuValueOptions(menu: HeaderMenuState): readonly HeaderMenuOption[] {
+  const column = store.schema?.find(item => item.name === menu.field);
+  const committed = headerMenuSelectionValues(viewQuery.filters, menu.field, column) ?? [];
+  if (committed.length === 0) return menu.options;
+  const loaded = new Set(menu.options.map(option => option.key));
+  const preserved = committed
+    .filter(value => !loaded.has(headerValueKey(value)))
+    .map(value => ({ key: headerValueKey(value), label: headerValueLabel(value), rawValue: value }));
+  return preserved.length > 0 ? [...menu.options, ...preserved] : menu.options;
+}
+
+/** 提交原始值集合到字段级筛选，并复用既有 runtime 管道触发权威重查。 */
+function commitHeaderValueFilter(field: string, keys: readonly string[] | null): void {
+  const menu = headerMenu.value;
+  if (!menu) return;
+  if (keys && headerMenuSelectionProblem(keys)) return;
+  // 只有权威完整枚举（封闭枚举字段，或动态取值已无更多页）勾满才等同
+  // 未筛选；分页未取完时勾满是明确的部分选择，必须原样应用。
+  const complete = menu.sourceComplete || !menu.hasMore;
+  const values = keys === null ? [] : resolveMenuSelectionValues(headerMenuValueOptions(menu), keys, complete);
+  viewQuery.applyHeaderValueFilter(field, values, store.schema?.find(column => column.name === field));
+  clearHeaderFilterForMenu(field);
+  closeHeaderMenu();
+  emit("viewQueryChange", {
+    headerFilters: cloneFilterExpressions(viewQuery.headerFilters),
+    sorts: viewQuery.sorts.map(sort => ({ ...sort })),
+    groups: viewQuery.groups.map(group => ({ ...group })),
+  });
+}
+
+function headerMenuSelectionProblem(keys: readonly string[]): string | null {
+  const menu = headerMenu.value;
+  if (!menu) return null;
+  const values = resolveMenuSelectionValues(
+    headerMenuValueOptions(menu), keys, menu.sourceComplete || !menu.hasMore);
+  return headerValueFilterError(viewQuery.filters, menu.field, values, store.schema?.find(column => column.name === menu.field));
+}
+
+function applyHeaderMenu(keys: readonly string[]): void {
+  const menu = headerMenu.value;
+  if (!menu) return;
+  commitHeaderValueFilter(menu.field, keys);
+}
+
+function clearHeaderMenu(): void {
+  const menu = headerMenu.value;
+  if (!menu) return;
+  commitHeaderValueFilter(menu.field, null);
+}
+
+watch(() => workspaceStore.currentTable, () => closeHeaderMenu());
+
+onMounted(() => {
+  wrapperEl.value?.addEventListener(HEADER_MENU_EVENT, onHeaderMenuEvent);
+});
+onBeforeUnmount(() => {
+  emptyHeaderObserver?.disconnect();
+  wrapperEl.value?.removeEventListener(HEADER_MENU_EVENT, onHeaderMenuEvent);
+  closeHeaderMenu();
+});
+const { dataApplying, clearHeaderFilterForMenu } = useTabulator(gridEl, {
+  onPresentationRestore: async () => {
+    await presentation?.restoreGrid();
+    syncEmptyStateTop();
+  },
+  onPresentationChanged: () => {
+    syncEmptyStateTop();
+    presentation?.changed();
+  },
   onCellEdited: props.onCellEdited,
   onRangeSelectionChanged: ({ rowKeys, fields }) => {
     const dataFields = fields.filter((field) => field !== ROW_NUMBER_FIELD);
@@ -358,6 +582,7 @@ function onGridKeyDown(event: KeyboardEvent): void {
 
 <template>
   <div
+    ref="wrapperEl"
     class="grid-wrapper"
     :class="[
       `density-${ui.density}`,
@@ -378,6 +603,7 @@ function onGridKeyDown(event: KeyboardEvent): void {
       <div
         v-if="store.datasetReady && store.allRows.length === 0"
         class="grid-empty-state"
+        :style="{ top: `${emptyStateTop}px` }"
         data-testid="grid-empty-state"
       >
         <span class="grid-empty-icon"><NIcon :size="20"><Plus /></NIcon></span>
@@ -397,6 +623,32 @@ function onGridKeyDown(event: KeyboardEvent): void {
     </div>
     <LoadingOverlay :show="store.loading" />
     <ErrorOverlay :show="!!store.error" :message="store.error ?? ''" />
+    <template v-if="headerMenu">
+      <div
+        class="vt-header-menu-backdrop"
+        data-testid="vt-header-menu-backdrop"
+        @click="closeHeaderMenu"
+      />
+      <div
+        class="vt-header-menu-anchor"
+        :style="{ left: `${headerMenu.x}px`, top: `${headerMenu.y}px` }"
+      >
+        <HeaderFilterMenu
+          :field-title="headerMenu.title"
+          :options="headerMenu.options"
+          :selection="headerMenu.selection"
+          :status="headerMenu.status"
+          :has-more="headerMenu.hasMore"
+          :loading-more="headerMenu.loadingMore"
+          :limitation="headerMenu.limitation"
+          :validate-selection="headerMenuSelectionProblem"
+          @apply="applyHeaderMenu"
+          @clear="clearHeaderMenu"
+          @load-more="loadMoreHeaderMenu"
+          @close="closeHeaderMenu"
+        />
+      </div>
+    </template>
   </div>
 </template>
 
@@ -423,6 +675,7 @@ function onGridKeyDown(event: KeyboardEvent): void {
   position: absolute;
   inset: 0;
   z-index: 2;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -467,6 +720,8 @@ function onGridKeyDown(event: KeyboardEvent): void {
   background: var(--vt-bg);
 }
 .grid-host :deep(.tabulator .tabulator-header) {
+  position: relative;
+  z-index: 3;
   color: var(--vt-fg-secondary);
   border: 0;
   border-bottom: 1px solid var(--vt-border);
@@ -653,7 +908,7 @@ function onGridKeyDown(event: KeyboardEvent): void {
 .grid-host :deep(.tabulator-range-cell-active) {
   border-color: var(--vt-color-primary-600);
   box-shadow:
-    inset 0 0 0 2px var(--vt-color-primary-600),
+    inset 0 0 0 1px var(--vt-color-primary-600),
     0 0 0 1px color-mix(in srgb, var(--vt-color-primary-500) 16%, transparent);
 }
 .grid-host :deep(.tabulator-popup-container),
@@ -677,7 +932,7 @@ function onGridKeyDown(event: KeyboardEvent): void {
 }
 .grid-host :deep(.tabulator-cell.vt-cell-selected) {
   background: color-mix(in srgb, var(--vt-color-primary-500) 5%, var(--vt-bg));
-  box-shadow: inset 0 0 0 2px var(--vt-color-primary-600);
+  box-shadow: inset 0 0 0 1px var(--vt-color-primary-600);
 }
 .grid-host :deep(.tabulator-cell.vt-structured-cell:focus-visible) {
   position: relative;
@@ -797,8 +1052,47 @@ function onGridKeyDown(event: KeyboardEvent): void {
   font: inherit;
   cursor: pointer;
 }
-.grid-host :deep(.vt-relation-cell--editable) { cursor: pointer; }
-.grid-host :deep(.vt-relation-cell--editable:hover) {
+.grid-host :deep(.vt-relation-cell--editable):hover {
   background: color-mix(in srgb, var(--vt-color-primary-500) 7%, var(--vt-bg));
+}
+.grid-host :deep(.vt-header-title) {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.grid-host :deep(.vt-header-title__text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-host :deep(.vt-header-menu-trigger) {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--vt-fg-muted);
+  background: transparent;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+.grid-host :deep(.vt-header-menu-trigger::before) { content: "▾"; }
+.grid-host :deep(.vt-header-menu-trigger:hover) {
+  color: var(--vt-color-primary-600);
+  background: var(--vt-bg-sunken);
+}
+.vt-header-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.vt-header-menu-anchor {
+  position: fixed;
+  z-index: 41;
 }
 </style>

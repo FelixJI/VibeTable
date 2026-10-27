@@ -816,6 +816,14 @@ export interface TableAdminCreatePayload {
 export interface TableAdminDeletePayload {
   readonly collection: string;
 }
+export interface TableCopyScope {
+  readonly copyRecords: boolean;
+  readonly copyViews: boolean;
+}
+export interface TableAdminDuplicatePayload extends Partial<TableCopyScope> {
+  readonly collection: string;
+  readonly displayName: string;
+}
 export interface CollectionsChangedPayload {
   readonly tables: readonly string[];
   readonly views?: readonly string[];
@@ -1554,6 +1562,7 @@ export type WebMessageType =
   | "document.relinkRequested"
   // Table-admin requests.
   | "tableAdmin.createRequested"
+  | "tableAdmin.duplicateRequested"
   | "tableAdmin.deleteRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
@@ -1573,7 +1582,8 @@ export type WebMessageType =
   | "plugin.task.get"
   | "plugin.surface.event"
   // Open the embedded data administration surface in this webview.
-  | "admin.openRequested";
+  | "admin.openRequested"
+  | "query.view";
 
 /**
  * Inbound (host -> web) message types consumed by this layer.
@@ -1625,6 +1635,7 @@ export type HostMessageType =
   | "recordDocumentLink.delete"
   | "query.page"
   | "query.cursorOpen"
+  | "query.view"
   | "query.cursorFetch"
   | "mutation.preview"
   | "mutation.apply"
@@ -1955,6 +1966,7 @@ export interface HostPayloadMap {
   "recordDocumentLink.repair": RecordDocumentLinkSnapshot;
   "recordDocumentLink.delete": RecordDocumentLinkDeleteResult;
   "query.page": Readonly<Record<string, unknown>>;
+  "query.view": QueryViewResult;
   "query.cursorOpen": QueryCursorWindow;
   "query.cursorFetch": QueryCursorWindow;
   "mutation.preview": Readonly<Record<string, unknown>>;
@@ -2065,6 +2077,7 @@ export interface WebPayloadMap {
   "recordDocumentLink.repair": RecordDocumentLinkRepairRequest;
   "recordDocumentLink.delete": RecordDocumentLinkDeleteRequest;
   "query.page": Readonly<Record<string, unknown>>;
+  "query.view": QueryViewRequestPayload;
   "query.cursorOpen": {
     readonly tableId: string;
     readonly query: Readonly<Record<string, unknown>>;
@@ -2236,6 +2249,7 @@ export interface WebPayloadMap {
   "document.relinkRequested": DocumentOpaqueHandlePayload;
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
+  "tableAdmin.duplicateRequested": TableAdminDuplicatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
@@ -2331,6 +2345,39 @@ export interface HostPluginChromePayload {
 export interface TableQueryRequestedPayload {
   readonly table: string;
   readonly query: TableQuery;
+}
+
+/**
+ * `query.view` 请求（Product RPC）：权威 QueryPort 视图。行分页与分组
+ * 分页独立，表头勾选值面板用 `limit:1` + 单字段 value 分组分页枚举
+ * 去重值，不下载全部行。
+ */
+export interface QueryViewRequestPayload {
+  readonly tableId: string;
+  readonly view: {
+    readonly query?: TableQuery;
+    readonly groups?: readonly GroupCondition[];
+    readonly summaries?: readonly SummaryCondition[];
+    readonly groupOffset?: number;
+    readonly groupLimit?: number;
+  };
+}
+
+/** `query.view` 响应中的行分页（分组枚举场景仅需计数与快照）。 */
+export interface QueryViewPage {
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+  readonly filteredRows?: number | null;
+  readonly totalRows?: number | null;
+  readonly snapshot?: QuerySnapshot | null;
+}
+
+/** `query.view` 响应：`groupRows[].key` 为原始值数组（null/0/false 保持原类型）。 */
+export interface QueryViewResult {
+  readonly page: QueryViewPage;
+  readonly groupRows?: readonly ViewGroupRow[] | null;
+  readonly groupOffset?: number | null;
+  readonly groupLimit?: number | null;
+  readonly hasMoreGroups?: boolean | null;
 }
 
 export interface TableCursorRequestedPayload {

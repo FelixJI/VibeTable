@@ -289,12 +289,18 @@ class RetentionPolicy(V2Model):
     policy_revision: int = Field(ge=1)
     snapshot_days: int = Field(ge=1)
     snapshot_count: int = Field(ge=1)
-    snapshot_buckets: list[Literal["hourly", "daily", "weekly", "monthly"]]
+    snapshot_buckets: list[Literal["smart", "hourly", "daily", "weekly", "monthly"]]
     file_revision_days: int = Field(ge=1)
     file_revision_count: int = Field(ge=1)
     file_revision_buckets: list[Literal["hourly", "daily", "weekly", "monthly"]]
     trash_months: Literal[3]
     repository_limit_bytes: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _exclusive_smart_retention(self) -> RetentionPolicy:
+        if "smart" in self.snapshot_buckets and self.snapshot_buckets != ["smart"]:
+            raise ValueError("smart retention cannot be combined with custom buckets")
+        return self
 
 
 class WorkspaceEvent(V2Model):
