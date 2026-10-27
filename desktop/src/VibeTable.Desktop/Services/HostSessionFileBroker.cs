@@ -515,6 +515,14 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         finally { _gate.Release(); }
     }
 
+    // A positive native commit survives retirement and a lost acknowledgement.
+    internal async Task<bool> WasWriteCommittedAsync(string transferId)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try { return _transfers.TryGetValue(transferId, out var transfer) && transfer.Outcome is true; }
+        finally { _gate.Release(); }
+    }
+
     internal async Task RevokeRunAsync(string runId)
     {
         await _gate.WaitAsync().ConfigureAwait(false);

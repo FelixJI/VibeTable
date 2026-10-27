@@ -267,7 +267,7 @@ def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monk
         lambda: SimpleNamespace(
             windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
             owner=lambda _hwnd: 12,
-            foreground=lambda *_args: None,
+            foreground=lambda *_args, **_kwargs: None,
             close=lambda: None,
         ),
     )
@@ -1017,9 +1017,18 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
     assert sent == []
 
 
-@pytest.mark.parametrize("stage", ["contrast", "contrast-restored", "application"])
-def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
-    tmp_path, monkeypatch, stage
+@pytest.mark.parametrize(
+    ("action", "stage"),
+    [
+        ("observe", "contrast"),
+        ("observe", "contrast-restored"),
+        ("observe", "application"),
+        ("contrast-on", "contrast"),
+        ("contrast-off", "contrast"),
+    ],
+)
+def test_native_contrast_actions_preserve_input_and_settings_boundaries(
+    tmp_path, monkeypatch, action, stage
 ):
     from types import SimpleNamespace
 
@@ -1052,16 +1061,28 @@ def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
         return {"pid": 12, "hwnd": 14}, {"x": 0, "y": 0, "width": 10, "height": 10}
 
     monkeypatch.setattr(native, "_observe_owned_chrome", observe)
+
+    def change_contrast(requested_action, _evidence):
+        assert window.owner(14) == 12
+        assert calls == []
+        calls.append(("contrast", requested_action))
+        return {"status": "restored" if requested_action == "contrast-off" else "enabled"}
+
+    monkeypatch.setattr(native, "_change_system_contrast", change_contrast)
     result = native.handle_plugin_native_request(
         {
             "requestId": "null-transition",
-            "action": "observe",
+            "action": action,
             "buttonId": "plugin-recover",
             "stage": stage,
         },
         host_pid=12,
         evidence=tmp_path,
     )
+    if action != "observe":
+        assert result["status"] == "completed", result
+        assert calls == [("contrast", action)]
+        return
     if stage == "application":
         assert result["status"] == "failed"
         assert result["foreground"]["afterHwnd"] == 0

@@ -1653,6 +1653,16 @@ def persist_product_e2e_evidence(
                 "53-confirm-delete-approved.png",
                 "52-picker-export-select.png",
             ),
+            "55-plugin-surface-outputs": (
+                "55-output-conformance.png",
+                "55-plugin-surface-outputs-trace.zip",
+                "55-archive-confirmation.png",
+                "55-picker-output-small-cancel.png",
+                "55-picker-output-small-select.png",
+                "55-picker-output-large-select.png",
+                "55-picker-output-reprint-select.png",
+                "55-picker-output-next-select.png",
+            ),
             "52-plugin-capability-services": (
                 "52-capability-services.json",
                 "52-capability-services.png",
@@ -1718,6 +1728,20 @@ def persist_product_e2e_evidence(
                 raise ValueError(
                     f"passing {scenario_id} report lacks screenshot evidence: {filename}"
                 )
+        if scenario_id == "55-plugin-surface-outputs":
+            for filename in (
+                "small.xlsx",
+                "large.xlsx",
+                "reprint.xlsx",
+                "new-template.xlsx",
+                "output-proof.json",
+            ):
+                relative = Path("_runtime") / "55" / "controls" / filename
+                if (
+                    not _copy_if_file(run_source / relative, run_destination / relative)
+                    and item["status"] == "passed"
+                ):
+                    raise ValueError(f"passing {scenario_id} lacks saved output: {filename}")
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
             # stays failure-only. A passed S35 needs one operationId whose

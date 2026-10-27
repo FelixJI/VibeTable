@@ -30,6 +30,8 @@
 
 [第二轮](https://github.com/FelixJI/VibeTable/actions/runs/40511704302)的八条 race lane、core 和 resilience 全部通过，S04 JSON 往返已恢复，resilience 的 29 项产品场景没有跳过。整轮因下面三项新故障失败，总墙钟 71 分 43 秒；`prepare` 执行 20 分 1 秒，最慢 race 执行 28 分 19 秒，新的关键路径 `resilience` 执行 36 分 45 秒，并在 prepare 完成后等待了 13 分 44 秒才启动。当时同仓有其他三轮 CI 并发，其他 shard 的启动也明显错开；该样本必须分别报告执行与 runner 等待，不能把增加并发宣称为无条件的总墙钟提速。
 
+[第三轮完整成功运行](https://github.com/FelixJI/VibeTable/actions/runs/40523612757)验证 head `270d7ea4`：22 个 job 全部成功，包括十四个 lane、五项 CodeQL 与 required；三个产品分片分别为 29/29、10/10、13/13，无跳过。总墙钟为 74 分 13 秒；prepare 18 分 55 秒，最长 race 为 31 分 58 秒，resilience 32 分 44 秒。关键路径上的 resilience 在 prepare 完成后等待 runner 20 分 2 秒；扣除这段等待的推算值为 54 分 11 秒，不是实际墙钟。已有三轮样本的最慢 race 为 28–32 分钟，明显短于历史 54–56 分钟，但同仓多轮 CI 并发时仍不能承诺总耗时低于一小时。该成功样本不包含随后合入 main 的 #536 新增场景；同步主干后的集成结果应以新 head 门禁为准。
+
 ### 本轮故障定位
 
 - [0.5.7 合并后的 main CI](https://github.com/FelixJI/VibeTable/actions/runs/40473110935)在 `49-plugin-application-security` 的 `contrast-off` 失败：系统切换高对比度时 `GetForegroundWindow` 返回 0，测试辅助代码在还原系统设置之前要求 Host 取得前台。该操作使用 `SystemParametersInfo`，不发送鼠标键盘输入。修复将系统设置恢复与输入焦点前提分开，保留 Host 身份、受控 runner、原始设置还原与读回校验；真正的输入仍必须通过前台/归属检查。相关系统 API 见 [Microsoft 高对比度参数文档](https://learn.microsoft.com/en-us/windows/win32/winauto/high-contrast-parameter)。CD 因这次 main CI 失败而跳过，并非独立的发布失败。
