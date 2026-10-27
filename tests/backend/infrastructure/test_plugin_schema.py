@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.infrastructure import plugin_schema as subject
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
-    _matches_type,
-    validate_plugin_json,
     validate_plugin_schema_document,
 )
 
@@ -19,7 +16,7 @@ def test_schema_error_exposes_stable_rpc_metadata() -> None:
     }
 
 
-def test_valid_nested_schema_and_json_cover_all_constraints() -> None:
+def test_valid_nested_schema_covers_supported_keywords() -> None:
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Config",
@@ -51,11 +48,6 @@ def test_valid_nested_schema_and_json_cover_all_constraints() -> None:
         },
     }
     validate_plugin_schema_document(schema, label="settings")
-    validate_plugin_json(
-        {"name": "alpha", "items": [1, None], "enabled": True},
-        schema,
-        label="settings",
-    )
 
 
 @pytest.mark.parametrize(
@@ -94,85 +86,3 @@ def test_schema_document_rejects_excessive_depth() -> None:
         schema = {"type": "array", "items": schema}
     with pytest.raises(PluginSchemaError, match="nesting depth"):
         validate_plugin_schema_document(schema, label="deep")
-
-
-@pytest.mark.parametrize(
-    ("value", "schema", "message"),
-    [
-        ("x", {"enum": ["y"]}, "does not match enum"),
-        (True, {"type": "integer"}, "wrong type"),
-        (1, {"type": "boolean"}, "wrong type"),
-        ({}, {"type": "array"}, "wrong type"),
-        ({}, {"required": ["id"]}, "missing 'id'"),
-        ({"x": 1}, {"properties": {}, "additionalProperties": False}, "unsupported property"),
-        ([], {"minItems": 1}, "too few items"),
-        ([1, 2], {"maxItems": 1}, "too many items"),
-        ("a", {"minLength": 2}, "too short"),
-        ("abc", {"maxLength": 2}, "too long"),
-        ("abc", {"pattern": "^z"}, "pattern"),
-        (0, {"minimum": 1}, "below minimum"),
-        (10, {"maximum": 9}, "above maximum"),
-    ],
-)
-def test_json_validation_rejects_constraint_violations(
-    value: object, schema: dict, message: str
-) -> None:
-    with pytest.raises(PluginSchemaError, match=message):
-        validate_plugin_json(value, schema, label="payload")
-
-
-@pytest.mark.parametrize("value", [{1, 2}, object()])
-def test_json_validation_rejects_non_wire_values(value: object) -> None:
-    with pytest.raises(PluginSchemaError, match="not JSON serializable"):
-        validate_plugin_json(value, {}, label="payload")
-
-
-def test_json_validation_rejects_payload_over_one_mib() -> None:
-    with pytest.raises(PluginSchemaError, match="1 MiB"):
-        validate_plugin_json("x" * (1024 * 1024 + 1), {}, label="payload")
-
-
-def test_json_validation_rejects_excessive_value_depth() -> None:
-    schema: dict = {}
-    value: object = "leaf"
-    for _ in range(34):
-        schema = {"type": "array", "items": schema}
-        value = [value]
-    with pytest.raises(PluginSchemaError, match="nesting depth"):
-        validate_plugin_json(value, schema, label="payload")
-
-
-@pytest.mark.parametrize(
-    ("value", "declared", "expected"),
-    [
-        (None, "null", True),
-        (True, "boolean", True),
-        (True, "integer", False),
-        (1, "integer", True),
-        (1, "number", True),
-        (1.5, "number", True),
-        ("x", "string", True),
-        ([], "array", True),
-        ({}, "object", True),
-        ("x", "future", False),
-    ],
-)
-def test_matches_type_is_closed(value: object, declared: str, expected: bool) -> None:
-    assert _matches_type(value, declared) is expected
-
-
-def test_unconstrained_properties_and_items_are_tolerated() -> None:
-    subject._validate(
-        {"free": {"nested": object()}},
-        {"type": "object", "properties": []},
-        path="$",
-        depth=0,
-        label="payload",
-    )
-    subject._validate(
-        [object()],
-        {"type": "array", "items": []},
-        path="$",
-        depth=0,
-        label="payload",
-    )

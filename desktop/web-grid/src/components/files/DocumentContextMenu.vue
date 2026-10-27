@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
-import { NIcon } from "naive-ui";
+import { computed, h, onBeforeUnmount, onMounted } from "vue";
+import type { Component, HTMLAttributes } from "vue";
+import { NDropdown, NIcon, type DropdownOption } from "naive-ui";
 import { ExternalLink, Eye, FolderSearch, History, LocateFixed, Trash2 } from "@lucide/vue";
 import type { DocumentCapability, DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { t } from "@/i18n";
@@ -11,85 +12,79 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+// The menu teleports to document.body and NDropdown only reacts to
+// in-document interactions, so a native window blur must still dismiss it.
 const close = () => emit("close");
 onMounted(() => {
-  window.addEventListener("pointerdown", close);
   window.addEventListener("blur", close);
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("pointerdown", close);
   window.removeEventListener("blur", close);
 });
 
-function choose(action: DocumentCapability): void {
-  emit("action", action, props.entry);
+function menuIcon(icon: Component): () => ReturnType<typeof h> {
+  return () => h(NIcon, { size: 15 }, { default: () => h(icon) });
+}
+
+const dangerProps = {
+  role: "menuitem",
+  class: "document-menu-danger",
+  "data-testid": "document-unlink",
+} as HTMLAttributes;
+
+const options = computed<DropdownOption[]>(() => {
+  const capabilities = props.entry.capabilities;
+  const items: DropdownOption[] = [];
+  if (capabilities.includes("open")) {
+    items.push({ key: "open", label: t("files.action.open"), icon: menuIcon(ExternalLink), props: { role: "menuitem" } });
+  }
+  if (capabilities.includes("preview")) {
+    items.push({ key: "preview", label: t("files.action.preview"), icon: menuIcon(Eye), props: { role: "menuitem" } });
+  }
+  if (capabilities.includes("reveal") || capabilities.includes("relink")) {
+    items.push({ key: "divider-location", type: "divider" });
+    if (props.entry.availability === "missing" && capabilities.includes("relink")) {
+      items.push({ key: "relink", label: t("files.action.relink"), icon: menuIcon(LocateFixed), props: { role: "menuitem" } });
+    } else if (capabilities.includes("reveal")) {
+      items.push({ key: "reveal", label: t("files.action.reveal"), icon: menuIcon(FolderSearch), props: { role: "menuitem" } });
+    }
+  }
+  if (capabilities.includes("history")) {
+    items.push({ key: "history", label: t("files.action.history"), icon: menuIcon(History), props: { role: "menuitem" } });
+  }
+  if (capabilities.includes("unlink")) {
+    items.push({ key: "divider-unlink", type: "divider" });
+    items.push({ key: "unlink", label: t("files.action.unlink"), icon: menuIcon(Trash2), props: dangerProps });
+  }
+  return items;
+});
+
+function onSelect(key: string | number): void {
+  emit("action", key as DocumentCapability, props.entry);
 }
 </script>
 
 <template>
-  <div
-    class="document-menu"
-    role="menu"
-    :style="{ left: `${x}px`, top: `${y}px` }"
+  <NDropdown
+    :show="true"
+    trigger="manual"
+    placement="bottom-start"
+    :x="x"
+    :y="y"
+    :options="options"
     data-testid="document-context-menu"
-    @pointerdown.stop
-    @keydown.esc="emit('close')"
-  >
-    <button v-if="entry.capabilities.includes('open')" role="menuitem" autofocus @click="choose('open')">
-      <NIcon :size="15"><ExternalLink /></NIcon>{{ t("files.action.open") }}
-    </button>
-    <button v-if="entry.capabilities.includes('preview')" role="menuitem" @click="choose('preview')">
-      <NIcon :size="15"><Eye /></NIcon>{{ t("files.action.preview") }}
-    </button>
-    <i v-if="entry.capabilities.includes('reveal') || entry.capabilities.includes('relink')"></i>
-    <button v-if="entry.availability === 'missing' && entry.capabilities.includes('relink')" role="menuitem" @click="choose('relink')">
-      <NIcon :size="15"><LocateFixed /></NIcon>{{ t("files.action.relink") }}
-    </button>
-    <button v-else-if="entry.capabilities.includes('reveal')" role="menuitem" @click="choose('reveal')">
-      <NIcon :size="15"><FolderSearch /></NIcon>{{ t("files.action.reveal") }}
-    </button>
-    <button v-if="entry.capabilities.includes('history')" role="menuitem" @click="choose('history')">
-      <NIcon :size="15"><History /></NIcon>{{ t("files.action.history") }}
-    </button>
-    <i v-if="entry.capabilities.includes('unlink')"></i>
-    <button
-      v-if="entry.capabilities.includes('unlink')"
-      class="danger"
-      data-testid="document-unlink"
-      role="menuitem"
-      @click="choose('unlink')"
-    >
-      <NIcon :size="15"><Trash2 /></NIcon>{{ t("files.action.unlink") }}
-    </button>
-  </div>
+    role="menu"
+    @select="onSelect"
+    @update:show="(value: boolean) => { if (!value) emit('close'); }"
+    @clickoutside="emit('close')"
+  />
 </template>
 
-<style scoped>
-.document-menu {
-  position: fixed;
-  z-index: 120;
-  width: 196px;
-  padding: 5px;
-  border: 1px solid var(--vt-border);
-  border-radius: var(--vt-radius-lg);
-  background: var(--vt-bg-elevated);
-  box-shadow: var(--vt-shadow-3);
+<style>
+/* NDropdown teleports the menu to document.body, so the danger variant of the
+   unlink entry needs a global rule to reach it. */
+.n-dropdown .n-dropdown-option-body.document-menu-danger,
+.n-dropdown .n-dropdown-option-body.document-menu-danger:hover {
+  color: var(--vt-color-danger-600);
 }
-.document-menu button {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  gap: 9px;
-  min-height: 31px;
-  padding: 0 8px;
-  color: var(--vt-fg);
-  text-align: left;
-  border: 0;
-  border-radius: var(--vt-radius-md);
-  background: transparent;
-  cursor: pointer;
-}
-.document-menu button:hover, .document-menu button:focus-visible { outline: none; background: var(--vt-bg-sunken); }
-.document-menu button.danger { color: var(--vt-color-danger-600); }
-.document-menu i { display: block; height: 1px; margin: 4px 6px; background: var(--vt-border); }
 </style>
