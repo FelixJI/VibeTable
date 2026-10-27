@@ -2854,7 +2854,11 @@ def test_self_update_rollback_reports_bound_worker_failure_without_waiting_for_r
     def unexpected_wait(_: float) -> None:
         pytest.fail("terminal rollback failure waited for a success receipt")
 
+    # Freeze the clock so the first poll cannot lose its budget to a runner
+    # stall; an exhausted clock lands past the deadline so regressions fail fast.
+    ticks = iter((0.0, 0.0))
     monkeypatch.setattr(build_next.time, "sleep", unexpected_wait)
+    monkeypatch.setattr(build_next.time, "monotonic", lambda: next(ticks, 1.0))
     with pytest.raises(build_next.BuildError, match="health-failure/UPDATE_ROLLBACK_IO_FAILED"):
         build_next.wait_for_self_update_health_failure_rollback(
             tmp_path,
