@@ -4,6 +4,8 @@ VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue
 
 ## PR 与 main 必需门禁
 
+PR 不强制附截图，包括 WPF/Web 可见改动；截图仅在有助于说明问题或用户明确要求时提供。既有自动化测试的截图证据仍按场景契约采集，行为验证和 CI 门禁保持不变。
+
 `.github/workflows/ci.yml` 在 `pull_request` 和 `main` push 上运行单一 `required` job。workflow 只负责固定工具链和编排入口；项目阶段由 `.ci/project.json` 与 `scripts/automation_project.py` 定义，并依次 fail closed：
 
 | 阶段 | 覆盖 |
