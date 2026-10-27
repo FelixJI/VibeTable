@@ -446,7 +446,7 @@ def handle_plugin_native_request(
     deadline = time.monotonic() + 15
     try:
         _validate_request(request)
-        if request["action"] != "recover":
+        if request["action"] not in {"recover", "contrast-on", "contrast-off"}:
             runner._prepare_native_uia_observer()
         native = runner._DocumentNativeWindows()
         confirm = request["buttonId"].startswith("plugin-confirm-")
@@ -462,7 +462,14 @@ def handle_plugin_native_request(
         if len(windows) != 1:
             raise OSError("expected one current owned native plugin window")
         hwnd = windows[0]["hwnd"]
-        if request["action"] == "observe" and request["stage"] in {"contrast", "contrast-restored"}:
+        if request["action"] in {"contrast-on", "contrast-off"}:
+            # SystemParametersInfo restores settings without sending foreground input.
+            if native.owner(hwnd) != host_pid:
+                raise ValueError("native plugin window identity changed")
+        elif request["action"] == "observe" and request["stage"] in {
+            "contrast",
+            "contrast-restored",
+        }:
             native.foreground(hwnd, host_pid, settle_deadline=deadline)
         else:
             native.foreground(hwnd, host_pid)

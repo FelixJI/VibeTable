@@ -266,6 +266,7 @@ def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monk
         "_DocumentNativeWindows",
         lambda: SimpleNamespace(
             windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            owner=lambda _hwnd: 12,
             foreground=lambda *_args: None,
             close=lambda: None,
         ),
@@ -284,6 +285,112 @@ def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monk
     assert result["requestId"] == "restoration-request"
     assert result["contrast"]["original"] == original
     assert result["contrast"]["observed"] == observed
+    assert native._contrast_original == original
+
+
+@pytest.mark.parametrize("action", ["contrast-on", "contrast-off"])
+def test_system_contrast_requests_succeed_without_a_foreground_input_owner(
+    tmp_path, monkeypatch, action
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    # Windows can temporarily report no foreground window during a contrast transition.
+    activations = []
+    writes = []
+    current = {"flags": 127 if action == "contrast-off" else 126, "scheme": ""}
+
+    def parameters(flags=None, scheme=""):
+        if flags is not None:
+            writes.append((flags, scheme))
+            current.update(flags=flags, scheme=scheme)
+        return dict(current)
+
+    window = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    window.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: 0,
+        SetForegroundWindow=lambda hwnd: activations.append(("activate", hwnd)) or True,
+        SendMessageTimeoutW=lambda *args: activations.append(("synchronize", args[5])) or True,
+    )
+    window.owner = lambda _hwnd: 12
+    window.windows = lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}]
+    window.close = lambda: None
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(
+        native,
+        "_contrast_original",
+        None if action == "contrast-on" else {"flags": 126, "scheme": ""},
+    )
+    monkeypatch.setattr(native, "_contrast_on_observed", None)
+    monkeypatch.setattr(native, "_contrast_parameters", parameters)
+    monkeypatch.setattr(
+        runner,
+        "_prepare_native_uia_observer",
+        lambda: pytest.fail("system settings must not depend on the UIA observer"),
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: window)
+
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "no-foreground-window",
+            "action": action,
+            "buttonId": "plugin-recover",
+            "stage": "contrast",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "completed", result
+    assert activations == []
+    if action == "contrast-off":
+        assert writes == [(126, "")]
+        assert result["contrast"]["status"] == "restored"
+        assert result["contrast"]["observed"] == {"flags": 126, "scheme": ""}
+        assert native._contrast_original is None
+    else:
+        assert writes == [(127, "")]
+        assert result["contrast"]["status"] == "enabled"
+        assert result["contrast"]["observed"]["flags"] & 1 == 1
+
+
+def test_system_contrast_requests_keep_the_owned_host_identity_gate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    writes = []
+    original = {"flags": 126, "scheme": ""}
+    window = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    window.user32 = SimpleNamespace(GetForegroundWindow=lambda: 0)
+    window.owner = lambda _hwnd: 99
+    window.windows = lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}]
+    window.close = lambda: None
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(native, "_contrast_original", dict(original))
+    monkeypatch.setattr(
+        native, "_contrast_parameters", lambda flags=None, scheme="": writes.append((flags, scheme))
+    )
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: window)
+
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "foreign-owner",
+            "action": "contrast-off",
+            "buttonId": "plugin-recover",
+            "stage": "contrast",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert "changed" in result["error"]
+    assert writes == []
     assert native._contrast_original == original
 
 
