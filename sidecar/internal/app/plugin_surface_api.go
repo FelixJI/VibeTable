@@ -107,6 +107,9 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 		}
 		if bound && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
 			installed.ActionRisk = action.Risk
+			if err := resolveModelGrants(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation); err != nil {
+				return installed, err
+			}
 			return installed, nil
 		}
 	}
@@ -121,7 +124,7 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 			return event.JSON(http.StatusBadRequest, map[string]any{"code": "plugin_capability_invalid"})
 		}
 		budget := 15 * time.Second
-		if input.Method == "mutation.commit" {
+		if input.Method == "mutation.commit" || input.Method == "model.commit" {
 			budget = 120 * time.Second
 		}
 		ctx, cancel := context.WithTimeout(event.Request.Context(), budget)
@@ -220,6 +223,12 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		return nil, err
 	}
 	switch input.Method {
+	case "model.catalog", "model.preview", "model.commit", "model.read", "model.status":
+		var domain *schemaFieldChangeDomain
+		if len(ioPorts) > 0 && ioPorts[0] != nil {
+			domain = ioPorts[0].models
+		}
+		return executeSurfaceModel(ctx, app, workspace, input, domain)
 	case "attachment.stage", "attachment.list", "attachment.read":
 		var ports *pluginSurfaceIO
 		if len(ioPorts) > 0 {
@@ -644,7 +653,7 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 				name = "delete"
 			}
 			var grant *pluginReadGrant
-			for _, candidate := range installed.Manifest.Permissions.Data {
+			for _, candidate := range installed.grants() {
 				if (candidate.Collection == plan.Collection || candidate.Collection == "$active" && plan.Collection == input.ActiveCollection) && pluginHas(candidate.Operations, name) {
 					copy := candidate
 					grant = &copy

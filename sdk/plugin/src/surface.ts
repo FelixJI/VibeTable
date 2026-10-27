@@ -3,6 +3,7 @@ import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryPage, 
 import type { CommandContext, JsonObject, JsonValue } from "./types.js";
 import type { ReadGrant, WriteGrant } from "./capabilities.js";
 import { PluginCapabilityError } from "./capabilities.js";
+import { createSurfaceModel, type SurfaceModel } from "./surface-model.js";
 
 export const SURFACE_API_CONTRACT = "vibetable.plugin-api.v1";
 export interface SurfaceMutationPlan {
@@ -57,6 +58,7 @@ export interface SurfaceTransport {
   removeEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
 }
 export interface SurfaceCapabilities {
+  readonly model: SurfaceModel;
   readonly context: { read(): Promise<CommandContext>; current(): Promise<SurfacePresentation>; onChanged(listener: (value: SurfacePresentation) => void): () => void };
   readonly tasks: { list(): Promise<readonly SurfaceTask[]>; onChanged(listener: (tasks: readonly SurfaceTask[]) => void): () => void; cancel(taskId: string): Promise<{ readonly cancelRequested: boolean }> };
   readonly ui: ReturnType<typeof createSurfacePresentationClient>["ui"];
@@ -177,15 +179,15 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     return new Promise<T>((resolve, reject) => {
       const cancel = (): void => {
         try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } }); }
-        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
+        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" || method === "model.configure" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
       };
       const cleanup = (): void => signal?.removeEventListener("abort", cancel);
       const timer = setTimeout(() => {
         pending.delete(requestId);
         cleanup();
         cancel();
-        reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
-      }, method === "mutation.submit" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "attachments.previewChange" ? 125_000 : 20_000);
+        reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" || method === "model.configure" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
+      }, method === "mutation.submit" || method === "model.configure" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "attachments.previewChange" ? 125_000 : 20_000);
       pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
       try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); onSent?.(); }
@@ -434,6 +436,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     return output;
   }
   return {
+    model: createSurfaceModel(call),
     context: {
       read: async () => {
         const context = await call<CommandContext>("context.read", {});
@@ -493,7 +496,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
         if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
-        request.reject((request.method === "mutation.submit" || request.method === "file.write")
+        request.reject((request.method === "mutation.submit" || request.method === "file.write" || request.method === "model.configure")
           ? new PluginCapabilityError("plugin_commit_unknown", "Plugin surface closed before the commit receipt; outcome unknown; no automatic retry.")
           : new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
       }

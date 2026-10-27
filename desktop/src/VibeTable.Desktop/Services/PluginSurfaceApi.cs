@@ -89,7 +89,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "model.configure" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
@@ -185,6 +185,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "storage.delete":
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
+                    break;
+                case "model.configure":
+                case "model.read":
+                case "model.status":
+                    result = await HandleModelAsync(surface, request.Method, request.Params, deadline.Token);
                     break;
                 case "attachments.list":
                 case "attachments.read":

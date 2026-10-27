@@ -19,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -42,6 +43,10 @@ type FormulaDraftInspection struct {
 
 func NewCatalog(app core.App) *Catalog {
 	return &Catalog{app: app}
+}
+
+func (catalog *Catalog) ProtectModelField(ctx context.Context, table, field string, before, after *v2.FieldDefinition) error {
+	return pluginmodel.ProtectField(ctx, catalog.app, table, field, before, after)
 }
 
 // AuthorFormulaDocument resolves editor references against active catalog IDs.

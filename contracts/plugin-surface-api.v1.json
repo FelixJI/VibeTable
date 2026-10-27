@@ -4,6 +4,9 @@
   "pluginApi": "3.x",
   "methods": [
     "context.read",
+    "model.configure",
+    "model.read",
+    "model.status",
     "data.describe",
     "data.query",
     "data.releaseCursor",
@@ -61,6 +64,15 @@
     "attachmentStageRequestBytes": 2097152
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+  "model": {
+    "contract": "vibetable.plugin-model.v1",
+    "declaration": "closed permissions.model logical entities and fields; no arbitrary scripts or SQL",
+    "configuration": "native Host selection and exact plan confirmation; canonical table/field identities",
+    "hostOnly": ["model.catalog", "model.preview", "model.commit"],
+    "authorization": "explicit logical-role grants only after complete configuration; current installation rechecked",
+    "recovery": "durable per-step progress; read/status after cancellation or unknown reply; never imply rollback or automatically replay",
+    "upgrade": "additive schema operations only; renames preserve identity, incompatible changes fail closed"
+  },
   "notifications": [
     "data.invalidated",
     "data.subscription.closed"

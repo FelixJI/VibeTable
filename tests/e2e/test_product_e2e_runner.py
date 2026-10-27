@@ -5127,6 +5127,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_surface_api.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_models.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_sdk_examples.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
@@ -5974,8 +5975,9 @@ def test_plugin_host_restart_seed_missing_plugin_identity_is_invalid(
     assert not (tmp_path / "evidence" / scenario.id / "persistent" / "seed-state.json").exists()
 
 
+@pytest.mark.parametrize("scenario_id", ["11-plugin-mutation", "54-plugin-models"])
 def test_plugin_host_restart_acceptance_is_selected_only_for_its_scenarios(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scenario_id: str
 ) -> None:
     routed: list[str] = []
 
@@ -5992,12 +5994,12 @@ def test_plugin_host_restart_acceptance_is_selected_only_for_its_scenarios(
     exit_code, report = runner.run_product_acceptance(
         package_root=tmp_path / "package",
         evidence_root=tmp_path / "evidence",
-        selected=("11-plugin-mutation",),
+        selected=(scenario_id,),
     )
 
     assert exit_code == 0
     assert report["status"] == "passed"
-    assert routed == ["11-plugin-mutation"]
+    assert routed == [scenario_id]
 
     routed.clear()
     _patch_acceptance_preflight(

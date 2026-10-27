@@ -458,7 +458,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			options.Logger.Info("workspace.legacy_import.completed")
 			registerPluginStoreRoutes(event.Router, plugins, businessGate)
 			registerPluginDataRoutes(event.Router, pb, querySource, capabilities.WorkspaceID, capabilities.SessionEpoch)
-			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate, &pluginSurfaceIO{plans: importPlans, attachments: attachmentManager})
+			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate, &pluginSurfaceIO{plans: importPlans, attachments: attachmentManager, models: &fieldSettings})
 			registerPluginWorkerRetiredRoutes(event.Router)
 			schemaCatalog := schemaapi.New(pb)
 			contentMetadata := metadata.NewContentService(pb, querySource)

@@ -2,6 +2,7 @@ package pluginstore
 
 import (
 	"encoding/json"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"path"
 	"strings"
 )
@@ -47,6 +48,15 @@ func validateManifest(value any, pluginID, version string) error {
 		}
 	}
 	ui := manifest["ui"].(map[string]any)
+	if value, exists := manifest["permissions"].(map[string]any)["model"]; exists {
+		raw, err := json.Marshal(value)
+		if !native || err != nil {
+			return invalidPayload()
+		}
+		if _, err := pluginmodel.Decode(raw); err != nil {
+			return invalidPayload()
+		}
+	}
 	views, _ := ui["customViews"].([]any)
 	for _, value := range views {
 		view, _ := value.(map[string]any)

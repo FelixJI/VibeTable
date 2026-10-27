@@ -338,6 +338,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "51-plugin-application-commit-unknown",
         "52-plugin-capability-services",
         "53-record-manager",
+        "54-plugin-models",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -1802,7 +1803,12 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
 
 @pytest.mark.parametrize(
     "scenario",
-    ["11-plugin-mutation", "33-host-grid-presentation", "39-file-workflow-combination"],
+    [
+        "11-plugin-mutation",
+        "33-host-grid-presentation",
+        "39-file-workflow-combination",
+        "54-plugin-models",
+    ],
 )
 @pytest.mark.parametrize("failed_phase", ["seed", "resume"])
 def test_product_e2e_failure_evidence_retains_host_restart_phases(
@@ -3098,6 +3104,12 @@ def _prepare_complete_product_reports(
                 phase_root.mkdir(parents=True)
                 for filename in filenames:
                     (phase_root / filename).write_bytes(b"synthetic unit-test image/trace payload")
+        if "54-plugin-models" in selected[stage]:
+            for phase, filenames in S54_PHASE_EVIDENCE.items():
+                phase_root = run_root / "54-plugin-models" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic model qualification evidence")
         if "39-file-workflow-combination" in selected[stage]:
             for phase, filenames in S39_SCREENSHOTS.items():
                 phase_root = run_root / "39-file-workflow-combination" / phase / "20260817T010204Z"
@@ -3949,6 +3961,18 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
         "product-e2e-report.json",
         *(f"{scenario_id}/persistent/{name}" for name in evidence),
     }
+
+
+S54_PHASE_EVIDENCE = {
+    "seed": (
+        "54-models.json",
+        "54-model-native-create.png",
+        "54-model-native-map.png",
+        "54-model-native-upgrade.png",
+        "54-plugin-models-trace.zip",
+    ),
+    "resume": ("54-models-reopened.json", "54-plugin-models-trace.zip"),
+}
 
 
 SCENARIO_SCREENSHOTS = {
@@ -4819,3 +4843,35 @@ def test_race_discovery_uses_the_same_build_tags_as_execution(monkeypatch, tmp_p
     assert code == 0
     selected = {arg for command in commands for arg in command if arg.startswith("-test.run=")}
     assert selected == {"-test.run=^TestShared$", "-test.run=^TestRaceOnly$"}
+
+
+@pytest.mark.parametrize("missing_phase", [None, "seed", "resume"])
+def test_model_restart_requires_both_processes_evidence(
+    tmp_path: Path, missing_phase: str | None
+) -> None:
+    scenario = "54-plugin-models"
+    run = tmp_path / "source" / "20261027T050000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps({"status": "passed", "scenarios": [{"scenario": scenario, "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    expected = {"product-e2e-report.json"}
+    for phase, filenames in S54_PHASE_EVIDENCE.items():
+        directory = run / scenario / phase / "20261027T050001Z"
+        directory.mkdir(parents=True)
+        for filename in filenames:
+            (directory / filename).write_bytes(f"{phase}:{filename}".encode())
+            expected.add(f"{scenario}/{phase}/{directory.name}/{filename}")
+        (directory / "workspace.db").write_bytes(b"private workspace")
+    if missing_phase is not None:
+        filename = S54_PHASE_EVIDENCE[missing_phase][0]
+        (run / scenario / missing_phase / "20261027T050001Z" / filename).unlink()
+        with pytest.raises(ValueError, match=filename):
+            next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+        return
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert {
+        file.relative_to(retained).as_posix() for file in retained.rglob("*") if file.is_file()
+    } == expected

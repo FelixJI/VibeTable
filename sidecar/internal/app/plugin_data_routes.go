@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -53,18 +54,20 @@ type pluginComputedRevision struct {
 	Watermark  string `json:"watermark"`
 }
 type pluginInstallation struct {
-	InstallationID string `json:"installationId"`
-	PackageHash    string `json:"packageHash"`
-	Revision       int64  `json:"revision"`
-	Status         string `json:"status"`
+	ModelGrants    []pluginReadGrant `json:"-"`
+	InstallationID string            `json:"installationId"`
+	PackageHash    string            `json:"packageHash"`
+	Revision       int64             `json:"revision"`
+	Status         string            `json:"status"`
 	Manifest       struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
 		} `json:"compatibility"`
 		Permissions struct {
-			Data           []pluginReadGrant `json:"data"`
-			PrivateStorage bool              `json:"privateStorage"`
-			Files          []string          `json:"files"`
+			Model          *pluginmodel.Declaration `json:"model,omitempty"`
+			Data           []pluginReadGrant        `json:"data"`
+			PrivateStorage bool                     `json:"privateStorage"`
+			Files          []string                 `json:"files"`
 		} `json:"permissions"`
 	} `json:"manifest"`
 }
@@ -86,13 +89,17 @@ func pluginHas(values []string, value string) bool {
 	return false
 }
 func (installation pluginInstallation) grant(table, active string) *pluginReadGrant {
-	for _, grant := range installation.Manifest.Permissions.Data {
+	for _, grant := range installation.grants() {
 		if pluginHas(grant.Operations, "read") && pluginHas(grant.Operations, "query") &&
 			(grant.Collection == table || grant.Collection == "$active" && table == active) {
 			return &grant
 		}
 	}
 	return nil
+}
+
+func (installation pluginInstallation) grants() []pluginReadGrant {
+	return append(append([]pluginReadGrant{}, installation.Manifest.Permissions.Data...), installation.ModelGrants...)
 }
 
 // This route has no renderer registration. Host supplies execution identity;
@@ -139,6 +146,9 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 				return pluginDataError("plugin_api_unsupported")
 			}
 		}
+		if err := resolveModelGrants(ctx, tx, input.ProjectKey, input.PluginID, &installed); err != nil {
+			return err
+		}
 		switch input.Operation {
 		case "describe":
 			var request pluginDescribeRequest
@@ -159,7 +169,7 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			}
 			tables := []any{}
 			seen := map[string]bool{}
-			for _, grant := range installed.Manifest.Permissions.Data {
+			for _, grant := range installed.grants() {
 				id := grant.Collection
 				if id == "$active" {
 					id = input.ActiveCollection

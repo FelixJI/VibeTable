@@ -156,6 +156,7 @@ _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
         "recordId",
     ),
     "44-file-restore-crash": ("workspaceId", "restoreCrash"),
+    "54-plugin-models": ("workspaceId", "sessionEpoch", "projectKey", "bindings", "userData"),
 }
 
 
@@ -389,6 +390,7 @@ _NODE_FREE_HOST_SCENARIOS = frozenset(
         "51-plugin-application-commit-unknown",
         "52-plugin-capability-services",
         "53-record-manager",
+        "54-plugin-models",
     }
 )
 
@@ -2369,12 +2371,19 @@ def _run_node_runner_guarded(
                     "51-plugin-application-commit-unknown",
                     "52-plugin-capability-services",
                     "53-record-manager",
+                    "54-plugin-models",
                 }:
                     native_result = {
                         "requestId": native_id,
                         "status": "failed",
                         "error": "native plugin scenario not authorized",
                     }
+                elif command[command.index("--scenario") + 1] == "54-plugin-models":
+                    from tests.e2e.plugin_model_native import handle_plugin_model_request
+
+                    native_result = handle_plugin_model_request(
+                        plugin_native_request, host_scope=host_scope, evidence=scenario_dir
+                    )
                 else:
                     from tests.e2e.plugin_application_native import handle_plugin_native_request
 
@@ -3123,6 +3132,10 @@ def run_scenario(
         from tests.e2e.plugin_capability_packages import prepare_capability_packages
 
         prepare_capability_packages(controls_dir)
+    if scenario.id == "54-plugin-models":
+        from tests.e2e.plugin_model_packages import prepare_model_packages
+
+        prepare_model_packages(controls_dir)
     if scenario.id in {"16-dashboard-lifecycle", "17-interface-lifecycle", "53-record-manager"}:
         from tests.e2e.plugin_capability_packages import prepare_record_manager_package
 
@@ -3715,6 +3728,7 @@ def run_product_acceptance(
             "51-plugin-application-commit-unknown",
             "52-plugin-capability-services",
             "53-record-manager",
+            "54-plugin-models",
         }
         for scenario in scenarios
     ):
@@ -3748,6 +3762,7 @@ def run_product_acceptance(
                 "51-plugin-application-commit-unknown",
                 "52-plugin-capability-services",
                 "53-record-manager",
+                "54-plugin-models",
             }
             and native_observer_error is not None
         ):

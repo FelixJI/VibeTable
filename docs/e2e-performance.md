@@ -24,11 +24,13 @@
 - GitHub run：[main CI 40074440901](https://github.com/FelixJI/VibeTable/actions/runs/40074440901)
 - 报告契约：`contractVersion=2.0`
 - 结果：52/52 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`54-plugin-models`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：1（`49-plugin-application-security`）。
 
 S49 随顶部原生栏移除，改为真实 WebView 应用/恢复侧栏截图，并保存原生菜单输入、系统对比度回执及 CPU 前后进程证据；该证据形式尚待后续同候选完整 CI 验证。下方 main 样本的通过事实保留，不将其视为新证据契约已闭合。
+
+S54 新增受控三表建模、原生手动映射和无损升级，分配至 file-io lane；其同候选真实桌面证据尚待包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 
 同一 main 候选的 data-io 10 场、file-io 13 场与 resilience 29 场精确、不重复覆盖当前 manifest 的全部 52 个场景，三份原始产品报告均通过、零失败、零跳过。三个产品 lane 报告对同一 source 与同一候选 `VibeTable-v0.5.3-win-x64.zip`（271 个文件）的 commit、sourceHash、候选与资产绑定核验一致，产品 stage 与同 lane 其余 stage 返回码均为零，packageAudit 与四组件 freshness 通过。三个产品 stage 实际用时约 1183.5 秒、1162.0 秒与 1236.9 秒，均在 1800 秒预算内。报告内部路径分别为 `lane-evidence/data-io/20261024T075228Z/product-e2e-report.json`、`lane-evidence/file-io/20261024T075040Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261024T075717Z/product-e2e-report.json`。
 
