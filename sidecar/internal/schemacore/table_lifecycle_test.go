@@ -35,12 +35,22 @@ func TestTableCreateRejectsDuplicateDisplayNameButKeepsReplayIdempotent(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	preview := PreviewTableID("operation-duplicate-name-1")
+	if preview == "" || preview == PreviewTableID("operation-duplicate-name-2") {
+		t.Fatal("preview must allocate distinct canonical identities per operation")
+	}
+	if tables, err := app.CountRecords("vibetable_tables"); err != nil || tables != 0 {
+		t.Fatalf("preview wrote business tables: count=%d, error=%v", tables, err)
+	}
 	first, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
 		DisplayName: "订单", OperationID: "operation-duplicate-name-1",
 		Actor: v2.Actor{ID: "local-user", Kind: "user"},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.TableID != preview || PreviewTableID("operation-duplicate-name-1") != preview {
+		t.Fatalf("create identity %q differs from stable preview %q", first.TableID, preview)
 	}
 	// Same name, different operationId: a second physical table is rejected.
 	_, err = lifecycle.Create(context.Background(), v2.TableCreateIntent{
