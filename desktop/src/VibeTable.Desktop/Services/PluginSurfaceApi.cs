@@ -89,7 +89,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
@@ -116,6 +116,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 await HandleFileAsync(surface, state, request.Method, request.Params, deadline.Token);
                 return Reply(requestId, new { released = true });
             }
+            if (request.Method == "output.release")
+            {
+                await HandleOutputAsync(surface, state, request.Method, request.Params, deadline.Token);
+                return Reply(requestId, new { released = true });
+            }
             // Like cancellation, releasing a handle must remain possible when normal requests fill the budget.
             if (request.Method == "data.unsubscribe")
             {
@@ -136,6 +141,16 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             object? result;
             switch (request.Method)
             {
+                case "output.create":
+                case "output.write":
+                case "output.seal":
+                case "output.save":
+                case "output.status":
+                case "output.previewArchive":
+                case "output.reopen":
+                    result = await HandleOutputAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    if (result is JsonElement outputReceipt && outputReceipt.TryGetProperty("committed", out var outputCommitted) && outputCommitted.ValueKind == JsonValueKind.True) committed = true;
+                    break;
                 case "output.print":
                     {
                         if (request.Params.ValueKind != JsonValueKind.Object || request.Params.EnumerateObject().Any())
@@ -468,7 +483,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         if (method == "context.read" && surface.InvocationContext is { } invocation)
             payload["invocationContext"] = JsonSerializer.SerializeToNode(new
             { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
-        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(method == "attachment.stage" ? AttachmentStageJson : null));
+        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(method is "attachment.stage" or "output.stage.write" ? AttachmentStageJson : null));
         if (bytes.Length > (method == "attachment.stage" ? AttachmentStageRequestBytes : MaxBytes)) throw Error("plugin_message_too_large");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
         request.Headers.Add(generation.Context.SessionHeaderName, generation.Context.SessionSecret);
@@ -554,6 +569,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         ReleaseSubscriptions(token);
         ReleaseFiles(token);
         ReleaseDataIo(token);
+        ReleaseOutputs(token);
         _attachmentRefs.TryRemove(token, out _);
         if (_states.TryRemove(token, out var state))
         { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); }

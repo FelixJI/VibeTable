@@ -492,5 +492,15 @@
       "plugin.data-io",
       "plugin.subscriptions"
     ]
+  },
+  {
+    "id": "55-plugin-surface-outputs",
+    "title": "插件有界模板产物保存、归档与原样重印",
+    "requirement": "真实WPF/WebView2中的合成插件通过公开SDK生成普通及大于1MiB的XLSX，原生选址落盘、Host确认归档；重开页面读取不可变原产物并原样重印，新模板生成新实例，超出32MiB明确拒绝。独立ZIP/XML读取器核对文件内容与字节一致，保存和重印不改变业务字段。",
+    "capabilities": [
+      "plugin.surface-api",
+      "plugin.output.artifacts",
+      "plugin.attachments"
+    ]
   }
 ]

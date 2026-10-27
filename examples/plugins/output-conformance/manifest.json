@@ -1,0 +1,15 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.output-conformance",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "合成 XLSX 产物验收" },
+  "compatibility": { "minHostVersion": "0.5.3", "pluginApi": "3.x" },
+  "permissions": {
+    "data": [{ "collection": "$active", "operations": ["read", "query", "update"], "fields": ["*"] }],
+    "privateStorage": false,
+    "files": ["pickWrite"],
+    "network": { "domains": [], "methods": [] }
+  },
+  "actions": [{ "actionId": "open-output", "displayName": { "zh-CN": "生成合成产物" }, "mode": "local", "risk": "write", "invocation": "manual", "placements": ["table.toolbar"] }],
+  "ui": { "customViews": [{ "viewId": "output", "actionId": "open-output", "entry": "ui/index.html", "script": "dist/output.js" }] }
+}

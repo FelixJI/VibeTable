@@ -3,8 +3,39 @@ import assert from "node:assert/strict";
 import {
   installContrastRestoreProjectionCaptureInPage,
   selectExpectedPluginSecurityConsoleEntries,
+  assertRecoveredApplicationShell,
 } from "./plugin_application_security.mjs";
 import { waitForCapturedBridgeMessage, captureCompletedInPage } from "./bridge_capture_wait.mjs";
+
+test("renderer crash recovery waits for asynchronous plugin catalog projection after the shell mounts", async () => {
+  let catalogProjected = false;
+  const projection = new Promise(resolve => setImmediate(() => { catalogProjected = true; resolve(); }));
+  const waits = [];
+  const page = {
+    getByTestId(id) {
+      return {
+        async waitFor() {
+          waits.push(id);
+          if (id === "nav-plugin-app-com.vibetable.e2e.application-a/open-app") await projection;
+        },
+        async isVisible() { return id.startsWith("nav-plugin-app-") ? catalogProjected : true; },
+      };
+    },
+  };
+  const recorder = { check(name, passed) { assert.ok(passed, `assertion failed: ${name}: {}`); } };
+  await assertRecoveredApplicationShell(page, recorder, "actual renderer crash recovers into a usable product shell");
+  assert.ok(waits.includes("nav-plugin-app-com.vibetable.e2e.application-a/open-app"));
+});
+
+test("renderer recovery still fails when the installed application never becomes reachable", async () => {
+  const missing = new Error("installed application entry did not appear within the recovery deadline");
+  const page = { getByTestId(id) { return {
+    async waitFor() { if (id.startsWith("nav-plugin-app-")) throw missing; },
+    async isVisible() { return !id.startsWith("nav-plugin-app-"); },
+  }; } };
+  const recorder = { check(name, passed) { assert.ok(passed, name); } };
+  await assert.rejects(assertRecoveredApplicationShell(page, recorder, "recovered shell"), error => error === missing);
+});
 
 const intermediate = extra => JSON.stringify({
   type: "appearance.changed",

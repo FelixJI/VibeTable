@@ -26,6 +26,14 @@
     "storage.delete",
     "mutation.preview",
     "mutation.submit",
+    "output.create",
+    "output.write",
+    "output.seal",
+    "output.save",
+    "output.status",
+    "output.previewArchive",
+    "output.reopen",
+    "output.release",
     "output.print",
     "request.cancel"
   ],
@@ -58,7 +66,11 @@
     "pluginWorkbookEntries": 4096,
     "pluginImportPlansTotal": 128,
     "ownedDataIoCancelAcknowledgements": 8,
-    "attachmentStageRequestBytes": 2097152
+    "attachmentStageRequestBytes": 2097152,
+    "outputBytes": 33554432,
+    "outputBlockBytes": 262144,
+    "outputsPerSurface": 2,
+    "outputLifetimeSeconds": 600
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "notifications": [
@@ -125,6 +137,15 @@
     "write": "Host-native file selection, staged principal/record/field/file binding, canonical setAttachments and native confirmation",
     "read": "current Go installation and field grant checked for each bounded block",
     "stageTransport": "Host-only attachment.stage JSON envelope <=2 MiB including base64; decoded file <=1 MiB; all other surface HTTP requests <=1 MiB"
+  },
+  "outputs": {
+    "contract": "vibetable.plugin-output.v1",
+    "source": "immutable plugin-declared templateVersion, dataVersion and purpose; not independently verified business facts",
+    "ownership": "current surface, installation and workspace; ordinary file and attachment budgets unchanged",
+    "save": "native target selection and atomic replacement; stable saveId recovers an in-session receipt; unknown never auto-replays",
+    "archive": "existing canonical attachment mutation and native confirmation; immutable artifact source audit in the same business transaction",
+    "reopen": "opaque archived artifactId, current installation and canonical field authorization, original issued bytes",
+    "print": "opened preview only, never a successful physical printing receipt"
   },
   "ui": {
     "transport": "trusted parent; existing vibetable.plugin-surface.v1 action service=ui; never a Product RPC",
