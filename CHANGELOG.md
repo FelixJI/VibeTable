@@ -1,5 +1,11 @@
 # VibeTable 0.4.0
 
+## 0.5.7
+
+### Bug Fixes
+
+- **workspace:** 改善字段筛选复制与工作区保护体验 (#525) (c8ab2ea)
+
 ## 0.5.6
 
 ### Features
