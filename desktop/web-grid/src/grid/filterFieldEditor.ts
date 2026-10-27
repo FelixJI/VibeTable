@@ -53,3 +53,22 @@ export function isPlainTextColumn(column: ColumnSchema | undefined): boolean {
   if (column.filterInput === "select" || column.filterInput === "multiSelect") return false;
   return column.display?.kind !== "select" && (column.enumOptions?.length ?? 0) === 0;
 }
+
+/**
+ * 表头输入对该列是否保持精确 `eq` 语义（`buildQuery` 的最终分支）。
+ *
+ * 普通文本列（空白分词 contains）、JSON 文档列（contains）与多选/成员
+ * 列（contains 成员）的表头输入会被查询适配器改写操作符：把这些列的
+ * `eq` 条件镜像进输入后，仅排序触发的 runtime 捕获也会把保存视图/高
+ * 级条件改写成 contains 或列级 OR。列信息缺失时同样返回 false：无法
+ * 证明可往返的条件一律不镜像。
+ */
+export function headerInputPreservesEq(column: ColumnSchema | undefined): boolean {
+  if (!column) return false;
+  if (column.filterInput === "multiSelect") return false;
+  if (column.filterOperators?.includes("contains") && !column.filterOperators.includes("eq")) {
+    return false;
+  }
+  if (column.dataType === "json") return false;
+  return !isPlainTextColumn(column);
+}

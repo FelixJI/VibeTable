@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import type { ColumnSchema } from "@/contracts";
 import { defaultVisibleFields, useViewQueryStore } from "./viewQueryStore";
 
 describe("viewQueryStore", () => {
@@ -284,6 +285,51 @@ describe("viewQueryStore", () => {
 
     store.applyHeaderValueFilter("note", []);
     expect(store.filters).toEqual([otherGroup]);
+  });
+
+  it("列感知镜像：普通文本 eq 不进表头输入，仅排序的 runtime 捕获不改写保存语义", () => {
+    const store = useViewQueryStore();
+    const columns: readonly ColumnSchema[] = [
+      { name: "note", title: "备注", dataType: "text", editable: true, nullable: true },
+      {
+        name: "status", title: "状态", dataType: "text", editable: true, nullable: true,
+        filterInput: "select", filterOptions: [{ value: "open", label: "进行中" }],
+      },
+    ];
+    store.replace("orders", {
+      kind: "table", layout: "table",
+      filters: [
+        { field: "note", operator: "eq", value: "foo bar" },
+        { field: "status", operator: "eq", value: "open" },
+      ],
+      sorts: [], search: "", visibleFields: ["note", "status"],
+    }, ["note", "status"], columns);
+    // 普通文本列的表头输入是 contains 语义：eq 镜像后仅排序也会被改写，
+    // 因此不镜像；select 枚举列输入往返保持 eq，仍镜像。
+    expect(store.headerFilters).toEqual([
+      { field: "status", operator: "eq", value: "open" },
+    ]);
+
+    // 用户仅调整排序：captureRuntimeQuery 从（未被镜像污染的）表头输入
+    // 重建，保存的普通文本 eq 条件必须原样保留。
+    store.updateRuntime({
+      headerFilters: [{ field: "status", operator: "eq", value: "open", logic: "AND" }],
+      sorts: [{ field: "note", direction: "desc" }],
+      groups: [],
+    });
+    expect(store.filters).toEqual([
+      { field: "note", operator: "eq", value: "foo bar" },
+      { field: "status", operator: "eq", value: "open", logic: "AND" },
+    ]);
+    expect(store.toQuery().filters).toEqual(store.filters);
+
+    // 高级编辑器重新保存定义时同样不得镜像不可往返的普通文本 eq。
+    store.updateDefinition({
+      filters: [{ field: "note", operator: "eq", value: "foo bar" }],
+      groups: [], summaries: [], visibleFields: ["note"],
+      columns,
+    });
+    expect(store.headerFilters).toEqual([]);
   });
 
   it("勾选面板同步 managed 镜像：外层 runtime.changed 不会把旧表头叶子加回", () => {

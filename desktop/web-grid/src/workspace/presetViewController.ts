@@ -276,7 +276,7 @@ export function createPresetViewController(
     const generation = loadGeneration;
     applying = true;
     try {
-      await applyDataSourceView(grid, view);
+      await applyDataSourceView(grid, view, dependencies.table.schema ?? []);
       await nextTick();
       if (generation === loadGeneration) pendingView.value = null;
     } catch (error) {
@@ -350,7 +350,7 @@ export function createPresetViewController(
     // 应用视图即确认当前 schema 为已知基线（覆盖 view.reload 等非恢复路径）。
     const schemaFields = (dependencies.table.schema ?? []).map(column => column.name);
     trackedSchemaFields = new Set(schemaFields);
-    dependencies.query.replace(collection, view, schemaFields);
+    dependencies.query.replace(collection, view, schemaFields, schema);
     if (view.kind && view.kind !== "table") {
       pendingView.value = null;
       requestAuthoritative();
@@ -498,7 +498,7 @@ export function createPresetViewController(
       const visible = new Set(dependencies.query.visibleFields);
       if (trackedSchemaFields.size === 0) {
         // 首次见到该表 schema：维持既有初始化语义。
-        if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
+        if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields, columns);
         else dependencies.query.reset(collection, fields);
       } else {
         // 增量：新字段默认可见（行 ID 除外），既有字段保持原状（含显式
@@ -600,13 +600,16 @@ export function createPresetViewController(
       }
       case "definition.changed": {
         if (initializing || applying) return;
-        dependencies.query.updateDefinition(intent.definition);
+        dependencies.query.updateDefinition({
+          ...intent.definition,
+          columns: dependencies.table.schema ?? [],
+        });
         dependencies.presets.markDirty();
         const grid = dependencies.grid.current.value;
         if (grid && activeKind.value === "table") {
           applying = true;
           try {
-            await applyDataSourceView(grid, captureTable());
+            await applyDataSourceView(grid, captureTable(), dependencies.table.schema ?? []);
             if (!stillCurrent()) return;
             await nextTick();
           } finally {

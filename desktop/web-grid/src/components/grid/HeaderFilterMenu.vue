@@ -56,8 +56,10 @@ const checkedCount = computed(() =>
   props.options.filter(option => draft.value.has(option.key)).length);
 const allChecked = computed(() =>
   props.options.length > 0 && checkedCount.value === props.options.length);
-const noneChecked = computed(() => checkedCount.value === 0);
-const selectedKeys = computed(() => props.options.filter(option => draft.value.has(option.key)).map(option => option.key));
+/** 提交载荷 = 完整 draft：含未加载分页的既有勾选（父级解析回原始值）。 */
+const selectedKeys = computed(() => [...draft.value]);
+/** 应用门槛看完整载荷：既有选择全在后页时也必须可提交。 */
+const noneChecked = computed(() => selectedKeys.value.length === 0);
 const selectionProblem = computed(() => props.validateSelection?.(selectedKeys.value) ?? null);
 
 function toggle(key: string, checked: boolean): void {

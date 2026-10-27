@@ -147,12 +147,34 @@ export function headerValueFilterError(
   return null;
 }
 
-/** 从当前顶层条件推导面板初始勾选键；其余情形视为未筛选（全选态）。 */
+/** 从当前顶层条件推导面板初始勾选；其余情形视为未筛选（全选态）。 */
 export function headerMenuSelection(
   filters: readonly FilterExpression[],
   field: string,
   column?: ColumnSchema,
 ): readonly string[] | null {
+  const pairs = menuSelectionPairs(filters, field, column);
+  return pairs === null ? null : pairs.map(pair => pair.key);
+}
+
+/**
+ * 面板初始勾选对应的原始值集合（与 `headerMenuSelection` 同一判定）：
+ * 分页未加载的既有勾选值提交时必须能解析回原始值，不能静默丢弃。
+ */
+export function headerMenuSelectionValues(
+  filters: readonly FilterExpression[],
+  field: string,
+  column?: ColumnSchema,
+): readonly unknown[] | null {
+  const pairs = menuSelectionPairs(filters, field, column);
+  return pairs === null ? null : pairs.map(pair => pair.value);
+}
+
+function menuSelectionPairs(
+  filters: readonly FilterExpression[],
+  field: string,
+  column?: ColumnSchema,
+): readonly { readonly key: string; readonly value: unknown }[] | null {
   if (!canEditHeaderValueFilter(filters, field)) return null;
   const membership = column?.filterInput === "multiSelect"
     || (column?.filterOperators?.includes("contains") && !column.filterOperators.includes("eq"));
@@ -162,11 +184,13 @@ export function headerMenuSelection(
   if (own.length !== 1) return null;
   const entry = own[0]!;
   if (isFilterCondition(entry)) {
-    if (entry.operator === "eq") return [headerValueKey(entry.value)];
-    if (entry.operator === "contains" && membership) return [headerValueKey(entry.value)];
-    if (entry.operator === "is_null") return [headerValueKey(null)];
+    if (entry.operator === "eq") return [{ key: headerValueKey(entry.value), value: entry.value }];
+    if (entry.operator === "contains" && membership) {
+      return [{ key: headerValueKey(entry.value), value: entry.value }];
+    }
+    if (entry.operator === "is_null") return [{ key: headerValueKey(null), value: null }];
     if (entry.operator === "in" && Array.isArray(entry.value)) {
-      return entry.value.map(headerValueKey);
+      return entry.value.map(value => ({ key: headerValueKey(value), value }));
     }
     return null;
   }
@@ -178,16 +202,17 @@ export function headerMenuSelection(
     index === 0 || leaf.logic === undefined || leaf.logic === "OR")) {
     return null;
   }
-  const keys: string[] = [];
+  const pairs: { key: string; value: unknown }[] = [];
   for (const leaf of entry.filters) {
-    if (leaf.operator === "is_null") keys.push(headerValueKey(null));
-    else if (leaf.operator === "eq") keys.push(headerValueKey(leaf.value));
-    else if (leaf.operator === "contains" && membership) keys.push(headerValueKey(leaf.value));
-    else if (leaf.operator === "in" && Array.isArray(leaf.value)) {
-      keys.push(...leaf.value.map(headerValueKey));
+    if (leaf.operator === "is_null") pairs.push({ key: headerValueKey(null), value: null });
+    else if (leaf.operator === "eq") pairs.push({ key: headerValueKey(leaf.value), value: leaf.value });
+    else if (leaf.operator === "contains" && membership) {
+      pairs.push({ key: headerValueKey(leaf.value), value: leaf.value });
+    } else if (leaf.operator === "in" && Array.isArray(leaf.value)) {
+      pairs.push(...leaf.value.map(value => ({ key: headerValueKey(value), value })));
     } else return null;
   }
-  return keys.length > 0 ? keys : null;
+  return pairs.length > 0 ? pairs : null;
 }
 
 /**

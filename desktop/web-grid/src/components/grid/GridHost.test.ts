@@ -629,6 +629,48 @@ describe("GridHost history selection", () => {
     wrapper.unmount();
   });
 
+  it("动态分页面板：未加载的既有勾选值随应用原样保留，不静默丢失", async () => {
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useTableStore().setDatasetReady({
+      table: "orders",
+      columns: [{ name: "note", title: "备注", dataType: "text", editable: true, nullable: true }],
+      rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+    });
+    // 首页只加载 a 与空白，后续分页未取：既有筛选勾选了 a、b、z。
+    setHostBridgeForTesting({
+      request: vi.fn(async () => ({
+        page: { rows: [], snapshot: { table: "orders" } },
+        groupRows: [{ key: ["a"], count: 2, summaries: [] }, { key: [null], count: 1, summaries: [] }],
+        groupOffset: 0, hasMoreGroups: true,
+      })),
+    } as unknown as HostBridge);
+    const view = useViewQueryStore();
+    view.replace("orders", {
+      kind: "table", layout: "table",
+      filters: [{ field: "note", operator: "in", value: ["a", "b", "z"] }],
+      sorts: [], search: "", visibleFields: ["note"],
+    }, ["note"]);
+    const wrapper = mount(GridHost, {
+      attachTo: document.body,
+      props: { onViewQueryChange: query => view.updateRuntime(query) },
+    });
+
+    wrapper.get(".grid-wrapper").element.dispatchEvent(new CustomEvent("vt-header-menu", {
+      bubbles: true, detail: { field: "note" },
+    }));
+    await flushPromises();
+    // 未改动勾选直接应用：b/z 尚未加载，也必须随提交保留。
+    document.querySelector<HTMLElement>('[data-testid="vt-header-menu-apply"]')!.click();
+    await flushPromises();
+
+    expect(view.filters).toEqual([
+      { field: "note", operator: "in", value: ["a", "b", "z"] },
+    ]);
+    wrapper.unmount();
+  });
+
   it("replaces and clears a checked header value through the real parent runtime callback", async () => {
     const workspace=useWorkspaceStore();
     workspace.setOpened([{collection:"orders",metadata:{}}],{orders:"Orders"});

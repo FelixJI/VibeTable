@@ -22,8 +22,11 @@ export function cloneFilterExpressions(filters: readonly FilterExpression[]): Fi
     : { ...filter });
 }
 
-function mirroredHeaderFilters(filters: readonly FilterExpression[]): FilterExpression[] {
-  return headerFilterConditions(filters).map(filter => ({ ...filter }));
+function mirroredHeaderFilters(
+  filters: readonly FilterExpression[],
+  columns?: readonly ColumnSchema[],
+): FilterExpression[] {
+  return headerFilterConditions(filters, columns).map(filter => ({ ...filter }));
 }
 
 function sameFilter(left: FilterExpression, right: FilterExpression): boolean {
@@ -128,11 +131,11 @@ export const useViewQueryStore = defineStore("view-query", {
       this.visibleFields = defaultVisibleFields(allFields);
       this.collapsedGroupKeys = [];
     },
-    replace(collection: string, view: PresetView, allFields: readonly string[]) {
+    replace(collection: string, view: PresetView, allFields: readonly string[], columns?: readonly ColumnSchema[]) {
       this.collection = collection;
       this.search = view.search;
       this.filters = cloneFilterExpressions(view.filters);
-      this.headerFilters = mirroredHeaderFilters(view.filters);
+      this.headerFilters = mirroredHeaderFilters(view.filters, columns);
       this.sorts = [...view.sorts];
       this.groups = [...(view.groups ?? [])].slice(0, 2);
       this.summaries = [...(view.summaries ?? [])].slice(0, 3);
@@ -163,9 +166,11 @@ export const useViewQueryStore = defineStore("view-query", {
       readonly groups: readonly GroupCondition[];
       readonly summaries: readonly SummaryCondition[];
       readonly visibleFields: readonly string[];
+      /** 当前 schema：用于只镜像可经表头输入往返的条件。 */
+      readonly columns?: readonly ColumnSchema[];
     }) {
       this.filters = cloneFilterExpressions(input.filters);
-      this.headerFilters = mirroredHeaderFilters(input.filters);
+      this.headerFilters = mirroredHeaderFilters(input.filters, input.columns);
       this.groups = [...input.groups].slice(0, 2);
       this.summaries = [...input.summaries].slice(0, 3);
       this.visibleFields = [...input.visibleFields];

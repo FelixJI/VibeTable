@@ -79,6 +79,26 @@ describe("HeaderFilterMenu", () => {
     wrapper.unmount();
   });
 
+  it("未加载的既有勾选值随应用一并提交：不静默丢弃", async () => {
+    // 动态取值分页：s:z 在后续页未加载，但它是既有筛选（in [a, z]）的
+    // 已选值；面板无法展示也无法取消它，提交必须原样携带。
+    const wrapper = open(pageOne, ["s:a", "s:z"]);
+    await wrapper.get('[data-testid="vt-header-menu-apply"]').trigger("click");
+    expect(wrapper.emitted("apply")?.[0]).toEqual([["s:a", "s:z"]]);
+    wrapper.unmount();
+  });
+
+  it("既有选择全在后续分页：应用不禁用且提交不静默丢弃", async () => {
+    // 首页只加载了 s:a/null；既有筛选勾选的 s:z 全部在后续分页：
+    // 已加载计数为 0，但提交载荷非空，应用必须可用且原样携带 s:z。
+    const wrapper = open(pageOne, ["s:z"]);
+    expect((wrapper.get('[data-testid="vt-header-menu-apply"]').element as HTMLButtonElement).disabled)
+      .toBe(false);
+    await wrapper.get('[data-testid="vt-header-menu-apply"]').trigger("click");
+    expect(wrapper.emitted("apply")?.[0]).toEqual([["s:z"]]);
+    wrapper.unmount();
+  });
+
   it("blocks over-budget submission with an actionable message until the selection is reduced", async () => {
     const wrapper=open(pageOne);
     await wrapper.setProps({validateSelection:(keys:readonly string[])=>keys.length>1?"请减少勾选，筛选条件最多 50 条。":null});

@@ -6,9 +6,11 @@ import {
   headerMenuOptionsFromPage,
   canEditHeaderValueFilter,
   headerMenuSelection,
+  headerMenuSelectionValues,
   headerMenuSource,
   headerValueFilterLeaves,
   headerValueFilterError,
+  headerValueLabel,
   isFieldValueGroup,
   resolveMenuSelectionValues,
   searchMenuOptions,
@@ -278,6 +280,46 @@ describe("headerFilterMenu", () => {
       [{ field: "amount", operator: "contains", value: "op" }],
       "amount",
     )).toBeNull();
+  });
+
+  it("headerMenuSelectionValues 与 headerMenuSelection 同源：原始值与键一一对应", () => {
+    expect(headerMenuSelectionValues(
+      [{ field: "amount", operator: "in", value: [0, 5] }],
+      "amount",
+    )).toEqual([0, 5]);
+    expect(headerMenuSelectionValues(
+      [{ field: "amount", operator: "is_null" }],
+      "amount",
+    )).toEqual([null]);
+    expect(headerMenuSelectionValues([{
+      groupLogic: "OR",
+      filters: [
+        { field: "amount", operator: "is_null" },
+        { field: "amount", operator: "eq", value: 0 },
+      ],
+    }], "amount")).toEqual([null, 0]);
+    expect(headerMenuSelectionValues(
+      [{ field: "amount", operator: "contains", value: "op" }],
+      "amount",
+    )).toBeNull();
+  });
+
+  it("分页未加载的既有勾选值在提交解析中原样保留：不静默丢弃", () => {
+    const filters = [{ field: "note", operator: "in" as const, value: ["a", "b", "z"] }];
+    const options = headerMenuOptionsFromPage([
+      { key: "s:a", label: "a", rawValue: "a", count: 2 },
+      { key: "null", label: "（空白）", rawValue: null, count: 1 },
+    ]);
+    // 既有条件值中未出现在已加载选项里的，补进提交解析选项（GridHost 组合）。
+    const committed = headerMenuSelectionValues(filters, "note") ?? [];
+    const loaded = new Set(options.map(option => option.key));
+    const preserved = committed
+      .filter(value => !loaded.has(headerValueKey(value)))
+      .map(value => ({ key: headerValueKey(value), label: headerValueLabel(value), rawValue: value }));
+    expect(preserved.map(option => option.rawValue)).toEqual(["b", "z"]);
+    // 分页未取完（complete=false）：勾选 [a,b,z] 必须解析出全部三个原始值。
+    expect(resolveMenuSelectionValues([...options, ...preserved], ["s:a", "s:b", "s:z"], false))
+      .toEqual(["a", "b", "z"]);
   });
 
   it("完整枚举勾满才清除；分页未取完时勾满是明确的部分选择", () => {

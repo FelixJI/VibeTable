@@ -27,11 +27,14 @@ import {
   canEditHeaderValueFilter,
   headerMenuOptionsFromPage,
   headerMenuSelection,
+  headerMenuSelectionValues,
   headerMenuSource,
   headerValueFilterError,
+  headerValueLabel,
   resolveMenuSelectionValues,
   type HeaderMenuOption,
 } from "@/grid/headerFilterMenu";
+import { headerValueKey } from "@/services/headerFilterValues";
 import { useHeaderFilterValuesService } from "@/services/headerFilterValues";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { cloneFilterExpressions, useViewQueryStore } from "@/stores/viewQueryStore";
@@ -229,6 +232,21 @@ function loadMoreHeaderMenu(): void {
   void loadMenuValues(session, tableId, menu.field, menu.options.length, menu.options);
 }
 
+/**
+ * 提交/校验用选项：既有条件中未加载分页的勾选值补成可解析选项，
+ * 否则应用会静默丢弃这些无法展示、也无法取消勾选的值。
+ */
+function headerMenuValueOptions(menu: HeaderMenuState): readonly HeaderMenuOption[] {
+  const column = store.schema?.find(item => item.name === menu.field);
+  const committed = headerMenuSelectionValues(viewQuery.filters, menu.field, column) ?? [];
+  if (committed.length === 0) return menu.options;
+  const loaded = new Set(menu.options.map(option => option.key));
+  const preserved = committed
+    .filter(value => !loaded.has(headerValueKey(value)))
+    .map(value => ({ key: headerValueKey(value), label: headerValueLabel(value), rawValue: value }));
+  return preserved.length > 0 ? [...menu.options, ...preserved] : menu.options;
+}
+
 /** 提交原始值集合到字段级筛选，并复用既有 runtime 管道触发权威重查。 */
 function commitHeaderValueFilter(field: string, keys: readonly string[] | null): void {
   const menu = headerMenu.value;
@@ -237,7 +255,7 @@ function commitHeaderValueFilter(field: string, keys: readonly string[] | null):
   // 只有权威完整枚举（封闭枚举字段，或动态取值已无更多页）勾满才等同
   // 未筛选；分页未取完时勾满是明确的部分选择，必须原样应用。
   const complete = menu.sourceComplete || !menu.hasMore;
-  const values = keys === null ? [] : resolveMenuSelectionValues(menu.options, keys, complete);
+  const values = keys === null ? [] : resolveMenuSelectionValues(headerMenuValueOptions(menu), keys, complete);
   viewQuery.applyHeaderValueFilter(field, values, store.schema?.find(column => column.name === field));
   clearHeaderFilterForMenu(field);
   closeHeaderMenu();
@@ -251,7 +269,8 @@ function commitHeaderValueFilter(field: string, keys: readonly string[] | null):
 function headerMenuSelectionProblem(keys: readonly string[]): string | null {
   const menu = headerMenu.value;
   if (!menu) return null;
-  const values = resolveMenuSelectionValues(menu.options, keys, menu.sourceComplete || !menu.hasMore);
+  const values = resolveMenuSelectionValues(
+    headerMenuValueOptions(menu), keys, menu.sourceComplete || !menu.hasMore);
   return headerValueFilterError(viewQuery.filters, menu.field, values, store.schema?.find(column => column.name === menu.field));
 }
 
