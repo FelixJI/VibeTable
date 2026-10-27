@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { installApplication, openApplication } from "./plugin_applications.mjs";
+import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
 
 async function waitFile(file, predicate, seconds = 20) {
   const until = Date.now() + seconds * 1000;
@@ -32,10 +32,10 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const ready = JSON.parse(await waitFile(path.join(runtime.controlsDir, "mutation-barrier.ready.json"), text => JSON.parse(text).point === "after_record"));
   recorder.check("actual Go write reached the existing transaction barrier", ready.point === "after_record" && Number.isInteger(ready.pid ?? ready.processId), { ready });
   const oldToken = await frame.evaluate(() => window.name);
-  // 原生常驻“停止插件”入口已移除：用同一渲染器恢复路径（seal → drain ≤6s →
-  // rebuild）封存会话；屏障挂起的写入在 drain 后保持 sticky-unknown，后续
-  // 断言不受影响。封存证据即下方的 sealed-sessions trace（无原生输入面）。
-  await runtime.refreshPluginProductPage();
+  const recovering = await nativePluginInput(runtime, "recover", "plugin-recover", "cancelled");
+  recorder.check("native window menu begins recovery while the approved write is pending", recovering.status === "completed", { recovering });
+  // Tokens must die before the blocked authority write resumes. A single
+  // recovery creates one new page, so release after sealing and wait once.
   await waitFile(path.join(path.dirname(runtime.dataRoot), "vibetable-trace.log"), text => text.includes("Renderer recovery sealed plugin sessions;"));
   await fs.writeFile(path.join(runtime.controlsDir, "mutation-barrier.release"), "release\n");
   page = await runtime.refreshPluginProductPage();

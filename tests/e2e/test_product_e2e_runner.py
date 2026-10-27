@@ -5132,6 +5132,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_application_security.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_application_commit_unknown.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("renderer_diagnostics_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),

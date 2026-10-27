@@ -190,8 +190,9 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const faulting = looping.processInfo.filter(item => item.type === "renderer"
     && item.cpuTime - (before.processInfo.find(prior => prior.id === item.id)?.cpuTime ?? item.cpuTime) > 0.2);
   recorder.check("actual plugin loop consumes CPU in one identified renderer", faulting.length === 1, { before, looping, faulting });
-  // 原生常驻“停止插件”入口已随顶部宿主行移除：存活但失控的渲染器由宿主
-  // 恢复路径封存（seal → drain ≤6s → rebuild），不再有原生按钮输入路径。
+  // 原生窗口菜单不依赖失控的 renderer；通过真实输入触发既有恢复命令。
+  const recovered = await nativePluginInput(runtime, "recover", "plugin-recover", "loop");
+  recorder.check("native window menu recovers the looping renderer", recovered.status === "completed", { recovered });
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("renderer recovery preserves workspace and does not auto-reopen the faulting plugin", await page.getByTestId("plugin-app-viewport").count() === 0);

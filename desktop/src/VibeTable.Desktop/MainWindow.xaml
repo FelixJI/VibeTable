@@ -18,9 +18,9 @@
     </Window.Resources>
     <!--
         #482 之后的可用性收口：不再保留常驻的顶部原生宿主/插件 chrome 行，
-        插件界面仅通过侧栏图标进入；故障恢复的实际能力保留在两处 ——
+        插件界面仅通过侧栏图标进入；恢复界面也可通过原生窗口菜单（Alt+Space）访问。
         渲染器故障由宿主自动触发 RecoverRendererAsync（代码路径不变），
-        手动“恢复界面”入口收敛到宿主回退层（shell 未加载/故障时可见）。
+        宿主回退层保留“恢复界面”按钮（shell 未加载/故障时可见）。
     -->
     <Grid x:Name="RootGrid" Background="{DynamicResource VtWindowBackgroundBrush}">
         <!-- The primary app renderer is never navigated away from; recovery

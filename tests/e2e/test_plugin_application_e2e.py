@@ -67,6 +67,101 @@ def test_native_plugin_input_rejects_outside_the_closed_qa_request(change: dict[
         _validate_request(request)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [{"buttonId": "plugin-confirm-approve"}, {"stage": "application"}],
+)
+def test_native_menu_recovery_rejects_other_controls_and_stages(change):
+    request = {
+        "requestId": "owned-recovery",
+        "action": "recover",
+        "buttonId": "plugin-recover",
+        "stage": "loop",
+    }
+    request.update(change)
+    with pytest.raises(ValueError, match="recovery scope"):
+        _validate_request(request)
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background"])
+def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia(
+    tmp_path, monkeypatch, failure
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    sent = []
+
+    def menu_string(_menu, index, text, _length, _flags):
+        text.value = "恢复界面(&U)" if index == 1 and failure != "missing" else "Close"
+        return len(text.value)
+
+    api = SimpleNamespace(
+        GetSystemMenu=lambda *_args: 88,
+        GetMenuItemCount=lambda *_args: 2,
+        GetMenuStringW=menu_string,
+        GetMenuState=lambda *_args: 1 if failure == "disabled" else 0,
+        GetMenuItemID=lambda *_args: 4096,
+        GetForegroundWindow=lambda: 99 if failure == "background" else 14,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_native_uia_observer",
+        lambda: pytest.fail("hung renderer UIA is not needed"),
+    )
+    monkeypatch.setattr(native, "_send_input", lambda _native, **kwargs: sent.append(kwargs))
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            user32=api,
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *_args: None,
+            foreground_observation={"hostHwnd": 14, "hostPid": 12},
+            owner=lambda _hwnd: 99 if failure == "foreign" else 12,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "owned-recovery",
+            "action": "recover",
+            "buttonId": "plugin-recover",
+            "stage": "loop",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    if failure:
+        assert result["status"] == "failed"
+        assert not sent
+    else:
+        assert result["status"] == "completed"
+        assert result["menu"] == {"id": 4096, "label": "恢复界面(&U)"}
+        assert result["input"] == "SendInput"
+        assert sent == [{"recovery_menu": True}]
+
+
+def test_recovery_input_opens_the_system_menu_and_releases_modifiers():
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    events = []
+
+    def send(count, inputs, _size):
+        events.extend(
+            (inputs[index].payload.keyboard.vk, inputs[index].payload.keyboard.flags)
+            for index in range(count)
+        )
+        return count
+
+    native._send_input(SimpleNamespace(user32=SimpleNamespace(SendInput=send)), recovery_menu=True)
+    assert events == [(0x12, 0), (0x20, 0), (0x20, 2), (0x12, 2), (0x55, 0), (0x55, 2)]
+
+
 def test_system_contrast_is_refused_outside_controlled_github_runner(monkeypatch) -> None:
     from tests.e2e import plugin_application_native as native
 

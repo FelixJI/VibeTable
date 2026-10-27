@@ -1,9 +1,8 @@
 """Owned WPF chrome observation and actual SendInput for plugin application E2E.
 
 This is parent-side QA, never a product IPC. The closed request set can only
-observe/click the native controls the product still owns: the fault-layer
-renderer recovery entry (plugin-recover, reachable only while the host
-fallback layer is up) and the plugin confirmation dialog buttons. The former
+observe/click the native recovery and confirmation controls, or open the
+window system menu with Alt+Space and select its real recovery entry. The former
 always-on native host chrome row (plugin-stop/plugin-return/plugin-manage)
 was removed with the table-usability rework; those flows are now exercised
 through the real web sidebar surface.
@@ -32,8 +31,19 @@ _ALLOWED_BUTTONS = frozenset(
 def _validate_request(request: dict[str, Any]) -> None:
     if set(request) != {"requestId", "action", "buttonId", "stage"}:
         raise ValueError("native plugin request fields are invalid")
-    if request["action"] not in {"observe", "click", "escape", "contrast-on", "contrast-off"}:
+    if request["action"] not in {
+        "observe",
+        "click",
+        "escape",
+        "recover",
+        "contrast-on",
+        "contrast-off",
+    }:
         raise ValueError("native plugin action is invalid")
+    if request["action"] == "recover" and (
+        request["buttonId"] != "plugin-recover" or request["stage"] not in {"loop", "cancelled"}
+    ):
+        raise ValueError("native renderer recovery scope is invalid")
     if request["action"] in {"contrast-on", "contrast-off"} and (
         request["buttonId"] != "plugin-recover" or request["stage"] != "contrast"
     ):
@@ -211,6 +221,7 @@ def _send_input(
     text: str | None = None,
     vkeys: list[int] | None = None,
     wheel: int | None = None,
+    recovery_menu: bool = False,
 ) -> None:
     from ctypes import wintypes
 
@@ -247,7 +258,14 @@ def _send_input(
             raise ValueError("native button is outside the virtual desktop")
         mx, my = round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1))
         move = Input(0, Payload(mouse=Mouse(mx, my, 0, 0xC001, 0, 0)))
-    if wheel is not None:
+    if recovery_menu:
+        # Open the real window menu, then use its recovery mnemonic. No
+        # WM_SYSCOMMAND/Invoke bypass: this is the same keyboard path as a user.
+        events = [
+            Input(1, Payload(keyboard=Keyboard(vk, 0, flag, 0, 0)))
+            for vk, flag in ((0x12, 0), (0x20, 0), (0x20, 2), (0x12, 2), (0x55, 0), (0x55, 2))
+        ]
+    elif wheel is not None:
         if not isinstance(wheel, int) or wheel == 0 or not -1200 <= wheel <= 1200 or move is None:
             raise ValueError("native wheel delta or pointer position is invalid")
         events = [move, Input(0, Payload(mouse=Mouse(0, 0, wheel, 0x0800, 0, 0)))]
@@ -382,6 +400,43 @@ def _observe_owned_chrome(
         time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
 
+def _observe_recovery_menu(native: Any, hwnd: int, host_pid: int) -> dict[str, Any]:
+    from ctypes import wintypes
+
+    api = native.user32
+    signatures = {
+        "GetSystemMenu": ([wintypes.HWND, wintypes.BOOL], wintypes.HMENU),
+        "GetMenuItemCount": ([wintypes.HMENU], ctypes.c_int),
+        "GetMenuStringW": (
+            [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int, wintypes.UINT],
+            ctypes.c_int,
+        ),
+        "GetMenuState": ([wintypes.HMENU, wintypes.UINT, wintypes.UINT], wintypes.UINT),
+        "GetMenuItemID": ([wintypes.HMENU, ctypes.c_int], wintypes.UINT),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(api, name)
+        function.argtypes, function.restype = arguments, result
+    if native.owner(hwnd) != host_pid or api.GetForegroundWindow() != hwnd:
+        raise OSError("native recovery menu lost its foreground owner")
+    menu = api.GetSystemMenu(hwnd, False)
+    count = api.GetMenuItemCount(menu) if menu else -1
+    if not 1 <= count <= 64:
+        raise OSError("native recovery window menu is unavailable")
+    matches = []
+    for index in range(count):
+        label = ctypes.create_unicode_buffer(128)
+        api.GetMenuStringW(menu, index, label, len(label), 0x400)
+        if label.value == "恢复界面(&U)":
+            state = api.GetMenuState(menu, index, 0x400)
+            if state == 0xFFFFFFFF or state & 3:
+                raise OSError("native recovery menu is disabled")
+            matches.append({"id": api.GetMenuItemID(menu, index), "label": label.value})
+    if len(matches) != 1:
+        raise OSError("expected one actual native recovery menu entry")
+    return matches[0]
+
+
 def handle_plugin_native_request(
     request: dict[str, Any], *, host_pid: int, evidence: Path
 ) -> dict[str, Any]:
@@ -391,7 +446,8 @@ def handle_plugin_native_request(
     deadline = time.monotonic() + 15
     try:
         _validate_request(request)
-        runner._prepare_native_uia_observer()
+        if request["action"] != "recover":
+            runner._prepare_native_uia_observer()
         native = runner._DocumentNativeWindows()
         confirm = request["buttonId"].startswith("plugin-confirm-")
         windows = [
@@ -421,6 +477,20 @@ def handle_plugin_native_request(
                 "status": "completed",
                 "action": request["action"],
                 "contrast": contrast,
+            }
+        if request["action"] == "recover":
+            menu = _observe_recovery_menu(native, hwnd, host_pid)
+            if time.monotonic() >= deadline:
+                raise OSError("native plugin input exceeded its request budget")
+            _send_input(native, recovery_menu=True)
+            return {
+                "requestId": request["requestId"],
+                "status": "completed",
+                "action": "recover",
+                "menu": menu,
+                "input": "SendInput",
+                "sequence": "Alt+Space, U",
+                "foreground": native.foreground_observation,
             }
         suffix = request["stage"]
         screenshot = evidence / f"48-native-{suffix}.png"
