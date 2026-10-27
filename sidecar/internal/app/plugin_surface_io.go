@@ -21,6 +21,7 @@ import (
 
 type pluginSurfaceIO struct {
 	stages      surfaceAttachmentStages
+	outputs     surfaceOutputStages
 	plans       *importPlanOwner
 	attachments *attachments.Manager
 }
