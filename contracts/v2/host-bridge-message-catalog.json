@@ -1,0 +1,2014 @@
+{
+  "contractVersion": "1.0",
+  "notes": "Bridge boundary supplement: Product method/topic facts require explicit references resolved by their existing manifest builder. Workspace inner methods stay in their registry/policy authority; workspace.v2.request is the separate outer envelope. Only missing bridge wire names are owned here. Per-side flags preserve intentional asymmetry; routerWeb/routerHost are static seeds before unchanged typed registry composition. Public authority additions are not implicitly exposed. appPreferences.get/update and appearance.changed remain owned by app-settings-contract.json.",
+  "messages": [
+    {
+      "name": "admin.openRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "app.ready",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "bootstrap": true
+    },
+    {
+      "name": "clipboard.readText",
+      "family": "clipboard",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "clipboard.writeText",
+      "family": "clipboard",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "command.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "command.run"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "contentProfile.commit"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "contentProfile.delete"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "contentProfile.load"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "dailyQuote.fetch",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "dashboard.cancelRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.deleteRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.exportRetireRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.exportTargetRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.listRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.manifestRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.printRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.queryRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.readRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "dashboard.saveRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "data.applyImport"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "data.changed"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "data.export"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "data.exportTargetRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "data.importHistory"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "data.importSourceRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "data.previewImport"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "database.collectionsChanged",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "database.openCancelled",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "database.openRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "database.opened",
+        "database.openCancelled"
+      ]
+    },
+    {
+      "name": "database.opened",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "diagnostics.get",
+      "family": "runtimeDiagnostics",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.actionCompleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.diffCancelCompleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.diffCancelRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.diffCancelCompleted"
+      ]
+    },
+    {
+      "name": "document.diffCloseCompleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.diffCloseRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.diffCloseCompleted"
+      ]
+    },
+    {
+      "name": "document.diffCompleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.diffPageCompleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.diffPageRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.diffPageCompleted"
+      ]
+    },
+    {
+      "name": "document.diffRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.diffCompleted"
+      ]
+    },
+    {
+      "name": "document.dragOutRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "document.externalDropRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "document.importRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "document.listLoaded",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.listRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.listLoaded"
+      ]
+    },
+    {
+      "name": "document.openRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.actionCompleted"
+      ]
+    },
+    {
+      "name": "document.operationFailed",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "document.previewRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.actionCompleted"
+      ]
+    },
+    {
+      "name": "document.relinkRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "document.revealRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "document.actionCompleted"
+      ]
+    },
+    {
+      "name": "document.workspaceChanged",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "events.reconcile"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.change.apply"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.change.cancel"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.change.plan"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.change.status"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.recycleBin.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "field.settings.describe"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "file.downloadRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "file.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "file.previewRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "file.removeRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "file.replaceRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "file.token"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "file.uploadRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "formula.draft.validate"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "formula.preview"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "formula.validate"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "gridState.get"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "gridState.save"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "history.applyRestoreRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "history.restoreApplied"
+      ]
+    },
+    {
+      "name": "history.pageLoaded",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "history.previewRestoreRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "history.restorePreviewReady"
+      ]
+    },
+    {
+      "name": "history.queryRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "history.pageLoaded"
+      ]
+    },
+    {
+      "name": "history.restoreApplied",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "history.restorePreviewReady",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "host.pluginChrome",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "host.startupCancelRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "host.startupRetryRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "host.startupStateChanged",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "interface.cancelRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "interface.commitRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "interface.deleteRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "interface.listRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "interface.loadRequested",
+      "family": "core",
+      "status": "retired",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "name": "legacyLayout.cancelRequested",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "legacyLayout.exportCompleted",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "legacyLayout.exportRequested",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "legacyLayout.exportCompleted"
+      ]
+    },
+    {
+      "name": "legacyLayout.reportLoaded",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "legacyLayout.reportRequested",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "legacyLayout.reportLoaded"
+      ]
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "lookup.draft.preview"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "lookup.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "lookup.query"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "lookup.valuePage"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "mutation.apply"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "mutation.preview"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "operation.failed",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.action.describe",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.action.start",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.audit.list",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "plugin.catalog.changed"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.catalog.list",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.cleanup.listPending",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.install.cancel",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.install.commit",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.install.github.inspect",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.install.inspect",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "plugin.interaction.requested"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.interaction.resolve",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.lifecycle.rollback",
+      "family": "core",
+      "status": "rendererInternalOnly",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.lifecycle.setEnabled",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.lifecycle.uninstall",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.lifecycle.upgrade",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.projectContext.unavailable",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.surface.event",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.surface.message",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.task.cancel",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "plugin.task.changed"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.task.get",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "pluginPreservation.cancelRequested",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "pluginPreservation.exportCompleted",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "pluginPreservation.exportRequested",
+      "family": "preservation",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "pluginPreservation.exportCompleted"
+      ]
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "preset.delete"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "preset.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "preset.save"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "query.cursorFetch"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "query.cursorOpen"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "query.page"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "query.view"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "realtime.recovered"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "recordDocumentLink.commit"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "recordDocumentLink.delete"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "recordDocumentLink.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "recordDocumentLink.repair"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.applyDelta"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.createTarget"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.inspectPair"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.previewDelta"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.searchTargets"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "relation.updateSingle"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "schema.describe"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "schema.getTable"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "settings.commitWorkCalendar"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "settings.readDevice"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "settings.readWorkCalendar"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "settings.saveDevice"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": false
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "shortcut.delete"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "shortcut.launch"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "shortcut.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "shortcut.save"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "sourceImport.open",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.applyPasteRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.pasteApplied",
+        "table.editRejected"
+      ]
+    },
+    {
+      "name": "table.cursorRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false
+    },
+    {
+      "name": "table.datasetReady",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.deleteRowsRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.rowsDeleted",
+        "table.editRejected"
+      ]
+    },
+    {
+      "name": "table.editCommitted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.editRejected",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.editSchemaLoaded",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.insertRowRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.rowsInserted",
+        "table.editRejected"
+      ]
+    },
+    {
+      "name": "table.pageLoaded",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.pasteApplied",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.pastePreviewReady",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.previewPasteRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.pastePreviewReady"
+      ]
+    },
+    {
+      "name": "table.queryRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.pageLoaded"
+      ]
+    },
+    {
+      "name": "table.rowsDeleted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.rowsInserted",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "table.selected",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.editSchemaLoaded"
+      ]
+    },
+    {
+      "name": "table.updateCellRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "table.editCommitted",
+        "table.editRejected"
+      ]
+    },
+    {
+      "name": "table.windowLoaded",
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "tableAdmin.createRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "database.collectionsChanged"
+      ]
+    },
+    {
+      "name": "tableAdmin.deleteRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "database.collectionsChanged"
+      ]
+    },
+    {
+      "name": "tableAdmin.duplicateRequested",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "database.collectionsChanged"
+      ]
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "task.cancel"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "topic": "task.changed"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "task.create"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "task.status"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "update.check",
+      "family": "releaseUpdate",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "update.install",
+      "family": "releaseUpdate",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.compare"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.create"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.delete"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.list"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.promote"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "reference": {
+        "source": "product",
+        "method": "version.save"
+      },
+      "family": "core",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "workspace.v2.bootstrap",
+      "family": "workspaceV2",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "workspace.v2.event",
+      "family": "workspaceV2",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "workspace.v2.reply",
+      "family": "workspaceV2",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": false,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    },
+    {
+      "name": "workspace.v2.request",
+      "family": "workspaceV2",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": false,
+      "bridgeWeb": true,
+      "bridgeHost": false,
+      "responses": [
+        "workspace.v2.response",
+        "workspace.v2.reply"
+      ]
+    },
+    {
+      "name": "workspace.v2.response",
+      "family": "workspaceV2",
+      "status": "active",
+      "routerWeb": false,
+      "routerHost": true,
+      "bridgeWeb": false,
+      "bridgeHost": true
+    }
+  ]
+}

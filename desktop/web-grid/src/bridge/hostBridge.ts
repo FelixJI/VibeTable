@@ -49,10 +49,6 @@ import type {
   RuntimeDiagnosticsWebMessageType,
   RuntimeDiagnosticsWebPayloadMap,
 } from "@/contracts/runtimeDiagnosticsContracts";
-import {
-  RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
-  RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
-} from "@/contracts/runtimeDiagnosticsContracts";
 import type {
   AppPreferencesHostMessageType,
   AppPreferencesHostPayloadMap,
@@ -65,16 +61,21 @@ import {
   APP_PREFERENCES_HOST_MESSAGE_TYPES,
   APP_PREFERENCES_WEB_MESSAGE_TYPES,
   APPEARANCE_HOST_MESSAGE_TYPES,
+  AppSettingsProtocolError,
+  decodeAppPreferencesResult,
+  decodeAppSettingsOperationFailed,
+  decodeAppearanceChangedPayload,
 } from "@/contracts/appPreferencesContracts";
+import {
+  HOST_BRIDGE_HOST_MESSAGE_TYPES,
+  HOST_BRIDGE_RESPONSE_TYPE_OVERRIDES,
+  HOST_BRIDGE_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
 import type {
   ReleaseUpdateHostMessageType,
   ReleaseUpdateHostPayloadMap,
   ReleaseUpdateWebMessageType,
   ReleaseUpdateWebPayloadMap,
-} from "@/contracts/releaseUpdateContracts";
-import {
-  RELEASE_UPDATE_HOST_MESSAGE_TYPES,
-  RELEASE_UPDATE_WEB_MESSAGE_TYPES,
 } from "@/contracts/releaseUpdateContracts";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import {
@@ -88,20 +89,12 @@ import type {
   WorkspaceV2WebMessageType,
   WorkspaceV2WebPayloadMap,
 } from "@/contracts/workspaceV2Bridge";
-import {
-  WORKSPACE_V2_HOST_MESSAGE_TYPES,
-  WORKSPACE_V2_WEB_MESSAGE_TYPES,
-} from "@/contracts/workspaceV2Bridge";
 import type {
   PreservationHostMessageType,
   PreservationRequestResults,
   PreservationHostPayloadMap,
   PreservationWebMessageType,
   PreservationWebPayloadMap,
-} from "@/contracts/surfaceBridgeContracts";
-import {
-  PRESERVATION_HOST_MESSAGE_TYPES,
-  PRESERVATION_WEB_MESSAGE_TYPES,
 } from "@/contracts/surfaceBridgeContracts";
 
 import type {
@@ -111,8 +104,6 @@ import type {
   ClipboardWebPayloadMap,
 } from "@/contracts/clipboardContracts";
 import {
-  CLIPBOARD_HOST_MESSAGE_TYPES,
-  CLIPBOARD_WEB_MESSAGE_TYPES,
   CLIPBOARD_MESSAGE_MAX_BYTES,
   ClipboardOperationError,
 } from "@/contracts/clipboardContracts";
@@ -272,282 +263,22 @@ export class BridgeOperationError extends Error {
  * Whitelist of host -> web event types that carry a payload the web layer
  * understands. Anything else is dropped after a diagnostic.
  */
-const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
-  HostMessageType
->([
-  "host.startupStateChanged",
-  "host.pluginChrome",
-  "database.opened",
-  "database.openCancelled",
-  "plugin.projectContext.unavailable",
-  "table.pageLoaded",
-  "table.datasetReady",
-  "table.windowLoaded",
-  "operation.failed",
-  // B1 mutation notifications.
-  "table.editSchemaLoaded",
-  "table.editCommitted",
-  "table.editRejected",
-  "table.rowsInserted",
-  "table.rowsDeleted",
-  "data.changed",
-  "task.changed",
-  "realtime.recovered",
-  "data.importSourceRequested",
-  "data.importHistory",
-  "data.exportTargetRequested",
-  "data.previewImport",
-  "data.applyImport",
-  "data.export",
-  "task.create",
-  "task.cancel",
-  "task.status",
-  "dailyQuote.fetch",
-  "field.settings.describe",
-  "field.change.plan",
-  "field.change.apply",
-  "field.change.status",
-  "field.change.cancel",
-  "field.recycleBin.list",
-  "schema.getTable",
-  "contentProfile.load",
-  "contentProfile.commit",
-  "contentProfile.delete",
-  "recordDocumentLink.list",
-  "recordDocumentLink.commit",
-  "recordDocumentLink.repair",
-  "recordDocumentLink.delete",
-  "query.page",
-  "query.view",
-  "query.cursorOpen",
-  "query.cursorFetch",
-  "mutation.preview",
-  "mutation.apply",
-  "formula.validate",
-  "formula.draft.validate",
-  "formula.preview",
-  "file.list",
-  "file.token",
-  "file.uploadRequested",
-  "file.replaceRequested",
-  "file.removeRequested",
-  "file.previewRequested",
-  "file.downloadRequested",
-  "events.reconcile",
-  "schema.describe",
-  "relation.inspectPair",
-  "relation.searchTargets",
-  "relation.createTarget",
-  "relation.updateSingle",
-  "relation.previewDelta",
-  "relation.applyDelta",
-  "lookup.draft.preview",
-  "lookup.list",
-  "lookup.query",
-	"lookup.valuePage",
-  "settings.readWorkCalendar",
-  "settings.commitWorkCalendar",
-  "preset.list",
-  "preset.save",
-  "preset.delete",
-  "command.list",
-  "sourceImport.open",
-  "command.run",
-  "shortcut.list",
-  "shortcut.save",
-  "shortcut.delete",
-  "shortcut.launch",
-  "version.list",
-  "version.create",
-  "version.save",
-  "version.compare",
-  "version.promote",
-  "version.delete",
-  "gridState.get",
-  "gridState.save",
-  ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
+const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<HostMessageType>([
+  // Closed names come from the generated host-bridge message catalog;
+  // the appPreferences/appearance projection stays owned by the
+  // app-settings contract and is spread here.
+  ...HOST_BRIDGE_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
-  ...CLIPBOARD_HOST_MESSAGE_TYPES,
   ...APPEARANCE_HOST_MESSAGE_TYPES,
-  ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
-  ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
-  ...PRESERVATION_HOST_MESSAGE_TYPES,
-  // B2 paste preview + apply outcomes.
-  "table.pastePreviewReady",
-  "table.pasteApplied",
-  "history.pageLoaded",
-  "history.restorePreviewReady",
-  "history.restoreApplied",
-  // Table management: collection lifecycle events.
-  "database.collectionsChanged",
-  "document.listLoaded",
-  "document.actionCompleted",
-  "document.diffCompleted",
-  "document.diffCancelCompleted",
-  "document.diffPageCompleted",
-  "document.diffCloseCompleted",
-  "document.operationFailed",
-  "document.workspaceChanged",
-  "plugin.catalog.changed",
-  "plugin.task.changed",
-  "plugin.interaction.requested",
-  "plugin.surface.message",
-  "plugin.catalog.list",
-  "plugin.audit.list",
-  "plugin.cleanup.listPending",
-  "plugin.install.inspect",
-  "plugin.install.github.inspect",
-  "plugin.install.commit",
-  "plugin.install.cancel",
-  "plugin.lifecycle.setEnabled",
-  "plugin.lifecycle.upgrade",
-  "plugin.lifecycle.rollback",
-  "plugin.lifecycle.uninstall",
-  "plugin.action.describe",
-  "plugin.action.start",
-  "plugin.interaction.resolve",
-  "plugin.task.cancel",
-  "plugin.task.get",
-  "plugin.surface.event",
 ]);
 
 /**
  * Whitelist of web -> host message types that this layer is allowed to
  * produce. The bridge refuses to post anything outside this set.
  */
-const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
-  WebMessageType
->([
-  "app.ready",
-  "host.startupRetryRequested",
-  "host.startupCancelRequested",
-  "database.openRequested",
-  "table.selected",
-  "table.updateCellRequested",
-  "table.insertRowRequested",
-  "table.deleteRowsRequested",
-  "field.settings.describe",
-  "field.change.plan",
-  "field.change.apply",
-  "field.change.status",
-  "field.change.cancel",
-  "field.recycleBin.list",
-  "schema.getTable",
-  "contentProfile.load",
-  "contentProfile.commit",
-  "contentProfile.delete",
-  "recordDocumentLink.list",
-  "recordDocumentLink.commit",
-  "recordDocumentLink.repair",
-  "recordDocumentLink.delete",
-  "query.page",
-  "query.view",
-  "query.cursorOpen",
-  "query.cursorFetch",
-  "mutation.preview",
-  "mutation.apply",
-  "formula.validate",
-  "formula.draft.validate",
-  "formula.preview",
-  "file.list",
-  "file.token",
-  "file.uploadRequested",
-  "file.replaceRequested",
-  "file.removeRequested",
-  "file.previewRequested",
-  "file.downloadRequested",
-  "events.reconcile",
-  "schema.describe",
-  "relation.inspectPair",
-  "relation.searchTargets",
-  "relation.createTarget",
-  "relation.updateSingle",
-  "relation.previewDelta",
-  "relation.applyDelta",
-  "lookup.draft.preview",
-  "lookup.list",
-  "lookup.query",
-	"lookup.valuePage",
-  "settings.readWorkCalendar",
-  "settings.commitWorkCalendar",
-  "preset.list",
-  "preset.save",
-  "preset.delete",
-  "command.list",
-  "sourceImport.open",
-  "command.run",
-  "shortcut.list",
-  "shortcut.save",
-  "shortcut.delete",
-  "shortcut.launch",
-  "version.list",
-  "version.create",
-  "version.save",
-  "version.compare",
-  "version.promote",
-  "version.delete",
-  ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
+const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<WebMessageType>([
+  ...HOST_BRIDGE_WEB_MESSAGE_TYPES,
   ...APP_PREFERENCES_WEB_MESSAGE_TYPES,
-  ...CLIPBOARD_WEB_MESSAGE_TYPES,
-  ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
-  ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
-  ...PRESERVATION_WEB_MESSAGE_TYPES,
-  // B3 query + state requests.
-  "table.queryRequested",
-  "table.cursorRequested",
-  "gridState.get",
-  "gridState.save",
-  // B2 paste preview + apply requests.
-  "table.previewPasteRequested",
-  "table.applyPasteRequested",
-  "data.importHistory",
-  "data.importSourceRequested",
-  "data.exportTargetRequested",
-  "data.previewImport",
-  "data.applyImport",
-  "data.export",
-  "task.create",
-  "task.cancel",
-  "task.status",
-  "dailyQuote.fetch",
-  "history.queryRequested",
-  "history.previewRestoreRequested",
-  "history.applyRestoreRequested",
-  // Table management: create/delete collection requests.
-  "tableAdmin.createRequested",
-  "tableAdmin.duplicateRequested",
-  "tableAdmin.deleteRequested",
-  "plugin.catalog.list",
-  "plugin.audit.list",
-  "plugin.cleanup.listPending",
-  "plugin.install.inspect",
-  "plugin.install.github.inspect",
-  "plugin.install.commit",
-  "plugin.install.cancel",
-  "plugin.lifecycle.setEnabled",
-  "plugin.lifecycle.upgrade",
-  "plugin.lifecycle.rollback",
-  "plugin.lifecycle.uninstall",
-  "plugin.action.describe",
-  "plugin.action.start",
-  "plugin.interaction.resolve",
-  "plugin.task.cancel",
-  "plugin.task.get",
-  "plugin.surface.event",
-  "document.listRequested",
-  "document.importRequested",
-  "document.externalDropRequested",
-  "document.dragOutRequested",
-  "document.openRequested",
-  "document.previewRequested",
-  "document.diffRequested",
-  "document.diffCancelRequested",
-  "document.diffPageRequested",
-  "document.diffCloseRequested",
-  "document.revealRequested",
-  "document.relinkRequested",
-  // Open the embedded data administration surface in this webview.
-  "admin.openRequested",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -574,36 +305,23 @@ function clearPendingTimer(entry: Pending): void {
  */
 const RESPONSE_TYPE_OVERRIDES: Readonly<
   Partial<Record<WebMessageType, readonly HostMessageType[]>>
-> = {
-  "database.openRequested": ["database.opened", "database.openCancelled"],
-  "table.selected": ["table.editSchemaLoaded"],
-  "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
-  "table.insertRowRequested": ["table.rowsInserted", "table.editRejected"],
-  "table.deleteRowsRequested": ["table.rowsDeleted", "table.editRejected"],
-  "table.queryRequested": ["table.pageLoaded"],
-  "table.previewPasteRequested": ["table.pastePreviewReady"],
-  "table.applyPasteRequested": ["table.pasteApplied", "table.editRejected"],
-  "history.queryRequested": ["history.pageLoaded"],
-  "history.previewRestoreRequested": ["history.restorePreviewReady"],
-  "history.applyRestoreRequested": ["history.restoreApplied"],
-  "tableAdmin.createRequested": ["database.collectionsChanged"],
-  "tableAdmin.duplicateRequested": ["database.collectionsChanged"],
-  "tableAdmin.deleteRequested": ["database.collectionsChanged"],
-  "legacyLayout.reportRequested": ["legacyLayout.reportLoaded"],
-  "legacyLayout.exportRequested": ["legacyLayout.exportCompleted"],
-  "pluginPreservation.exportRequested": ["pluginPreservation.exportCompleted"],
-  "document.listRequested": ["document.listLoaded"],
-  "document.openRequested": ["document.actionCompleted"],
-  "document.previewRequested": ["document.actionCompleted"],
-  "document.diffRequested": ["document.diffCompleted"],
-  "document.diffCancelRequested": ["document.diffCancelCompleted"],
-  "document.diffPageRequested": ["document.diffPageCompleted"],
-  "document.diffCloseRequested": ["document.diffCloseCompleted"],
-  "document.revealRequested": ["document.actionCompleted"],
-  // Desktop currently names correlated replies `workspace.v2.response`.
-  // Keep `reply` accepted for protocol-v2 producers that use the catalog term.
-  "workspace.v2.request": ["workspace.v2.response", "workspace.v2.reply"],
-};
+> = HOST_BRIDGE_RESPONSE_TYPE_OVERRIDES;
+
+/** Settings-family replies are decoded against the generated app-settings
+ * contract at the real bridge resolution point. A malformed success must
+ * reject the pending request as a protocol error — never resolve — and the
+ * error never claims the write was not committed. Other families keep their
+ * existing decoding untouched. */
+const RESPONSE_DECODERS: ReadonlyMap<string, (value: unknown) => unknown | null> =
+  new Map([
+    ["appPreferences.get", decodeAppPreferencesResult],
+    ["appPreferences.update", decodeAppPreferencesResult],
+  ]);
+
+/** Pending requests whose operation.failed payloads are validated against
+ * the generated app-settings failure contract. */
+const SETTINGS_FAMILY_REQUESTS: ReadonlySet<string> =
+  new Set(APP_PREFERENCES_WEB_MESSAGE_TYPES);
 
 const HOST_PICKER_PREFIX = "host-picker://";
 const WORKSPACE_BOOTSTRAP_METHODS = new Set([
@@ -941,6 +659,25 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         if (type === "operation.failed") {
           clearPendingTimer(entry);
           pending.delete(requestId);
+          // Settings-family failures are validated against the generated
+          // app-settings contract: the host serializes unset metadata as
+          // null (no WhenWritingNull), unknown string codes stay a safe
+          // diagnosable failure, and a malformed failure (missing message /
+          // wrong-typed metadata) settles as a protocol error with an
+          // unknown outcome — never success, never a claim that a sent
+          // update was not committed. Other families keep the generic
+          // normalization untouched.
+          if (SETTINGS_FAMILY_REQUESTS.has(entry.messageType)) {
+            const decodedFailure = decodeAppSettingsOperationFailed(payload);
+            if (decodedFailure === null) {
+              entry.reject(
+                new AppSettingsProtocolError(entry.messageType, requestId),
+              );
+              return;
+            }
+            entry.reject(new BridgeOperationError(decodedFailure));
+            return;
+          }
           entry.reject(
             new BridgeOperationError(
               normalizeFailure(payload),
@@ -964,6 +701,16 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         }
         clearPendingTimer(entry);
         pending.delete(requestId);
+        const responseDecoder = RESPONSE_DECODERS.get(type);
+        if (responseDecoder) {
+          const decoded = responseDecoder(payload);
+          if (decoded === null) {
+            entry.reject(new AppSettingsProtocolError(type, requestId));
+            return;
+          }
+          entry.resolve(decoded);
+          return;
+        }
         entry.resolve(payload);
         // Note: for a request-response type we still ALSO fan out to handlers
         // only when the host uses it as a broadcast (no requestId). Since this
@@ -990,12 +737,29 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       if (session.enabled && session.isTransitioning) return;
     }
 
+    // Settings pushes are decoded before fan-out: a malformed appearance
+    // projection is dropped as malformed instead of reaching UI stores.
+    let fanoutPayload = payload;
+    if (type === "appearance.changed") {
+      const decoded = decodeAppearanceChangedPayload(payload);
+      if (decoded === null) {
+        onDiagnostic({
+          kind: "malformed",
+          type,
+          reason: "appearance.changed payload violates the app-settings wire contract",
+          raw: payload,
+        });
+        return;
+      }
+      fanoutPayload = decoded;
+    }
+
     // --- Fan out to typed handlers ---------------------------------------
     const set = handlers.get(type as HostMessageType);
     if (set) {
       for (const h of set) {
         try {
-          h(payload);
+          h(fanoutPayload);
         } catch (err) {
           onDiagnostic({
             kind: "malformed",

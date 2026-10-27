@@ -60,6 +60,8 @@
           "msbuild_prefix": "VibeTableContracts",
           "generated_source_exclusion": "**/VibeTable.Contracts/Generated/*.g.cs",
           "generated_source_files": [
+            "Generated/AppSettingsContracts.g.cs",
+            "Generated/HostBridgeCatalog.g.cs",
             "Generated/SchemaV2Contracts.g.cs",
             "Generated/WorkbenchContracts.g.cs"
           ],

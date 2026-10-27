@@ -63,11 +63,11 @@ public sealed class ApplicationRequestControllerTests
                 "appPreferences.update",
                 """{"theme":"dark"}"""));
 
-            Assert.AreEqual(AppThemeOptions.Dark, controller.CurrentPreferences.Theme);
+            Assert.AreEqual(AppSettingsThemeOption.Dark, controller.CurrentPreferences.Theme);
             Assert.HasCount(1, sink.Replies);
             using JsonDocument payload = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
             Assert.AreEqual(
-                AppThemeOptions.Dark,
+                AppSettingsThemeOption.Dark,
                 payload.RootElement.GetProperty("theme").GetString());
             // Explicit dark wins over the light system snapshot.
             Assert.AreEqual(
@@ -80,7 +80,7 @@ public sealed class ApplicationRequestControllerTests
             await controller.DispatchAsync(Request("appPreferences.get", "{}"));
             using JsonDocument read = JsonSerializer.SerializeToDocument(sink.Replies[1].Payload);
             Assert.AreEqual(
-                AppThemeOptions.Dark,
+                AppSettingsThemeOption.Dark,
                 read.RootElement.GetProperty("theme").GetString());
             Assert.AreEqual(
                 "dark",
@@ -109,11 +109,11 @@ public sealed class ApplicationRequestControllerTests
                 "appPreferences.update",
                 """{"adoptLegacyTheme":"system"}"""));
             Assert.AreEqual(
-                AppThemeOptions.System,
+                AppSettingsThemeOption.System,
                 controller.CurrentPreferences.Theme);
             using JsonDocument adopted = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
             Assert.AreEqual(
-                AppThemeOptions.System,
+                AppSettingsThemeOption.System,
                 adopted.RootElement.GetProperty("theme").GetString());
 
             // A second adoption attempt must never overwrite the now-explicit
@@ -122,7 +122,7 @@ public sealed class ApplicationRequestControllerTests
                 "appPreferences.update",
                 """{"adoptLegacyTheme":"dark"}"""));
             Assert.AreEqual(
-                AppThemeOptions.System,
+                AppSettingsThemeOption.System,
                 controller.CurrentPreferences.Theme);
         }
         finally
@@ -183,7 +183,7 @@ public sealed class ApplicationRequestControllerTests
             })
             {
                 using JsonDocument document = JsonDocument.Parse(payload);
-                Assert.IsFalse(ApplicationRequestController.TryReadAppPreferencesPatch(
+                Assert.IsFalse(AppSettingsPatchReader.TryRead(
                     document.RootElement, out _), payload);
             }
         }
