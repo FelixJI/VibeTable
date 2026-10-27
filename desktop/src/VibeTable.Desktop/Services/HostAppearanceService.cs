@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
@@ -22,7 +23,7 @@ internal sealed record HostThemeProjection(string? Preference, string Effective,
 internal static class AppThemePolicy
 {
     public static string ResolveEffectiveTheme(string? preferredTheme, HostAppearanceSnapshot system) =>
-        preferredTheme is AppThemeOptions.Light or AppThemeOptions.Dark
+        preferredTheme is AppSettingsThemeOption.Light or AppSettingsThemeOption.Dark
             ? preferredTheme
             : system.EffectiveBaseTheme;
 }
@@ -114,7 +115,7 @@ internal sealed class HostAppearanceService : IDisposable
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _dispatcher = dispatcher;
-        _preferredTheme = AppThemeOptions.IsKnown(preferredTheme) ? preferredTheme : null;
+        _preferredTheme = AppSettingsThemeOption.IsKnown(preferredTheme) ? preferredTheme : null;
         _current = source.Read();
         _source.Changed += OnSourceChanged;
     }
@@ -130,7 +131,7 @@ internal sealed class HostAppearanceService : IDisposable
 
     public void SetPreferredTheme(string? theme)
     {
-        string? normalized = AppThemeOptions.IsKnown(theme) ? theme : null;
+        string? normalized = AppSettingsThemeOption.IsKnown(theme) ? theme : null;
         if (normalized == _preferredTheme)
         {
             return;
@@ -187,7 +188,7 @@ internal static class HostThemeResources
     /// repeated applies swap instead of stacking.</summary>
     internal const string ThemeMarkerKey = "__VibeTableThemeMarker";
 
-    private const string Dark = AppThemeOptions.Dark;
+    private const string Dark = AppSettingsThemeOption.Dark;
     private const string FluentThemePrefix =
         "pack://application:,,,/PresentationFramework.Fluent;component/Themes/";
 

@@ -1,15 +1,15 @@
 // #465: closed host-owned text clipboard DTOs (host mirrors codes exactly;
 // empty-success is never mixed with failure states).
 
-export const CLIPBOARD_WEB_MESSAGE_TYPES = [
-  "clipboard.readText",
-  "clipboard.writeText",
-] as const;
+import {
+  CLIPBOARD_HOST_MESSAGE_TYPES,
+  CLIPBOARD_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
+
+export { CLIPBOARD_HOST_MESSAGE_TYPES, CLIPBOARD_WEB_MESSAGE_TYPES };
 
 export type ClipboardWebMessageType =
   (typeof CLIPBOARD_WEB_MESSAGE_TYPES)[number];
-
-export const CLIPBOARD_HOST_MESSAGE_TYPES = CLIPBOARD_WEB_MESSAGE_TYPES;
 
 export type ClipboardHostMessageType =
   (typeof CLIPBOARD_HOST_MESSAGE_TYPES)[number];
