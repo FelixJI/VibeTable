@@ -5,12 +5,30 @@
 
 | 边界 | 现行入口 | Authority / session | 错误与取消语义 | 现有验证 |
 |---|---|---|---|---|
-| Web → WPF WebView2 bridge | `desktop/web-grid/src/bridge/hostBridge.ts`、`services/workspaceV2HostAdapter.ts` → `MainWindow.Product.cs` / `Services/WebMessageRouter.cs` | Host 白名单；`workspaceId`、`sessionEpoch`、request/operation id 绑定当前 session。 | Host bridge 以稳定 error/reply 结束 request；旧 epoch 响应不得写入新 session。 | `hostBridge.test.ts`、`workspaceV2HostAdapter.test.ts`、`WebMessageRouterTests.cs`。 |
+| Web → WPF WebView2 bridge | `desktop/web-grid/src/bridge/hostBridge.ts`、`services/workspaceV2HostAdapter.ts` → `MainWindow.Product.cs` / `Services/WebMessageRouter.cs` | Host 白名单；`workspaceId`、`sessionEpoch`、request/operation id 绑定当前 session。设置族（`appPreferences.get/update`＋`appearance.changed`）由 `contracts/v2/app-settings-contract.json` 单一声明，两端生成投影：TS `contracts/appPreferencesContracts.ts`（含真实 bridge 解码）、C# `VibeTable.Contracts/Generated/AppSettingsContracts.g.cs`（patch 解析/结果/appearance DTO/白名单常量）。 | Host bridge 以稳定 error/reply 结束 request；旧 epoch 响应不得写入新 session。设置回复在 bridge 解码，畸形成功拒为 `AppSettingsProtocolError`（结果未知，不得推断未提交）；未知错误码保留诊断失败。 | `hostBridge.test.ts`、`appPreferencesContracts.test.ts`、`workspaceV2HostAdapter.test.ts`、`WebMessageRouterTests.cs`、`AppSettingsContractConformanceTests.cs`、共享 `contracts/v2/fixtures/app-settings-conformance.json`。 |
 | WPF dispatcher → Python BFF | `JsonRpc*Gateway.cs` → `backend/rpc/{server,dispatcher,messages,framing}.py` | WPF 是进程与本机能力 owner；Python 不拥有 SQLite 写路径。 | JSON-RPC error envelope；调用方传递取消，具体 method 保持闭集。 | `JsonRpcProductDataGatewayTests.cs`、`tests/backend/rpc/*`。 |
 | WPF → Go sidecar v2 RPC | `WorkspaceV2HttpGateway.cs` → `/api/vibetable/v2/rpc` → `protocolv2/dispatcher.go` → `workspacev2/runtime.go` | sidecar/PocketBase 是业务数据 authority；wire 绑定 `workspaceId`、`sessionEpoch`、fence/operation/sequence，path grant 仅由 Host 注入。 | `workspaceV2ErrorEnvelope` 使用稳定 JSON-RPC envelope；context cancel 传播到 Go handler。 | `WorkspaceV2HttpGatewayTests.cs`、`protocolv2/dispatcher_test.go`、`workspacev2/runtime_test.go`。 |
 | Go sidecar capability → Web 可见性 | `Runtime.Capabilities()` → `/api/vibetable/v2/capabilities` → `MainWindow.Product.cs` bootstrap → Web adapter | Producer capability 与 Host allowlist 必须共同满足；Web 只消费 Host 下发的闭集。 | capability 缺失返回稳定 `workspace.capability_unavailable`；不得以 UI 猜测替代。 | `workspacev2/runtime_test.go`、Desktop capability/dispatcher tests，以及能力矩阵所列最终产品场景。 |
 | Web Document Diff → WPF → sidecar | `document.diffRequested` / `document.diffCancelRequested` → `WorkspaceDocumentOsAdapter` / coordinator → Host-only `fileHistory.materializeDiffPair` 与 `assertEffectiveRevision` | sidecar 固定 target/effective revision；Host 持有两文件 path grant 和 epoch/sequence lease；Web 只持 entry handle/revision id。 | operationId + entryHandle 精确取消；materialize 前后 CAS stale 映射为稳定 `stale`；epoch 轮换取消在途请求，raw Web materialize 被拒绝。 | Workspace/OpenXml engine tests、Desktop adapter/cancel tests、Web service/store/view tests、产品场景 `14-document-diff`。 |
 | WPF test-mode controls → 产品 E2E | runner 写入受控 controls dir → WPF test-mode picker/normal-close watcher | 仅 `--test-mode + --e2e-controls-dir` 可用；production 始终使用 native picker，不向 renderer 暴露 raw path route。 | 缺失/无效 fixture fail closed；normal close 后报告 Host exit、后代进程和端口释放。 | `ProductE2eControlTests`、`WorkspacePathGrantStoreTests`、runner 契约，以及[当前场景声明](../quality/product-e2e-capability-index.md)与对应 `required` 报告。 |
+
+桥接消息的补充来源为 `contracts/v2/host-bridge-message-catalog.json`：Product method/topic
+以 `reference` 引用原 authority，`host_bridge_catalog.py` 调用现有 Product manifest builder，
+从原 catalog/policy/runtime inventory 解析，不重复声明 owner/scope/audience/effect。生成器拒绝
+失效引用、public audience 降级及独立声明已有 authority 名。只显式投影当前边界，新增 public
+方法不会自动开放；内部 rollback 仍拒为 `CAPABILITY_NOT_PUBLIC`，退役布局保留
+`CAPABILITY_RETIRED`。C# `HostBridgeCatalog.g.cs` 与 TS `generated/hostBridgeCatalog.ts`
+分别被真实 router/bridge 消费，五个消息族的数组也来自该生成物，freshness 由 `--check` 检查。
+
+`routerWeb/routerHost` 仅描述静态 seed；Host 继续组合原 Product/relation typed registry 并执行
+参数、audience、session 等 guard，不改变 dispatch owner。四侧投影有意不对称，不能把它们取并集。
+Workspace 内层方法继续由 `RPC_REGISTRY`＋Workspace policy 经原生成器产生 manifest/TS 投影；
+外层 `workspace.v2.request` 属于补充表，两者没有同名交集。设置族独立沿用 app-settings 权威。
+
+上述设置纵切覆盖参数/结果/appearance 及关联错误；其它 payload 沿用已有契约，不宣称全仓统一。
+设置的合法 `operation.failed` 要求 `message: string`，`code/operation/operationId` 允许缺省、null
+或 string（保留真实 Host 的 null 输出），未知 code 保留诊断。畸形成功和畸形错误都拒为
+`AppSettingsProtocolError`、结果未知；不得推断写入未提交或自动重放，也不改变既有 timeout/取消语义。
 
 ## 宿主 Product 调用与 Go owner
 

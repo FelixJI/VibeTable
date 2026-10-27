@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -31,19 +32,19 @@ public sealed class AppPreferencesServiceTests
 
         store.Write(new PersistedAppPreferences(
             true,
-            UpdateProxyOptions.GhProxyNet,
+            AppSettingsUpdateProxyOption.GhproxyNet,
             "https://proxy.example.com/"));
         Assert.AreEqual(
             new PersistedAppPreferences(
                 true,
-                UpdateProxyOptions.GhProxyNet,
+                AppSettingsUpdateProxyOption.GhproxyNet,
                 "https://proxy.example.com/"),
             store.Read());
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
         Assert.IsTrue(
             document.RootElement.GetProperty("minimizeToTrayOnClose").GetBoolean());
         Assert.AreEqual(
-            UpdateProxyOptions.GhProxyNet,
+            AppSettingsUpdateProxyOption.GhproxyNet,
             document.RootElement.GetProperty("updateProxy").GetString());
     }
 
@@ -54,7 +55,7 @@ public sealed class AppPreferencesServiceTests
         var startup = new FakeStartupRegistration();
         var service = new AppPreferencesService(store, startup);
 
-        AppPreferences updated = service.Update(new AppPreferencesPatch(true, true));
+        AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(true, true));
 
         Assert.AreEqual(new AppPreferences(true, true), updated);
         Assert.IsTrue(store.Value.MinimizeToTrayOnClose);
@@ -69,14 +70,14 @@ public sealed class AppPreferencesServiceTests
         var startup = new FakeStartupRegistration();
         var service = new AppPreferencesService(store, startup);
 
-        AppPreferences updated = service.Update(new AppPreferencesPatch(
+        AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(
             null,
             null,
-            UpdateProxyOptions.Custom,
+            AppSettingsUpdateProxyOption.Custom,
             " https://proxy.example.com/base ",
             HasCustomUpdateProxyUrl: true));
 
-        Assert.AreEqual(UpdateProxyOptions.Custom, updated.UpdateProxy);
+        Assert.AreEqual(AppSettingsUpdateProxyOption.Custom, updated.UpdateProxy);
         Assert.AreEqual("https://proxy.example.com/base", updated.CustomUpdateProxyUrl);
         Assert.AreEqual(updated.MinimizeToTrayOnClose, store.Value.MinimizeToTrayOnClose);
         Assert.AreEqual(updated.UpdateProxy, store.Value.UpdateProxy);
@@ -91,7 +92,7 @@ public sealed class AppPreferencesServiceTests
         var service = new AppPreferencesService(store, startup);
 
         Assert.ThrowsExactly<IOException>(() =>
-            service.Update(new AppPreferencesPatch(true, true)));
+            service.Update(new AppSettingsPreferencesPatch(true, true)));
 
         Assert.IsFalse(startup.Enabled);
         CollectionAssert.AreEqual(new[] { true, false }, startup.Changes);
@@ -187,22 +188,22 @@ public sealed class AppPreferencesServiceTests
         Assert.IsFalse(ParsePatch("{\"startWithWindows\":\"yes\"}", out _));
         Assert.IsTrue(ParsePatch(
             "{\"minimizeToTrayOnClose\":true,\"startWithWindows\":false}",
-            out AppPreferencesPatch? patch));
-        Assert.AreEqual(new AppPreferencesPatch(true, false), patch);
+            out AppSettingsPreferencesPatch? patch));
+        Assert.AreEqual(new AppSettingsPreferencesPatch(true, false), patch);
         Assert.IsTrue(ParsePatch(
             "{\"updateProxy\":\"custom\",\"customUpdateProxyUrl\":\"https://proxy.example/\"}",
             out patch));
-        Assert.AreEqual(UpdateProxyOptions.Custom, patch!.UpdateProxy);
+        Assert.AreEqual(AppSettingsUpdateProxyOption.Custom, patch!.UpdateProxy);
         Assert.IsTrue(patch.HasCustomUpdateProxyUrl);
         Assert.IsFalse(ParsePatch("{\"updateProxy\":\"automatic\"}", out _));
         Assert.IsTrue(ParsePatch("{\"theme\":\"dark\"}", out patch));
-        Assert.AreEqual(AppThemeOptions.Dark, patch!.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, patch!.Theme);
         Assert.IsTrue(patch.HasTheme);
         Assert.IsFalse(patch.HasAdoptLegacyTheme);
         Assert.IsFalse(ParsePatch("{\"theme\":\"sepia\"}", out _));
         Assert.IsFalse(ParsePatch("{\"theme\":\"dark\",\"adoptLegacyTheme\":\"light\"}", out _));
         Assert.IsTrue(ParsePatch("{\"adoptLegacyTheme\":\"system\"}", out patch));
-        Assert.AreEqual(AppThemeOptions.System, patch!.AdoptLegacyTheme);
+        Assert.AreEqual(AppSettingsThemeOption.System, patch!.AdoptLegacyTheme);
         Assert.IsTrue(patch.HasAdoptLegacyTheme);
         Assert.IsFalse(patch.HasTheme);
         Assert.IsFalse(ParsePatch("{\"adoptLegacyTheme\":\"nope\"}", out _));
@@ -219,16 +220,16 @@ public sealed class AppPreferencesServiceTests
         Assert.IsNull(store.Read().Theme);
         store.Write(new PersistedAppPreferences(
             true,
-            UpdateProxyOptions.Direct,
+            AppSettingsUpdateProxyOption.Direct,
             null,
-            AppThemeOptions.System));
-        Assert.AreEqual(AppThemeOptions.System, store.Read().Theme);
+            AppSettingsThemeOption.System));
+        Assert.AreEqual(AppSettingsThemeOption.System, store.Read().Theme);
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
         Assert.AreEqual(
-            AppThemeOptions.System,
+            AppSettingsThemeOption.System,
             document.RootElement.GetProperty("theme").GetString());
 
-        store.Write(new PersistedAppPreferences(true, UpdateProxyOptions.Direct, null, null));
+        store.Write(new PersistedAppPreferences(true, AppSettingsUpdateProxyOption.Direct, null, null));
         Assert.IsNull(store.Read().Theme);
     }
 
@@ -249,7 +250,7 @@ public sealed class AppPreferencesServiceTests
         PersistedAppPreferences stored = store.Read();
         Assert.IsNull(stored.Theme);
         Assert.IsTrue(stored.MinimizeToTrayOnClose);
-        Assert.AreEqual(UpdateProxyOptions.GhProxyNet, stored.UpdateProxy);
+        Assert.AreEqual(AppSettingsUpdateProxyOption.GhproxyNet, stored.UpdateProxy);
     }
 
     [TestMethod]
@@ -259,28 +260,28 @@ public sealed class AppPreferencesServiceTests
         var startup = new FakeStartupRegistration();
         var service = new AppPreferencesService(store, startup);
 
-        AppPreferences updated = service.Update(new AppPreferencesPatch(
+        AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(
             null,
             null,
-            Theme: AppThemeOptions.Dark,
+            Theme: AppSettingsThemeOption.Dark,
             HasTheme: true));
 
-        Assert.AreEqual(AppThemeOptions.Dark, updated.Theme);
-        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, updated.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, store.Value.Theme);
         Assert.IsEmpty(startup.Changes);
 
         // A patch without HasTheme never clears a configured theme.
-        updated = service.Update(new AppPreferencesPatch(null, null));
-        Assert.AreEqual(AppThemeOptions.Dark, updated.Theme);
+        updated = service.Update(new AppSettingsPreferencesPatch(null, null));
+        Assert.AreEqual(AppSettingsThemeOption.Dark, updated.Theme);
 
         // Unknown themes are rejected before any write lands.
         Assert.ThrowsExactly<ArgumentException>(() =>
-            service.Update(new AppPreferencesPatch(
+            service.Update(new AppSettingsPreferencesPatch(
                 null,
                 null,
                 Theme: "sepia",
                 HasTheme: true)));
-        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, store.Value.Theme);
         Assert.IsFalse(store.Value.MinimizeToTrayOnClose);
     }
 
@@ -291,24 +292,24 @@ public sealed class AppPreferencesServiceTests
         var startup = new FakeStartupRegistration();
         var service = new AppPreferencesService(store, startup);
 
-        AppPreferences adopted = service.AdoptLegacyTheme(AppThemeOptions.Dark);
-        Assert.AreEqual(AppThemeOptions.Dark, adopted.Theme);
-        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        AppPreferences adopted = service.AdoptLegacyTheme(AppSettingsThemeOption.Dark);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, adopted.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, store.Value.Theme);
         Assert.IsEmpty(startup.Changes);
 
         // A later adoption attempt never overwrites the now-explicit value,
         // including an explicit "system".
-        AppPreferences kept = service.AdoptLegacyTheme(AppThemeOptions.Light);
-        Assert.AreEqual(AppThemeOptions.Dark, kept.Theme);
-        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        AppPreferences kept = service.AdoptLegacyTheme(AppSettingsThemeOption.Light);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, kept.Theme);
+        Assert.AreEqual(AppSettingsThemeOption.Dark, store.Value.Theme);
 
         Assert.ThrowsExactly<ArgumentException>(() => service.AdoptLegacyTheme("sepia"));
     }
 
-    private static bool ParsePatch(string json, out AppPreferencesPatch? patch)
+    private static bool ParsePatch(string json, out AppSettingsPreferencesPatch? patch)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        return ApplicationRequestController.TryReadAppPreferencesPatch(
+        return AppSettingsPatchReader.TryRead(
             document.RootElement,
             out patch);
     }

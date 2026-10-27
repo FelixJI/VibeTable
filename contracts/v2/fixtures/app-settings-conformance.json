@@ -1,0 +1,73 @@
+{
+  "contractVersion": "1.0",
+  "notes": "Shared positive/negative matrix for the app-settings wire family. updatePatchCases carry RAW JSON payload strings (duplicate-key cases cannot be represented as parsed objects); both the desktop router/adapter tests and the web contract tests must consume them without re-encoding through a lossy object round-trip. customUpdateProxyUrlLength cases build the raw payload string in-test to keep this file small.",
+  "updatePatchCases": [
+    { "id": "valid-partial-tray", "raw": "{\"minimizeToTrayOnClose\":true}", "valid": true },
+    { "id": "valid-multi", "raw": "{\"updateProxy\":\"ghProxyCom\",\"theme\":\"dark\"}", "valid": true },
+    { "id": "valid-adopt-alone", "raw": "{\"adoptLegacyTheme\":\"system\"}", "valid": true },
+    { "id": "valid-custom-empty", "raw": "{\"customUpdateProxyUrl\":\"\"}", "valid": true },
+    { "id": "valid-custom-url-2048", "customUpdateProxyUrlLength": 2048, "valid": true },
+    { "id": "invalid-custom-url-2049", "customUpdateProxyUrlLength": 2049, "valid": false },
+    { "id": "invalid-empty-patch", "raw": "{}", "valid": false },
+    { "id": "invalid-null-theme", "raw": "{\"theme\":null}", "valid": false },
+    { "id": "invalid-null-custom-url", "raw": "{\"customUpdateProxyUrl\":null}", "valid": false },
+    { "id": "invalid-adopt-null", "raw": "{\"adoptLegacyTheme\":null}", "valid": false },
+    { "id": "invalid-unknown-field", "raw": "{\"minimizeToTrayOnClose\":true,\"unknown\":1}", "valid": false },
+    { "id": "invalid-theme-enum", "raw": "{\"theme\":\"sepia\"}", "valid": false },
+    { "id": "invalid-proxy-enum", "raw": "{\"updateProxy\":\"socks5\"}", "valid": false },
+    { "id": "invalid-tray-type", "raw": "{\"minimizeToTrayOnClose\":\"true\"}", "valid": false },
+    { "id": "invalid-duplicate-tray", "raw": "{\"minimizeToTrayOnClose\":true,\"minimizeToTrayOnClose\":false}", "valid": false },
+    { "id": "invalid-duplicate-proxy-same-value", "raw": "{\"updateProxy\":\"direct\",\"updateProxy\":\"direct\"}", "valid": false },
+    { "id": "invalid-theme-with-adopt", "raw": "{\"theme\":\"light\",\"adoptLegacyTheme\":\"dark\"}", "valid": false },
+    { "id": "invalid-adopt-with-theme-order", "raw": "{\"adoptLegacyTheme\":\"dark\",\"theme\":\"light\"}", "valid": false },
+    { "id": "invalid-adopt-mixed", "raw": "{\"adoptLegacyTheme\":\"dark\",\"startWithWindows\":true}", "valid": false },
+    { "id": "invalid-adopt-mixed-order", "raw": "{\"startWithWindows\":true,\"adoptLegacyTheme\":\"dark\"}", "valid": false },
+    { "id": "invalid-array-payload", "raw": "[]", "valid": false },
+    { "id": "invalid-string-payload", "raw": "\"no\"", "valid": false }
+  ],
+  "preferencesResultCases": [
+    { "id": "valid-full", "raw": "{\"minimizeToTrayOnClose\":true,\"startWithWindows\":false,\"updateProxy\":\"custom\",\"customUpdateProxyUrl\":\"https://p.example/\",\"theme\":\"dark\",\"effectiveTheme\":\"dark\",\"highContrast\":false}", "valid": true },
+    { "id": "valid-theme-null", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": true },
+    { "id": "valid-extra-field-tolerated", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":true,\"futureField\":1}", "valid": true },
+    { "id": "invalid-missing-theme", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-missing-custom-url", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-custom-url-null", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":null,\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-result-theme-enum", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"theme\":\"sepia\",\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-effective-enum", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"theme\":null,\"effectiveTheme\":\"auto\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-result-proxy-enum", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"socks5\",\"customUpdateProxyUrl\":\"\",\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-bool-type", "raw": "{\"minimizeToTrayOnClose\":false,\"startWithWindows\":false,\"updateProxy\":\"direct\",\"customUpdateProxyUrl\":\"\",\"theme\":null,\"effectiveTheme\":\"light\",\"highContrast\":\"yes\"}", "valid": false },
+    { "id": "invalid-not-object", "raw": "\"no\"", "valid": false },
+    { "id": "invalid-null-payload", "raw": "null", "valid": false }
+  ],
+  "getCases": [
+    { "id": "valid-empty-object", "raw": "{}", "valid": true },
+    { "id": "invalid-non-empty-object", "raw": "{\"stale\":1}", "valid": false },
+    { "id": "invalid-array-payload", "raw": "[]", "valid": false },
+    { "id": "invalid-string-payload", "raw": "\"no\"", "valid": false },
+    { "id": "invalid-duplicate-keys", "raw": "{\"a\":1,\"a\":2}", "valid": false }
+  ],
+  "operationFailedCases": [
+    { "id": "valid-full", "raw": "{\"message\":\"无法保存桌面应用设置。\",\"code\":\"APP_PREFERENCES_WRITE_FAILED\",\"operation\":\"appPreferences.update\",\"operationId\":\"op-1\"}", "valid": true },
+    { "id": "valid-null-metadata", "raw": "{\"message\":\"m\",\"code\":null,\"operation\":null,\"operationId\":null}", "valid": true },
+    { "id": "valid-absent-metadata", "raw": "{\"message\":\"m\"}", "valid": true },
+    { "id": "valid-unknown-string-code", "raw": "{\"message\":\"future\",\"code\":\"APP_PREFERENCES_FUTURE_CODE\"}", "valid": true },
+    { "id": "valid-extra-field-tolerated", "raw": "{\"message\":\"m\",\"futureField\":1}", "valid": true },
+    { "id": "invalid-missing-message", "raw": "{\"code\":\"APP_PREFERENCES_BAD_PAYLOAD\"}", "valid": false },
+    { "id": "invalid-null-message", "raw": "{\"message\":null}", "valid": false },
+    { "id": "invalid-message-type", "raw": "{\"message\":42}", "valid": false },
+    { "id": "invalid-code-type", "raw": "{\"message\":\"m\",\"code\":7}", "valid": false },
+    { "id": "invalid-code-object", "raw": "{\"message\":\"m\",\"code\":{}}", "valid": false },
+    { "id": "invalid-operation-type", "raw": "{\"message\":\"m\",\"operation\":[]}", "valid": false },
+    { "id": "invalid-operation-id-type", "raw": "{\"message\":\"m\",\"operationId\":{}}", "valid": false },
+    { "id": "invalid-not-object", "raw": "\"no\"", "valid": false },
+    { "id": "invalid-null-payload", "raw": "null", "valid": false }
+  ],
+  "appearanceChangedCases": [
+    { "id": "valid-null-preference", "raw": "{\"preference\":null,\"effective\":\"dark\",\"highContrast\":false}", "valid": true },
+    { "id": "valid-explicit-system", "raw": "{\"preference\":\"system\",\"effective\":\"light\",\"highContrast\":true,\"futureField\":2}", "valid": true },
+    { "id": "invalid-missing-preference", "raw": "{\"effective\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-missing-effective", "raw": "{\"preference\":null,\"highContrast\":false}", "valid": false },
+    { "id": "invalid-preference-enum", "raw": "{\"preference\":\"sepia\",\"effective\":\"light\",\"highContrast\":false}", "valid": false },
+    { "id": "invalid-highcontrast-type", "raw": "{\"preference\":null,\"effective\":\"light\",\"highContrast\":1}", "valid": false }
+  ]
+}

@@ -157,6 +157,8 @@ def contracts() -> None:
     _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/product_runtime_inventory.py", "--check")
     _run("uv", "run", "python", "contracts/v2/product_rpc_capability_policy.py", "--check")
+    _run("uv", "run", "python", "contracts/v2/app_settings_contract.py", "--check")
+    _run("uv", "run", "python", "contracts/v2/host_bridge_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_compatibility_package.py", "--check")
     _run(
@@ -183,6 +185,8 @@ def contracts() -> None:
         "tests/contract/test_product_contracts.py",
         "tests/contract/test_product_runtime_inventory.py",
         "tests/contract/test_product_rpc_capability_policy.py",
+        "tests/contract/test_app_settings_contract.py",
+        "tests/contract/test_host_bridge_catalog.py",
         "tests/contract/test_workspace_rpc_capability_manifest.py",
         "tests/contract/test_schema_v2_dto_codegen.py",
         "tests/contract/test_workbench_dto_codegen.py",

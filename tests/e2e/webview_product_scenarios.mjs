@@ -7753,6 +7753,51 @@ async function scenario12(page, recorder, _network, runtime) {
   });
   await panel.locator("header button").click();
 
+  const initialPreferences = await rawBridgeRequest(page, "appPreferences.get", {});
+  recorder.check("the real Host accepts the empty settings read contract",
+    initialPreferences.type === "appPreferences.get"
+      && typeof initialPreferences.payload?.startWithWindows === "boolean"
+      && typeof initialPreferences.payload?.minimizeToTrayOnClose === "boolean",
+    initialPreferences);
+  const rejectedRead = await rawBridgeRequest(page, "appPreferences.get", { theme: "dark" });
+  recorder.check("the real Host rejects fields on the empty settings read contract",
+    rejectedRead.type === "operation.failed"
+      && rejectedRead.payload?.code === "APP_PREFERENCES_BAD_PAYLOAD", rejectedRead);
+  await acknowledgeExpectedBridgeFailure(page, rejectedRead);
+  const partialPreferences = await rawBridgeRequest(page, "appPreferences.update", {
+    customUpdateProxyUrl: "  https://preferences.example.invalid  ",
+    theme: "system",
+  });
+  recorder.check("the real Host preserves omitted settings during a partial update",
+    partialPreferences.type === "appPreferences.update"
+      && partialPreferences.payload?.customUpdateProxyUrl === "https://preferences.example.invalid"
+      && partialPreferences.payload?.theme === "system"
+      && partialPreferences.payload?.startWithWindows === initialPreferences.payload?.startWithWindows
+      && partialPreferences.payload?.minimizeToTrayOnClose === initialPreferences.payload?.minimizeToTrayOnClose,
+    { initialPreferences, partialPreferences });
+  const adoptedPreferences = await rawBridgeRequest(page, "appPreferences.update", {
+    adoptLegacyTheme: "dark",
+  });
+  recorder.check("legacy adoption cannot overwrite an explicit Host theme",
+    adoptedPreferences.type === "appPreferences.update"
+      && adoptedPreferences.payload?.theme === "system", adoptedPreferences);
+  for (const invalidPatch of [
+    {}, { theme: null }, { theme: "invalid" }, { unknownSetting: true },
+    { adoptLegacyTheme: "dark", minimizeToTrayOnClose: true },
+    { customUpdateProxyUrl: "x".repeat(2049) },
+  ]) {
+    const rejectedPreferences = await rawBridgeRequest(page, "appPreferences.update", invalidPatch);
+    recorder.check("invalid settings are rejected by the real Host before applying effects",
+      rejectedPreferences.type === "operation.failed"
+        && rejectedPreferences.payload?.code === "APP_PREFERENCES_BAD_PAYLOAD",
+      { invalidPatch, rejectedPreferences });
+    await acknowledgeExpectedBridgeFailure(page, rejectedPreferences);
+  }
+  const preservedPreferences = await rawBridgeRequest(page, "appPreferences.get", {});
+  recorder.check("invalid updates leave the persisted settings unchanged",
+    JSON.stringify(preservedPreferences.payload) === JSON.stringify(adoptedPreferences.payload),
+    { adoptedPreferences, preservedPreferences });
+
   // Visual acceptance is part of the product gate, not a source-only token
   // check. Exercise the user-facing theme control and capture the real
   // packaged WebView2 table, modal, and popover in dark mode.
@@ -7861,6 +7906,8 @@ async function scenario12(page, recorder, _network, runtime) {
     themeReopened.payload.session.sessionEpoch > themeSession.sessionEpoch
       && reopenedPreferences.payload?.theme === "dark"
       && reopenedPreferences.payload?.effectiveTheme === "dark"
+      && reopenedPreferences.payload?.customUpdateProxyUrl === "https://preferences.example.invalid"
+      && reopenedPreferences.payload?.startWithWindows === initialPreferences.payload?.startWithWindows
       && await page.locator("html.dark").count() === 1,
     { reopenedPreferences });
 }

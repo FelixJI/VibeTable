@@ -173,7 +173,7 @@ public partial class MainWindow : Window
             // normal appPreferences.get refresh cannot undo the tray policy
             // before the black-box close request arrives.
             startupPreferences = _appPreferencesService.Update(
-                new AppPreferencesPatch(true, null));
+                new AppSettingsPreferencesPatch(true, null));
         }
         // Only an auto-started launch reconciles the startup value: a stale
         // pointer left after moving/reinstalling is cleaned so the next boot
@@ -665,13 +665,11 @@ public partial class MainWindow : Window
 
     private void PostAppearanceSnapshot(HostThemeProjection projection) =>
         _webBridge.PostNotification(
-            "appearance.changed",
-            new
-            {
-                preference = projection.Preference,
-                effective = projection.Effective,
-                highContrast = projection.HighContrast,
-            });
+            AppSettingsWireMethods.AppearanceChanged,
+            new AppSettingsAppearanceChanged(
+                projection.Preference,
+                projection.Effective,
+                projection.HighContrast));
 
     private void OnRuntimeClientReady()
     {

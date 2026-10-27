@@ -2,7 +2,6 @@ using System.Text.Json;
 using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
-
 internal interface IApplicationRequestHost
 {
     void ApplyPreferences(AppPreferences preferences);
@@ -78,7 +77,7 @@ internal sealed class ApplicationRequestController : IDisposable
             _reply.PostOperationFailed(
                 request.RequestId,
                 "The application preferences request is invalid.",
-                "APP_PREFERENCES_BAD_PAYLOAD");
+                AppSettingsErrorCodes.BadPayload);
             return Task.CompletedTask;
         }
         try
@@ -93,20 +92,23 @@ internal sealed class ApplicationRequestController : IDisposable
             _reply.PostOperationFailed(
                 request.RequestId,
                 "无法读取桌面应用设置。",
-                "APP_PREFERENCES_READ_FAILED");
+                AppSettingsErrorCodes.ReadFailed);
         }
         return Task.CompletedTask;
     }
 
     private Task UpdatePreferencesAsync(RoutedWebRequest request)
     {
-        if (!TryReadAppPreferencesPatch(request.Payload, out AppPreferencesPatch? patch)
+        // The generated reader rejects unknown/duplicate keys, present nulls,
+        // bad enums, oversized URLs, empty patches and any mixing of
+        // theme/adoptLegacyTheme before business state is touched.
+        if (!AppSettingsPatchReader.TryRead(request.Payload, out AppSettingsPreferencesPatch? patch)
             || patch is null)
         {
             _reply.PostOperationFailed(
                 request.RequestId,
                 "The application preferences update is invalid.",
-                "APP_PREFERENCES_BAD_PAYLOAD");
+                AppSettingsErrorCodes.BadPayload);
             return Task.CompletedTask;
         }
         try
@@ -123,10 +125,12 @@ internal sealed class ApplicationRequestController : IDisposable
         catch (Exception exception)
         {
             TraceUnexpectedFailure("Application preferences update", exception);
+            // The store write may already have committed and appearance/native
+            // effects may have run; this failure never means "not committed".
             _reply.PostOperationFailed(
                 request.RequestId,
                 "无法保存桌面应用设置，请检查当前用户权限后重试。",
-                "APP_PREFERENCES_WRITE_FAILED");
+                AppSettingsErrorCodes.WriteFailed);
         }
         return Task.CompletedTask;
     }
@@ -273,128 +277,20 @@ internal sealed class ApplicationRequestController : IDisposable
         }
     }
 
-    internal static bool TryReadAppPreferencesPatch(
-        JsonElement payload,
-        out AppPreferencesPatch? patch)
-    {
-        patch = null;
-        if (payload.ValueKind != JsonValueKind.Object)
-            return false;
-        bool? minimizeToTrayOnClose = null;
-        bool? startWithWindows = null;
-        string? updateProxy = null;
-        string? customUpdateProxyUrl = null;
-        string? theme = null;
-        string? adoptLegacyTheme = null;
-        bool sawMinimize = false;
-        bool sawStartup = false;
-        bool sawUpdateProxy = false;
-        bool sawCustomUpdateProxyUrl = false;
-        bool sawTheme = false;
-        bool sawAdoptLegacyTheme = false;
-        foreach (JsonProperty property in payload.EnumerateObject())
-        {
-            if (property.NameEquals("minimizeToTrayOnClose"))
-            {
-                if (sawMinimize || property.Value.ValueKind is not
-                        (JsonValueKind.True or JsonValueKind.False))
-                    return false;
-                sawMinimize = true;
-                minimizeToTrayOnClose = property.Value.GetBoolean();
-                continue;
-            }
-            if (property.NameEquals("startWithWindows"))
-            {
-                if (sawStartup || property.Value.ValueKind is not
-                        (JsonValueKind.True or JsonValueKind.False))
-                    return false;
-                sawStartup = true;
-                startWithWindows = property.Value.GetBoolean();
-                continue;
-            }
-            if (property.NameEquals("updateProxy"))
-            {
-                if (sawUpdateProxy || property.Value.ValueKind != JsonValueKind.String)
-                    return false;
-                sawUpdateProxy = true;
-                updateProxy = property.Value.GetString();
-                if (updateProxy is null || !UpdateProxyOptions.IsKnown(updateProxy))
-                    return false;
-                continue;
-            }
-            if (property.NameEquals("customUpdateProxyUrl"))
-            {
-                if (sawCustomUpdateProxyUrl
-                    || property.Value.ValueKind != JsonValueKind.String)
-                    return false;
-                sawCustomUpdateProxyUrl = true;
-                customUpdateProxyUrl = property.Value.GetString();
-                if (customUpdateProxyUrl is null || customUpdateProxyUrl.Length > 2048)
-                    return false;
-                continue;
-            }
-            if (property.NameEquals("theme"))
-            {
-                if (sawTheme || property.Value.ValueKind != JsonValueKind.String)
-                    return false;
-                sawTheme = true;
-                theme = property.Value.GetString();
-                if (theme is null || !AppThemeOptions.IsKnown(theme))
-                    return false;
-                // A direct choice and the one-time legacy adoption are
-                // mutually exclusive: mixing them could overwrite an
-                // explicit Host value through the compare-unset path.
-                if (sawAdoptLegacyTheme)
-                    return false;
-                continue;
-            }
-            if (property.NameEquals("adoptLegacyTheme"))
-            {
-                if (sawAdoptLegacyTheme || property.Value.ValueKind != JsonValueKind.String)
-                    return false;
-                sawAdoptLegacyTheme = true;
-                adoptLegacyTheme = property.Value.GetString();
-                if (adoptLegacyTheme is null || !AppThemeOptions.IsKnown(adoptLegacyTheme))
-                    return false;
-                if (sawTheme)
-                    return false;
-                continue;
-            }
-            return false;
-        }
-        if (!sawMinimize && !sawStartup && !sawUpdateProxy && !sawCustomUpdateProxyUrl
-            && !sawTheme && !sawAdoptLegacyTheme)
-            return false;
-        if (sawAdoptLegacyTheme
-            && (sawMinimize || sawStartup || sawUpdateProxy || sawCustomUpdateProxyUrl || sawTheme))
-            return false;
-        patch = new AppPreferencesPatch(
-            minimizeToTrayOnClose,
-            startWithWindows,
-            updateProxy,
-            customUpdateProxyUrl,
-            sawCustomUpdateProxyUrl,
-            theme,
-            sawTheme,
-            adoptLegacyTheme,
-            sawAdoptLegacyTheme);
-        return true;
-    }
-
+    /// <summary>Result projection shared by get/update replies. The DTO and
+    /// its wire names are generated from the app-settings contract.</summary>
     private void PostPreferences(RoutedWebRequest request)
         => _reply.PostResponse(
             request.Type,
             request.RequestId,
-            new
-            {
-                minimizeToTrayOnClose = CurrentPreferences.MinimizeToTrayOnClose,
-                startWithWindows = CurrentPreferences.StartWithWindows,
-                updateProxy = CurrentPreferences.UpdateProxy,
-                customUpdateProxyUrl = CurrentPreferences.CustomUpdateProxyUrl ?? "",
-                theme = CurrentPreferences.Theme,
-                effectiveTheme = _appearance.Projection.Effective,
-                highContrast = _appearance.Projection.HighContrast,
-            });
+            new AppSettingsPreferences(
+                CurrentPreferences.MinimizeToTrayOnClose,
+                CurrentPreferences.StartWithWindows,
+                CurrentPreferences.UpdateProxy,
+                CurrentPreferences.CustomUpdateProxyUrl ?? "",
+                CurrentPreferences.Theme,
+                _appearance.Projection.Effective,
+                _appearance.Projection.HighContrast));
 
     private void TraceUnexpectedFailure(string operation, Exception exception)
         => _host.Trace($"{operation} failed; exception={exception.GetType().Name}");

@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -42,7 +43,7 @@ public sealed class ReleaseUpdateServiceTests
 
         ReleaseUpdateCandidate? candidate = await client.CheckAsync(
             "1.0.0",
-            UpdateProxyOptions.GhProxyNet,
+            AppSettingsUpdateProxyOption.GhproxyNet,
             null,
             CancellationToken.None);
 
@@ -68,7 +69,7 @@ public sealed class ReleaseUpdateServiceTests
         ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
             () => client.CheckAsync(
                 "1.0.0",
-                UpdateProxyOptions.Direct,
+                AppSettingsUpdateProxyOption.Direct,
                 null,
                 CancellationToken.None));
 
@@ -89,7 +90,7 @@ public sealed class ReleaseUpdateServiceTests
         ReleaseUpdateException exception = await Assert.ThrowsExactlyAsync<ReleaseUpdateException>(
             () => client.CheckAsync(
                 "1.0.0",
-                UpdateProxyOptions.GhProxyNet,
+                AppSettingsUpdateProxyOption.GhproxyNet,
                 null,
                 CancellationToken.None));
 
@@ -107,7 +108,7 @@ public sealed class ReleaseUpdateServiceTests
 
         ReleaseUpdateCandidate? candidate = await client.CheckAsync(
             "1.0.0",
-            UpdateProxyOptions.Direct,
+            AppSettingsUpdateProxyOption.Direct,
             null,
             CancellationToken.None);
 
@@ -147,7 +148,7 @@ public sealed class ReleaseUpdateServiceTests
 
         Uri proxied = UpdateDownloadProxy.Rewrite(
             direct,
-            UpdateProxyOptions.Custom,
+            AppSettingsUpdateProxyOption.Custom,
             "https://proxy.example/base");
 
         Assert.AreEqual(
@@ -156,7 +157,7 @@ public sealed class ReleaseUpdateServiceTests
         ReleaseUpdateException exception = Assert.ThrowsExactly<ReleaseUpdateException>(() =>
             UpdateDownloadProxy.Rewrite(
                 direct,
-                UpdateProxyOptions.Custom,
+                AppSettingsUpdateProxyOption.Custom,
                 "http://proxy.example/"));
         Assert.AreEqual("UPDATE_PROXY_INVALID", exception.Code);
     }
