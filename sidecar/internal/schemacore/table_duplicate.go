@@ -81,6 +81,8 @@ func duplicateTableContents(ctx context.Context, app core.App, intent v2.TableCr
 	}
 	allocator := v2.NewIdentityAllocator(nil)
 	fieldIDs := map[string]string{}
+	// Copied view filters reference self relation rows by record id under both field reference forms.
+	selfRelations := map[string]bool{}
 	for i := range definitions {
 		field := &definitions[i]
 		if (copyRecords && (field.LogicalType == v2.LogicalFile || field.LogicalType == v2.LogicalAutoNumber)) || field.Lookup != nil {
@@ -104,6 +106,10 @@ func duplicateTableContents(ctx context.Context, app core.App, intent v2.TableCr
 					return duplicateUnsupported("Wait for formula computation to finish before duplicating this table.")
 				}
 			}
+		}
+		if field.Relation != nil && field.Relation.TargetTableID == sourceID {
+			selfRelations[field.Identity.FieldID] = true
+			selfRelations[field.Identity.PhysicalName] = true
 		}
 		identity, err := allocator.AllocateField(ctx)
 		if err != nil {
@@ -188,7 +194,8 @@ func duplicateTableContents(ctx context.Context, app core.App, intent v2.TableCr
 	if err := schemaapi.New(app).SyncComputedMetadataForTable(ctx, targetID); err != nil {
 		return err
 	}
-	if err := duplicateRows(ctx, app, source, targetID, collection, definitions, copyRecords); err != nil {
+	rowIDs, err := duplicateRows(ctx, app, source, targetID, collection, definitions, copyRecords)
+	if err != nil {
 		return err
 	}
 	if err := mutation.AuditCopiedRows(ctx, app, targetID, intent.OperationID, intent.Actor, now); err != nil {
@@ -197,25 +204,25 @@ func duplicateTableContents(ctx context.Context, app core.App, intent v2.TableCr
 	if err := materializeCopiedFormulas(ctx, app, targetID, collection); err != nil {
 		return err
 	}
-	return duplicateViews(ctx, app, sourceID, targetID, fieldIDs, copyRecords, copyViews)
+	return duplicateViews(ctx, app, sourceID, targetID, fieldIDs, selfRelations, rowIDs, copyRecords, copyViews)
 }
 
-func duplicateRows(ctx context.Context, app core.App, source *core.Record, targetID string, target *core.Collection, fields []v2.FieldDefinition, copyRecords bool) error {
+func duplicateRows(ctx context.Context, app core.App, source *core.Record, targetID string, target *core.Collection, fields []v2.FieldDefinition, copyRecords bool) (map[string]string, error) {
 	old, err := app.FindCollectionByNameOrId(source.GetString("collection_id"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, field := range old.Fields {
 		if target.Fields.GetByName(field.GetName()) == nil {
-			return duplicateUnsupported("Unmanaged provider fields must be migrated before duplication.")
+			return nil, duplicateUnsupported("Unmanaged provider fields must be migrated before duplication.")
 		}
 	}
 	if !copyRecords {
-		return nil
+		return nil, nil
 	}
 	rows, err := app.FindAllRecords(old)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ids := map[string]string{}
 	for _, row := range rows {
@@ -234,7 +241,7 @@ func duplicateRows(ctx context.Context, app core.App, source *core.Record, targe
 	}
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		values := append([]string(nil), expressions...)
 		params := dbx.Params{"id": ids[row.Id], "source": row.Id}
@@ -245,13 +252,13 @@ func duplicateRows(ctx context.Context, app core.App, source *core.Record, targe
 			linked := row.GetStringSlice(field.Identity.PhysicalName)
 			for i, id := range linked {
 				if ids[id] == "" {
-					return duplicateUnsupported("A self relation references a missing source row.")
+					return nil, duplicateUnsupported("A self relation references a missing source row.")
 				}
 				linked[i] = ids[id]
 			}
 			raw, err := json.Marshal(linked)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			name := field.Identity.PhysicalName
 			params[name] = string(raw)
@@ -269,13 +276,13 @@ func duplicateRows(ctx context.Context, app core.App, source *core.Record, targe
 		}
 		query := "INSERT INTO `" + target.Name + "` (" + strings.Join(columns, ",") + ") SELECT " + strings.Join(values, ",") + " FROM `" + old.Name + "` WHERE id={:source}"
 		if _, err := app.DB().NewQuery(query).Bind(params).Execute(); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if len(rows) > 0 {
 		_, err = app.DB().NewQuery("UPDATE vibetable_tables SET data_revision=1 WHERE table_id={:table}").Bind(dbx.Params{"table": targetID}).Execute()
 	}
-	return err
+	return ids, err
 }
 
 func materializeCopiedFormulas(ctx context.Context, app core.App, tableID string, collection *core.Collection) error {
@@ -323,7 +330,7 @@ func materializeCopiedFormulas(ctx context.Context, app core.App, tableID string
 	return err
 }
 
-func duplicateViews(ctx context.Context, app core.App, source, target string, fieldIDs map[string]string, copyRecords, copyViews bool) error {
+func duplicateViews(ctx context.Context, app core.App, source, target string, fieldIDs map[string]string, selfRelations map[string]bool, rowIDs map[string]string, copyRecords, copyViews bool) error {
 	for _, name := range []string{"vibetable_presets", "vibetable_content_profiles", "vibetable_record_document_links"} {
 		if (name == "vibetable_presets" && !copyViews) || (name == "vibetable_record_document_links" && !copyRecords) {
 			continue
@@ -358,7 +365,7 @@ func duplicateViews(ctx context.Context, app core.App, source, target string, fi
 			if payload["tableId"] == source {
 				payload["tableId"] = target
 			}
-			remapViewFields(payload, fieldIDs)
+			remapViewFields(payload, fieldIDs, selfRelations, rowIDs)
 			raw, err = json.Marshal(payload)
 			if err != nil {
 				return err
@@ -378,9 +385,12 @@ func duplicateViews(ctx context.Context, app core.App, source, target string, fi
 	return nil
 }
 
-func remapViewFields(value any, fields map[string]string) {
+func remapViewFields(value any, fields map[string]string, selfRelations map[string]bool, rowIDs map[string]string) {
 	switch node := value.(type) {
 	case map[string]any:
+		if remapViewFilter(node, fields, selfRelations, rowIDs) {
+			return
+		}
 		for key, item := range node {
 			switch key {
 			case "field", "fieldId", "fieldRef", "dateField", "endDateField", "titleField", "groupField", "coverField", "titleFieldId", "bodyFieldId", "summaryFieldId":
@@ -396,12 +406,45 @@ func remapViewFields(value any, fields map[string]string) {
 					}
 				}
 			case "view", "filters", "sorts", "groups", "summaries", "columns":
-				remapViewFields(item, fields)
+				remapViewFields(item, fields, selfRelations, rowIDs)
 			}
 		}
 	case []any:
 		for _, item := range node {
-			remapViewFields(item, fields)
+			remapViewFields(item, fields, selfRelations, rowIDs)
 		}
 	}
+}
+
+// remapViewFilter remaps one filter leaf because copied rows get fresh record
+// ids; it reports whether the node was a filter condition.
+func remapViewFilter(node map[string]any, fields map[string]string, selfRelations map[string]bool, rowIDs map[string]string) bool {
+	field, ok := node["field"].(string)
+	if !ok {
+		return false
+	}
+	if _, ok := node["operator"].(string); !ok {
+		return false
+	}
+	if fields[field] != "" {
+		node["field"] = fields[field]
+	}
+	if !selfRelations[field] || rowIDs == nil {
+		return true
+	}
+	switch operator := node["operator"]; operator {
+	case "eq", "ne", "contains":
+		if text, ok := node["value"].(string); ok && rowIDs[text] != "" {
+			node["value"] = rowIDs[text]
+		}
+	case "in":
+		if values, ok := node["value"].([]any); ok {
+			for i, item := range values {
+				if text, ok := item.(string); ok && rowIDs[text] != "" {
+					values[i] = rowIDs[text]
+				}
+			}
+		}
+	}
+	return true
 }

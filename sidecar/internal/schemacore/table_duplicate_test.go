@@ -408,6 +408,241 @@ func TestTableDuplicateCopyScopesAndReplayBinding(t *testing.T) {
 	}
 }
 
+func TestTableDuplicateRemapsSelfRelationFilterOperandsToCopiedRows(t *testing.T) {
+	app := commitProjectionApp(t)
+	lifecycle, _ := NewTableLifecycle(app)
+	ctx := context.Background()
+	actor := v2.Actor{ID: "test", Kind: "user"}
+	source, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "筛选来源", OperationID: "filter-copy-source", Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": source.TableID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := app.FindCollectionByNameOrId(metadata.GetString("collection_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flag := copiedField(t, v2.LogicalBool)
+	if err := fieldchange.InstallCopiedField(app, collection, source.TableID, flag); err != nil {
+		t.Fatal(err)
+	}
+	text := copiedField(t, v2.LogicalText)
+	if err := fieldchange.InstallCopiedField(app, collection, source.TableID, text); err != nil {
+		t.Fatal(err)
+	}
+	relation := copiedField(t, v2.LogicalRelation)
+	relation.Relation = &v2.RelationSpec{TargetTableID: source.TableID, Cardinality: "one", DeletePolicy: "restrict", DisplayField: flag.Identity.FieldID}
+	if err := fieldchange.InstallCopiedField(app, collection, source.TableID, relation); err != nil {
+		t.Fatal(err)
+	}
+	external, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "外部表", OperationID: "filter-copy-external", Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": external.TableID})
+	externalCollection, _ := app.FindCollectionByNameOrId(externalMeta.GetString("collection_id"))
+	externalFlag := copiedField(t, v2.LogicalBool)
+	if err := fieldchange.InstallCopiedField(app, externalCollection, external.TableID, externalFlag); err != nil {
+		t.Fatal(err)
+	}
+	externalRow := core.NewRecord(externalCollection)
+	externalRow.Set(externalFlag.Identity.PhysicalName, true)
+	externalRow.Set(externalFlag.Value.Presence.PhysicalName, true)
+	if err := app.Save(externalRow); err != nil {
+		t.Fatal(err)
+	}
+	externalRelation := copiedField(t, v2.LogicalRelation)
+	externalRelation.Relation = &v2.RelationSpec{TargetTableID: external.TableID, Cardinality: "one", DeletePolicy: "restrict", DisplayField: externalFlag.Identity.FieldID}
+	if err := fieldchange.InstallCopiedField(app, collection, source.TableID, externalRelation); err != nil {
+		t.Fatal(err)
+	}
+	first := core.NewRecord(collection)
+	first.Set(flag.Identity.PhysicalName, false)
+	first.Set(flag.Value.Presence.PhysicalName, true)
+	if err := app.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	second := core.NewRecord(collection)
+	second.Set(relation.Identity.PhysicalName, first.Id)
+	second.Set(externalRelation.Identity.PhysicalName, externalRow.Id)
+	if err := app.Save(second); err != nil {
+		t.Fatal(err)
+	}
+	presets, _ := app.FindCollectionByNameOrId("vibetable_presets")
+	preset := core.NewRecord(presets)
+	preset.Set("logical_id", "filter-view")
+	raw, err := json.Marshal(map[string]any{"scope": source.TableID, "name": "筛选视图", "view": map[string]any{
+		"visibleFields": []string{relation.Identity.FieldID},
+		"filters": []any{
+			map[string]any{"field": relation.Identity.FieldID, "operator": "eq", "value": first.Id},
+			map[string]any{"field": relation.Identity.FieldID, "operator": "in", "value": []any{first.Id, second.Id}},
+			map[string]any{"field": relation.Identity.FieldID, "operator": "contains", "value": first.Id},
+			map[string]any{"field": text.Identity.FieldID, "operator": "contains", "value": first.Id},
+			map[string]any{"field": relation.Identity.FieldID, "operator": "is_null"},
+			map[string]any{"field": externalRelation.Identity.FieldID, "operator": "eq", "value": externalRow.Id},
+			map[string]any{"groupLogic": "AND", "filters": []any{
+				map[string]any{"field": relation.Identity.FieldID, "operator": "ne", "value": second.Id},
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset.Set("payload_json", types.JSONRaw(raw))
+	if err := app.Save(preset); err != nil {
+		t.Fatal(err)
+	}
+	copy, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "筛选副本", OperationID: "filter-copy-target", SourceTableID: source.TableID, Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copiedFields, err := fieldchange.NewCatalog(app).Fields(ctx, copy.TableID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldIDByPhysical := map[string]string{}
+	for _, field := range copiedFields {
+		fieldIDByPhysical[field.Identity.PhysicalName] = field.Identity.FieldID
+	}
+	copyRelation, copyText, copyExternal := fieldIDByPhysical[relation.Identity.PhysicalName], fieldIDByPhysical[text.Identity.PhysicalName], fieldIDByPhysical[externalRelation.Identity.PhysicalName]
+	if copyRelation == relation.Identity.FieldID || copyText == text.Identity.FieldID {
+		t.Fatal("copied field identity was reused")
+	}
+	copyMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": copy.TableID})
+	rows, err := app.FindAllRecords(copyMeta.GetString("collection_id"))
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%#v err=%v", rows, err)
+	}
+	var copiedFirst, copiedSecond, copiedExternalLink string
+	rowIDs := map[string]bool{}
+	for _, row := range rows {
+		rowIDs[row.Id] = true
+		if linked := row.GetString(relation.Identity.PhysicalName); linked != "" {
+			copiedSecond, copiedFirst = row.Id, linked
+			copiedExternalLink = row.GetString(externalRelation.Identity.PhysicalName)
+		}
+	}
+	if copiedFirst == "" || copiedSecond == "" || !rowIDs[copiedFirst] || copiedFirst == first.Id || copiedSecond == second.Id {
+		t.Fatalf("copied rows first=%s second=%s rows=%#v", copiedFirst, copiedSecond, rows)
+	}
+	// External relation targets live in another table and keep their record ids.
+	if copiedExternalLink != externalRow.Id {
+		t.Fatalf("copied external link=%q want=%s", copiedExternalLink, externalRow.Id)
+	}
+	allPresets, _ := app.FindAllRecords("vibetable_presets")
+	filterLeaves := func(payload map[string]any) map[string]map[string]any {
+		leaves := map[string]map[string]any{}
+		var collect func(node any)
+		collect = func(node any) {
+			switch item := node.(type) {
+			case []any:
+				for _, child := range item {
+					collect(child)
+				}
+			case map[string]any:
+				if children, ok := item["filters"].([]any); ok {
+					collect(children)
+				} else if _, ok := item["operator"]; ok {
+					leaves[fmt.Sprintf("%v|%v", item["field"], item["operator"])] = item
+				}
+			}
+		}
+		collect(payload["view"].(map[string]any)["filters"])
+		return leaves
+	}
+	leaves := map[string]map[string]any{}
+	found := false
+	for _, view := range allPresets {
+		if view.GetString("logical_id") == "filter-view" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(view.GetString("payload_json")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["scope"] != copy.TableID {
+			continue
+		}
+		found = true
+		leaves = filterLeaves(payload)
+	}
+	if !found {
+		t.Fatal("copied view is missing")
+	}
+	if leaf := leaves[copyRelation+"|eq"]; leaf["value"] != copiedFirst {
+		t.Fatalf("eq operand=%#v want=%s", leaf["value"], copiedFirst)
+	}
+	leaf := leaves[copyRelation+"|in"]
+	values, ok := leaf["value"].([]any)
+	if !ok || len(values) != 2 || values[0] != copiedFirst || values[1] != copiedSecond {
+		t.Fatalf("in operands=%#v want=[%s %s]", leaf["value"], copiedFirst, copiedSecond)
+	}
+	if leaf := leaves[copyRelation+"|contains"]; leaf["value"] != copiedFirst {
+		t.Fatalf("contains operand=%#v want=%s", leaf["value"], copiedFirst)
+	}
+	// describeFilterOperators publishes eq/ne/in for relation columns, so ne
+	// is mapped as well and nested group leaves must reach the remap.
+	if leaf := leaves[copyRelation+"|ne"]; leaf["value"] != copiedSecond {
+		t.Fatalf("nested ne operand=%#v want=%s", leaf["value"], copiedSecond)
+	}
+	if leaf := leaves[copyExternal+"|eq"]; leaf["value"] != externalRow.Id {
+		t.Fatalf("external operand=%#v want=%s", leaf["value"], externalRow.Id)
+	}
+	// Plain text operands never reference copied rows and must stay byte-identical.
+	if leaf := leaves[copyText+"|contains"]; leaf["value"] != first.Id {
+		t.Fatalf("text operand=%#v want=%s", leaf["value"], first.Id)
+	}
+	if _, ok := leaves[copyRelation+"|is_null"]["value"]; ok {
+		t.Fatal("nullary filter gained an operand")
+	}
+	// Without copied records there is no row identity mapping to apply.
+	no := false
+	structure, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "筛选结构", OperationID: "filter-copy-structure", SourceTableID: source.TableID, CopyRecords: &no, Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structCopyPresets, err := app.FindAllRecords("vibetable_presets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	structureFound := false
+	for _, view := range structCopyPresets {
+		if view.GetString("logical_id") == "filter-view" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(view.GetString("payload_json")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["scope"] != structure.TableID {
+			continue
+		}
+		structureFound = true
+		structCopy, err := fieldchange.NewCatalog(app).Fields(ctx, structure.TableID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range structCopy {
+			if field.Identity.PhysicalName != relation.Identity.PhysicalName {
+				continue
+			}
+			structureLeaves := filterLeaves(payload)
+			if leaf := structureLeaves[field.Identity.FieldID+"|eq"]; leaf["value"] != first.Id {
+				t.Fatalf("structure-only operand=%#v want source row %s", leaf["value"], first.Id)
+			}
+			if leaf := structureLeaves[field.Identity.FieldID+"|ne"]; leaf["value"] != second.Id {
+				t.Fatalf("structure-only ne operand=%#v want source row %s", leaf["value"], second.Id)
+			}
+		}
+	}
+	if !structureFound {
+		t.Fatal("structure-only view copy is missing")
+	}
+}
+
 func TestTableDuplicateStructureInitializesAutomaticNumberIndependently(t *testing.T) {
 	app := commitProjectionApp(t)
 	lifecycle, _ := NewTableLifecycle(app)
