@@ -22,6 +22,10 @@ TITLES = {
     # NativeProductFileRequestController.SelectImportSource dialog.
     "import-unicode-csv": "Import table data",
     "import-unicode-xlsx": "Import table data",
+    "output-small": "保存托管附件",
+    "output-large": "保存托管附件",
+    "output-reprint": "保存托管附件",
+    "output-next": "保存托管附件",
 }
 FILES = {
     "read": "52-input.csv",
@@ -37,10 +41,21 @@ FILES = {
     # emoji); the picker still never accepts a path from the request.
     "import-unicode-csv": "导入-源-Cafe\u0301-👩🏽‍💻.csv",
     "import-unicode-xlsx": "数据-源-👩🏽‍💻.xlsx",
+    "output-small": "small.xlsx",
+    "output-large": "large.xlsx",
+    "output-reprint": "reprint.xlsx",
+    "output-next": "new-template.xlsx",
 }
 # Scenario 35's own import pickers keep the scenario evidence prefix; the
 # shared capability-service kinds keep their historical 52- evidence names.
-EVIDENCE_PREFIXES = {"import-unicode-csv": "35", "import-unicode-xlsx": "35"}
+EVIDENCE_PREFIXES = {
+    "import-unicode-csv": "35",
+    "import-unicode-xlsx": "35",
+    "output-small": "55",
+    "output-large": "55",
+    "output-reprint": "55",
+    "output-next": "55",
+}
 
 
 def validate_file_request(request: dict[str, Any], controls: Path) -> Path:

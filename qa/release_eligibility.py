@@ -116,6 +116,7 @@ FILE_IO_SCENARIO_IDS = (
     "52-plugin-capability-services",
     "53-record-manager",
     "54-plugin-models",
+    "55-plugin-surface-outputs",
 )
 LANE_STAGE_SCENARIO_IDS = {
     "product-e2e-data-io": DATA_IO_SCENARIO_IDS,

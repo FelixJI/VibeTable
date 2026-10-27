@@ -22,6 +22,7 @@ import (
 type pluginSurfaceIO struct {
 	models      *schemaFieldChangeDomain
 	stages      surfaceAttachmentStages
+	outputs     surfaceOutputStages
 	plans       *importPlanOwner
 	attachments *attachments.Manager
 }

@@ -29,6 +29,7 @@ func (ports *pluginSurfaceIO) dropAttachments(input pluginSurfaceAPIRequest) (an
 	if ports == nil || ports.attachments == nil || decodePluginParams(input.Request, &request) != nil || len(request.Handles) > 8 {
 		return nil, pluginDataError("plugin_capability_invalid")
 	}
+	ports.dropOutputs(input, request.Handles)
 	ports.stages.mu.Lock()
 	defer ports.stages.mu.Unlock()
 	for _, handle := range request.Handles {

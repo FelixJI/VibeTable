@@ -19,3 +19,6 @@ export type { CellDisplay, CellValueKind } from "./display.js";
 export { SURFACE_UI_METHODS, SURFACE_UI_UNSUPPORTED } from "./surface-ui.js";
 export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from "./surface-ui.js";
 export type { SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
+
+export { SURFACE_OUTPUT_CONTRACT, SURFACE_OUTPUT_MAX_BYTES } from "./surface-output.js";
+export type { SurfaceOutput, SurfaceOutputClient, SurfaceOutputOptions, SurfaceOutputReceipt, SurfaceOutputSource } from "./surface-output.js";

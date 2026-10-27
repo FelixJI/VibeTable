@@ -339,6 +339,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "52-plugin-capability-services",
         "53-record-manager",
         "54-plugin-models",
+        "55-plugin-surface-outputs",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -3086,6 +3087,8 @@ def _prepare_complete_product_reports(
         )
         if "35-data-io-interoperability" in selected[stage]:
             _write_s35_audit_drain_log(run_root, ("business", "file"))
+        if "55-plugin-surface-outputs" in selected[stage]:
+            _write_output_artifacts(run_root)
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
                 "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
@@ -4013,7 +4016,33 @@ def test_model_native_diagnostics_are_retained_only_for_failed_phases(
         assert not (destination / "unrelated.json").exists()
 
 
+OUTPUT_ARTIFACTS = (
+    "small.xlsx",
+    "large.xlsx",
+    "reprint.xlsx",
+    "new-template.xlsx",
+    "output-proof.json",
+)
+
+
+def _write_output_artifacts(run: Path) -> None:
+    controls = run / "_runtime" / "55" / "controls"
+    controls.mkdir(parents=True)
+    for filename in OUTPUT_ARTIFACTS:
+        (controls / filename).write_bytes(filename.encode())
+
+
 SCENARIO_SCREENSHOTS = {
+    "55-plugin-surface-outputs": (
+        "55-output-conformance.png",
+        "55-plugin-surface-outputs-trace.zip",
+        "55-archive-confirmation.png",
+        "55-picker-output-small-cancel.png",
+        "55-picker-output-small-select.png",
+        "55-picker-output-large-select.png",
+        "55-picker-output-reprint-select.png",
+        "55-picker-output-next-select.png",
+    ),
     "07-attachment-history": ("07-named-comparison.png", "07-named-revisions.png"),
     "19-gallery-lifecycle": ("19-gallery-lifecycle.png",),
     "32-shared-work-calendar": ("32-shared-work-calendar.png",),
@@ -4162,6 +4191,8 @@ def _scenario_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> P
     )
     for filename in SCENARIO_SCREENSHOTS[scenario_id]:
         (directory / filename).write_bytes(filename.encode())
+    if scenario_id == "55-plugin-surface-outputs":
+        _write_output_artifacts(run)
     (directory / "unrelated.png").write_bytes(b"unrelated")
     (directory / "workspace.db").write_bytes(b"private workspace")
     return run
@@ -4185,6 +4216,11 @@ def test_scenario_screenshots_archive_only_declared_images(
         # The bounded close-audit measurement projection is always archived,
         # for passing and failed S35 runs alike.
         expected.add(f"{scenario_id}/35-audit-drain.json")
+    if scenario_id == "55-plugin-surface-outputs":
+        for filename in OUTPUT_ARTIFACTS:
+            relative = f"_runtime/55/controls/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == filename.encode()
     assert {
         path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
     } == expected
@@ -4198,6 +4234,13 @@ def test_scenario_screenshots_missing_image_rejects_passed_report(
     filename = SCENARIO_SCREENSHOTS[scenario_id][-1]
     (run / scenario_id / filename).unlink()
     with pytest.raises(ValueError, match=filename):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_output_evidence_requires_saved_artifact(tmp_path: Path) -> None:
+    run = _scenario_screenshot_run(tmp_path, "55-plugin-surface-outputs", "passed")
+    (run / "_runtime/55/controls/reprint.xlsx").unlink()
+    with pytest.raises(ValueError, match=r"reprint\.xlsx"):
         next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
 
 

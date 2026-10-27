@@ -391,6 +391,7 @@ _NODE_FREE_HOST_SCENARIOS = frozenset(
         "52-plugin-capability-services",
         "53-record-manager",
         "54-plugin-models",
+        "55-plugin-surface-outputs",
     }
 )
 
@@ -2305,6 +2306,7 @@ def _run_node_runner_guarded(
                 "35-data-io-interoperability",
                 "52-plugin-capability-services",
                 "53-record-manager",
+                "55-plugin-surface-outputs",
             }:
                 file_result = {
                     "requestId": file_dialog_request.get("requestId"),
@@ -2372,6 +2374,7 @@ def _run_node_runner_guarded(
                     "52-plugin-capability-services",
                     "53-record-manager",
                     "54-plugin-models",
+                    "55-plugin-surface-outputs",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -3136,6 +3139,11 @@ def run_scenario(
         from tests.e2e.plugin_model_packages import prepare_model_packages
 
         prepare_model_packages(controls_dir)
+
+    if scenario.id == "55-plugin-surface-outputs":
+        from tests.e2e.plugin_surface_outputs import prepare_output_package
+
+        prepare_output_package(controls_dir)
     if scenario.id in {"16-dashboard-lifecycle", "17-interface-lifecycle", "53-record-manager"}:
         from tests.e2e.plugin_capability_packages import prepare_record_manager_package
 
@@ -3474,6 +3482,10 @@ def run_scenario(
                     "code": "RESULT_EXIT_MISMATCH",
                     "message": "runner exited zero without a passing result",
                 }
+            if scenario.id == "55-plugin-surface-outputs" and result.get("status") == "passed":
+                from tests.e2e.plugin_surface_outputs import verify_output_files
+
+                result["outputFileVerification"] = verify_output_files(controls_dir)
         except Exception as exc:
             infrastructure_error = str(exc)
             result = _failure_result(
@@ -3729,6 +3741,7 @@ def run_product_acceptance(
             "52-plugin-capability-services",
             "53-record-manager",
             "54-plugin-models",
+            "55-plugin-surface-outputs",
         }
         for scenario in scenarios
     ):
@@ -3763,6 +3776,7 @@ def run_product_acceptance(
                 "52-plugin-capability-services",
                 "53-record-manager",
                 "54-plugin-models",
+                "55-plugin-surface-outputs",
             }
             and native_observer_error is not None
         ):

@@ -229,6 +229,13 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			domain = ioPorts[0].models
 		}
 		return executeSurfaceModel(ctx, app, workspace, input, domain)
+
+	case "output.stage.begin", "output.stage.write", "output.stage.finish", "output.open", "output.read":
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return executeSurfaceOutput(ctx, app, workspace, input, ports)
 	case "attachment.stage", "attachment.list", "attachment.read":
 		var ports *pluginSurfaceIO
 		if len(ioPorts) > 0 {
@@ -417,6 +424,9 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.mutation", input.RequestID, func(ctx context.Context) error {
 			var applyErr error
 			receipt, applyErr = kernel.ApplyWithCommit(mutation.WithBusinessReplay(ctx, "plugin.surface.mutation"), request, func(tx core.App, receipt mutation.Receipt) error {
+				if err := surfaceOutputArchiveFinish(ctx, tx, workspace, input, ioPorts...); err != nil {
+					return err
+				}
 				return surfaceAuditFinish(ctx, tx, workspace, input, "succeeded", "")
 			})
 			return applyErr

@@ -77,6 +77,14 @@ export function installContrastRestoreProjectionCaptureInPage() {
   return capture.id;
 }
 
+export async function assertRecoveredApplicationShell(page, recorder, checkName) {
+  await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
+  // The shell mounts before its asynchronous workspace plugin catalog is projected.
+  await page.getByTestId("nav-plugin-app-com.vibetable.e2e.application-a/open-app")
+    .waitFor({ state: "visible", timeout: 60000 });
+  await assertSidebarPluginReachable(page, recorder, checkName);
+}
+
 export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const opened = await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
@@ -204,7 +212,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const after = await browserSession.send("SystemInfo.getProcessInfo");
   recorder.check("old faulting renderer leaves the shared browser process set",
     !after.processInfo.some(next => next.id === faulting[0].id), { before, looping, faulting, after });
-  await assertSidebarPluginReachable(page, recorder,
+  await assertRecoveredApplicationShell(page, recorder,
     "recovery leaves sidebar plugin entries reachable without reopening the app");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "49-loop-recovered.png") });
   await page.getByTestId("nav-tables").click();
@@ -215,10 +223,9 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const session = await page.context().newCDPSession(page);
   await session.send("Page.crash").catch(error => { recorder.check("actual renderer crash closes or fails the old CDP target", /crash|closed|target|connection/i.test(String(error)), { error: String(error) }); });
   page = await runtime.refreshPluginProductPage();
-  await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   // 自动恢复成功后回到 Ready 外壳：故障层断言只在故障层进行（见下），
   // 此处验证恢复后的真实用户可达性。
-  await assertSidebarPluginReachable(page, recorder,
+  await assertRecoveredApplicationShell(page, recorder,
     "actual renderer crash recovers into a usable product shell");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "49-crash-recovered.png") });
   await page.getByTestId("nav-tables").click();
