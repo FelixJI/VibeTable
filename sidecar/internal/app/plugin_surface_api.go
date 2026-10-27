@@ -652,14 +652,7 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 			} else if operation.Kind == mutation.OperationDelete {
 				name = "delete"
 			}
-			var grant *pluginReadGrant
-			for _, candidate := range installed.grants() {
-				if (candidate.Collection == plan.Collection || candidate.Collection == "$active" && plan.Collection == input.ActiveCollection) && pluginHas(candidate.Operations, name) {
-					copy := candidate
-					grant = &copy
-					break
-				}
-			}
+			grant := installed.grantFor(plan.Collection, input.ActiveCollection, name)
 			if grant == nil {
 				return pluginDataError("plugin_write_denied")
 			}

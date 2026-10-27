@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -106,18 +109,7 @@ func executeSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		}
 		return map[string]any{"contract": pluginmodel.Contract, "status": "unconfigured", "bindings": map[string]any{}}, nil
 	case "model.catalog":
-		// This method is Host-only. The frame API never forwards it.
-		tables, err := schemaapi.New(app).List(ctx)
-		if err != nil {
-			return nil, err
-		}
-		catalog := []v2.SchemaSnapshot{}
-		for _, t := range tables {
-			if t.Snapshot.Kind == "base" {
-				catalog = append(catalog, t.Snapshot)
-			}
-		}
-		return map[string]any{"model": model, "tables": catalog}, nil
+		return surfaceModelCatalog(ctx, app, workspace, input)
 	case "model.preview":
 		if installed.ActionRisk == "read" {
 			return nil, pluginDataError("plugin_write_denied")
@@ -146,6 +138,134 @@ func executeSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		return commitSurfaceModel(ctx, app, workspace, input, installed, request.RequestID, domain)
 	}
 	return nil, pluginDataError("plugin_capability_invalid")
+}
+
+const modelCatalogPageSize = 32
+
+// Match PocketBase router.Event.JSON, including its legacy-data options.
+func modelCatalogFits(page map[string]any) (bool, error) {
+	wire, err := jsonv2.Marshal(page, jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+	return len(wire) <= maxMutationRequestBytes, err
+}
+
+func appendModelCatalogItem(page map[string]any, key, nextKey string, item, next any) (bool, error) {
+	items := page[key].([]any)
+	previousNext := page[nextKey]
+	page[key], page[nextKey] = append(items, item), next
+	fits, err := modelCatalogFits(page)
+	if err != nil || fits {
+		return fits, err
+	}
+	page[key], page[nextKey] = items, previousNext
+	if len(items) == 0 {
+		return false, pluginDataError("plugin_message_too_large")
+	}
+	return false, nil
+}
+
+// Host-only summaries; field pages bind the selected table's current schema revision.
+func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (map[string]any, error) {
+	var request struct {
+		AfterTableID   string `json:"afterTableId,omitempty"`
+		TableID        string `json:"tableId,omitempty"`
+		SchemaRevision string `json:"schemaRevision,omitempty"`
+		Offset         int    `json:"offset,omitempty"`
+	}
+	if decodePluginParams(input.Request, &request) != nil || request.Offset < 0 {
+		return nil, pluginDataError("plugin_capability_invalid")
+	}
+	var result map[string]any
+	err := app.RunInTransaction(func(tx core.App) error {
+		installed, err := surfaceInstallation(ctx, tx, workspace, input)
+		if err != nil {
+			return err
+		}
+		catalog := schemaapi.New(tx)
+		if request.TableID != "" {
+			if request.AfterTableID != "" || request.SchemaRevision == "" {
+				return pluginDataError("plugin_capability_invalid")
+			}
+			table, err := catalog.Describe(ctx, request.TableID)
+			if err != nil || table.Snapshot.Kind != "base" || table.Snapshot.SchemaRevision != request.SchemaRevision || request.Offset > len(table.Snapshot.Fields) {
+				return pluginDataError("plugin_plan_stale")
+			}
+			result = map[string]any{"tableId": request.TableID, "schemaRevision": request.SchemaRevision, "fields": []any{}, "nextOffset": nil}
+			for index := request.Offset; index < len(table.Snapshot.Fields); index++ {
+				if len(result["fields"].([]any)) == modelCatalogPageSize {
+					result["nextOffset"] = index
+					break
+				}
+				field := table.Snapshot.Fields[index]
+				if field.Lifecycle.State == "active" {
+					var next any
+					if index+1 < len(table.Snapshot.Fields) {
+						next = index + 1
+					}
+					added, err := appendModelCatalogItem(result, "fields", "nextOffset", map[string]any{"fieldId": field.Identity.FieldID, "displayName": field.DisplayName, "logicalType": field.LogicalType}, next)
+					if err != nil {
+						return err
+					}
+					if !added {
+						result["nextOffset"] = index
+						break
+					}
+				}
+			}
+			return nil
+		}
+		if request.Offset != 0 || request.SchemaRevision != "" {
+			return pluginDataError("plugin_capability_invalid")
+		}
+		tables, err := catalog.List(ctx)
+		if err != nil {
+			return err
+		}
+		sort.Slice(tables, func(i, j int) bool { return tables[i].Snapshot.TableID < tables[j].Snapshot.TableID })
+		base := tables[:0]
+		for _, table := range tables {
+			if table.Snapshot.Kind == "base" {
+				base = append(base, table)
+			}
+		}
+		tables = base
+		afterFound := request.AfterTableID == ""
+		result = map[string]any{"model": installed.Manifest.Permissions.Model, "tables": []any{}, "nextAfterTableId": nil}
+		for index, table := range tables {
+			s := table.Snapshot
+			if !afterFound {
+				afterFound = s.TableID == request.AfterTableID
+				continue
+			}
+			if len(result["tables"].([]any)) == modelCatalogPageSize {
+				break
+			}
+			var next any
+			if index+1 < len(tables) {
+				next = s.TableID
+			}
+			added, err := appendModelCatalogItem(result, "tables", "nextAfterTableId", map[string]any{"tableId": s.TableID, "displayName": s.DisplayName, "schemaRevision": s.SchemaRevision}, next)
+			if err != nil {
+				return err
+			}
+			if !added {
+				break
+			}
+		}
+		if !afterFound {
+			return pluginDataError("plugin_plan_stale")
+		}
+		return nil
+	})
+	if err == nil {
+		fits, encodingError := modelCatalogFits(result)
+		if encodingError != nil {
+			return nil, encodingError
+		}
+		if !fits {
+			return nil, pluginDataError("plugin_message_too_large")
+		}
+	}
+	return result, err
 }
 
 func previewSurfaceModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, request modelPreviewRequest, states []pluginmodel.State, domain *schemaFieldChangeDomain) (modelPreview, error) {

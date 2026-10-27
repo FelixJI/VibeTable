@@ -3,8 +3,27 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { runPluginModels, installModelCatalogObserverInPage, readModelCatalogInPage,
+import { runPluginModels, modelMappingSelections, installModelCatalogObserverInPage, readModelCatalogInPage,
   releaseModelCatalogObserverInPage, waitForModelCatalog } from "./plugin_models.mjs";
+
+test("native mapping choices bind canonical ids to labels independently of catalog and field ordering", () => {
+  const bindings = {};
+  const schemas = {};
+  const tables = [];
+  for (const [entity, keys] of [["people", ["name", "tickets"]], ["tickets", ["title", "person"]], ["assets", ["name", "quantity"]]]) {
+    bindings[entity] = { tableId: `tbl_${entity}`, fields: Object.fromEntries(keys.map(key => [key, `fld_${entity}_${key}`])) };
+    tables.unshift({ tableId: `tbl_${entity}`, displayName: `Actual ${entity}` });
+    schemas[entity] = { fields: keys.toReversed().map(key => ({ identity: { fieldId: `fld_${entity}_${key}` }, displayName: `Actual ${entity} ${key}`, logicalType: "text" })) };
+  }
+  const choices = modelMappingSelections(tables, schemas, bindings);
+  assert.equal(choices.length, 9);
+  assert.deepEqual(choices[0], { controlId: "PluginModelTable_people", label: "Actual people" });
+  assert.deepEqual(choices[1], { controlId: "PluginModelField_people_name", label: "Actual people name · text" });
+  assert.deepEqual(choices[8], { controlId: "PluginModelField_assets_quantity", label: "Actual assets quantity · text" });
+  assert.throws(() => modelMappingSelections([], schemas, bindings), /canonical mapping table unavailable/);
+  schemas.people.fields.push(schemas.people.fields[0]);
+  assert.throws(() => modelMappingSelections(tables, schemas, bindings), /canonical mapping field unavailable/);
+});
 
 function seedCatalogHarness(tables) {
   const calls = [];

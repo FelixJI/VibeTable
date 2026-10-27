@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { sdk, testing } from "./load-sdk.mjs";
 
 test("model calls have no catalog, mappings, approval or implicit replay channel", async () => {
@@ -33,4 +34,13 @@ test("offline host does not invent native model support", async () => {
   const client = sdk.createSurfaceClient("surface-a", host.transport);
   await assert.rejects(client.model.configure({ mode: "create" }), error => error.code === "plugin_api_unsupported");
   client.dispose();
+});
+
+test("native model catalog stays closed and bounded in the shared contract", () => {
+  const contract = JSON.parse(readFileSync(new URL("../../../contracts/plugin-surface-api.v1.json", import.meta.url), "utf8"));
+  assert.deepEqual(contract.model.hostOnly, ["model.catalog", "model.preview", "model.commit"]);
+  for (const method of contract.model.hostOnly) assert.equal(contract.methods.includes(method), false);
+  assert.equal(contract.model.catalog.pageItems, 32);
+  assert.equal(contract.model.catalog.messageBytes, contract.limits.messageBytes);
+  assert.equal(contract.limits.messageBytes, 1048576);
 });

@@ -64,6 +64,7 @@ internal static class Program
         var bounds = root.Current.BoundingRectangle;
         Stage("plugin-root end");
         var buttons = new List<object>();
+        var combos = new List<object>();
         var nativeElements = new Stack<AutomationElement>();
         nativeElements.Push(root);
         int visited = 0;
@@ -80,8 +81,28 @@ internal static class Program
                 nativeElements.Push(child);
                 child = TreeWalker.ControlViewWalker.GetNextSibling(child);
             }
-            if (element.Current.ControlType != ControlType.Button) continue;
             string id = element.Current.AutomationId;
+            if (root.Current.AutomationId == "PluginModelWindow"
+                && element.Current.ControlType == ControlType.ComboBox
+                && (id.StartsWith("PluginModelTable_", StringComparison.Ordinal) || id.StartsWith("PluginModelField_", StringComparison.Ordinal)))
+            {
+                var options = element.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
+                if (options.Count > 32) return Reject("UIA_MODEL_OPTIONS_LIMIT");
+                var choices = new List<object>();
+                foreach (AutomationElement option in options)
+                {
+                    var optionBox = option.Current.BoundingRectangle;
+                    choices.Add(new { name = option.Current.Name, pid = option.Current.ProcessId,
+                        enabled = option.Current.IsEnabled, offscreen = option.Current.IsOffscreen,
+                        x = optionBox.IsEmpty ? 0 : optionBox.X, y = optionBox.IsEmpty ? 0 : optionBox.Y,
+                        width = optionBox.IsEmpty ? 0 : optionBox.Width, height = optionBox.IsEmpty ? 0 : optionBox.Height });
+                }
+                bool expanded = element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out object expansion)
+                    && ((ExpandCollapsePattern)expansion).Current.ExpandCollapseState == ExpandCollapseState.Expanded;
+                combos.Add(new { id, pid = element.Current.ProcessId, enabled = element.Current.IsEnabled,
+                    focused = element.Current.HasKeyboardFocus, expanded, selected = ReadState(element), choices });
+            }
+            if (element.Current.ControlType != ControlType.Button) continue;
             if (!id.StartsWith("plugin-", StringComparison.Ordinal)) continue;
             var box = element.Current.BoundingRectangle;
             buttons.Add(new { id, name = element.Current.Name, pid = element.Current.ProcessId,
@@ -125,7 +146,8 @@ internal static class Program
         Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid = root.Current.ProcessId,
             title = root.Current.Name, x = bounds.IsEmpty ? 0 : bounds.X, y = bounds.IsEmpty ? 0 : bounds.Y,
             width = bounds.IsEmpty ? 0 : bounds.Width, height = bounds.IsEmpty ? 0 : bounds.Height,
-            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
+            automationId = root.Current.AutomationId,
+            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons, combos }));
         Stage("plugin-serialize end");
         return 0;
     }

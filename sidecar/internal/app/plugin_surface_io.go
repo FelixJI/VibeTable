@@ -31,12 +31,7 @@ func surfaceIOOwner(input pluginSurfaceAPIRequest) string {
 }
 
 func surfaceIOGrant(installed pluginSurfaceInstallation, input pluginSurfaceAPIRequest, table, operation string) *pluginReadGrant {
-	for _, grant := range installed.grants() {
-		if (grant.Collection == table || grant.Collection == "$active" && table == input.ActiveCollection) && pluginHas(grant.Operations, operation) {
-			return &grant
-		}
-	}
-	return nil
+	return installed.grantFor(table, input.ActiveCollection, operation)
 }
 
 func surfaceImportGrant(installed pluginSurfaceInstallation, input pluginSurfaceAPIRequest, table, mode string) *pluginReadGrant {

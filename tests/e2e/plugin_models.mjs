@@ -6,6 +6,22 @@ import { isAppliedMutationResponse } from "./bridge_raw_request.mjs";
 const PLUGIN = "com.vibetable.examples.model-conformance";
 const MAPPED = "com.vibetable.e2e.model-mapped";
 
+export function modelMappingSelections(tables, schemas, bindings) {
+  const selections = [];
+  for (const [entity, fields] of [["people", ["name", "tickets"]], ["tickets", ["title", "person"]], ["assets", ["name", "quantity"]]]) {
+    const binding = bindings[entity];
+    const table = tables.filter(item => item.tableId === binding.tableId);
+    if (table.length !== 1) throw new Error("real canonical mapping table unavailable");
+    selections.push({ controlId: `PluginModelTable_${entity}`, label: table[0].displayName });
+    for (const field of fields) {
+      const choice = schemas[entity].fields.filter(item => item.identity.fieldId === binding.fields[field]);
+      if (choice.length !== 1) throw new Error("real canonical mapping field unavailable");
+      selections.push({ controlId: `PluginModelField_${entity}_${field}`, label: `${choice[0].displayName} · ${choice[0].logicalType}` });
+    }
+  }
+  return selections;
+}
+
 // Read-only observation of the same Host catalog projection used by the sidebar.
 // Ordinary notifications have no wire scope: stale delivery is prevented by the
 // Host's generation/lease gate, and this observer retires on any local epoch change.
@@ -82,7 +98,7 @@ async function nativeModel(runtime, action, buttonId, stage, selections) {
   const target = path.join(runtime.evidenceDir, "plugin-native-request.json");
   await fs.writeFile(`${target}.tmp`, JSON.stringify({ requestId, action, buttonId, stage, ...(selections ? { selections } : {}) }));
   await fs.rename(`${target}.tmp`, target);
-  const until = Date.now() + 20000;
+  const until = Date.now() + (action === "map" ? 75000 : 20000);
   while (Date.now() < until) {
     const reply = await fs.readFile(path.join(runtime.evidenceDir, "plugin-native-result.json"), "utf8").then(JSON.parse).catch(error => { if (error.code === "ENOENT") return null; throw error; });
     if (reply?.requestId === requestId) {
@@ -212,12 +228,7 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     recorder.check("second plugin has no model grant before native mapping", unconfigured.result?.tables?.length === 0, { unconfigured });
     beforeCatalog = await catalogRevision();
     await frame.locator("#map").click();
-    const selections = [];
-    for (const [entity, fields] of [["people", ["name", "tickets"]], ["tickets", ["title", "person"]], ["assets", ["name", "quantity"]]]) {
-      const binding = first.bindings[entity]; selections.push(tables.findIndex(table => table.tableId === binding.tableId));
-      for (const field of fields) selections.push(schemas[entity].fields.findIndex(item => item.identity.fieldId === binding.fields[field]));
-    }
-    if (selections.some(index => index < 0)) throw new Error("real canonical mapping choices unavailable");
+    const selections = modelMappingSelections(tables, schemas, first.bindings);
     await nativeModel(runtime, "map", "plugin-model-preview", "map", selections);
     await nativeModel(runtime, "click", "plugin-model-confirm", "map");
     const mapped = await completed(frame);

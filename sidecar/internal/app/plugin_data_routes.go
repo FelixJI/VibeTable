@@ -89,13 +89,32 @@ func pluginHas(values []string, value string) bool {
 	return false
 }
 func (installation pluginInstallation) grant(table, active string) *pluginReadGrant {
+	return installation.grantFor(table, active, "read", "query")
+}
+
+func (installation pluginInstallation) grantFor(table, active string, operations ...string) *pluginReadGrant {
+	var merged *pluginReadGrant
 	for _, grant := range installation.grants() {
-		if pluginHas(grant.Operations, "read") && pluginHas(grant.Operations, "query") &&
-			(grant.Collection == table || grant.Collection == "$active" && table == active) {
-			return &grant
+		if grant.Collection != table && !(grant.Collection == "$active" && table == active) {
+			continue
+		}
+		matches := true
+		for _, operation := range operations {
+			matches = matches && pluginHas(grant.Operations, operation)
+		}
+		if !matches {
+			continue
+		}
+		if merged == nil {
+			merged = &pluginReadGrant{Collection: table, Operations: operations, Fields: []string{}}
+		}
+		for _, field := range grant.Fields {
+			if !pluginHas(merged.Fields, field) {
+				merged.Fields = append(merged.Fields, field)
+			}
 		}
 	}
-	return nil
+	return merged
 }
 
 func (installation pluginInstallation) grants() []pluginReadGrant {

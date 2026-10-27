@@ -6948,7 +6948,7 @@ using System.Windows.Interop;
 internal static class Program
 {
     [STAThread]
-    public static void Main()
+    public static void Main(string[] args)
     {
         var application = new Application();
         var panel = new StackPanel();
@@ -6960,11 +6960,25 @@ internal static class Program
         panel.Children.Add(emptyBounds);
         panel.Children.Add(clickable);
         var window = new Window { Width = 400, Height = 300, Content = panel };
+        ComboBox? modelCombo = null;
+        if (args is ["--model-combo"])
+        {
+            AutomationProperties.SetAutomationId(window, "PluginModelWindow");
+            modelCombo = new ComboBox { Width = 220, Height = 30 };
+            AutomationProperties.SetAutomationId(modelCombo, "PluginModelTable_people");
+            modelCombo.Items.Add("实际模型表一");
+            modelCombo.Items.Add("实际模型表二");
+            modelCombo.SelectedIndex = 1;
+            panel.Children.Add(modelCombo);
+        }
         window.Loaded += (_, _) => window.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (modelCombo is not null) modelCombo.IsDropDownOpen = true;
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {
                 hwnd = new WindowInteropHelper(window).Handle.ToInt64(),
                 pid = Environment.ProcessId, apartment = "STA"
-            }))));
+            }));
+        }));
         application.Run(window);
     }
 }
@@ -7091,6 +7105,40 @@ def test_native_document_observer_rejects_over_limit_value_pattern(
         for secret in ("PRIVATE_VALUE_ONLY", "VALUE_ONLY_FIXTURE", "空边界", "可点击"):
             assert secret not in chrome.stderr
         assert chrome_png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_native_model_combo_observer_reads_real_selection_and_popup_options(
+    native_value_only_fixture: Path,
+) -> None:
+    if runner.os.environ.get("GITHUB_ACTIONS") != "true" or runner.os.environ.get("CI") != "true":
+        pytest.skip("real model ComboBox observation requires the controlled GitHub CI runner")
+    runner._prepare_native_uia_observer()
+    with _owned_native_uia_window([str(native_value_only_fixture), "--model-combo"]) as (
+        native,
+        hwnd,
+    ):
+        result = subprocess.run(
+            [str(runner.NATIVE_UIA_OBSERVER_EXE), "--buttons", str(hwnd)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        observation = json.loads(result.stdout)
+        assert observation["automationId"] == "PluginModelWindow"
+        assert observation["hwnd"] == hwnd
+        assert observation["pid"] == native.owner(hwnd)
+        assert len(observation["combos"]) == 1
+        combo = observation["combos"][0]
+        assert combo["id"] == "PluginModelTable_people"
+        assert combo["enabled"] is True
+        assert combo["expanded"] is True
+        assert combo["selected"] == "实际模型表二"
+        assert {item["name"] for item in combo["choices"]} == {"实际模型表一", "实际模型表二"}
+        assert all(item["pid"] == observation["pid"] for item in combo["choices"])
+        assert all(item["width"] > 0 and item["height"] > 0 for item in combo["choices"])
 
 
 def _uia_stage_timeline(stderr: str) -> tuple[list[str], list[int]]:

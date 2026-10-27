@@ -24,10 +24,14 @@ internal sealed class NativePluginModelWindow : Window
         layout.Children.Add(new ScrollViewer { Content = _body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); Content = layout;
     }
 
-    internal static Task<JsonElement?> ChooseMappingAsync(JsonElement catalog, CancellationToken token)
-        => ShowAsync(() =>
+    internal static async Task<JsonElement?> ChooseMappingAsync(JsonElement catalog,
+        Func<string, string, CancellationToken, Task<JsonElement>> readFields, CancellationToken token)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+        return await ShowAsync(() =>
         {
             var window = new NativePluginModelWindow("映射插件数据模型");
+            window.Closed += (_, _) => lifetime.Cancel();
             window.Line("请选择现有表和字段。只接受类型、精度及关系兼容的精确映射；不会改写现有值。");
             JsonElement[] tables = catalog.GetProperty("tables").EnumerateArray().Select(t => t.Clone()).ToArray();
             foreach (var entity in catalog.GetProperty("model").GetProperty("entities").EnumerateArray())
@@ -48,17 +52,30 @@ internal sealed class NativePluginModelWindow : Window
                     fields[fieldKey] = choice; window._body.Children.Add(choice);
                 }
                 window._fields[key] = fields;
-                table.SelectionChanged += (_, _) =>
+                var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
+                window._body.Children.Add(error);
+                int selectionVersion = 0;
+                table.SelectionChanged += async (_, _) =>
                 {
+                    int version = ++selectionVersion;
                     foreach (var field in fields.Values) field.Items.Clear();
+                    error.Text = "";
                     if (table.SelectedItem is not Choice selected) return;
-                    var schema = tables.First(t => t.GetProperty("tableId").GetString() == selected.Id);
-                    foreach (var actual in schema.GetProperty("fields").EnumerateArray())
+                    table.IsEnabled = false;
+                    try
                     {
-                        if (actual.GetProperty("lifecycle").GetProperty("state").GetString() != "active") continue;
-                        var item = new Choice(actual.GetProperty("identity").GetProperty("fieldId").GetString()!, $"{actual.GetProperty("displayName").GetString()} · {actual.GetProperty("logicalType").GetString()}");
-                        foreach (var field in fields.Values) field.Items.Add(item);
+                        var summary = tables.First(t => t.GetProperty("tableId").GetString() == selected.Id);
+                        var schema = await readFields(selected.Id, summary.GetProperty("schemaRevision").GetString()!, lifetime.Token);
+                        if (lifetime.IsCancellationRequested || version != selectionVersion) return;
+                        foreach (var actual in schema.GetProperty("fields").EnumerateArray())
+                        {
+                            var item = new Choice(actual.GetProperty("fieldId").GetString()!, $"{actual.GetProperty("displayName").GetString()} · {actual.GetProperty("logicalType").GetString()}");
+                            foreach (var field in fields.Values) field.Items.Add(item);
+                        }
                     }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+                    catch (Exception) { if (version == selectionVersion) error.Text = "字段目录读取失败或结构已变化，请关闭后重新配置。"; }
+                    finally { if (version == selectionVersion) table.IsEnabled = true; }
                 };
             }
             window.Loaded += (_, _) => window._tables.Values.FirstOrDefault()?.Focus();
@@ -74,6 +91,7 @@ internal sealed class NativePluginModelWindow : Window
             });
             return window;
         }, token);
+    }
 
     internal static async Task<bool> ConfirmAsync(JsonElement preview, CancellationToken token)
     {
