@@ -3,9 +3,9 @@ import { computed, ref, watch } from "vue";
 import {
   NAlert,
   NButton,
-  NCard,
   NCheckbox,
   NIcon,
+  NModal,
   NTag,
 } from "naive-ui";
 import { AlertTriangle, FileSpreadsheet, RefreshCw, ShieldCheck, X } from "@lucide/vue";
@@ -30,8 +30,11 @@ const props = withDefaults(defineProps<{
   repreviewing: boolean;
   /** True only after the host admitted the task (task.create returned an id). */
   taskAdmitted?: boolean;
+  /** Drives the modal shell; the host hides (not unmounts) it on other views. */
+  visible?: boolean;
 }>(), {
   taskAdmitted: false,
+  visible: true,
 });
 
 const emit = defineEmits<{
@@ -88,6 +91,16 @@ const canRepreview = computed(() =>
   && props.relationOptions !== null
   && mappingStale.value);
 
+// Escape may only leave the preview while nothing is in flight; task
+// cancellation stays on the explicit cancel button so a keyboard dismissal
+// never becomes a shortcut into the write-path task cancel flow.
+const canDismiss = computed(() =>
+  !props.applying && !props.cancelling && !props.repreviewing);
+
+function requestDismiss(): void {
+  if (canDismiss.value) emit("cancel");
+}
+
 function formatBytes(value: number | null): string {
   if (value === null) return t("dataIo.import.preview.sizeUnknown");
   if (value < 1024) return `${value} B`;
@@ -119,202 +132,200 @@ function displayValue(row: ImportPlanRow, field: string): string {
 </script>
 
 <template>
-  <div class="import-preview-shell">
-    <NCard
-      class="import-preview-panel"
-      size="small"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="t('dataIo.import.preview.title')"
-      data-testid="import-preview-panel"
-    >
-      <template #header>
-        <div class="panel-title">
-          <span class="file-mark"><NIcon :size="21"><FileSpreadsheet /></NIcon></span>
-          <span>
-            <strong>{{ t("dataIo.import.preview.title") }}</strong>
-            <small>{{ session.grant.displayName }} · {{ formatBytes(session.grant.sizeBytes) }}</small>
-          </span>
-        </div>
-      </template>
-      <template #header-extra>
-        <NButton
-          quaternary
-          circle
-          size="small"
-          :disabled="applying"
-          :aria-label="t('dataIo.import.preview.cancel')"
-          @click="emit('cancel')"
-        >
-          <template #icon><NIcon><X /></NIcon></template>
-        </NButton>
-      </template>
-
-      <div class="preview-scroll">
-        <section class="summary-grid" :aria-label="t('dataIo.import.preview.summary')">
-          <div><span>{{ t("dataIo.import.preview.total") }}</span><strong>{{ session.plan.summary.totalRows }}</strong></div>
-          <div class="valid"><span>{{ t("dataIo.import.preview.valid") }}</span><strong>{{ session.plan.summary.validRows }}</strong></div>
-          <div :class="{ danger: session.plan.summary.errorRows > 0 }"><span>{{ t("dataIo.import.preview.errors") }}</span><strong>{{ session.plan.summary.errorRows }}</strong></div>
-          <div :class="{ warning: session.plan.summary.warningRows > 0 }"><span>{{ t("dataIo.import.preview.warnings") }}</span><strong>{{ session.plan.summary.warningRows }}</strong></div>
-        </section>
-
-        <NAlert type="info" :show-icon="false" class="atomic-note">
-          <span class="alert-line">
-            <NIcon :size="17"><ShieldCheck /></NIcon>
-            {{ t("dataIo.import.preview.atomicHint") }}
-          </span>
-        </NAlert>
-
-        <ImportRelationMapping
-          :source-columns="session.plan.sourceColumns"
-          :options="relationOptions"
-          :loading="relationOptionsLoading"
-          :error="relationOptionsError"
-          :model-value="relationConfig"
-          :disabled="applying || repreviewing"
-          @update:model-value="emit('update:relationConfig', $event)"
-        />
-
-        <NAlert
-          v-if="mappingDirty"
-          type="warning"
-          :show-icon="true"
-          data-testid="import-mapping-stale"
-        >
-          {{ t("dataIo.import.mapping.stale") }}
-        </NAlert>
-        <NAlert
-          v-else-if="schemaDrifted"
-          type="warning"
-          :show-icon="true"
-          data-testid="import-schema-drifted"
-        >
-          {{ t("dataIo.import.mapping.schemaDrifted") }}
-        </NAlert>
-
-        <NAlert
-          v-if="session.plan.unmatchedColumns.length"
-          type="warning"
-          :title="t('dataIo.import.preview.unmatchedTitle')"
-          class="unmatched-alert"
-        >
-          <p>{{ t("dataIo.import.preview.unmatchedHint") }}</p>
-          <div class="tag-list">
-            <NTag v-for="column in session.plan.unmatchedColumns" :key="column" size="small" type="warning">
-              {{ column }}
-            </NTag>
-          </div>
-        </NAlert>
-
-        <section v-if="diagnostics.length" class="diagnostic-section" data-testid="import-diagnostics">
-          <header>
-            <span><NIcon :size="17"><AlertTriangle /></NIcon>{{ t("dataIo.import.preview.diagnostics") }}</span>
-            <small>{{ diagnostics.length }}</small>
-          </header>
-          <div class="diagnostic-list">
-            <article v-for="(item, index) in diagnostics" :key="`${item.row}-${item.column}-${item.code}-${index}`">
-              <NTag :type="item.severity === 'error' ? 'error' : 'warning'" size="small">
-                {{ item.severity === "error" ? t("dataIo.import.preview.error") : t("dataIo.import.preview.warning") }}
-              </NTag>
-              <div>
-                <strong>{{ diagnosticLocation(item) }}</strong>
-                <p>{{ item.message }}</p>
-                <code v-if="item.originalValue">{{ item.originalValue }}</code>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section v-if="previewRows.length && previewFields.length" class="sample-section">
-          <header>
-            <strong>{{ t("dataIo.import.preview.sampleTitle") }}</strong>
-            <small>{{ t("dataIo.import.preview.sampleHint") }}</small>
-          </header>
-          <div class="sample-table-wrap">
-            <table>
-              <thead><tr><th>{{ t("dataIo.import.preview.sourceRow") }}</th><th v-for="field in previewFields" :key="field">{{ field }}</th></tr></thead>
-              <tbody>
-                <tr v-for="row in previewRows" :key="row.sourceRow">
-                  <th>{{ row.sourceRow }}</th>
-                  <td v-for="field in previewFields" :key="field" :title="displayValue(row, field)">{{ displayValue(row, field) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <NAlert v-if="error" type="error" :show-icon="true" data-testid="import-apply-error">
-          {{ error }}
-        </NAlert>
-
-        <NCheckbox
-          v-if="requiresAcknowledgement"
-          v-model:checked="acknowledged"
-          data-testid="import-ack"
-        >
-          {{ t("dataIo.import.preview.ack") }}
-        </NCheckbox>
+  <NModal
+    :show="visible"
+    display-directive="show"
+    preset="card"
+    size="small"
+    class="import-preview-panel"
+    :aria-label="t('dataIo.import.preview.title')"
+    data-testid="import-preview-panel"
+    :mask-closable="false"
+    :closable="false"
+    :close-on-esc="canDismiss"
+    @update:show="(value: boolean) => { if (!value) requestDismiss(); }"
+  >
+    <template #header>
+      <div class="panel-title">
+        <span class="file-mark"><NIcon :size="21"><FileSpreadsheet /></NIcon></span>
+        <span>
+          <strong>{{ t("dataIo.import.preview.title") }}</strong>
+          <small>{{ session.grant.displayName }} · {{ formatBytes(session.grant.sizeBytes) }}</small>
+        </span>
       </div>
+    </template>
+    <template #header-extra>
+      <NButton
+        quaternary
+        circle
+        size="small"
+        :disabled="applying"
+        :aria-label="t('dataIo.import.preview.cancel')"
+        @click="emit('cancel')"
+      >
+        <template #icon><NIcon><X /></NIcon></template>
+      </NButton>
+    </template>
 
-      <template #action>
-        <div class="panel-actions">
-          <span>{{ t("dataIo.import.preview.createOnly") }}</span>
-          <div>
-            <NButton
-              v-if="applying && taskAdmitted"
-              size="small"
-              tertiary
-              data-testid="import-view-task"
-              @click="emit('openImportManagement')"
-            >
-              {{ t("dataIo.import.preview.viewTask") }}
-            </NButton>
-            <NButton
-              v-if="relationOptions !== null || relationOptionsLoading"
-              :loading="repreviewing"
-              :disabled="!canRepreview"
-              data-testid="import-repreview"
-              @click="emit('repreview')"
-            >
-              <template #icon><NIcon><RefreshCw /></NIcon></template>
-              {{ t("dataIo.import.repreview") }}
-            </NButton>
-            <NButton
-              data-testid="import-cancel"
-              :loading="cancelling"
-              :disabled="cancelling || (applying && !cancellable)"
-              @click="applying ? emit('cancelTask') : emit('cancel')"
-            >
-              {{ applying ? t("dataIo.import.preview.cancelTask") : t("dataIo.import.preview.cancel") }}
-            </NButton>
-            <NButton
-              type="primary"
-              :loading="applying"
-              :disabled="!canConfirm"
-              data-testid="import-confirm"
-              @click="emit('confirm')"
-            >
-              {{ t("dataIo.import.preview.confirm", { count: session.plan.summary.validRows }) }}
-            </NButton>
-          </div>
+    <div class="preview-scroll">
+      <section class="summary-grid" :aria-label="t('dataIo.import.preview.summary')">
+        <div><span>{{ t("dataIo.import.preview.total") }}</span><strong>{{ session.plan.summary.totalRows }}</strong></div>
+        <div class="valid"><span>{{ t("dataIo.import.preview.valid") }}</span><strong>{{ session.plan.summary.validRows }}</strong></div>
+        <div :class="{ danger: session.plan.summary.errorRows > 0 }"><span>{{ t("dataIo.import.preview.errors") }}</span><strong>{{ session.plan.summary.errorRows }}</strong></div>
+        <div :class="{ warning: session.plan.summary.warningRows > 0 }"><span>{{ t("dataIo.import.preview.warnings") }}</span><strong>{{ session.plan.summary.warningRows }}</strong></div>
+      </section>
+
+      <NAlert type="info" :show-icon="false" class="atomic-note">
+        <span class="alert-line">
+          <NIcon :size="17"><ShieldCheck /></NIcon>
+          {{ t("dataIo.import.preview.atomicHint") }}
+        </span>
+      </NAlert>
+
+      <ImportRelationMapping
+        :source-columns="session.plan.sourceColumns"
+        :options="relationOptions"
+        :loading="relationOptionsLoading"
+        :error="relationOptionsError"
+        :model-value="relationConfig"
+        :disabled="applying || repreviewing"
+        @update:model-value="emit('update:relationConfig', $event)"
+      />
+
+      <NAlert
+        v-if="mappingDirty"
+        type="warning"
+        :show-icon="true"
+        data-testid="import-mapping-stale"
+      >
+        {{ t("dataIo.import.mapping.stale") }}
+      </NAlert>
+      <NAlert
+        v-else-if="schemaDrifted"
+        type="warning"
+        :show-icon="true"
+        data-testid="import-schema-drifted"
+      >
+        {{ t("dataIo.import.mapping.schemaDrifted") }}
+      </NAlert>
+
+      <NAlert
+        v-if="session.plan.unmatchedColumns.length"
+        type="warning"
+        :title="t('dataIo.import.preview.unmatchedTitle')"
+        class="unmatched-alert"
+      >
+        <p>{{ t("dataIo.import.preview.unmatchedHint") }}</p>
+        <div class="tag-list">
+          <NTag v-for="column in session.plan.unmatchedColumns" :key="column" size="small" type="warning">
+            {{ column }}
+          </NTag>
         </div>
-      </template>
-    </NCard>
-  </div>
+      </NAlert>
+
+      <section v-if="diagnostics.length" class="diagnostic-section" data-testid="import-diagnostics">
+        <header>
+          <span><NIcon :size="17"><AlertTriangle /></NIcon>{{ t("dataIo.import.preview.diagnostics") }}</span>
+          <small>{{ diagnostics.length }}</small>
+        </header>
+        <div class="diagnostic-list">
+          <article v-for="(item, index) in diagnostics" :key="`${item.row}-${item.column}-${item.code}-${index}`">
+            <NTag :type="item.severity === 'error' ? 'error' : 'warning'" size="small">
+              {{ item.severity === "error" ? t("dataIo.import.preview.error") : t("dataIo.import.preview.warning") }}
+            </NTag>
+            <div>
+              <strong>{{ diagnosticLocation(item) }}</strong>
+              <p>{{ item.message }}</p>
+              <code v-if="item.originalValue">{{ item.originalValue }}</code>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="previewRows.length && previewFields.length" class="sample-section">
+        <header>
+          <strong>{{ t("dataIo.import.preview.sampleTitle") }}</strong>
+          <small>{{ t("dataIo.import.preview.sampleHint") }}</small>
+        </header>
+        <div class="sample-table-wrap">
+          <table>
+            <thead><tr><th>{{ t("dataIo.import.preview.sourceRow") }}</th><th v-for="field in previewFields" :key="field">{{ field }}</th></tr></thead>
+            <tbody>
+              <tr v-for="row in previewRows" :key="row.sourceRow">
+                <th>{{ row.sourceRow }}</th>
+                <td v-for="field in previewFields" :key="field" :title="displayValue(row, field)">{{ displayValue(row, field) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <NAlert v-if="error" type="error" :show-icon="true" data-testid="import-apply-error">
+        {{ error }}
+      </NAlert>
+
+      <NCheckbox
+        v-if="requiresAcknowledgement"
+        v-model:checked="acknowledged"
+        data-testid="import-ack"
+      >
+        {{ t("dataIo.import.preview.ack") }}
+      </NCheckbox>
+    </div>
+
+    <template #action>
+      <div class="panel-actions">
+        <span>{{ t("dataIo.import.preview.createOnly") }}</span>
+        <div>
+          <NButton
+            v-if="applying && taskAdmitted"
+            size="small"
+            tertiary
+            data-testid="import-view-task"
+            @click="emit('openImportManagement')"
+          >
+            {{ t("dataIo.import.preview.viewTask") }}
+          </NButton>
+          <NButton
+            v-if="relationOptions !== null || relationOptionsLoading"
+            :loading="repreviewing"
+            :disabled="!canRepreview"
+            data-testid="import-repreview"
+            @click="emit('repreview')"
+          >
+            <template #icon><NIcon><RefreshCw /></NIcon></template>
+            {{ t("dataIo.import.repreview") }}
+          </NButton>
+          <NButton
+            data-testid="import-cancel"
+            :loading="cancelling"
+            :disabled="cancelling || (applying && !cancellable)"
+            @click="applying ? emit('cancelTask') : emit('cancel')"
+          >
+            {{ applying ? t("dataIo.import.preview.cancelTask") : t("dataIo.import.preview.cancel") }}
+          </NButton>
+          <NButton
+            type="primary"
+            :loading="applying"
+            :disabled="!canConfirm"
+            data-testid="import-confirm"
+            @click="emit('confirm')"
+          >
+            {{ t("dataIo.import.preview.confirm", { count: session.plan.summary.validRows }) }}
+          </NButton>
+        </div>
+      </div>
+    </template>
+  </NModal>
 </template>
 
 <style scoped>
-.import-preview-shell {
-  position: fixed;
-  inset: 0;
-  z-index: 45;
-  display: grid;
-  place-items: center;
-  padding: var(--vt-space-4);
-  background: color-mix(in srgb, var(--vt-bg-sunken) 64%, transparent);
-  backdrop-filter: blur(2px);
+/* NModal teleports the preset card to document.body without this component's
+   scope attribute, so the shell size rules must stay global. */
+:global(.import-preview-panel) {
+  width: min(820px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
 }
-.import-preview-panel { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); box-shadow: var(--vt-shadow-3); }
 .panel-title { display: flex; align-items: center; gap: var(--vt-space-3); }
 .panel-title > span:last-child { display: grid; gap: 2px; }
 .panel-title small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 400; }

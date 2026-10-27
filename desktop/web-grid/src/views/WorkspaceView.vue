@@ -1986,7 +1986,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
     />
     <ImportPreviewPanel
       v-if="importPreviewSession"
-      v-show="ui.activeView === 'tables'"
+      :visible="ui.activeView === 'tables'"
       :session="importPreviewSession"
       :applying="importApplying"
       :cancellable="dataIoBusy"

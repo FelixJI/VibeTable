@@ -553,7 +553,8 @@ describe("WorkspaceView", () => {
     // The original preview panel opens on the tables view so the toolbar stays
     // available for the follow-up export in the extended desktop scenario.
     expect(useUiStore().activeView).toBe("tables");
-    expect(wrapper.find('[data-testid="import-preview-panel"]').exists()).toBe(true);
+    // The modal panel teleports to document.body.
+    expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeTruthy();
     expect(wrapper.find('[data-testid="import-target"]').exists()).toBe(false);
   });
 
@@ -2592,6 +2593,9 @@ describe("WorkspaceView", () => {
       schemaRevision: "schema-1",
       dataRevision: 1,
     };
+    // The toolbar import flow lives on the tables view; the preview modal is
+    // gated by `visible` and only teleports once that view is active.
+    useUiStore().navigate("tables");
     const wrapper = mountView();
     await flushPromises();
     posted.length = 0;
@@ -2746,15 +2750,23 @@ describe("WorkspaceView", () => {
     });
     await flushPromises();
 
-    const panel = () => wrapper.find('[data-testid="import-preview-panel"]');
-    expect(panel().exists()).toBe(true);
-    const previewElement = panel().element;
-    await wrapper.get('[data-testid="import-ack"]').trigger("click");
+    // The modal panel teleports to document.body; display-directive "show"
+    // keeps the same element alive while the imports view hides it.
+    const panelEl = () => document.body.querySelector<HTMLElement>('[data-testid="import-preview-panel"]');
+    const bodyClick = (testId: string) => {
+      const el = document.body.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+      if (!el) throw new Error(`missing ${testId}`);
+      el.click();
+    };
+    expect(panelEl()).toBeTruthy();
+    const previewElement = panelEl()!;
+    bodyClick("import-ack");
+    await flushPromises();
     // Before admission there is no task to view in the background.
-    expect(wrapper.find('[data-testid="import-view-task"]').exists()).toBe(false);
+    expect(document.body.querySelector('[data-testid="import-view-task"]')).toBeNull();
 
     // Confirm: the task is admitted and then paused mid-run (mutation barrier).
-    (wrapper.get('[data-testid="import-confirm"]').element as HTMLElement).click();
+    bodyClick("import-confirm");
     await flushPromises();
     request = posted.at(-1)!;
     expect(request.type).toBe("task.create");
@@ -2765,16 +2777,15 @@ describe("WorkspaceView", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const viewTask = wrapper.get('[data-testid="import-view-task"]');
-    await viewTask.trigger("click");
+    bodyClick("import-view-task");
     await flushPromises();
 
     // The management page opens without the modal shell intercepting it: the
-    // panel stays mounted (same session/ack state) but is hidden by v-show.
+    // panel stays mounted (same session/ack state) but is hidden by the modal.
     expect(ui.activeView).toBe("imports");
     expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
-    expect(panel().exists()).toBe(true);
-    expect(panel().isVisible()).toBe(false);
+    expect(panelEl()).toBeTruthy();
+    expect(panelEl()!.style.display).toBe("none");
     expect(wrapper.get('[data-testid="import-active-task"]').text()).toContain("task-import");
     expect(wrapper.get('[data-testid="import-cancel-active-task"]').attributes("disabled")).toBeUndefined();
     expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
@@ -2784,13 +2795,15 @@ describe("WorkspaceView", () => {
     ui.navigate("tables");
     try {
       await flushPromises();
-      expect(panel().isVisible()).toBe(true);
-      expect(panel().element).toBe(previewElement);
-      expect(wrapper.get('[data-testid="import-ack"]').attributes("aria-checked")).toBe("true");
-      expect(wrapper.get('[data-testid="import-confirm"]').attributes("disabled")).toBeDefined();
-      const cancel = wrapper.get('[data-testid="import-cancel"]');
-      expect(cancel.attributes("disabled")).toBeUndefined();
-      expect(cancel.text()).toBe("取消导入任务");
+      expect(panelEl()!.style.display).not.toBe("none");
+      expect(panelEl()).toBe(previewElement);
+      const ack = document.body.querySelector<HTMLElement>('[data-testid="import-ack"]');
+      expect(ack?.getAttribute("aria-checked")).toBe("true");
+      const confirm = document.body.querySelector<HTMLButtonElement>('[data-testid="import-confirm"]');
+      expect(confirm?.hasAttribute("disabled")).toBe(true);
+      const cancel = document.body.querySelector<HTMLElement>('[data-testid="import-cancel"]');
+      expect(cancel?.hasAttribute("disabled")).toBe(false);
+      expect(cancel?.textContent).toContain("取消导入任务");
       expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
 
       // Settle the paused run so the polling loop retires with real timers off.
@@ -2807,7 +2820,7 @@ describe("WorkspaceView", () => {
       });
       await vi.advanceTimersByTimeAsync(0);
       expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
-      expect(panel().exists()).toBe(false);
+      expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeNull();
     } finally {
       vi.useRealTimers();
     }

@@ -6,12 +6,17 @@
  * (pastePanelOpen) and EMITS user intent (confirm / cancel). It does NOT call
  * `pasteService` — `WorkspaceView` translates `confirm` into the apply call.
  *
+ * The shell is a standard NModal (mask + focus trap + autofocus); the card
+ * content is kept as-is. Keyboard/overlay dismissal routes through
+ * `requestCancel`, so it stays locked while an apply is awaiting the
+ * authoritative host receipt.
+ *
  * Note: the brief template used an "overflow" phase for a redirect UI; the real
  * `pasteStore.PastePhase` includes "overflow" too (set when `plan.overflow`
  * is true), so that branch renders the redirect hint as designed.
  */
 import { computed } from "vue";
-import { NCard, NButton, NSpace, NCheckbox, NIcon, NTag, NText } from "naive-ui";
+import { NCard, NModal, NButton, NSpace, NCheckbox, NIcon, NTag, NText } from "naive-ui";
 import { X } from "@lucide/vue";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -66,98 +71,102 @@ function requestCancel(): void {
 </script>
 
 <template>
-  <NCard
-    v-if="ui.pastePanelOpen"
-    class="paste-panel"
-    :bordered="true"
-    size="small"
-    role="dialog"
-    aria-modal="true"
-    data-testid="paste-panel"
-    :data-phase="paste.phase"
+  <NModal
+    :show="ui.pastePanelOpen"
+    :mask-closable="false"
+    :close-on-esc="canDismiss"
+    @update:show="(value: boolean) => { if (!value) requestCancel(); }"
   >
-    <template #header>{{ t(titleKey) }}</template>
-    <template #header-extra>
-      <NButton
-        size="tiny"
-        quaternary
-        :aria-label="t('paste.cancel')"
-        :title="t('paste.cancel')"
-        :disabled="!canDismiss"
-        data-testid="paste-close"
-        @click.stop="requestCancel"
-      >
-        <template #icon><NIcon :size="15"><X /></NIcon></template>
-      </NButton>
-    </template>
-
-    <div class="paste-body">
-      <NText v-if="paste.error" type="error" role="alert" data-testid="paste-error">
-        {{ paste.error }}
-      </NText>
-      <NText v-if="paste.summaryText" depth="3" data-testid="paste-summary">
-        {{ paste.summaryText }}
-      </NText>
-
-      <div v-if="paste.phase === 'overflow'" class="paste-overflow" data-testid="paste-overflow">
-        {{ t("paste.overflow") }}
-      </div>
-
-      <div v-if="diagnostics.length" class="paste-diagnostics" data-testid="paste-diagnostics">
-        <div v-for="g of diagnostics" :key="g.rowIndex">
-          <NTag
-            v-for="(d, i) in g.diagnostics"
-            :key="i"
-            :type="d.severity === 'error' ? 'error' : 'warning'"
-            size="small"
-          >
-            {{ t("paste.diagnostic.rowCol", { row: g.rowIndex + 1, col: d.columnIndex + 1, message: d.message }) }}
-          </NTag>
-        </div>
-      </div>
-
-      <NCheckbox
-        v-if="hasWarning"
-        :checked="paste.acked"
-        data-testid="paste-ack"
-        @update:checked="paste.toggleAck()"
-      >
-        {{ t("paste.ack") }}
-      </NCheckbox>
-    </div>
-
-    <template #action>
-      <NSpace justify="end">
+    <NCard
+      class="paste-panel"
+      :bordered="true"
+      size="small"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t(titleKey)"
+      data-testid="paste-panel"
+      :data-phase="paste.phase"
+    >
+      <template #header>{{ t(titleKey) }}</template>
+      <template #header-extra>
         <NButton
-          size="small"
+          size="tiny"
+          quaternary
+          :aria-label="t('paste.cancel')"
+          :title="t('paste.cancel')"
           :disabled="!canDismiss"
-          data-testid="paste-cancel"
+          data-testid="paste-close"
           @click.stop="requestCancel"
         >
-          {{ t("paste.cancel") }}
+          <template #icon><NIcon :size="15"><X /></NIcon></template>
         </NButton>
-        <NButton
-          size="small"
-          type="primary"
-          :disabled="!canConfirm"
-          data-testid="paste-confirm"
-          @click="emit('confirm')"
+      </template>
+
+      <div class="paste-body">
+        <NText v-if="paste.error" type="error" role="alert" data-testid="paste-error">
+          {{ paste.error }}
+        </NText>
+        <NText v-if="paste.summaryText" depth="3" data-testid="paste-summary">
+          {{ paste.summaryText }}
+        </NText>
+
+        <div v-if="paste.phase === 'overflow'" class="paste-overflow" data-testid="paste-overflow">
+          {{ t("paste.overflow") }}
+        </div>
+
+        <div v-if="diagnostics.length" class="paste-diagnostics" data-testid="paste-diagnostics">
+          <div v-for="g of diagnostics" :key="g.rowIndex">
+            <NTag
+              v-for="(d, i) in g.diagnostics"
+              :key="i"
+              :type="d.severity === 'error' ? 'error' : 'warning'"
+              size="small"
+            >
+              {{ t("paste.diagnostic.rowCol", { row: g.rowIndex + 1, col: d.columnIndex + 1, message: d.message }) }}
+            </NTag>
+          </div>
+        </div>
+
+        <NCheckbox
+          v-if="hasWarning"
+          :checked="paste.acked"
+          data-testid="paste-ack"
+          @update:checked="paste.toggleAck()"
         >
-          {{ t("paste.confirm") }}
-        </NButton>
-      </NSpace>
-    </template>
-  </NCard>
+          {{ t("paste.ack") }}
+        </NCheckbox>
+      </div>
+
+      <template #action>
+        <NSpace justify="end">
+          <NButton
+            size="small"
+            :disabled="!canDismiss"
+            data-testid="paste-cancel"
+            @click.stop="requestCancel"
+          >
+            {{ t("paste.cancel") }}
+          </NButton>
+          <NButton
+            size="small"
+            type="primary"
+            :disabled="!canConfirm"
+            data-testid="paste-confirm"
+            @click="emit('confirm')"
+          >
+            {{ t("paste.confirm") }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NCard>
+  </NModal>
 </template>
 
 <style scoped>
+/* Standard NModal positioning centers the card; only the size stays fixed. */
 .paste-panel {
-  position: fixed;
-  right: var(--vt-space-4);
-  bottom: var(--vt-space-4);
   width: 360px;
   max-height: 60vh;
-  z-index: 30;
   box-shadow: var(--vt-shadow-3);
 }
 .paste-diagnostics {

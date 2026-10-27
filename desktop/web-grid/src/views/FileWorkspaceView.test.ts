@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import FileWorkspaceView from "./FileWorkspaceView.vue";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
@@ -43,6 +43,20 @@ function fileRevision(
     restoredFromRevisionId: null,
     ...overrides,
   };
+}
+
+/** NDropdown teleports the context menu to document.body. */
+function contextMenu(): DOMWrapper<Element> {
+  const el = document.body.querySelector('[data-testid="document-context-menu"]');
+  if (!el) throw new Error("document context menu not rendered");
+  return new DOMWrapper(el);
+}
+
+function contextMenuItem(text: string): DOMWrapper<Element> {
+  const item = contextMenu().findAll('[role="menuitem"]')
+    .find((candidate) => candidate.text().includes(text));
+  if (!item) throw new Error(`missing context menu item: ${text}`);
+  return item;
 }
 
 describe("FileWorkspaceView", () => {
@@ -219,11 +233,9 @@ describe("FileWorkspaceView", () => {
 
     await wrapper.get('[data-testid="document-row-context-second"]')
       .trigger("contextmenu", { clientX: 20, clientY: 30 });
-    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
-      .findAll('[role="menuitem"]')
-      .find((item) => item.text().includes("历史"));
-    expect(historyAction).toBeDefined();
-    await historyAction!.trigger("click");
+    await flushPromises();
+    const historyAction = contextMenuItem("历史");
+    await historyAction.trigger("click");
     await wrapper.vm.$nextTick();
 
     expect(store.primaryHandle).toBe(second.entryHandle);
@@ -242,10 +254,11 @@ describe("FileWorkspaceView", () => {
     ]);
     const wrapper = mount(FileWorkspaceView);
     await wrapper.get('[data-testid="document-row-missing"]').trigger("contextmenu", { clientX: 20, clientY: 30 });
-    const menu = wrapper.get('[data-testid="document-context-menu"]');
+    await flushPromises();
+    const menu = contextMenu();
     expect(menu.text()).toContain("重新定位");
     expect(menu.text()).not.toContain("在资源管理器中显示");
-    await menu.findAll('[role="menuitem"]')[0].trigger("click");
+    await contextMenuItem("重新定位").trigger("click");
     expect(wrapper.emitted("intent")?.at(-1)).toEqual([{
       type: "document.relinkRequested",
       handle: "missing",
@@ -277,11 +290,9 @@ describe("FileWorkspaceView", () => {
     const row = wrapper.get('[data-testid="document-row-missing-history"]');
 
     await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
-    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
-      .findAll('[role="menuitem"]')
-      .find((item) => item.text().includes("历史"));
-    expect(historyAction).toBeDefined();
-    await historyAction!.trigger("click");
+    await flushPromises();
+    const historyAction = contextMenuItem("历史");
+    await historyAction.trigger("click");
     await wrapper.vm.$nextTick();
 
     expect(wrapper.emitted("workspaceV2Action")?.at(-1)).toEqual([{
@@ -312,7 +323,8 @@ describe("FileWorkspaceView", () => {
     expect(store.inspectorTab).toBe("preview");
     await wrapper.get('[data-testid="document-row-missing-without-history"]')
       .trigger("contextmenu", { clientX: 20, clientY: 30 });
-    expect(wrapper.get('[data-testid="document-context-menu"]').text()).not.toContain("版本历史");
+    await flushPromises();
+    expect(contextMenu().text()).not.toContain("版本历史");
     expect(wrapper.emitted("workspaceV2Action")?.some(
       ([action]) => (action as { method: string }).method === "fileHistory.readTree",
     )).not.toBe(true);
@@ -333,9 +345,8 @@ describe("FileWorkspaceView", () => {
       const row = wrapper.get('[data-testid="document-row-stale-history-menu"]');
       await row.trigger("click");
       await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
-      const staleHistoryAction = wrapper.get('[data-testid="document-context-menu"]')
-        .findAll('[role="menuitem"]')
-        .find((item) => item.text().includes("历史"));
+      await flushPromises();
+      const staleHistoryAction = contextMenuItem("历史");
       expect(staleHistoryAction).toBeDefined();
 
       store.setEntries(hostChange === "revoked" ? [{ ...document, capabilities: [] }] : []);
@@ -370,11 +381,9 @@ describe("FileWorkspaceView", () => {
     const row = wrapper.get('[data-testid="document-row-history-revoked"]');
     await row.trigger("click");
     await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
-    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
-      .findAll('[role="menuitem"]')
-      .find((item) => item.text().includes("历史"));
-    expect(historyAction).toBeDefined();
-    await historyAction!.trigger("click");
+    await flushPromises();
+    const historyAction = contextMenuItem("历史");
+    await historyAction.trigger("click");
     await wrapper.vm.$nextTick();
     expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("版本历史");
     expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(true);
