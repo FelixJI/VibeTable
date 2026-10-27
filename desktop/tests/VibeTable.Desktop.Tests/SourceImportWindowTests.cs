@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using VibeTable.Desktop.Services;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -586,7 +587,7 @@ public sealed class SourceImportWindowTests
             File.WriteAllBytes(Path.Combine(screenshotDirectory, "native-wizard-dark.png"), dark.Png);
         }
 
-        await fixture.DoAsync(w => appearance.SetPreferredTheme(AppThemeOptions.Light));
+        await fixture.DoAsync(w => appearance.SetPreferredTheme(AppSettingsThemeOption.Light));
         await fixture.SettleAsync();
         Assert.AreEqual(
             ThemedColor("light", HostThemeResources.WindowBackgroundBrushKey),

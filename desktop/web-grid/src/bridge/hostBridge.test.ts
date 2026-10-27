@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vite
 import { createPinia, setActivePinia } from "pinia";
 
 import { BridgeOperationError, BridgeRequestNotSentError, createHostBridge } from "./hostBridge";
+import { AppSettingsProtocolError } from "@/contracts/appPreferencesContracts";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useHeaderFilterValuesService } from "@/services/headerFilterValues";
@@ -576,8 +577,19 @@ describe("HostBridge", () => {
     const scoped = bridge.requestWithHandle("lookup.query", lookupQueryPayload());
     expect(session.beginSwitch("workspace-b")).toBe(true);
     await expect(scoped.promise).rejects.toMatchObject({ name: "AbortError" });
-    webview.emit({ type, requestId: "global-1", payload: { updateAvailable: false } });
-    await expect(update).resolves.toEqual({ updateAvailable: false });
+    const globalReply = type === "update.check"
+      ? { updateAvailable: false }
+      : {
+          minimizeToTrayOnClose: false,
+          startWithWindows: false,
+          updateProxy: "direct",
+          customUpdateProxyUrl: "",
+          theme: null,
+          effectiveTheme: "light",
+          highContrast: false,
+        };
+    webview.emit({ type, requestId: "global-1", payload: globalReply });
+    await expect(update).resolves.toEqual(globalReply);
     bridge.stop();
   });
 
@@ -702,6 +714,9 @@ describe("HostBridge", () => {
         startWithWindows: false,
         updateProxy: "direct",
         customUpdateProxyUrl: "",
+        theme: null,
+        effectiveTheme: "light",
+        highContrast: false,
       },
     });
     await expect(get).resolves.toEqual({
@@ -709,6 +724,9 @@ describe("HostBridge", () => {
       startWithWindows: false,
       updateProxy: "direct",
       customUpdateProxyUrl: "",
+      theme: null,
+      effectiveTheme: "light",
+      highContrast: false,
     });
 
     const update = bridge.request("appPreferences.update", {
@@ -727,6 +745,9 @@ describe("HostBridge", () => {
         startWithWindows: false,
         updateProxy: "direct",
         customUpdateProxyUrl: "",
+        theme: null,
+        effectiveTheme: "light",
+        highContrast: false,
       },
     });
     await expect(update).resolves.toEqual({
@@ -734,8 +755,199 @@ describe("HostBridge", () => {
       startWithWindows: false,
       updateProxy: "direct",
       customUpdateProxyUrl: "",
+      theme: null,
+      effectiveTheme: "light",
+      highContrast: false,
     });
 
+    bridge.stop();
+  });
+
+  it("rejects a malformed settings success as a protocol error with an unknown outcome", async () => {
+    const diagnostics: unknown[] = [];
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "malformed-update",
+      onDiagnostic: (d) => diagnostics.push(d),
+    });
+    bridge.start();
+
+    const update = bridge.request("appPreferences.update", { theme: "dark" });
+    // Malformed success: theme is missing entirely (present-null is legal,
+    // absent is not).
+    webview.emit({
+      type: "appPreferences.update",
+      requestId: "malformed-update",
+      payload: {
+        minimizeToTrayOnClose: false,
+        startWithWindows: false,
+        updateProxy: "direct",
+        customUpdateProxyUrl: "",
+        effectiveTheme: "dark",
+        highContrast: false,
+      },
+    });
+
+    const error = await update.then(
+      () => { throw new Error("must not resolve"); },
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(AppSettingsProtocolError);
+    expect(error.messageType).toBe("appPreferences.update");
+    expect(error.requestId).toBe("malformed-update");
+    // The failure must never be read as "the update was not committed".
+    expect(error.message).toContain("outcome is unknown");
+    expect(error.message).not.toMatch(/not committed|rolled back/i);
+    // A late operation.failed for the settled request stays an orphan.
+    webview.emit({
+      type: "operation.failed",
+      requestId: "malformed-update",
+      payload: { message: "late failure", code: "LATE" },
+    });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ kind: "orphaned-response" }),
+    );
+    bridge.stop();
+  });
+
+  it("drops malformed appearance.changed pushes without fanning out", () => {
+    const diagnostics: unknown[] = [];
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      onDiagnostic: (d) => diagnostics.push(d),
+    });
+    bridge.start();
+    const received: unknown[] = [];
+    const unsubscribe = bridge.on("appearance.changed", (payload) =>
+      received.push(payload));
+
+    webview.emit(JSON.stringify({
+      type: "appearance.changed",
+      payload: { preference: null, highContrast: false },
+    }));
+    expect(received).toEqual([]);
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ kind: "malformed", type: "appearance.changed" }),
+    );
+
+    webview.emit(JSON.stringify({
+      type: "appearance.changed",
+      payload: { preference: "dark", effective: "dark", highContrast: false },
+    }));
+    expect(received).toEqual([
+      { preference: "dark", effective: "dark", highContrast: false },
+    ]);
+    unsubscribe();
+    bridge.stop();
+  });
+
+  it("preserves unknown settings-family failure codes on operation.failed", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "future-code",
+    });
+    bridge.start();
+
+    const update = bridge.request("appPreferences.update", { theme: "dark" });
+    webview.emit({
+      type: "operation.failed",
+      requestId: "future-code",
+      payload: { message: "future failure shape", code: "APP_PREFERENCES_FUTURE_CODE" },
+    });
+
+    const error = await update.then(
+      () => { throw new Error("must not resolve"); },
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(BridgeOperationError);
+    expect(error.code).toBe("APP_PREFERENCES_FUTURE_CODE");
+    expect(error.message).toContain("future failure shape");
+    bridge.stop();
+  });
+
+  it("accepts the host's null failure metadata as a legal business failure", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "null-metadata",
+    });
+    bridge.start();
+
+    const update = bridge.request("appPreferences.update", { theme: "dark" });
+    // The host serializes unset metadata as null (no WhenWritingNull).
+    webview.emit({
+      type: "operation.failed",
+      requestId: "null-metadata",
+      payload: { message: "无法保存桌面应用设置。", code: null, operation: null, operationId: null },
+    });
+
+    const error = await update.then(
+      () => { throw new Error("must not resolve"); },
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(BridgeOperationError);
+    expect(error.message).toContain("无法保存桌面应用设置。");
+    expect(error.code).toBeUndefined();
+    bridge.stop();
+  });
+
+  it.each([
+    ["missing message", { code: "APP_PREFERENCES_BAD_PAYLOAD" }],
+    ["null message", { message: null }],
+    ["number code", { message: "m", code: 7 }],
+    ["object code", { message: "m", code: {} }],
+    ["array payload", ["m"]],
+    ["null payload", null],
+  ])("rejects a malformed settings failure (%s) as a protocol error", async (_label, payload) => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "malformed-failure",
+    });
+    bridge.start();
+
+    const update = bridge.request("appPreferences.update", { theme: "dark" });
+    webview.emit({
+      type: "operation.failed",
+      requestId: "malformed-failure",
+      payload,
+    });
+
+    const error = await update.then(
+      () => { throw new Error("must not resolve"); },
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(AppSettingsProtocolError);
+    expect(error.message).toContain("outcome is unknown");
+    bridge.stop();
+  });
+
+  it("keeps the generic failure path for other message families", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "non-settings",
+    });
+    bridge.start();
+
+    const check = bridge.request("update.check", {});
+    // A payload without a string message degrades to the generic safe
+    // failure for non-settings families — unchanged semantics.
+    webview.emit({
+      type: "operation.failed",
+      requestId: "non-settings",
+      payload: { code: "UPDATE_CHECK_FAILED" },
+    });
+
+    const error = await check.then(
+      () => { throw new Error("must not resolve"); },
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(BridgeOperationError);
+    expect(error.message).toContain("host reported operation.failed with no message");
     bridge.stop();
   });
 

@@ -1,0 +1,85 @@
+{
+  "contractVersion": "1.0",
+  "methods": [
+    {
+      "method": "appPreferences.get",
+      "direction": "webToHost",
+      "response": "sameType",
+      "request": { "shape": "emptyObject" }
+    },
+    {
+      "method": "appPreferences.update",
+      "direction": "webToHost",
+      "response": "sameType",
+      "request": { "shape": "patch" }
+    }
+  ],
+  "notifications": [
+    {
+      "topic": "appearance.changed",
+      "direction": "hostToWeb"
+    }
+  ],
+  "enums": {
+    "themePreference": { "values": ["light", "dark", "system"] },
+    "updateProxy": { "values": ["direct", "ghproxyNet", "ghProxyCom", "custom"] },
+    "effectiveBaseTheme": { "values": ["light", "dark"] }
+  },
+  "preferencesResult": {
+    "fields": [
+      { "name": "minimizeToTrayOnClose", "type": "boolean", "optional": false },
+      { "name": "startWithWindows", "type": "boolean", "optional": false },
+      { "name": "updateProxy", "type": "enum", "enum": "updateProxy", "optional": false },
+      { "name": "customUpdateProxyUrl", "type": "string", "optional": false, "notes": "host projects the persisted nullable value as the empty string" },
+      { "name": "theme", "type": "enum", "enum": "themePreference", "optional": false, "nullable": true, "notes": "null means not configured and is distinct from an explicit system choice; the key itself is required" },
+      { "name": "effectiveTheme", "type": "enum", "enum": "effectiveBaseTheme", "optional": false },
+      { "name": "highContrast", "type": "boolean", "optional": false }
+    ]
+  },
+  "updatePatch": {
+    "atLeastOneField": true,
+    "fields": [
+      { "name": "minimizeToTrayOnClose", "type": "boolean", "optional": true },
+      { "name": "startWithWindows", "type": "boolean", "optional": true },
+      { "name": "updateProxy", "type": "enum", "enum": "updateProxy", "optional": true },
+      { "name": "customUpdateProxyUrl", "type": "string", "optional": true, "maxLengthUtf16Units": 2048 },
+      { "name": "theme", "type": "enum", "enum": "themePreference", "optional": true },
+      { "name": "adoptLegacyTheme", "type": "enum", "enum": "themePreference", "optional": true }
+    ],
+    "mutexGroups": [
+      { "fields": ["theme", "adoptLegacyTheme"] }
+    ],
+    "exclusiveFields": ["adoptLegacyTheme"],
+    "notes": "present null is always rejected; duplicate payload keys must be rejected before JsonElement information loss; adoptLegacyTheme is a one-time compare-unset adoption and cannot be mixed with any other field"
+  },
+  "appearanceChanged": {
+    "fields": [
+      { "name": "preference", "type": "enum", "enum": "themePreference", "optional": false, "nullable": true, "notes": "the key is required; null means not configured" },
+      { "name": "effective", "type": "enum", "enum": "effectiveBaseTheme", "optional": false },
+      { "name": "highContrast", "type": "boolean", "optional": false }
+    ]
+  },
+  "operationFailed": {
+    "fields": [
+      { "name": "message", "type": "string", "optional": false },
+      { "name": "code", "type": "string", "optional": true, "nullable": true, "notes": "the host serializes unset as null (no WhenWritingNull); absent, null and string are all legal; unknown string codes are preserved as a safe diagnosable failure; number/object/array are malformed" },
+      { "name": "operation", "type": "string", "optional": true, "nullable": true, "notes": "serialized as null when unset" },
+      { "name": "operationId", "type": "string", "optional": true, "nullable": true, "projected": false, "notes": "serialized as null when unset; tolerated here and not projected beyond the current bridge consumption semantics" }
+    ],
+    "notes": "Settings-family operation.failed payload contract for the shared envelope. A malformed failure (missing/null message, wrong-typed metadata) is a protocol error with an unknown outcome — never success and never a claim that a sent update was not committed."
+  },
+  "errorCodes": [
+    {
+      "code": "APP_PREFERENCES_BAD_PAYLOAD",
+      "when": "get payload is not an empty object or update payload violates updatePatch"
+    },
+    {
+      "code": "APP_PREFERENCES_READ_FAILED",
+      "when": "reading persisted preferences fails"
+    },
+    {
+      "code": "APP_PREFERENCES_WRITE_FAILED",
+      "when": "persisting an accepted update fails; the write outcome is not inferable as not-committed because appearance/native effects may already have run"
+    }
+  ]
+}

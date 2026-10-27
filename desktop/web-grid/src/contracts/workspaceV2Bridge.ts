@@ -631,14 +631,12 @@ export interface WorkspaceV2Bootstrap {
   readonly fileTrees: readonly FileRevisionTreeProjection[];
 }
 
-export const WORKSPACE_V2_HOST_MESSAGE_TYPES = [
-  "workspace.v2.bootstrap",
-  "workspace.v2.event",
-  "workspace.v2.reply",
-  "workspace.v2.response",
-] as const;
+import {
+  WORKSPACE_V2_HOST_MESSAGE_TYPES,
+  WORKSPACE_V2_WEB_MESSAGE_TYPES,
+} from "@/contracts/generated/hostBridgeCatalog";
 
-export const WORKSPACE_V2_WEB_MESSAGE_TYPES = ["workspace.v2.request"] as const;
+export { WORKSPACE_V2_HOST_MESSAGE_TYPES, WORKSPACE_V2_WEB_MESSAGE_TYPES };
 
 export type WorkspaceV2HostMessageType =
   (typeof WORKSPACE_V2_HOST_MESSAGE_TYPES)[number];
