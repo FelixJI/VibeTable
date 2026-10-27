@@ -237,7 +237,7 @@ def contracts() -> None:
 
 
 def python_quality() -> None:
-    """Run the same Python quality gate locally and in the candidate core lane."""
+    """Run the same Python quality gate locally and in the candidate quality lane."""
     commands = (
         ("uv", "run", "ruff", "format", "--check", "."),
         ("uv", "run", "ruff", "check", "."),
@@ -607,13 +607,13 @@ def release_smoke() -> None:
 
 
 def _prepare_smoke_lane(lane: str) -> None:
-    if lane == "core":
+    if lane in {"core", "quality"}:
         bootstrap()
         if _candidate_prepare_mode():
             node_env = _node_environment()
             for project in NPM_PROJECTS[1:]:
                 _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
-    elif lane in {"race-a", "race-b", "race-c", "race-d"}:
+    elif lane in {"race-a", "race-b", "race-c", "race-d", "race-e", "race-f", "race-g", "race-h"}:
         _install_w64devkit()
     elif lane == "resilience":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
@@ -642,11 +642,11 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
     _prepare_smoke_lane(lane)
     python = (
         ("uv", "run", "python")
-        if lane in {"core", "resilience", "data-io", "file-io"}
+        if lane in {"core", "quality", "resilience", "data-io", "file-io"}
         else (sys.executable,)
     )
     smoke_env = {"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}
-    if lane in {"core", "resilience", "data-io", "file-io"}:
+    if lane in {"core", "quality", "resilience", "data-io", "file-io"}:
         smoke_env = _node_environment(smoke_env)
     _run(
         *python,
@@ -721,10 +721,15 @@ def _parser() -> argparse.ArgumentParser:
         "--lane",
         choices=(
             "core",
+            "quality",
             "race-a",
             "race-b",
             "race-c",
             "race-d",
+            "race-e",
+            "race-f",
+            "race-g",
+            "race-h",
             "resilience",
             "data-io",
             "file-io",

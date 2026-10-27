@@ -249,7 +249,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: [plan, prepare, shard]
+    needs: [plan, prepare, shard, codeql]
     if: always() && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.action != 'closed')
     name: required
     runs-on: windows-latest
@@ -260,9 +260,11 @@ jobs:
           CI_PLAN_RESULT: ${{ needs.plan.result }}
           CI_PREPARE_RESULT: ${{ needs.prepare.result }}
           CI_SHARD_RESULT: ${{ needs.shard.result }}
+          CI_CODEQL_RESULT: ${{ needs.codeql.result }}
         shell: pwsh
         run: |
           if ($env:CI_PLAN_RESULT -ne 'success') { exit 1 }
+          if ($env:CI_CODEQL_RESULT -ne 'success') { exit 1 }
           if ($env:CI_SHARDED -eq 'true') {
             if ($env:CI_PREPARE_RESULT -ne 'success' -or $env:CI_SHARD_RESULT -ne 'success') { exit 1 }
           } elseif ($env:CI_SHARDED -eq 'false') {

@@ -205,6 +205,75 @@ func TestFormalRelinkRematerializesMissingSameContentLeaf(t *testing.T) {
 	assertMaterializedContent(t, filesRoot, "relink.txt", "same")
 }
 
+func TestMaterializerPlansOnlyMissingOrDifferentBytes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		previous   string
+		disk       string
+		missing    bool
+		unsafe     bool
+		operations int
+	}{
+		{name: "new matching leaf", disk: "new"},
+		{name: "changed matching leaf", previous: "old", disk: "new"},
+		{name: "different bytes", disk: "bad", operations: 1},
+		{name: "missing leaf", missing: true, operations: 1},
+		{name: "unsafe target", unsafe: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newHistoryFixture(t)
+			ctx := context.Background()
+			current := map[string]Document{}
+			request := SaveRequest{
+				Token: fixture.token, DocumentID: testDocumentOne, Path: "external.txt",
+				Kind: RevisionAutosave, Content: []byte("new"),
+			}
+			if test.previous != "" {
+				previous := request
+				previous.Content = []byte(test.previous)
+				result, err := fixture.save(ctx, previous)
+				if err != nil {
+					t.Fatal(err)
+				}
+				current[result.Document.DocumentID] = result.Document
+				request.ExpectedEffectiveRevision = stringRef(result.Revision.RevisionID)
+			}
+			result, err := fixture.save(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			materializer, err := OpenMaterializer(
+				filepath.Join(root, "files"), filepath.Join(root, "journal"), fixture.repository,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "files", "external.txt")
+			if test.unsafe {
+				err = os.Mkdir(target, 0o700)
+			} else if !test.missing {
+				err = os.WriteFile(target, []byte(test.disk), 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations, err := materializer.plan(ctx, current, map[string]Document{
+				result.Document.DocumentID: result.Document,
+			})
+			if test.unsafe {
+				if !errors.Is(err, ErrUnsafeFilePath) {
+					t.Fatalf("unsafe target error = %v", err)
+				}
+				return
+			}
+			if err != nil || len(operations) != test.operations {
+				t.Fatalf("operations = %#v, error = %v; want %d", operations, err, test.operations)
+			}
+		})
+	}
+}
+
 func TestPersistentHeadPublishesAndDrainsAuditOutboxAtomically(t *testing.T) {
 	ctx := context.Background()
 	coordinator, err := writecoordinator.New(

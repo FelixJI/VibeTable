@@ -111,7 +111,7 @@ func (materializer *Materializer) PrepareAndApply(
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	operations, err := materializer.plan(current, next)
+	operations, err := materializer.plan(ctx, current, next)
 	if err != nil || len(operations) == 0 {
 		return err
 	}
@@ -225,6 +225,7 @@ func (materializer *Materializer) Recover(
 }
 
 func (materializer *Materializer) plan(
+	ctx context.Context,
 	current map[string]Document,
 	next map[string]Document,
 ) ([]materializerOperation, error) {
@@ -250,9 +251,9 @@ func (materializer *Materializer) plan(
 	sort.Strings(paths)
 	operations := make([]materializerOperation, 0, len(paths))
 	for _, relative := range paths {
-		oldLeaf, oldExists := currentLeaves[relative]
 		newLeaf, newExists := nextLeaves[relative]
-		if oldExists && newExists && oldLeaf == newLeaf {
+		// External ingestion may already have installed the exact desired bytes.
+		if newExists {
 			matches, matchErr := materializer.diskLeafMatches(
 				relative,
 				newLeaf,
@@ -261,6 +262,19 @@ func (materializer *Materializer) plan(
 				return nil, matchErr
 			}
 			if matches {
+				oldLeaf, oldExists := currentLeaves[relative]
+				if !oldExists || oldLeaf != newLeaf {
+					// Matching disk bytes cannot replace proof of the referenced repository content.
+					reader, err := materializer.repository.Open(ctx, newLeaf.ObjectID)
+					if err != nil {
+						return nil, err
+					}
+					verifyErr := copyAndVerifyContent(io.Discard, reader, newLeaf.Size, newLeaf.ContentHash)
+					closeErr := reader.Close()
+					if err := errors.Join(verifyErr, closeErr); err != nil {
+						return nil, err
+					}
+				}
 				continue
 			}
 		}
@@ -620,20 +634,27 @@ func copyReaderVerified(
 	if err != nil {
 		return err
 	}
-	hasher := sha256.New()
-	written, copyErr := io.Copy(
-		io.MultiWriter(file, hasher),
-		io.LimitReader(reader, expectedSize+1),
-	)
+	copyErr := copyAndVerifyContent(file, reader, expectedSize, expectedHash)
 	syncErr := file.Sync()
 	closeErr := file.Close()
 	if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
 		_ = os.Remove(destination)
 		return err
 	}
+	return nil
+}
+
+func copyAndVerifyContent(destination io.Writer, reader io.Reader, expectedSize int64, expectedHash string) error {
+	if expectedSize < 0 {
+		return ErrStateCorrupt
+	}
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(destination, hasher), io.LimitReader(reader, expectedSize+1))
+	if err != nil {
+		return err
+	}
 	actualHash := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
 	if written != expectedSize || actualHash != expectedHash {
-		_ = os.Remove(destination)
 		return ErrStateCorrupt
 	}
 	return nil

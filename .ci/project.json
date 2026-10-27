@@ -147,6 +147,13 @@
         "go": true
       },
       {
+        "name": "quality",
+        "uv": true,
+        "node": true,
+        "dotnet": true,
+        "go": true
+      },
+      {
         "name": "race-a",
         "go": true
       },
@@ -160,6 +167,22 @@
       },
       {
         "name": "race-d",
+        "go": true
+      },
+      {
+        "name": "race-e",
+        "go": true
+      },
+      {
+        "name": "race-f",
+        "go": true
+      },
+      {
+        "name": "race-g",
+        "go": true
+      },
+      {
+        "name": "race-h",
         "go": true
       },
       {

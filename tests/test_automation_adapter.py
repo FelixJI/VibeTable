@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -35,7 +36,7 @@ def node_quality_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     return tmp_path
 
 
-def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
+def test_quality_node_stage_checks_plugins_and_preserves_web_coverage(
     node_quality_checkout: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -64,7 +65,7 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
     monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
     command, cwd = next_gate.stage_command("web-test")
 
-    assert "web-test" in next_gate.LANE_STAGES["core"]
+    assert "web-test" in next_gate.LANE_STAGES["quality"]
     assert command == [
         sys.executable,
         str(REPO_ROOT / "scripts" / "automation_project.py"),
@@ -124,7 +125,7 @@ def test_node_stage_stops_on_plugin_or_web_failure(
     assert "[FAIL] VibeTable automation:" in capsys.readouterr().err
 
 
-def test_core_python_stage_runs_static_checks_and_full_coverage_suite(
+def test_quality_python_stage_runs_static_checks_and_full_coverage_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -138,7 +139,7 @@ def test_core_python_stage_runs_static_checks_and_full_coverage_suite(
     monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
     command, cwd = next_gate.stage_command("python")
 
-    assert "python" in next_gate.LANE_STAGES["core"]
+    assert "python" in next_gate.LANE_STAGES["quality"]
     assert command == [
         sys.executable,
         str(REPO_ROOT / "scripts" / "automation_project.py"),
@@ -348,6 +349,39 @@ def test_ci_prepare_scopes_candidate_mode_to_the_prepare_step() -> None:
 
     assert prepare_step.count("VIBETABLE_CI_PREPARE_MODE: candidate") == 1
     assert ci.count("VIBETABLE_CI_PREPARE_MODE: candidate") == 1
+
+
+@pytest.mark.parametrize("codeql_result", ["success", "failure", "cancelled", "skipped", ""])
+def test_required_gate_rejects_unsuccessful_codeql(codeql_result: str) -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    required = ci.split("\n  required:\n", 1)[1]
+    assert "needs: [plan, prepare, shard, codeql]" in required
+    assert "github.event_name != 'schedule'" in required
+    step = required.split("- name: Fail closed on orchestration errors", 1)[1].split(
+        "\n      - uses:", 1
+    )[0]
+    assert "CI_CODEQL_RESULT: ${{ needs.codeql.result }}" in step
+    script = "\n".join(
+        line.removeprefix("          ") for line in step.split("run: |\n", 1)[1].splitlines()
+    )
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell is not None, "PowerShell is required to exercise the runner gate"
+    completed = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "CI_SHARDED": "true",
+            "CI_PLAN_RESULT": "success",
+            "CI_PREPARE_RESULT": "success",
+            "CI_SHARD_RESULT": "success",
+            "CI_CODEQL_RESULT": codeql_result,
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == (0 if codeql_result == "success" else 1)
 
 
 def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
@@ -1357,15 +1391,33 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     shards = config["ci_shards"]
     assert [lane["name"] for lane in shards["lanes"]] == [
         "core",
+        "quality",
         "race-a",
         "race-b",
         "race-c",
         "race-d",
+        "race-e",
+        "race-f",
+        "race-g",
+        "race-h",
         "resilience",
         "data-io",
         "file-io",
         "release",
     ]
+    assert tuple(lane["name"] for lane in shards["lanes"]) == tuple(next_gate.LANE_STAGES)
+    for lane in shards["lanes"]:
+        args = automation_project._parser().parse_args(
+            ["smoke-lane", "--lane", lane["name"], "--json-report", "report.json"]
+        )
+        assert args.lane == lane["name"]
+    quality = next(lane for lane in shards["lanes"] if lane["name"] == "quality")
+    assert {name for name in ("uv", "node", "dotnet", "go") if quality.get(name)} == {
+        "uv",
+        "node",
+        "dotnet",
+        "go",
+    }
     resilience = next(lane for lane in shards["lanes"] if lane["name"] == "resilience")
     assert {name for name in ("uv", "node", "dotnet", "go") if resilience.get(name)} == {
         "uv",
@@ -1422,10 +1474,15 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
     ("lane", "expected"),
     [
         ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
+        ("quality", ["bootstrap", "npm-ci", "npm-ci", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
         ("race-c", ["w64devkit"]),
         ("race-d", ["w64devkit"]),
+        ("race-e", ["w64devkit"]),
+        ("race-f", ["w64devkit"]),
+        ("race-g", ["w64devkit"]),
+        ("race-h", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("data-io", ["uv-sync", "npm-ci"]),
         ("file-io", ["uv-sync", "npm-ci", "npm-ci", "npm-ci"]),
@@ -1555,13 +1612,15 @@ def test_smoke_lane_binds_report_to_the_declared_candidate(
     assert command[-2:] == ("--json-report", str(report))
 
 
-def test_sharded_core_lane_runs_only_the_current_candidate_report(
+@pytest.mark.parametrize("lane", ["core", "quality"])
+def test_sharded_python_lane_runs_only_the_current_candidate_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    lane: str,
 ) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
-    report = tmp_path / "lane-reports" / "core.json"
+    report = tmp_path / "lane-reports" / f"{lane}.json"
     observed: list[tuple[str, ...]] = []
     observed_envs: list[dict[str, str] | None] = []
     monkeypatch.setenv("AUTOMATION_ARTIFACTS_DIR", str(artifacts))
@@ -1580,9 +1639,11 @@ def test_sharded_core_lane_runs_only_the_current_candidate_report(
 
     monkeypatch.setattr(automation_project, "_run", run_lane)
 
-    automation_project.release_smoke_lane("core", report)
+    automation_project.release_smoke_lane(lane, report)
 
     assert len(observed) == 1
+    assert observed[0][:3] == ("uv", "run", "python")
+    assert observed[0][3:6] == ("qa/next.py", "--lane", lane)
     assert observed[0][-2:] == ("--json-report", str(report))
     assert observed_envs == [
         {
