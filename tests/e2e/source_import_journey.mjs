@@ -106,6 +106,18 @@ export function sourceImportRequestText(mode) {
   return mode;
 }
 
+export async function openManagementEntry(page) {
+  const panel = page.getByTestId("import-management");
+  if (!(await panel.isVisible().catch(() => false))) {
+    // 重开后无选中表：入口互斥地在数据表视图栏或空状态，先回数据表导航。
+    await page.getByTestId("nav-tables").click();
+    await page.getByTestId("table-import-management")
+      .or(page.getByTestId("table-empty-import"))
+      .click();
+  }
+  await panel.waitFor({ state: "visible", timeout: 60_000 });
+}
+
 export function parseSourceImportState(rawText) {
   let parsed;
   try {
@@ -751,13 +763,7 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     }
     throw new Error(`Host source import state for "${scenario}" never became valid: ${lastError}`);
   };
-  const openManagement = async () => {
-    const panel = page.getByTestId("import-management");
-    if (!(await panel.isVisible().catch(() => false))) {
-      await page.getByTestId("table-import-management").click();
-    }
-    await panel.waitFor({ state: "visible", timeout: 60_000 });
-  };
+  const openManagement = async () => openManagementEntry(page);
 
   // Entry runs on the already-active workspace session (see
   // awaitSourceImportEntryReady); the caller keeps its import-management

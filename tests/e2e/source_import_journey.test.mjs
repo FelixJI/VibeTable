@@ -6,7 +6,7 @@ import path from "node:path";
 
 import {
   EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertPreSubmissionTerminal, awaitSourceImportTargetReady,
-  buildCodeIndex, buildTableTargets, migrationJobIds, parseSourceImportState,
+  buildCodeIndex, buildTableTargets, migrationJobIds, openManagementEntry, parseSourceImportState,
   relationValueIds, resolveFieldColumns, sourceImportRequestText,
   validateSyntheticExpectation, verifyAttachmentBinding, verifyMigrationReceipt,
   verifyPreSubmissionTerminalReceipt, verifyRecordIdentityByCode, verifyRelationGraph,
@@ -840,6 +840,45 @@ test("target readiness waits for its actual rows and every table-switch read bef
     globalThis.window = oldWindow;
     globalThis.document = oldDocument;
   }
+});
+
+test("openManagementEntry re-enters through the tables navigation after a reopen", async () => {
+  const makePage = ({ panelVisible, renderedEntry }) => {
+    const clicks = [];
+    return {
+      clicks,
+      getByTestId: (testId) => {
+        if (testId === "import-management") {
+          return {
+            isVisible: async () => panelVisible,
+            waitFor: async (options) => { clicks.push(`panel:${options?.state ?? "visible"}`); },
+          };
+        }
+        if (testId === "nav-tables") return { click: async () => { clicks.push("nav-tables"); } };
+        if (testId === "table-import-management" || testId === "table-empty-import") {
+          return { or: () => ({
+            click: async () => { clicks.push(renderedEntry); },
+          }) };
+        }
+        throw new Error(`unexpected data-testid: ${testId}`);
+      },
+    };
+  };
+
+  // management 已打开：不重新导航，直接等待面板。
+  const open = makePage({ panelVisible: true, renderedEntry: null });
+  await openManagementEntry(open);
+  assert.deepEqual(open.clicks, ["panel:visible"]);
+
+  // 重开首页且无选中表：回数据表导航并使用空状态入口。
+  const empty = makePage({ panelVisible: false, renderedEntry: "table-empty-import" });
+  await openManagementEntry(empty);
+  assert.deepEqual(empty.clicks, ["nav-tables", "table-empty-import", "panel:visible"]);
+
+  // 已有选中表：使用数据表视图栏入口。
+  const table = makePage({ panelVisible: false, renderedEntry: "table-import-management" });
+  await openManagementEntry(table);
+  assert.deepEqual(table.clicks, ["nav-tables", "table-import-management", "panel:visible"]);
 });
 
 test("source reopen settles only its retired lookup after durable authority checks", async () => {

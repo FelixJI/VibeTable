@@ -480,6 +480,9 @@ def handle_plugin_native_request(
             }
         if request["action"] == "recover":
             menu = _observe_recovery_menu(native, hwnd, host_pid)
+            dpi = int(native.user32.GetDpiForWindow(hwnd))
+            if dpi <= 0:
+                raise OSError("native recovery window DPI is unavailable")
             if time.monotonic() >= deadline:
                 raise OSError("native plugin input exceeded its request budget")
             _send_input(native, recovery_menu=True)
@@ -488,6 +491,7 @@ def handle_plugin_native_request(
                 "status": "completed",
                 "action": "recover",
                 "menu": menu,
+                "dpi": dpi,
                 "input": "SendInput",
                 "sequence": "Alt+Space, U",
                 "foreground": native.foreground_observation,

@@ -83,7 +83,7 @@ def test_native_menu_recovery_rejects_other_controls_and_stages(change):
         _validate_request(request)
 
 
-@pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background"])
+@pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background", "dpi"])
 def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia(
     tmp_path, monkeypatch, failure
 ):
@@ -105,6 +105,7 @@ def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia
         GetMenuState=lambda *_args: 1 if failure == "disabled" else 0,
         GetMenuItemID=lambda *_args: 4096,
         GetForegroundWindow=lambda: 99 if failure == "background" else 14,
+        GetDpiForWindow=lambda _hwnd: 0 if failure == "dpi" else 144,
     )
     monkeypatch.setattr(
         runner,
@@ -141,6 +142,7 @@ def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia
         assert result["status"] == "completed"
         assert result["menu"] == {"id": 4096, "label": "恢复界面(&U)"}
         assert result["input"] == "SendInput"
+        assert result["dpi"] == 144
         assert sent == [{"recovery_menu": True}]
 
 

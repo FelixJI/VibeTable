@@ -13,7 +13,14 @@ test("unknown commit requests native recovery, observes sealing, releases the wr
     getByRole: () => element, locator: () => element,
     async evaluate(callback) { return String(callback).includes("window.name") ? "old-token" : "plugin_source_denied"; },
   };
-  const page = { getByTestId: () => element, locator: () => element };
+  const page = {
+    getByTestId: () => element, locator: () => element,
+    async screenshot({ path: target }) {
+      assert.equal(target, path.join(runtime.evidenceDir, "51-commit-recovered.png"));
+      assert.ok(refreshed, "capture the new renderer, not the retired page");
+      events.push("screenshot");
+    },
+  };
   const nativeInput = async (_runtime, action, buttonId) => {
     events.push(action);
     assert.equal(buttonId, action === "click" ? "plugin-confirm-approve" : "plugin-recover");
@@ -21,7 +28,7 @@ test("unknown commit requests native recovery, observes sealing, releases the wr
   };
   let refreshed = false;
   const runtime = {
-    controlsDir: "controls", dataRoot: "owned/local-data",
+    controlsDir: "controls", dataRoot: "owned/local-data", evidenceDir: "evidence",
     async refreshPluginProductPage() {
       assert.ok(events.includes("recover"), "waiting for a new page cannot initiate recovery");
       assert.equal(refreshed, false, "one recovery produces one new page");
@@ -40,7 +47,15 @@ test("unknown commit requests native recovery, observes sealing, releases the wr
     }
     return text;
   };
-  const fakeFs = { async writeFile(file) {
+  const fakeFs = { async writeFile(file, text) {
+    if (file === path.join(runtime.evidenceDir, "51-unknown-commit.json")) {
+      const evidence = JSON.parse(text);
+      assert.equal(evidence.terminal.error.code, "plugin_commit_unknown");
+      assert.equal(evidence.later.error.code, "plugin_commit_unknown");
+      assert.deepEqual(evidence.observed.rows, evidence.unchanged.rows);
+      assert.equal(evidence.recovery.status, "completed");
+      events.push("receipt"); return;
+    }
     assert.equal(file, path.join(runtime.controlsDir, "mutation-barrier.release"));
     assert.equal(events.at(-1), "sealed"); events.push("release");
   } };
@@ -57,5 +72,5 @@ test("unknown commit requests native recovery, observes sealing, releases the wr
   const run = new Function("fs", "path", "nativePluginInput", "installApplication", "openApplication", "waitFile",
     `return (${body});`)(fakeFs, path, nativeInput, async () => {}, async () => frame, waitFile);
   await run(page, { check(name, passed) { assert.ok(passed, name); } }, runtime, helpers);
-  assert.deepEqual(events, ["click", "recover", "sealed", "release", "refresh"]);
+  assert.deepEqual(events, ["click", "recover", "sealed", "release", "refresh", "screenshot", "receipt"]);
 });

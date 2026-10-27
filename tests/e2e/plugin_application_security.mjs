@@ -149,6 +149,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
     recorder.check(`plugin application stays usable inside the product shell in ${mode}`,
       await page.getByTestId("plugin-app-viewport").isVisible()
         && await page.getByTestId("nav-plugins").isVisible());
+    await page.screenshot({ path: path.join(runtime.evidenceDir, `49-application-${mode}.png`) });
   }
   await helpers.beginBridgeMessageCapture(page, ["appearance.changed"]);
   // This closed parent-side scope is refused locally and runs only on the
@@ -162,6 +163,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   recorder.check("actual Host projects high contrast from the system notification", projectedContrast.payload.highContrast === true, { projectedContrast });
   await page.waitForFunction(() => matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
   recorder.check("real WebView receives the operating system forced-color mode", await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "49-application-contrast.png") });
   const restoredCaptureId = await page.evaluate(installContrastRestoreProjectionCaptureInPage);
   const restoredContrast = await nativePluginInput(runtime, "contrast-off", "plugin-recover", "contrast");
   recorder.check("controlled runner restores the recorded system contrast contract", restoredContrast.status === "completed"
@@ -171,6 +173,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   recorder.check("actual Host projects high contrast off after restoration", restoredProjection.payload.highContrast === false, { restoredProjection });
   await page.waitForFunction(() => !matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
   recorder.check("plugin forced colors also leave high contrast", !await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "49-application-contrast-restored.png") });
   const scaling = await page.context().newCDPSession(page);
   try {
     await scaling.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.25 });
@@ -180,6 +183,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
         && await page.getByTestId("nav-plugins").isVisible()
         && await page.getByTestId("plugin-app-viewport").isVisible(),
       { scale, scope: "content scale; physical DPI unchanged" });
+    await page.screenshot({ path: path.join(runtime.evidenceDir, "49-application-scaled.png") });
   } finally { await scaling.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }); }
   const browserSession = await page.context().browser().newBrowserCDPSession();
   const before = await browserSession.send("SystemInfo.getProcessInfo");
@@ -193,6 +197,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   // 原生窗口菜单不依赖失控的 renderer；通过真实输入触发既有恢复命令。
   const recovered = await nativePluginInput(runtime, "recover", "plugin-recover", "loop");
   recorder.check("native window menu recovers the looping renderer", recovered.status === "completed", { recovered });
+  recorder.check("native recovery observes the actual host window DPI", Number.isInteger(recovered.dpi) && recovered.dpi > 0, { dpi: recovered.dpi });
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("renderer recovery preserves workspace and does not auto-reopen the faulting plugin", await page.getByTestId("plugin-app-viewport").count() === 0);
@@ -201,6 +206,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
     !after.processInfo.some(next => next.id === faulting[0].id), { before, looping, faulting, after });
   await assertSidebarPluginReachable(page, recorder,
     "recovery leaves sidebar plugin entries reachable without reopening the app");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "49-loop-recovered.png") });
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
@@ -214,10 +220,13 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   // 此处验证恢复后的真实用户可达性。
   await assertSidebarPluginReachable(page, recorder,
     "actual renderer crash recovers into a usable product shell");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "49-crash-recovered.png") });
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
   recorder.check("after crash the same PocketBase business record is preserved", (await frame.locator("#rows").innerText()).includes("security original"));
   await page.getByTestId("plugin-app-return").click();
-  await fs.writeFile(path.join(runtime.evidenceDir, "49-security-observations.json"), JSON.stringify({ probes, before, looping, faulting, after }, null, 2));
+  await fs.writeFile(path.join(runtime.evidenceDir, "49-security-observations.json"), JSON.stringify({
+    probes, before, looping, faulting, after, recovery: recovered, contrast, restoredContrast,
+  }, null, 2));
 }

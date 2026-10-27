@@ -40,6 +40,7 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   await fs.writeFile(path.join(runtime.controlsDir, "mutation-barrier.release"), "release\n");
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "51-commit-recovered.png") });
   const terminal = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
   recorder.check("lost commit receipt is unknown rather than rolled back or replayed", terminal.payload.state === "aborted" && terminal.payload.error?.code === "plugin_commit_unknown", { terminal });
   const query = () => helpers.rawBridgeRequest(page, "query.page", { tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
@@ -57,5 +58,9 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   recorder.check("unknown commit recovery leaves the product shell usable",
     await page.getByTestId("nav-plugins").isVisible());
   await page.getByTestId("plugin-app-return").click();
+  await fs.writeFile(path.join(runtime.evidenceDir, "51-unknown-commit.json"), JSON.stringify({
+    taskId, recovery: recovering, terminal: terminal.payload, observed: observed.payload,
+    later: later.payload, unchanged: unchanged.payload,
+  }, null, 2));
   return { taskId, projectKey: opened.payload.projectKey };
 }

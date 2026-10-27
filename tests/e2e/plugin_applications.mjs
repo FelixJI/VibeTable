@@ -438,6 +438,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   }
   await assertSidebarPluginReachable(page, recorder,
     "actual plugin management stays reachable from the sidebar while the app is open");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "48-application-sidebar.png") });
 
   if (!statePath) {
     const began = Date.now();
@@ -595,6 +596,7 @@ export async function runHeadlessBudget(page, recorder, runtime, helpers) {
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("native headless deadline recovers even without a module finish signal", Date.now() - began >= 120000 && await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "50-headless-recovered.png") });
   await page.getByTestId("nav-tables").click();
   await helpers.selectTable(page, "Budget Tasks");
   const frame = await openApplication(page);
