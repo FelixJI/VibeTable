@@ -4273,9 +4273,12 @@ async function editRelationPairScenario(page, recorder, authors, articleTableId,
   await openRelationPairEditor(page, relation.physicalName, "作者文章");
   await selectVisibleNOption(page, "relation-source-cardinality", "单条");
   const blocked = await planRelationPairThroughUi(page);
+  const conflictMessage = blocked.errors
+    ?.find(error => error.code === "relation.cardinality.conflict")?.message;
   recorder.check("many-to-one conflict is visible and cannot discard existing links",
-    blocked.canApply === false && blocked.errors?.some(error => error.code === "relation.cardinality.conflict")
-      && (await page.getByTestId("field-change-plan").innerText()).includes("relation.cardinality.conflict")
+    blocked.canApply === false && Boolean(conflictMessage)
+      // 抽屉未收录该 code 的友好提示，回退展示后端原始 message。
+      && (await page.getByTestId("field-change-plan").innerText()).includes(conflictMessage)
       && await page.getByTestId("field-apply-button").isDisabled()
       && canonicalJsonText(conflictBefore) === canonicalJsonText(
         await readRelationPairAuthority(page, articleTableId, relation.fieldId),
@@ -6268,8 +6271,8 @@ async function waitForMutationBarrier(runtime, timeoutMs = 60_000) {
 }
 
 async function chooseToolbarMore(page, key) {
+  // 导入入口在视图栏按钮，工具栏菜单仅保留导出/刷新等。
   const labels = {
-    import: /导入数据|Import data/i,
     "export-csv": /导出 CSV|Export CSV/i,
     "export-xlsx": /导出 XLSX|Export XLSX/i,
     refresh: /刷新|Refresh/i,
@@ -12045,7 +12048,7 @@ const scenarios = {
   ),
   "35-data-io-interoperability": (page, recorder, _network, runtime) => runDataIoInteroperability(
     page, recorder, runtime, {
-      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
+      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, selectTable,
       parseCsv, canonicalJsonText, chooseToolbarMore,
       openWorkspaceCenterFromSwitcher, replicaUiMethod,
       beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,

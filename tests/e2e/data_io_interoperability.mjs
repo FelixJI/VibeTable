@@ -29,7 +29,7 @@ const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.met
 // bridge call or control path may choose these sources.
 export async function runDataIoInteroperability(page, recorder, runtime, helpers) {
   const {
-    waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
+    waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, selectTable,
     canonicalJsonText, chooseToolbarMore,
     openWorkspaceCenterFromSwitcher, replicaUiMethod,
     beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
@@ -448,6 +448,9 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
         canonicalJsonText(actual) === canonicalJsonText(expected), { expected, actual });
     }
   });
+  // 重开工作区后不在数据表视图，而导入管理入口在表内视图栏；先回表再进。
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "A5 Interop CSV");
   await page.getByTestId("table-import-management").click();
   await page.getByTestId("import-history-row").first().waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-reopened.png"), fullPage: true });

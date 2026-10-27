@@ -10,7 +10,7 @@ import {
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 
-test("failed import UI reads each menu body's disabled state", async (t) => {
+test("failed import UI reads the view-bar import button and menu cancel state", async (t) => {
   for (const [importDisabled, cancelDisabled] of [[false, true], [true, true], [false, false]]) {
     await t.test(`import disabled=${importDisabled}, cancel disabled=${cancelDisabled}`, async () => {
       const element = {
@@ -20,18 +20,23 @@ test("failed import UI reads each menu body's disabled state", async (t) => {
         click: async () => {},
         waitFor: async () => {},
       };
+      const importButton = {
+        waitFor: async () => {},
+        isEnabled: async () => !importDisabled,
+      };
       const page = {
-        getByTestId: () => element,
+        getByTestId: (testId) => {
+          if (testId === "table-import-data") return importButton;
+          return element;
+        },
         keyboard: { press: async () => {} },
         locator: selector => {
           assert.equal(selector, ".n-dropdown-option-body");
           return { filter: ({ hasText }) => ({ last: () => {
-            const disabled = hasText.test("导入数据") ? importDisabled : cancelDisabled;
+            const disabled = hasText.test("取消数据任务") ? cancelDisabled : false;
             return {
               waitFor: async () => {},
               getAttribute: async () => `n-dropdown-option-body${disabled ? " n-dropdown-option-body--disabled" : ""}`,
-              // Naive UI's parent does not carry the disabled modifier.
-              locator: () => ({ getAttribute: async () => "n-dropdown-option" }),
             };
           } }) };
         },

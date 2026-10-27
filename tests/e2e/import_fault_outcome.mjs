@@ -12,11 +12,11 @@ export async function waitForFailedImportUi(page, deadlineAt) {
       if (errorLength > 0 && confirmEnabled && cancelEnabled) {
         await page.getByTestId("import-cancel").click();
         await panel.waitFor({ state: "hidden", timeout: Math.max(1, deadlineAt - Date.now()) });
+        // 导入入口在视图栏按钮；取消数据任务仍在工具栏菜单。
+        const importButton = page.getByTestId("table-import-data");
+        await importButton.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        const newImportAvailable = await importButton.isEnabled();
         await page.getByTestId("toolbar-more").click();
-        const importOption = page.locator(".n-dropdown-option-body")
-          .filter({ hasText: /导入数据|Import data/i }).last();
-        await importOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
-        const optionClass = await importOption.getAttribute("class");
         const cancelOption = page.locator(".n-dropdown-option-body")
           .filter({ hasText: /取消数据任务|Cancel data task/i }).last();
         await cancelOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
@@ -26,7 +26,7 @@ export async function waitForFailedImportUi(page, deadlineAt) {
           errorLength,
           confirmEnabled,
           cancelEnabled,
-          newImportAvailable: !optionClass?.includes("--disabled"),
+          newImportAvailable,
           cancelTaskAvailable: !cancelClass?.includes("--disabled"),
         };
       }
