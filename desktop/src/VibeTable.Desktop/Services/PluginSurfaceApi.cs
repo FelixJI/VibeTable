@@ -31,6 +31,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private readonly Func<PluginSurfaceSession, string, CancellationToken, Task<bool>>? _preparePrint;
     private readonly Action? _showPrint;
     private readonly Func<string, Task>? _releasePrint;
+    private readonly Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? _refreshModelCatalog;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
     private sealed record NativeWrite(PluginProjectContext Context, TaskCompletionSource Completion);
     private readonly ConcurrentDictionary<string, Task> _cleanups = new(StringComparer.Ordinal);
@@ -45,9 +46,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         Action? showPrint = null,
         Func<string, Task>? releasePrint = null,
         Func<HostSessionFileBroker>? files = null, INativeProductFileHost? fileHost = null,
-        Func<Func<string?>, Task<string?>>? pickFile = null, Func<PluginDataIoPort>? dataIo = null)
+        Func<Func<string?>, Task<string?>>? pickFile = null, Func<PluginDataIoPort>? dataIo = null,
+        Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? refreshModelCatalog = null)
     {
         _preparePrint = preparePrint; _showPrint = showPrint; _releasePrint = releasePrint;
+        _refreshModelCatalog = refreshModelCatalog;
         _dataIo = dataIo; _files = files; _fileHost = fileHost; _pickFile = pickFile;
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
         _subscriptionSource = subscriptionSource;
@@ -190,6 +193,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "model.read":
                 case "model.status":
                     result = await HandleModelAsync(surface, request.Method, request.Params, deadline.Token);
+                    if (request.Method == "model.configure" && result is JsonElement modelReceipt && modelReceipt.GetProperty("status").GetString() == "completed") committed = true;
                     break;
                 case "attachments.list":
                 case "attachments.read":

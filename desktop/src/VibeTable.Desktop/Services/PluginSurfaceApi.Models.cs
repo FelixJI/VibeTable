@@ -19,6 +19,7 @@ internal sealed partial class PluginSurfaceApi
     {
         var request = parameters.Deserialize<ConfigureModel>(Json) ?? throw Error("plugin_capability_invalid");
         if (request.Mode is not ("create" or "map")) throw Error("plugin_capability_invalid");
+        var generation = _generation() ?? throw Error("plugin_session_stale");
         JsonElement? mappings = null;
         if (request.Mode == "map")
         {
@@ -29,7 +30,11 @@ internal sealed partial class PluginSurfaceApi
         var payload = mappings is null ? JsonSerializer.SerializeToElement(new { mode = request.Mode })
             : JsonSerializer.SerializeToElement(new { mode = request.Mode, mappings });
         var preview = await CallAsync(surface, "model.preview", payload, token);
-        if (preview.GetProperty("status").GetString() == "completed") return preview;
+        if (preview.GetProperty("status").GetString() == "completed")
+        {
+            await RefreshModelCatalogAsync(generation, token);
+            return preview;
+        }
         if (!await NativePluginModelWindow.ConfirmAsync(preview, token)) return null;
         CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         string requestId = preview.GetProperty("requestId").GetString()!;
@@ -49,6 +54,7 @@ internal sealed partial class PluginSurfaceApi
             if (result.GetProperty("status").GetString() != "completed") throw Error("plugin_model_partial");
             var finished = _tasks.FinishNative(taskId, "succeeded", new PluginRuntimeResult(PluginContractVersions.Result, "success", "数据模型配置完成", [], null, [], null, []));
             if (finished is not null) _reply.PostNotification("plugin.task.changed", finished);
+            await RefreshModelCatalogAsync(generation, token);
             return result;
         }
         catch
@@ -58,5 +64,16 @@ internal sealed partial class PluginSurfaceApi
             throw;
         }
         finally { _writes.TryRemove(requestId, out _); completion.TrySetResult(); }
+    }
+
+    private async Task RefreshModelCatalogAsync(ProductSidecarGenerationSnapshot generation, CancellationToken token)
+    {
+        if (_refreshModelCatalog is null) return;
+        try { await _refreshModelCatalog(generation, token); }
+        catch (Exception error)
+        {
+            // Catalog projection cannot downgrade a committed model; its owner reports scoped failures.
+            System.Diagnostics.Trace.TraceWarning("plugin_model.catalog_refresh_failed:" + error.GetType().Name);
+        }
     }
 }

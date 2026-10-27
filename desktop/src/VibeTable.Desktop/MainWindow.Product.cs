@@ -470,7 +470,8 @@ public partial class MainWindow : Window
             files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
             fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
             pickFile: pick => Dispatcher.InvokeAsync(pick).Task,
-            dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."));
+            dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."),
+            refreshModelCatalog: (snapshot, token) => _productRealtime?.RefreshCatalogAsync(snapshot, token, "plugin_model") ?? Task.CompletedTask);
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(
