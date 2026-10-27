@@ -128,7 +128,6 @@ public sealed class GridStateCoordinator
         CancelQuery();
         _queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = _queryCts.Token;
-        _queryDebounce?.Dispose();
         JsonElement stableQuery = query.Clone();
         var state = (table, stableQuery, generation, token, completion, notifyRecovery);
         _queryDebounce = _timeProvider.CreateTimer(
@@ -515,6 +514,7 @@ public sealed class GridStateCoordinator
 
     private void CancelQuery()
     {
+        Interlocked.Exchange(ref _queryDebounce, null)?.Dispose();
         var existing = Interlocked.Exchange(ref _queryCts, null);
         if (existing is not null)
         {

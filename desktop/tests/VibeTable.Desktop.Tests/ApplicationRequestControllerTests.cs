@@ -1,5 +1,5 @@
+using System.Net;
 using System.Text.Json;
-using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop.Tests;
@@ -8,322 +8,87 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ApplicationRequestControllerTests
 {
     [TestMethod]
-    public async Task PreferencesFlowPersistsStateAndAppliesOnlyNativeEffects()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var sink = new FakeWebReplySink();
-            var host = new FakeApplicationRequestHost();
-            using ApplicationRequestController controller = Controller(root, sink, host);
-
-            await controller.DispatchAsync(Request(
-                "appPreferences.update",
-                """
-                {
-                  "minimizeToTrayOnClose": true,
-                  "startWithWindows": true,
-                  "updateProxy": "direct",
-                  "customUpdateProxyUrl": ""
-                }
-                """));
-            await controller.DispatchAsync(Request("appPreferences.get", "{}"));
-
-            Assert.IsTrue(controller.CurrentPreferences.MinimizeToTrayOnClose);
-            Assert.IsTrue(controller.CurrentPreferences.StartWithWindows);
-            Assert.AreEqual(1, host.EnsureTrayIconCalls);
-            Assert.HasCount(2, host.AppliedPreferences);
-            Assert.HasCount(2, sink.Replies);
-            Assert.IsTrue(
-                ReadBoolean(sink.Replies[1].Payload, "minimizeToTrayOnClose"));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public async Task ThemePreferenceRoundTripsAndProjectsAppearance()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var sink = new FakeWebReplySink();
-            var host = new FakeApplicationRequestHost();
-            using ApplicationRequestController controller = Controller(root, sink, host);
-
-            await controller.DispatchAsync(Request(
-                "appPreferences.update",
-                """{"theme":"dark"}"""));
-
-            Assert.AreEqual(AppSettingsThemeOption.Dark, controller.CurrentPreferences.Theme);
-            Assert.HasCount(1, sink.Replies);
-            using JsonDocument payload = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
-            Assert.AreEqual(
-                AppSettingsThemeOption.Dark,
-                payload.RootElement.GetProperty("theme").GetString());
-            // Explicit dark wins over the light system snapshot.
-            Assert.AreEqual(
-                "dark",
-                payload.RootElement.GetProperty("effectiveTheme").GetString());
-            Assert.IsFalse(
-                payload.RootElement.GetProperty("highContrast").GetBoolean());
-
-            // Reads project the persisted preference without changing it.
-            await controller.DispatchAsync(Request("appPreferences.get", "{}"));
-            using JsonDocument read = JsonSerializer.SerializeToDocument(sink.Replies[1].Payload);
-            Assert.AreEqual(
-                AppSettingsThemeOption.Dark,
-                read.RootElement.GetProperty("theme").GetString());
-            Assert.AreEqual(
-                "dark",
-                read.RootElement.GetProperty("effectiveTheme").GetString());
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public async Task LegacyAdoptionPersistsOnlyWhileTheHostIsUnconfigured()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var sink = new FakeWebReplySink();
-            var host = new FakeApplicationRequestHost();
-            using ApplicationRequestController controller = Controller(root, sink, host);
-
-            await controller.DispatchAsync(Request(
-                "appPreferences.update",
-                """{"adoptLegacyTheme":"system"}"""));
-            Assert.AreEqual(
-                AppSettingsThemeOption.System,
-                controller.CurrentPreferences.Theme);
-            using JsonDocument adopted = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
-            Assert.AreEqual(
-                AppSettingsThemeOption.System,
-                adopted.RootElement.GetProperty("theme").GetString());
-
-            // A second adoption attempt must never overwrite the now-explicit
-            // Host value (compare-unset semantics).
-            await controller.DispatchAsync(Request(
-                "appPreferences.update",
-                """{"adoptLegacyTheme":"dark"}"""));
-            Assert.AreEqual(
-                AppSettingsThemeOption.System,
-                controller.CurrentPreferences.Theme);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
     public async Task InvalidApplicationRequestsFailBeforeProvidersOrLifecycleEffects()
     {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var sink = new FakeWebReplySink();
-            var host = new FakeApplicationRequestHost();
-            using ApplicationRequestController controller = Controller(root, sink, host);
-
-            await controller.DispatchAsync(Request("appPreferences.get", "[]"));
-            await controller.DispatchAsync(Request("update.check", "[]"));
-            await controller.DispatchAsync(Request("dailyQuote.fetch", "{}"));
-            await controller.DispatchAsync(Request("application.raw", "{}"));
-
-            CollectionAssert.AreEqual(
-                new[]
-                {
-                    "APP_PREFERENCES_BAD_PAYLOAD",
-                    "UPDATE_BAD_PAYLOAD",
-                    "DAILY_QUOTE_BAD_PAYLOAD",
-                    "UNKNOWN_TYPE",
-                },
-                sink.Replies.Select(FailureCode).ToArray());
-            Assert.AreEqual(0, host.EnsureTrayIconCalls);
-            Assert.AreEqual(0, host.RequestExitCalls);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public void LegacyAdoptionRejectsMixedPatchesInEitherPropertyOrder()
-    {
-        foreach (string other in new[]
-        {
-            "\"minimizeToTrayOnClose\":true", "\"startWithWindows\":true",
-            "\"updateProxy\":\"direct\"", "\"customUpdateProxyUrl\":\"\"", "\"theme\":\"light\"",
-        })
-        {
-            foreach (string payload in new[]
-            {
-                "{\"adoptLegacyTheme\":\"dark\"," + other + "}",
-                "{" + other + ",\"adoptLegacyTheme\":\"dark\"}",
-            })
-            {
-                using JsonDocument document = JsonDocument.Parse(payload);
-                Assert.IsFalse(AppSettingsPatchReader.TryRead(
-                    document.RootElement, out _), payload);
-            }
-        }
-    }
-
-    [TestMethod]
-    public void HandlesOnlyTheClosedApplicationRequestUnion()
-    {
-        foreach (string type in new[]
-        {
-            "appPreferences.get",
-            "appPreferences.update",
-            "update.check",
-            "update.install",
-            "dailyQuote.fetch",
-        })
-        {
-            Assert.IsTrue(ApplicationRequestController.Handles(type), type);
-        }
-        Assert.IsFalse(ApplicationRequestController.Handles("application.raw"));
-        Assert.IsFalse(ApplicationRequestController.Handles("workspace.v2.request"));
-    }
-
-    [TestMethod]
-    public async Task UnexpectedProviderFailuresReturnStableCodesAndEmitSafeDiagnostics()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
+        using var fixture = new AppPreferencesFixture();
         var sink = new FakeWebReplySink();
         var host = new FakeApplicationRequestHost();
-        var preferences = new AppPreferencesService(
-            new ThrowingAppPreferencesStore(),
-            new InMemoryStartupRegistration());
-        using var controller = new ApplicationRequestController(
-            sink,
-            host,
-            preferences,
-            new ReleaseUpdateCoordinator(root, "1.0.0", installationEnabled: false),
-            new DailyQuoteHostClient(),
-            Appearance(),
-            AppPreferences.Default);
-
-        await controller.DispatchAsync(Request("appPreferences.get", "{}"));
-        await controller.DispatchAsync(Request(
-            "appPreferences.update",
-            """{"minimizeToTrayOnClose":false}"""));
-        await controller.DispatchAsync(Request("update.check", "{}"));
-
-        CollectionAssert.AreEqual(
-            new[]
-            {
-                "APP_PREFERENCES_READ_FAILED",
-                "APP_PREFERENCES_WRITE_FAILED",
-                "UPDATE_CHECK_FAILED",
-            },
+        using var controller = Controller(fixture, sink, host);
+        await controller.DispatchAsync(Request("update.check", "[]"));
+        await controller.DispatchAsync(Request("dailyQuote.fetch", "{}"));
+        await controller.DispatchAsync(Request("application.raw", "{}"));
+        CollectionAssert.AreEqual(new[] { "UPDATE_BAD_PAYLOAD", "DAILY_QUOTE_BAD_PAYLOAD", "UNKNOWN_TYPE" },
             sink.Replies.Select(FailureCode).ToArray());
-        CollectionAssert.AreEqual(
-            new[]
-            {
-                "Application preferences read failed; exception=IOException",
-                "Application preferences update failed; exception=IOException",
-                "Release update check failed; exception=IOException",
-            },
-            host.Traces);
+        Assert.IsEmpty(fixture.Events);
+        Assert.AreEqual(0, host.RequestExitCalls);
     }
 
-    private static ApplicationRequestController Controller(
-        string root,
-        FakeWebReplySink sink,
-        IApplicationRequestHost host)
+    [TestMethod]
+    public void HandlesOnlyUpdatesAndQuotesAfterSettingsMovedToTheirOwnAdapter()
     {
-        var preferences = new AppPreferencesService(
-            new JsonAppPreferencesStore(Path.Combine(root, "preferences.json")),
-            new InMemoryStartupRegistration());
-        return new ApplicationRequestController(
-            sink,
-            host,
-            preferences,
-            new ReleaseUpdateCoordinator(root, "1.0.0", installationEnabled: false),
-            new DailyQuoteHostClient(),
-            Appearance(),
-            AppPreferences.Default);
+        foreach (string type in new[] { "update.check", "update.install", "dailyQuote.fetch" })
+            Assert.IsTrue(ApplicationRequestController.Handles(type), type);
+        foreach (string type in new[] { "appPreferences.get", "appPreferences.update", "application.raw", "workspace.v2.request" })
+            Assert.IsFalse(ApplicationRequestController.Handles(type), type);
     }
 
-    private static HostAppearanceService Appearance() =>
-        new(new FakeAppearanceSource());
-
-    private static RoutedWebRequest Request(string type, string json)
+    [TestMethod]
+    public async Task UpdateCheckReadFailureKeepsStableErrorAndSafeDiagnostics()
     {
-        using JsonDocument document = JsonDocument.Parse(json);
-        return new RoutedWebRequest(
-            type,
-            "request-" + type,
-            document.RootElement.Clone(),
-            string.Empty);
+        using var fixture = new AppPreferencesFixture();
+        fixture.Store.ThrowOnRead = true;
+        var sink = new FakeWebReplySink();
+        var host = new FakeApplicationRequestHost();
+        using var controller = Controller(fixture, sink, host);
+        await controller.DispatchAsync(Request("update.check", "{}"));
+        Assert.AreEqual("UPDATE_CHECK_FAILED", FailureCode(sink.Replies.Single()));
+        CollectionAssert.AreEqual(new[] { "Release update check failed; exception=IOException" }, host.Traces);
+        CollectionAssert.AreEqual(new[] { "read" }, fixture.Events);
     }
 
-    private static bool ReadBoolean(object? payload, string property)
-        => JsonSerializer.SerializeToElement(payload)
-            .GetProperty(property)
-            .GetBoolean();
+    [TestMethod]
+    public async Task UpdateCheckRefreshesTheSameCurrentOwnerWithoutApplyingNativeEffects()
+    {
+        using var fixture = new AppPreferencesFixture();
+        fixture.Store.Seed(new PersistedAppPreferences(true, "direct", null, "dark"));
+        using var http = new HttpClient(new EmptyReleasesHandler());
+        var updates = new ReleaseUpdateCoordinator(fixture.Path, "1.0.0",
+            new GitHubReleaseUpdateClient(http), new ReleasePackageStager(), installationEnabled: false);
+        var sink = new FakeWebReplySink();
+        using var controller = Controller(fixture, sink, new FakeApplicationRequestHost(), updates);
+        await controller.DispatchAsync(Request("update.check", "{}"));
+        Assert.AreEqual("update.check", sink.Replies.Single().Type);
+        Assert.AreSame(fixture.UseCases.CurrentPreferences, controller.CurrentPreferences);
+        Assert.AreEqual("dark", controller.CurrentPreferences.Theme);
+        CollectionAssert.AreEqual(new[] { "read", "startup.read" }, fixture.Events);
+    }
+
+    private static ApplicationRequestController Controller(AppPreferencesFixture fixture,
+        IWebReplySink sink, IApplicationRequestHost host, ReleaseUpdateCoordinator? updates = null)
+        => new(sink, host, fixture.UseCases,
+            updates ?? new ReleaseUpdateCoordinator(fixture.Path, "1.0.0", installationEnabled: false),
+            new DailyQuoteHostClient());
+
+    private static RoutedWebRequest Request(string type, string raw)
+    {
+        using JsonDocument document = JsonDocument.Parse(raw);
+        return new(type, "request-" + type, document.RootElement.Clone(), string.Empty);
+    }
 
     private static string? FailureCode(FakeWebReplySink.Reply reply)
-        => JsonSerializer.SerializeToElement(reply.Payload)
-            .GetProperty("code")
-            .GetString();
-
-    private sealed class FakeAppearanceSource : ISystemAppearanceSource
-    {
-        public HostAppearanceSnapshot Read() =>
-            new(SystemPrefersDark: false, HighContrast: false);
-
-        public event EventHandler? Changed { add { } remove { } }
-
-        public void Dispose() { }
-    }
+        => JsonSerializer.SerializeToElement(reply.Payload).GetProperty("code").GetString();
 
     private sealed class FakeApplicationRequestHost : IApplicationRequestHost
     {
-        public List<AppPreferences> AppliedPreferences { get; } = [];
-        public int EnsureTrayIconCalls { get; private set; }
         public int RequestExitCalls { get; private set; }
         public List<string> Traces { get; } = [];
-
-        public void ApplyPreferences(AppPreferences preferences)
-            => AppliedPreferences.Add(preferences);
-
-        public void EnsureTrayIcon() => EnsureTrayIconCalls++;
-
         public void RequestExit() => RequestExitCalls++;
-
         public void Trace(string message) => Traces.Add(message);
     }
 
-    private sealed class ThrowingAppPreferencesStore : IAppPreferencesStore
+    private sealed class EmptyReleasesHandler : HttpMessageHandler
     {
-        public PersistedAppPreferences Read() => throw new IOException("private path");
-
-        public void Write(PersistedAppPreferences preferences)
-            => throw new IOException("private path");
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[]") });
     }
 }

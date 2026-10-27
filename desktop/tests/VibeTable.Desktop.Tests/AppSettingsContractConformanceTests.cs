@@ -9,7 +9,7 @@ namespace VibeTable.Desktop.Tests;
 /// <summary>
 /// App-settings wire conformance (#534): the shared raw-JSON fixture in
 /// contracts/v2/fixtures/app-settings-conformance.json must reproduce its
-/// verdicts through the REAL router + application adapter chain. Duplicate
+/// verdicts through the REAL router + preferences adapter chain. Duplicate
 /// payload keys stay raw strings so the rejection happens before any
 /// JsonElement information loss; invalid inputs must never reach the store,
 /// startup registration or native lifecycle effects, and must not change the
@@ -49,8 +49,11 @@ public sealed class AppSettingsContractConformanceTests
         public void Dispose() { }
     }
 
-    private sealed class CountingApplicationRequestHost : IApplicationRequestHost
+    private sealed class CountingApplicationRequestHost : IAppPreferencesEffects
     {
+        public HostAppearanceService Appearance { get; set; } = null!;
+        public HostThemeProjection Projection => Appearance.Projection;
+        public void SetPreferredTheme(string? theme) => Appearance.SetPreferredTheme(theme);
         public int ApplyPreferencesCalls { get; private set; }
         public int EnsureTrayIconCalls { get; private set; }
         public int RequestExitCalls { get; private set; }
@@ -72,7 +75,8 @@ public sealed class AppSettingsContractConformanceTests
         public FakeWebReplySink Sink = new();
         public CountingApplicationRequestHost Host = new();
         public HostAppearanceService Appearance;
-        public ApplicationRequestController Controller;
+        public AppPreferencesUseCases Preferences;
+        public AppPreferencesRequestAdapter Adapter;
 
         public Context(string id)
         {
@@ -82,19 +86,16 @@ public sealed class AppSettingsContractConformanceTests
             Directory.CreateDirectory(Root);
             Store = new CountingStore(Path.Combine(Root, "preferences.json"));
             Appearance = new HostAppearanceService(new FakeAppearanceSource());
-            Controller = new ApplicationRequestController(
-                Sink,
-                Host,
+            Host.Appearance = Appearance;
+            Preferences = new AppPreferencesUseCases(
                 new AppPreferencesService(Store, new InMemoryStartupRegistration()),
-                new ReleaseUpdateCoordinator(Root, "1.0.0", installationEnabled: false),
-                new DailyQuoteHostClient(),
-                Appearance,
+                Host,
                 AppPreferences.Default);
+            Adapter = new AppPreferencesRequestAdapter(Sink, Preferences, Host.Trace);
         }
 
         public void Dispose()
         {
-            Controller.Dispose();
             Appearance.Dispose();
             Directory.Delete(Root, recursive: true);
         }
@@ -176,7 +177,7 @@ public sealed class AppSettingsContractConformanceTests
             Assert.IsNull(rejected, $"{id}: the router must admit the closed settings type");
             Assert.IsNotNull(routed, $"{id}: the request must be dispatched");
 
-            AppPreferences preferencesBefore = context.Controller.CurrentPreferences;
+            AppPreferences preferencesBefore = context.Preferences.CurrentPreferences;
             int readsBefore = context.Store.Reads;
             int writesBefore = context.Store.Writes;
             int applyBefore = context.Host.ApplyPreferencesCalls;
@@ -185,7 +186,7 @@ public sealed class AppSettingsContractConformanceTests
             int traceBefore = context.Host.TraceCalls;
             int repliesBefore = context.Sink.Replies.Count;
 
-            context.Controller.DispatchAsync(routed!).GetAwaiter().GetResult();
+            context.Adapter.Dispatch(routed!);
             var replies = context.Sink.Replies.Skip(repliesBefore).ToList();
             Assert.AreEqual(1, replies.Count, $"{id}: exactly one correlated reply");
 
@@ -222,7 +223,7 @@ public sealed class AppSettingsContractConformanceTests
                     $"{id}: invalid patches must not trace unexpected failures");
                 Assert.AreEqual(
                     preferencesBefore,
-                    context.Controller.CurrentPreferences,
+                    context.Preferences.CurrentPreferences,
                     $"{id}: invalid patches must not change business preferences");
             }
         }
@@ -243,13 +244,13 @@ public sealed class AppSettingsContractConformanceTests
             Assert.IsNull(rejected, $"{id}: the router must admit the closed settings type");
             Assert.IsNotNull(routed, $"{id}: the request must be dispatched");
 
-            AppPreferences preferencesBefore = context.Controller.CurrentPreferences;
+            AppPreferences preferencesBefore = context.Preferences.CurrentPreferences;
             int writesBefore = context.Store.Writes;
             int applyBefore = context.Host.ApplyPreferencesCalls;
             int trayBefore = context.Host.EnsureTrayIconCalls;
             int repliesBefore = context.Sink.Replies.Count;
 
-            context.Controller.DispatchAsync(routed!).GetAwaiter().GetResult();
+            context.Adapter.Dispatch(routed!);
             var replies = context.Sink.Replies.Skip(repliesBefore).ToList();
             Assert.AreEqual(1, replies.Count, $"{id}: exactly one correlated reply");
 
@@ -276,7 +277,7 @@ public sealed class AppSettingsContractConformanceTests
                     $"{id}: invalid get must not create native effects");
                 Assert.AreEqual(
                     preferencesBefore,
-                    context.Controller.CurrentPreferences,
+                    context.Preferences.CurrentPreferences,
                     $"{id}: invalid get must not change business preferences");
             }
         }
@@ -286,11 +287,11 @@ public sealed class AppSettingsContractConformanceTests
     public void ValidReply_UsesGeneratedWireShapeWithNullableThemeAndEmptyUrl()
     {
         using var context = new Context("shape");
-        context.Controller.DispatchAsync(new RoutedWebRequest(
+        context.Adapter.Dispatch(new RoutedWebRequest(
             "appPreferences.update",
             "shape-1",
             JsonDocument.Parse("{\"minimizeToTrayOnClose\":false}").RootElement.Clone(),
-            string.Empty)).GetAwaiter().GetResult();
+            string.Empty));
 
         FakeWebReplySink.Reply reply = context.Sink.Replies.Single();
         Assert.AreEqual("appPreferences.update", reply.Type);
