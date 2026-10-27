@@ -2584,6 +2584,40 @@ describe("WorkspaceView", () => {
     expect(wrapper.findComponent(DataSourceViewBar).props("importDisabled")).toBe(true);
   });
 
+  it("无当前表（新工作区/删除最后一表）空状态保留导入管理入口，有表时不重复", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const ui = useUiStore();
+    // 新工作区：没有任何数据表，飞书 .base 导入只需活动工作区且会自建表。
+    workspace.setOpened([], {});
+    ui.navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.findComponent(DataSourceViewBar).exists()).toBe(false);
+    await wrapper.get('[data-testid="table-empty-import"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+    expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
+
+    // 有表：保留既有表内入口，空状态入口消失（不恢复常驻多余入口）。
+    ui.navigate("tables");
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    await flushPromises();
+    expect(wrapper.findComponent(DataSourceViewBar).exists()).toBe(true);
+    expect(wrapper.find('[data-testid="table-empty-import"]').exists()).toBe(false);
+
+    // 删除最后一表：回到无表空状态，入口恢复可用。
+    workspace.setCollections([], {});
+    await flushPromises();
+    expect(wrapper.find('[data-testid="table-empty"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="table-empty-import"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+  });
+
   it("runs a validated import and refreshes the active table", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

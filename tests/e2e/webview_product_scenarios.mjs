@@ -823,6 +823,13 @@ async function scenario01(page, recorder, network, runtime) {
     { processNetwork },
   );
   recorder.check("startup gate is no longer present", await page.getByTestId("startup-gate").count() === 0);
+  await page.getByTestId("nav-tables").click();
+  await page.getByTestId("table-empty-import").waitFor();
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "01-empty-workspace-import.png"), fullPage: true });
+  await page.getByTestId("table-empty-import").click();
+  await page.getByTestId("import-management").waitFor();
+  recorder.check("an empty workspace can start a Feishu base import without an unrelated table",
+    await page.getByTestId("import-source-feishuBase").isEnabled());
 }
 
 async function scenario02(page, recorder, _network, runtime) {

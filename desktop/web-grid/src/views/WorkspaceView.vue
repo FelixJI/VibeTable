@@ -1689,7 +1689,17 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
               <span><NIcon :size="21"><FilePlus2 /></NIcon></span>
               <h2>{{ t("table.empty.title") }}</h2>
               <p>{{ workspace.lastError ?? t("table.empty.description") }}</p>
-              <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
+              <div class="table-empty__actions">
+                <NButton type="primary" size="small" @click="onNewTable">{{ t("sidebar.newTable") }}</NButton>
+                <!-- 无表时视图栏入口不可达：飞书 .base 导入只需活动工作区且会
+                     自建表，空状态保留导入管理入口；有表时不重复展示。 -->
+                <NButton
+                  size="small"
+                  quaternary
+                  data-testid="table-empty-import"
+                  @click="enterImportManagement"
+                >导入管理</NButton>
+              </div>
             </div>
             <template v-else>
               <FieldManagementView
@@ -2440,6 +2450,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
 .table-empty > span { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 12px; color: var(--vt-color-primary-500); border-radius: var(--vt-radius-lg); background: var(--vt-color-primary-50); }
 .table-empty h2 { margin: 0 0 4px; color: var(--vt-fg); font-size: var(--vt-font-title); font-weight: 600; }
 .table-empty p { margin: 0 0 16px; }
+.table-empty__actions { display: flex; gap: 8px; align-items: center; }
 .table-summary {
   flex: 0 0 26px;
   padding: 4px 12px;
