@@ -198,10 +198,16 @@ func duplicateTableContents(ctx context.Context, app core.App, intent v2.TableCr
 	if err != nil {
 		return err
 	}
-	if err := mutation.AuditCopiedRows(ctx, app, targetID, intent.OperationID, intent.Actor, now); err != nil {
-		return err
+	// Copied membership must invalidate dependencies before formula materialization.
+	if len(rowIDs) > 0 {
+		if err := relatedcomputation.AdvanceInputRevisions(ctx, app, targetID, definitions, nil, nil, string(mutation.OperationInsert), 1); err != nil {
+			return err
+		}
 	}
 	if err := materializeCopiedFormulas(ctx, app, targetID, collection); err != nil {
+		return err
+	}
+	if err := mutation.AuditCopiedRows(ctx, app, targetID, intent.OperationID, intent.Actor, now); err != nil {
 		return err
 	}
 	return duplicateViews(ctx, app, sourceID, targetID, fieldIDs, selfRelations, rowIDs, copyRecords, copyViews)

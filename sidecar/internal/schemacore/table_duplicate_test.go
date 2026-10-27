@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -109,6 +112,127 @@ func TestTableDuplicatePreservesAutomaticDatesAndRematerializesFormulaVersions(t
 	}
 	if !envelope.Fresh(expectation) || envelope.Value != float64(3) || envelope.Version.DefinitionVersion != 1 {
 		t.Fatalf("envelope=%#v expectation=%#v", envelope, expectation)
+	}
+}
+
+func TestTableDuplicateAuditsFinalFormulaValuesAndKeepsDependenciesFresh(t *testing.T) {
+	app := commitProjectionApp(t)
+	lifecycle, _ := NewTableLifecycle(app)
+	instant := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	ctx := formula.WithEvaluationTime(context.Background(), instant)
+	actor := v2.Actor{ID: "test", Kind: "user"}
+	source, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "审计来源", OperationID: "audit-formula-source", Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": source.TableID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := app.FindCollectionByNameOrId(metadata.GetString("collection_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount := copiedField(t, v2.LogicalNumber)
+	relation := copiedField(t, v2.LogicalRelation)
+	relation.Relation = &v2.RelationSpec{TargetTableID: source.TableID, Cardinality: "many", DeletePolicy: "restrict", DisplayField: amount.Identity.FieldID}
+	clock := copiedField(t, v2.LogicalFormula)
+	clock.Formula = &v2.FormulaSpec{Language: "cel-v1", Source: "NOW()", ResultType: v2.LogicalDateTime}
+	total := copiedField(t, v2.LogicalFormula)
+	total.Formula = &v2.FormulaSpec{Language: "cel-v1", Source: fmt.Sprintf("relationSum(%s, %q)", relation.Identity.PhysicalName, amount.Identity.PhysicalName), ResultType: v2.LogicalNumber}
+	for _, field := range []v2.FieldDefinition{amount, relation, clock, total} {
+		if err := fieldchange.InstallCopiedField(app, collection, source.TableID, field); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := schemaapi.New(app).SyncComputedMetadataForTable(ctx, source.TableID); err != nil {
+		t.Fatal(err)
+	}
+	row := core.NewRecord(collection)
+	row.Set(amount.Identity.PhysicalName, 7)
+	row.Set(amount.Value.Presence.PhysicalName, true)
+	row.Set(relatedcomputation.RowRevisionField, 1)
+	if err := app.Save(row); err != nil {
+		t.Fatal(err)
+	}
+	row.Set(relation.Identity.PhysicalName, []string{row.Id})
+	row.Set(relation.Value.Presence.PhysicalName, true)
+	if err := app.Save(row); err != nil {
+		t.Fatal(err)
+	}
+	if err := materializeCopiedFormulas(ctx, app, source.TableID, collection); err != nil {
+		t.Fatal(err)
+	}
+	ctx = formula.WithEvaluationTime(ctx, instant.Add(time.Minute))
+	copy, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "审计副本", OperationID: "audit-formula-copy", SourceTableID: source.TableID, Actor: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, copy.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := app.FindAllRecords(definition.PhysicalName)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("copied rows=%d error=%v", len(rows), err)
+	}
+	for _, field := range definition.Snapshot.Fields {
+		if field.Formula == nil {
+			continue
+		}
+		envelope, ok := relatedcomputation.Decode(rows[0].GetRaw(field.Identity.PhysicalName))
+		expectation, err := relatedcomputation.ExpectationFor(ctx, app, copy.TableID, definition.Snapshot.Fields, field.Identity.FieldID, 1)
+		if err != nil || !ok || !envelope.Fresh(expectation) {
+			t.Fatalf("copied formula=%#v expectation=%#v error=%v", envelope, expectation, err)
+		}
+		want := any(float64(7))
+		if field.Formula.Source == "NOW()" {
+			want = instant.Add(time.Minute).Format(time.RFC3339)
+		}
+		if envelope.Value != want {
+			t.Fatalf("formula value=%v want=%v", envelope.Value, want)
+		}
+	}
+	edges, err := app.FindRecordsByFilter("vibetable_computation_dependencies", "target_table_id={:table}", "", 0, 0, dbx.Params{"table": copy.TableID})
+	if err != nil || len(edges) == 0 {
+		t.Fatalf("copied dependency edges=%d error=%v", len(edges), err)
+	}
+	for _, edge := range edges {
+		if edge.GetInt(relatedcomputation.InputRevisionField) != 1 {
+			t.Fatalf("copied input revision=%v", edge.GetRaw(relatedcomputation.InputRevisionField))
+		}
+	}
+	raw, err := json.Marshal(mutation.ProductRow(app, definition, rows[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	audits, err := app.FindRecordsByFilter("vibetable_audit_events", "table_id={:table}", "", 0, 0, dbx.Params{"table": copy.TableID})
+	if err != nil || len(audits) != 1 {
+		t.Fatalf("copy audits=%d error=%v", len(audits), err)
+	}
+	var after map[string]any
+	if err := json.Unmarshal([]byte(audits[0].GetString("after_json")), &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, want) {
+		t.Errorf("audit after=%#v want committed row=%#v", after, want)
+	}
+	outbox, err := app.FindFirstRecordByFilter("vibetable_audit_outbox", "event_id={:event}", dbx.Params{"event": "table-copy:audit-formula-copy:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		After map[string]any `json:"after"`
+	}
+	if err := json.Unmarshal([]byte(outbox.GetString("payload_json")), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(payload.After, want) {
+		t.Errorf("outbox after=%#v want committed row=%#v", payload.After, want)
 	}
 }
 
