@@ -168,81 +168,122 @@ func (ledger *Ledger) Append(
 	ctx context.Context,
 	envelope Envelope,
 ) (AppendResult, error) {
-	if err := ctx.Err(); err != nil {
-		return AppendResult{}, err
-	}
-	normalized, err := normalizeEnvelope(envelope)
+	results, err := ledger.appendBatch(ctx, []Envelope{envelope})
 	if err != nil {
 		return AppendResult{}, err
 	}
+	return results[0], nil
+}
 
+func (ledger *Ledger) appendBatch(ctx context.Context, envelopes []Envelope) ([]AppendResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 	if ledger.db == nil {
-		return AppendResult{}, errors.New("audit.ledger_closed")
+		return nil, errors.New("audit.ledger_closed")
 	}
-	if index, exists := ledger.events[normalized.EventID]; exists {
-		existing := ledger.records[index]
-		if !envelopesEqual(existing.Envelope, normalized) {
-			return AppendResult{}, ErrEventConflict
-		}
-		return AppendResult{Record: existing, Duplicate: true}, nil
-	}
-	sourceKey := envelopeSourceKey(normalized)
-	if eventID, exists := ledger.sourceKeys[sourceKey]; exists &&
-		eventID != normalized.EventID {
-		return AppendResult{}, ErrSourceConflict
-	}
-	if normalized.SourceSequence != ledger.sourceHigh[normalized.SourceEpoch]+1 {
-		return AppendResult{}, ErrSourceGap
-	}
-
+	results := make([]AppendResult, 0, len(envelopes))
+	additions := make([]Record, 0, len(envelopes))
+	events := make(map[string]Record, len(envelopes))
+	sourceKeys := make(map[string]string, len(envelopes))
+	sourceHigh := make(map[string]uint64, len(envelopes))
 	previous := ""
 	if len(ledger.records) > 0 {
 		previous = ledger.records[len(ledger.records)-1].Hash
 	}
-	record := Record{
-		LedgerSequence: uint64(len(ledger.records)) + 1,
-		PreviousHash:   previous,
-		Envelope:       normalized,
+	for _, envelope := range envelopes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		normalized, err := normalizeEnvelope(envelope)
+		if err != nil {
+			return nil, err
+		}
+		existing, exists := events[normalized.EventID]
+		if !exists {
+			if index, found := ledger.events[normalized.EventID]; found {
+				existing, exists = ledger.records[index], true
+			}
+		}
+		if exists {
+			if !envelopesEqual(existing.Envelope, normalized) {
+				return nil, ErrEventConflict
+			}
+			results = append(results, AppendResult{Record: existing, Duplicate: true})
+			continue
+		}
+		sourceKey := envelopeSourceKey(normalized)
+		eventID, exists := sourceKeys[sourceKey]
+		if !exists {
+			eventID, exists = ledger.sourceKeys[sourceKey]
+		}
+		if exists && eventID != normalized.EventID {
+			return nil, ErrSourceConflict
+		}
+		high, exists := sourceHigh[normalized.SourceEpoch]
+		if !exists {
+			high = ledger.sourceHigh[normalized.SourceEpoch]
+		}
+		if normalized.SourceSequence != high+1 {
+			return nil, ErrSourceGap
+		}
+		record := Record{
+			LedgerSequence: uint64(len(ledger.records)+len(additions)) + 1,
+			PreviousHash:   previous, Envelope: normalized,
+		}
+		record.Hash, err = recordHash(record)
+		if err != nil {
+			return nil, err
+		}
+		previous = record.Hash
+		additions = append(additions, record)
+		events[normalized.EventID] = record
+		sourceKeys[sourceKey] = normalized.EventID
+		sourceHigh[normalized.SourceEpoch] = normalized.SourceSequence
+		results = append(results, AppendResult{Record: record})
 	}
-	record.Hash, err = recordHash(record)
-	if err != nil {
-		return AppendResult{}, err
+	if len(additions) == 0 {
+		return results, nil
 	}
 	transaction, err := ledger.db.BeginTx(ctx, nil)
 	if err != nil {
-		return AppendResult{}, fmt.Errorf("begin audit append: %w", err)
+		return nil, fmt.Errorf("begin audit append: %w", err)
 	}
 	defer transaction.Rollback()
-	if _, err := transaction.ExecContext(
-		ctx,
-		`INSERT INTO audit_ledger (
+	for _, record := range additions {
+		if _, err := transaction.ExecContext(
+			ctx,
+			`INSERT INTO audit_ledger (
 			ledger_sequence, event_id, source_epoch, source_sequence,
 			mutation_identity, payload_hash, payload, occurred_at,
 			previous_hash, hash
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.LedgerSequence,
-		record.Envelope.EventID,
-		record.Envelope.SourceEpoch,
-		record.Envelope.SourceSequence,
-		record.Envelope.MutationIdentity,
-		record.Envelope.PayloadHash,
-		[]byte(record.Envelope.Payload),
-		record.Envelope.OccurredAt.Format(time.RFC3339Nano),
-		record.PreviousHash,
-		record.Hash,
-	); err != nil {
-		return AppendResult{}, fmt.Errorf("append audit record: %w", err)
+			record.LedgerSequence,
+			record.Envelope.EventID,
+			record.Envelope.SourceEpoch,
+			record.Envelope.SourceSequence,
+			record.Envelope.MutationIdentity,
+			record.Envelope.PayloadHash,
+			[]byte(record.Envelope.Payload),
+			record.Envelope.OccurredAt.Format(time.RFC3339Nano),
+			record.PreviousHash,
+			record.Hash,
+		); err != nil {
+			return nil, fmt.Errorf("append audit record: %w", err)
+		}
 	}
 	if err := transaction.Commit(); err != nil {
-		return AppendResult{}, fmt.Errorf("flush audit record: %w", err)
+		return nil, fmt.Errorf("flush audit record: %w", err)
 	}
-	ledger.events[normalized.EventID] = len(ledger.records)
-	ledger.sourceKeys[sourceKey] = normalized.EventID
-	ledger.sourceHigh[normalized.SourceEpoch] = normalized.SourceSequence
-	ledger.records = append(ledger.records, record)
-	return AppendResult{Record: record}, nil
+	for _, record := range additions {
+		ledger.events[record.Envelope.EventID] = len(ledger.records)
+		ledger.sourceKeys[envelopeSourceKey(record.Envelope)] = record.Envelope.EventID
+		ledger.sourceHigh[record.Envelope.SourceEpoch] = record.Envelope.SourceSequence
+		ledger.records = append(ledger.records, record)
+	}
+	return results, nil
 }
 
 func (ledger *Ledger) Anchor() Anchor {

@@ -115,38 +115,53 @@ public sealed class PythonBackendSupervisorTests
         await supervisor.StartAsync(CancellationToken.None);
         JsonRpcClient expected = supervisor.Client!;
         using var release = new ManualResetEventSlim();
-        var admitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task<bool> admission = Task.Run(() => supervisor.TryUseReadyClient(client =>
+
+        // Dedicated threads keep thread-pool starvation outside the admission/release window.
+        Task coordination = Task.Factory.StartNew(async () =>
         {
-            admitted.TrySetResult();
-            Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(5)), "Admission was not released.");
-            return ReferenceEquals(expected, client);
-        }));
-        Task<Task>? shutdown = null;
-        try
-        {
-            await admitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var attempting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            shutdown = Task.Factory.StartNew(() =>
+            var admitted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<bool> admission = Task.Factory.StartNew(() =>
+                supervisor.TryUseReadyClient(client =>
+                {
+                    admitted.TrySetResult();
+                    Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(5)), "Admission was not released.");
+                    return ReferenceEquals(expected, client);
+                }),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Task<Task>? shutdown = null;
+            try
             {
-                attempting.TrySetResult();
-                return dispose ? supervisor.DisposeAsync().AsTask()
-                    : supervisor.StopAsync(CancellationToken.None);
-            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            await attempting.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            // Shutdown cannot pass its synchronous state transition while admission owns the gate.
-            await Assert.ThrowsExactlyAsync<TimeoutException>(async () =>
+                Assert.IsTrue(
+                    admitted.Task.Wait(TimeSpan.FromSeconds(5)),
+                    "Admission did not enter the gate within 5s.");
+                var attempting = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                shutdown = Task.Factory.StartNew(() =>
+                {
+                    attempting.TrySetResult();
+                    return dispose ? supervisor.DisposeAsync().AsTask()
+                        : supervisor.StopAsync(CancellationToken.None);
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                Assert.IsTrue(
+                    attempting.Task.Wait(TimeSpan.FromSeconds(5)),
+                    "Shutdown did not start within 5s.");
+                // Shutdown cannot pass its synchronous state transition while admission owns the gate.
+                Assert.IsFalse(
+                    shutdown.Wait(TimeSpan.FromMilliseconds(200)),
+                    "Shutdown returned while admission still owned the state gate.");
+            }
+            finally
             {
-                await shutdown.WaitAsync(TimeSpan.FromMilliseconds(200));
-            });
-        }
-        finally
-        {
-            release.Set();
-            Assert.IsTrue(await admission.WaitAsync(TimeSpan.FromSeconds(5)));
-            if (shutdown is not null)
-                await shutdown.Unwrap().WaitAsync(TimeSpan.FromSeconds(5));
-        }
+                release.Set();
+                Assert.IsTrue(await admission.WaitAsync(TimeSpan.FromSeconds(5)));
+                if (shutdown is not null)
+                    await shutdown.Unwrap().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+            .Unwrap();
+
+        await coordination;
         Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
             throw new AssertFailedException("Retired client admitted a call.")));
         await AssertChildGoneAsync(supervisor);

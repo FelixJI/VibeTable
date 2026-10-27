@@ -10,6 +10,8 @@ const APP = (id, actionId = "open-app") => `nav-plugin-app-${id}/${actionId}`;
 // 真实侧栏。用面向用户的侧栏可达性取代原生 chrome 观察。
 export async function assertSidebarPluginReachable(page, recorder, checkName) {
   const entry = page.getByTestId(APP(A, "open-app"));
+  // 静态导航先于异步目录投影出现；应用入口可见才表示恢复后的插件可达。
+  await entry.waitFor({ state: "visible" });
   recorder.check(checkName, await page.getByTestId("nav-plugins").isVisible()
     && await entry.isVisible(), { });
 }

@@ -69,29 +69,36 @@ func (drainer *Drainer) Drain(
 			return report, nil
 		}
 		SortEnvelopes(pending)
+		report.Phase = "between_records"
+		if err := ctx.Err(); err != nil {
+			report.Anchor = drainer.ledger.Anchor()
+			return report, err
+		}
+		report.Phase = "append"
+		report.AppendCalls++
+		started = time.Now()
+		results, err := drainer.ledger.appendBatch(ctx, pending)
+		appendElapsed := time.Since(started)
+		report.AppendDuration += appendElapsed
+		report.AppendMaxDuration = max(report.AppendMaxDuration, appendElapsed)
+		if err != nil {
+			report.Anchor = drainer.ledger.Anchor()
+			return report, err
+		}
+		for _, result := range results {
+			if result.Duplicate {
+				report.Duplicates++
+			} else {
+				report.Appended++
+			}
+		}
+		// FULL commit precedes every acknowledgement; an unacknowledged tail replays as duplicates.
 		for _, envelope := range pending {
 			report.Phase = "between_records"
 			if err := ctx.Err(); err != nil {
 				report.Anchor = drainer.ledger.Anchor()
 				return report, err
 			}
-			report.Phase = "append"
-			report.AppendCalls++
-			started = time.Now()
-			result, err := drainer.ledger.Append(ctx, envelope)
-			appendElapsed := time.Since(started)
-			report.AppendDuration += appendElapsed
-			report.AppendMaxDuration = max(report.AppendMaxDuration, appendElapsed)
-			if err != nil {
-				report.Anchor = drainer.ledger.Anchor()
-				return report, err
-			}
-			if result.Duplicate {
-				report.Duplicates++
-			} else {
-				report.Appended++
-			}
-			// Sync happens inside Append, so failed source acknowledgement remains safely retryable.
 			report.Phase = "ack"
 			report.AcknowledgeCalls++
 			started = time.Now()
