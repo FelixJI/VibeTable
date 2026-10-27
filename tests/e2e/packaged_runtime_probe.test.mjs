@@ -46,7 +46,6 @@ test("first table setup activates the created table before waiting for its datas
       events.push("row-visible");
     },
     locator: (selector) => {
-      if (selector === "small") return { innerText: async () => tableId };
       assert.equal(selector, "button.table-select");
       return {
         click: async () => {
@@ -54,6 +53,10 @@ test("first table setup activates the created table before waiting for its datas
           events.push("select");
         },
       };
+    },
+    getAttribute: async (name) => {
+      assert.equal(name, "data-table-id");
+      return tableId;
     },
   };
   const page = {
@@ -66,10 +69,11 @@ test("first table setup activates the created table before waiting for its datas
           },
         };
       }
-      assert.equal(selector, ".table-row.table-item--active small");
+      assert.equal(selector, ".table-row.table-item--active");
       return {
-        innerText: async () => {
+        getAttribute: async (name) => {
           assert.equal(activated, true);
+          assert.equal(name, "data-table-id");
           events.push("identity");
           return tableId;
         },
@@ -122,7 +126,7 @@ test("created table activation rejects a different active identity", async () =>
   let waitedForSummary = false;
   const row = { locator: () => ({ click: async () => {} }) };
   const page = {
-    locator: () => ({ innerText: async () => "tbl_other" }),
+    locator: () => ({ getAttribute: async () => "tbl_other" }),
     getByTestId: () => ({
       waitFor: async () => { waitedForSummary = true; },
     }),

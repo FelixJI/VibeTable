@@ -90,6 +90,23 @@ describe("AppSidebar", () => {
     expect(wrapper.emitted("select")?.[0]).toEqual(["vt_t_01abc"]);
   });
 
+  it("exposes each row's physical collection id as a stable data attribute", () => {
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([
+      { collection: "vt_t_01abc", metadata: {} },
+      { collection: "vt_t_02def", metadata: { remark: "不应被猜测的备注字段" } },
+    ], { vt_t_01abc: "客户清单", vt_t_02def: "库存" });
+    workspace.selectTable("vt_t_02def");
+    const wrapper = mountSidebar();
+    // 侧栏可见说明行只承载备注/本机修改时间；物理 id 必须仍可被 E2E 从稳定
+    // 身份属性读取（回归：旧实现曾从说明行 small 文本读取 tbl_* 导致 E2E 超时）。
+    const rows = wrapper.findAll(".table-row");
+    expect(rows.map((row) => row.attributes("data-table-id"))).toEqual(["vt_t_01abc", "vt_t_02def"]);
+    const active = wrapper.get(".table-item--active");
+    expect(active.attributes("data-table-id")).toBe("vt_t_02def");
+    expect(active.text()).not.toContain("vt_t_02def");
+  });
+
   it("emits select with the collection name when a row is clicked", async () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });

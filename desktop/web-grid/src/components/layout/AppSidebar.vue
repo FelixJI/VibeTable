@@ -110,11 +110,13 @@ const collections = computed(() => {
       </NInput>
     </div>
     <div class="table-list" data-testid="sidebar-table-list">
+      <!-- 物理 id 以稳定 data 属性暴露给 E2E；可见说明行只承载备注或本机修改时间。 -->
       <div
         v-for="col in collections"
         :key="col.collection"
         class="table-row"
         :class="{ 'table-item--active': col.collection === workspace.currentTable }"
+        :data-table-id="col.collection"
       >
         <button
           type="button"

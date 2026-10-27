@@ -515,7 +515,7 @@ async function createEmptyTable(page, displayName) {
     has: page.getByTestId("sidebar-table-name").filter({ hasText: displayName }),
   }).last();
   await row.waitFor();
-  const tableId = (await row.locator("small").innerText()).trim();
+  const tableId = ((await row.getAttribute("data-table-id")) ?? "").trim();
   if (!tableId.startsWith("tbl_")) {
     throw new Error(`host did not expose an opaque table identity for ${displayName}: ${tableId}`);
   }
@@ -2028,7 +2028,7 @@ async function scenario02(page, recorder, _network, runtime) {
     .locator('[data-testid="sidebar-table-list"] .table-row')
     .evaluateAll(rows => rows.map(row => ({
       name: row.querySelector('[data-testid="sidebar-table-name"]')?.textContent?.trim() ?? "",
-      id: row.querySelector("small")?.textContent?.trim() ?? "",
+      id: row.dataset.tableId ?? "",
     })));
   const deleteRow = (displayName) => page
     .locator('[data-testid="sidebar-table-list"] .table-row')
@@ -2255,7 +2255,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await selectTable(page, "E2E Relation Target V2");
   const activeRowIds = await page
     .locator('[data-testid="sidebar-table-list"] .table-item--active')
-    .evaluateAll(rows => rows.map(row => row.querySelector("small")?.textContent?.trim()));
+    .evaluateAll(rows => rows.map(row => row.dataset.tableId ?? ""));
   recorder.check("02 a remaining table stays selectable through the real sidebar after reopen",
     activeRowIds.includes(target.tableId), { activeRowIds });
   await page.screenshot({
