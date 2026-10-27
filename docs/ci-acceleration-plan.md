@@ -24,18 +24,21 @@
 
 本轮把已有 race 调度扩为八个独立 runner，继续从 race 二进制发现完整测试集合，逐测试隔离执行，保留单 worker、超时和竞态检测。同时将 Python、contracts、tooling、.NET 和 Web 检查从 `core` 移到独立 `quality` lane；Go、开发构建及其 smoke 仍在 `core` 按原顺序执行。24 个必需阶段、全部产品 E2E、各栈覆盖率阈值和同一候选绑定不变。`required` 同时检查 CodeQL；任一 lane 缺失、失败或候选不一致仍拒绝通过。
 
-这会增加 runner 并发和少量重复初始化成本。实际节省还取决于 runner 排队及每个测试的耗时分布；上述历史数据不能当作修改后的实测结果。下一次 PR CI 应记录总墙钟及最长 lane，再与本表比较。
+这会增加 runner 并发和少量重复初始化成本。实际节省还取决于 runner 排队及每个测试的耗时分布；上述历史数据不能当作修改后的实测结果。
+
+[PR #539 首轮](https://github.com/FelixJI/VibeTable/actions/runs/40490699063)的八条 race lane 全部通过，最长 `race-d` 为 28 分 16 秒，另有约 6 分钟排队；`quality` 为 20 分 44 秒，`file-io` 为 25 分 4 秒，`prepare` 为 19 分 51 秒。整轮在 57 分 54 秒结束，但因 Go 差异覆盖率不足及 JSON 往返场景失败而未通过，且 `required` 提前拒绝聚合，因此该总时长不能作为完整门禁通过的提速验收。race 分片的执行时长已从历史最长 54–56 分钟缩短至约 28 分钟；仍需成功全流程和后续多次运行验证。
 
 ### 本轮故障定位
 
 - [0.5.7 合并后的 main CI](https://github.com/FelixJI/VibeTable/actions/runs/40473110935)在 `49-plugin-application-security` 的 `contrast-off` 失败：系统切换高对比度时 `GetForegroundWindow` 返回 0，测试辅助代码在还原系统设置之前要求 Host 取得前台。该操作使用 `SystemParametersInfo`，不发送鼠标键盘输入。修复将系统设置恢复与输入焦点前提分开，保留 Host 身份、受控 runner、原始设置还原与读回校验；真正的输入仍必须通过前台/归属检查。相关系统 API 见 [Microsoft 高对比度参数文档](https://learn.microsoft.com/en-us/windows/win32/winauto/high-contrast-parameter)。CD 因这次 main CI 失败而跳过，并非独立的发布失败。
 - [10 月 26 日 main CI](https://github.com/FelixJI/VibeTable/actions/runs/40255226840)的 S41 在工作区重开时等待 sidecar 就绪超时。该次关闭保护快照 551ms 完成，旧 sidecar 正常退出；新进程同步扫描 101 个文件，约 57 秒时仅完成 75 个，Host 在 60 秒截止。外部文件已经具有目标内容时，旧物化逻辑仍为新修订重复备份、复制和替换文件。本轮消除这段重复写入，同时保留仓储内容验证、同步索引、持久提交和回滚契约；不提前宣告就绪或放宽超时。优化后的托管 runner 表现仍需产品 E2E 实测。
 - `required` 原先没有依赖 CodeQL，存在扫描失败但唯一必需门禁通过的缺口。本轮将 CodeQL 加入依赖与结果检查，失败、取消或跳过均拒绝通过；这一缺口由编排代码和失败传播契约测试确认，不作为上述原生焦点失败的归因。
+- PR #539 首轮还暴露了 S04 JSON 往返场景的产品缺陷：导入与筛选均成功，但刷新布局时，共享表头映射遗漏了 JSON 的单个 `contains` 条件，输入框变空而权威筛选仍生效，随后退格无法清除实际筛选。Playwright trace 与真实 Tabulator 回归均确认这一状态不一致；修复只补充可无损往返的 JSON 文本条件映射，保留复杂分组、多选和其他字段条件的既有边界，不依赖延时或重跑。
 - [10 月 9 日 CD](https://github.com/FelixJI/VibeTable/actions/runs/37965714045)失败在当时的 `--require-closed-evidence` 发布证据门禁。当前入口已改为检查证据文档的一致性；[0.5.6 的 CD](https://github.com/FelixJI/VibeTable/actions/runs/40315429196)已完整成功，约 9 分 26 秒，其中发布与镜像同步约 8 分钟。本轮不删除这些现有校验，也不通过重跑或放宽条件掩盖历史失败。
 
 较早的 [S35 关闭超时](https://github.com/FelixJI/VibeTable/actions/runs/39903539985)只保留了 30 秒 HTTP 超时信息，诊断附件已不可用；另一次 [S41 请求捕获超时](https://github.com/FelixJI/VibeTable/actions/runs/39782966424)的现存日志也不足以定位。它们不能据此归为同一原因，也不计作本轮已验证修复。
 
-文件扫描的同机临时探针使用真实 `workspacev2.Open`、Kopia 和持久协调器：保存 1 个原文件并关闭工作区，离线新增 100 个文件，再重开并同步完成扫描。旧实现为 17.695 秒，最终实现为 14.410 秒，均完整发现 101 个文件。各运行一次，约 18.6% 的改善只提供方向性证据，不能证明托管 runner 的 60 秒超时已彻底消除，也不能替代 S41 产品验收。
+文件扫描的同机临时探针使用真实 `workspacev2.Open`、Kopia 和持久协调器：保存 1 个原文件并关闭工作区，离线新增 100 个文件，再重开并同步完成扫描。计时仅覆盖 `StartBackgroundWorkers` 的同步扫描，不含 `Open`；旧实现为 17.695 秒，最终实现为 14.410 秒，均完整发现 101 个文件。各运行一次，约 18.6% 的改善只提供方向性证据，不能证明托管 runner 的 60 秒超时已彻底消除，也不能替代 S41 产品验收。
 
 ### 早期基线
 

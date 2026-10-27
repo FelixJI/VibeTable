@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import { TabulatorFull } from "tabulator-tables";
+import { buildQuery } from "./queryAdapter";
+import { createPinia, setActivePinia } from "pinia";
+import { useViewQueryStore } from "@/stores/viewQueryStore";
+import type { ColumnSchema } from "@/contracts";
 import {
   applyDataSourceView,
   captureDataSourceView,
@@ -123,6 +127,52 @@ describe("dataSourceViewState", () => {
       expect(captureDataSourceView(grid).filters).toEqual([
         { field: "name", operator: "eq", value: "current-query" },
       ]);
+    } finally {
+      table.destroy?.(); element.remove(); vi.useRealTimers();
+    }
+  });
+
+  it.each(["8", "two words"])("restores and clears the JSON header query after a dataset refresh, value=%s", async value => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const schema: ColumnSchema[] = [{
+      name: "payload", title: "Payload", dataType: "json", editable: true, nullable: true,
+    }];
+    const table = new TabulatorFull(element, {
+      columns: [{ field: "payload", headerFilter: "input" }],
+      data: [{ payload: { value: 8 } }, { payload: { value: 9 } }],
+      sortMode: "remote", filterMode: "remote",
+    });
+    try {
+      const grid = createTabulatorDataSourceViewAdapter(table)!;
+      await vi.waitFor(() => expect(grid.initialized).toBe(true));
+      vi.useFakeTimers();
+      const input = element.querySelector<HTMLInputElement>(".tabulator-header-filter input")!;
+      input.value = value;
+      input.dispatchEvent(new KeyboardEvent("keyup", { key: "8", bubbles: true }));
+      await vi.advanceTimersByTimeAsync(300);
+      const query = buildQuery({ columns: schema, headerFilters: grid.getHeaderFilters!() });
+      expect(query.filters).toEqual([{ field: "payload", operator: "contains", value, logic: "AND" }]);
+      setActivePinia(createPinia());
+      const viewQuery = useViewQueryStore();
+      viewQuery.replace("json-table", {
+        layout: "table", search: "", sorts: [], filters: query.filters ?? [], visibleFields: ["payload"],
+      }, ["payload"], schema);
+      await table.setData([{ payload: { value: 8 } }]);
+      await applyDataSourceView(grid, {
+        layout: "table", search: "", columns: [{ name: "payload" }], sorts: [],
+        filters: query.filters ?? [],
+      }, schema);
+      const restoredInput = element.querySelector<HTMLInputElement>(".tabulator-header-filter input")!;
+      expect(input.isConnected).toBe(false);
+      expect(restoredInput.value).toBe(value);
+      restoredInput.value = "";
+      restoredInput.dispatchEvent(new KeyboardEvent("keyup", { key: "Backspace", bubbles: true }));
+      await vi.advanceTimersByTimeAsync(300);
+      const clearedQuery = buildQuery({ columns: schema, headerFilters: grid.getHeaderFilters!() });
+      expect(clearedQuery.filters).toEqual([]);
+      viewQuery.updateRuntime({ headerFilters: clearedQuery.filters ?? [], sorts: [], groups: [] });
+      expect(viewQuery.toQuery().filters).toEqual([]);
     } finally {
       table.destroy?.(); element.remove(); vi.useRealTimers();
     }
