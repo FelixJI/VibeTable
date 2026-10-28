@@ -1,4 +1,4 @@
-"""Measure one real packaged workspace lifecycle without performance thresholds."""
+"""Measure one real packaged workspace lifecycle and verify native preferences."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from tests.e2e.packaged_host_lifecycle import (
     WorkspaceLifecycleEvidence,
     WorkspaceOpenEvidence,
     opened_packaged_workspace,
+    run_lifecycle,
 )
 from tests.e2e.runtime_measurement_baseline import (
     BaselineErrorEvidence,
@@ -68,6 +69,7 @@ class PackagedWorkspaceReport(TypedDict):
 
 
 class PackagedLifecycleReport(TypedDict):
+    hostPreferences: dict[str, object]
     normalExitRequested: Literal[True]
     hostExitCode: Literal[0]
     membersAfterExit: list[dict[str, object]]
@@ -460,7 +462,9 @@ def _workspace_report(value: WorkspaceOpenEvidence) -> PackagedWorkspaceReport:
     }
 
 
-def _lifecycle_report(value: WorkspaceLifecycleEvidence) -> PackagedLifecycleReport:
+def _lifecycle_report(
+    value: WorkspaceLifecycleEvidence, host_preferences: dict[str, object]
+) -> PackagedLifecycleReport:
     if (
         value["status"] != "passed"
         or value["normalExitRequested"] is not True
@@ -475,7 +479,13 @@ def _lifecycle_report(value: WorkspaceLifecycleEvidence) -> PackagedLifecycleRep
             "HOST_LIFECYCLE_INCOMPLETE",
             "packaged Host did not complete a clean normal lifecycle",
         )
+    if host_preferences.get("ok") is not True:
+        raise BaselineMeasurementError(
+            "HOST_PREFERENCES_LIFECYCLE_FAILED",
+            json.dumps(host_preferences, ensure_ascii=False),
+        )
     return {
+        "hostPreferences": host_preferences,
         "normalExitRequested": True,
         "hostExitCode": 0,
         "membersAfterExit": [],
@@ -495,6 +505,7 @@ def _passed_report(
     first_table: FirstTableEvidence,
     rpc_latency: RpcLatencyEvidence,
     lifecycle: WorkspaceLifecycleEvidence,
+    host_preferences: dict[str, object],
 ) -> PackagedRuntimeBaselineReport:
     foundation = build_runtime_measurement_foundation_report(
         package_root=candidate.package_root,
@@ -535,7 +546,7 @@ def _passed_report(
         "firstTable": first_table,
         "rpcLatency": rpc_latency,
         "measurements": foundation["measurements"],
-        "lifecycle": _lifecycle_report(lifecycle),
+        "lifecycle": _lifecycle_report(lifecycle, host_preferences),
         "errors": [],
     }
 
@@ -649,6 +660,7 @@ def run_packaged_runtime_baseline(
                 first_table["tableId"],
             )
         phases = timeline.finish()
+        host_preferences = run_lifecycle(candidate.package_root, evidence_root / "host-preferences")
         passed = _passed_report(
             candidate=candidate,
             phases=phases,
@@ -657,6 +669,7 @@ def run_packaged_runtime_baseline(
             first_table=first_table,
             rpc_latency=rpc_latency,
             lifecycle=session.lifecycle,
+            host_preferences=host_preferences,
         )
         report: dict[str, object] = dict(passed)
     except Exception as exc:

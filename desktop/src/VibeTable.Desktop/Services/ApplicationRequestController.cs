@@ -1,20 +1,15 @@
 using System.Text.Json;
-using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 internal interface IApplicationRequestHost
 {
-    void ApplyPreferences(AppPreferences preferences);
-
-    void EnsureTrayIcon();
-
     void RequestExit();
 
     void Trace(string message);
 }
 
 /// <summary>
-/// Owns renderer-driven desktop preference, release update, and daily quote
+/// Owns renderer-driven release update and daily quote
 /// requests. WPF supplies only native lifecycle effects; validation, state,
 /// cancellation, result projection, and stable errors stay inside this seam.
 /// </summary>
@@ -22,20 +17,17 @@ internal sealed class ApplicationRequestController : IDisposable
 {
     private readonly IWebReplySink _reply;
     private readonly IApplicationRequestHost _host;
-    private readonly AppPreferencesService _preferences;
+    private readonly AppPreferencesUseCases _preferences;
     private readonly ReleaseUpdateCoordinator _updates;
     private readonly DailyQuoteHostClient _dailyQuotes;
-    private readonly HostAppearanceService _appearance;
     private readonly Func<CancellationToken> _sessionToken;
 
     public ApplicationRequestController(
         IWebReplySink reply,
         IApplicationRequestHost host,
-        AppPreferencesService preferences,
+        AppPreferencesUseCases preferences,
         ReleaseUpdateCoordinator updates,
         DailyQuoteHostClient dailyQuotes,
-        HostAppearanceService appearance,
-        AppPreferences initialPreferences,
         Func<CancellationToken>? sessionToken = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
@@ -43,18 +35,13 @@ internal sealed class ApplicationRequestController : IDisposable
         _preferences = preferences ?? throw new ArgumentNullException(nameof(preferences));
         _updates = updates ?? throw new ArgumentNullException(nameof(updates));
         _dailyQuotes = dailyQuotes ?? throw new ArgumentNullException(nameof(dailyQuotes));
-        _appearance = appearance ?? throw new ArgumentNullException(nameof(appearance));
-        CurrentPreferences = initialPreferences
-            ?? throw new ArgumentNullException(nameof(initialPreferences));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
     }
 
-    public AppPreferences CurrentPreferences { get; private set; }
+    public AppPreferences CurrentPreferences => _preferences.CurrentPreferences;
 
     public static bool Handles(string requestType)
         => requestType is
-            "appPreferences.get" or
-            "appPreferences.update" or
             "update.check" or
             "update.install" or
             "dailyQuote.fetch";
@@ -62,78 +49,11 @@ internal sealed class ApplicationRequestController : IDisposable
     public Task DispatchAsync(RoutedWebRequest request)
         => request.Type switch
         {
-            "appPreferences.get" => GetPreferencesAsync(request),
-            "appPreferences.update" => UpdatePreferencesAsync(request),
             "update.check" => CheckForReleaseUpdateAsync(request),
             "update.install" => InstallReleaseUpdateAsync(request),
             "dailyQuote.fetch" => FetchDailyQuoteAsync(request),
             _ => RejectUnknownAsync(request),
         };
-
-    private Task GetPreferencesAsync(RoutedWebRequest request)
-    {
-        if (!HasEmptyObjectPayload(request))
-        {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "The application preferences request is invalid.",
-                AppSettingsErrorCodes.BadPayload);
-            return Task.CompletedTask;
-        }
-        try
-        {
-            CurrentPreferences = _preferences.Read();
-            _host.ApplyPreferences(CurrentPreferences);
-            PostPreferences(request);
-        }
-        catch (Exception exception)
-        {
-            TraceUnexpectedFailure("Application preferences read", exception);
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "无法读取桌面应用设置。",
-                AppSettingsErrorCodes.ReadFailed);
-        }
-        return Task.CompletedTask;
-    }
-
-    private Task UpdatePreferencesAsync(RoutedWebRequest request)
-    {
-        // The generated reader rejects unknown/duplicate keys, present nulls,
-        // bad enums, oversized URLs, empty patches and any mixing of
-        // theme/adoptLegacyTheme before business state is touched.
-        if (!AppSettingsPatchReader.TryRead(request.Payload, out AppSettingsPreferencesPatch? patch)
-            || patch is null)
-        {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "The application preferences update is invalid.",
-                AppSettingsErrorCodes.BadPayload);
-            return Task.CompletedTask;
-        }
-        try
-        {
-            if (patch.MinimizeToTrayOnClose is true)
-                _host.EnsureTrayIcon();
-            CurrentPreferences = patch.HasAdoptLegacyTheme
-                ? _preferences.AdoptLegacyTheme(patch.AdoptLegacyTheme!)
-                : _preferences.Update(patch);
-            _appearance.SetPreferredTheme(CurrentPreferences.Theme);
-            _host.ApplyPreferences(CurrentPreferences);
-            PostPreferences(request);
-        }
-        catch (Exception exception)
-        {
-            TraceUnexpectedFailure("Application preferences update", exception);
-            // The store write may already have committed and appearance/native
-            // effects may have run; this failure never means "not committed".
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "无法保存桌面应用设置，请检查当前用户权限后重试。",
-                AppSettingsErrorCodes.WriteFailed);
-        }
-        return Task.CompletedTask;
-    }
 
     private async Task FetchDailyQuoteAsync(RoutedWebRequest request)
     {
@@ -190,7 +110,7 @@ internal sealed class ApplicationRequestController : IDisposable
         CancellationToken token = _sessionToken();
         try
         {
-            CurrentPreferences = _preferences.Read();
+            _preferences.RefreshCurrent();
             ReleaseUpdateCheckResult result = await _updates.CheckAsync(
                 CurrentPreferences,
                 token);
@@ -277,21 +197,6 @@ internal sealed class ApplicationRequestController : IDisposable
         }
     }
 
-    /// <summary>Result projection shared by get/update replies. The DTO and
-    /// its wire names are generated from the app-settings contract.</summary>
-    private void PostPreferences(RoutedWebRequest request)
-        => _reply.PostResponse(
-            request.Type,
-            request.RequestId,
-            new AppSettingsPreferences(
-                CurrentPreferences.MinimizeToTrayOnClose,
-                CurrentPreferences.StartWithWindows,
-                CurrentPreferences.UpdateProxy,
-                CurrentPreferences.CustomUpdateProxyUrl ?? "",
-                CurrentPreferences.Theme,
-                _appearance.Projection.Effective,
-                _appearance.Projection.HighContrast));
-
     private void TraceUnexpectedFailure(string operation, Exception exception)
         => _host.Trace($"{operation} failed; exception={exception.GetType().Name}");
 
@@ -312,16 +217,9 @@ internal sealed class ApplicationRequestController : IDisposable
 }
 
 internal sealed class ApplicationRequestHost(
-    Action<AppPreferences> applyPreferences,
-    Action ensureTrayIcon,
     Action requestExit,
     Action<string> trace) : IApplicationRequestHost
 {
-    public void ApplyPreferences(AppPreferences preferences)
-        => applyPreferences(preferences);
-
-    public void EnsureTrayIcon() => ensureTrayIcon();
-
     public void RequestExit() => requestExit();
 
     public void Trace(string message) => trace(message);

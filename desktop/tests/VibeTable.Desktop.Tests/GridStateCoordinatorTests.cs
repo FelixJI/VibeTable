@@ -68,6 +68,21 @@ public sealed class GridStateCoordinatorTests
         });
 
     [TestMethod]
+    public async Task ResetForTableChangeReleasesPendingDebounceAndCancelsItsWaiter()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, timeProvider: time);
+        Task<TablePage> waiting = coordinator.RequestQueryAsync("contracts", Query(), CancellationToken.None);
+        Assert.AreEqual(1, time.ScheduledTimerCount);
+        coordinator.ResetForTableChange();
+        coordinator.ResetForTableChange();
+        Assert.AreEqual(0, time.ScheduledTimerCount, "Retiring the coordinator must release the timer, not just cancel its token.");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(2)));
+        time.Advance(TimeSpan.FromSeconds(1));
+        Assert.IsEmpty(gateway.QueryWindowCalls);
+    }
+    [TestMethod]
     public void RequestQuery_Debounces_RapidRequests_IntoOne()
     {
         var gateway = new FakeTableRpcGateway();

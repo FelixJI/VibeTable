@@ -30,6 +30,23 @@ Workspace 内层方法继续由 `RPC_REGISTRY`＋Workspace policy 经原生成�
 或 string（保留真实 Host 的 null 输出），未知 code 保留诊断。畸形成功和畸形错误都拒为
 `AppSettingsProtocolError`、结果未知；不得推断写入未提交或自动重放，也不改变既有 timeout/取消语义。
 
+## 设置请求的协议与用例边界
+
+真实路径为 `HostRequestDispatcher` → 同步 `AppPreferencesRequestAdapter` →
+`AppPreferencesUseCases` → 既有 `AppPreferencesService`。adapter 使用生成的原始 JSON reader，
+持有方法/requestId、wire 错误映射与唯一终态尝试；坏 payload 不进入用例，未知方法不 fallback。
+回包器异常只记录异常类型，不补发第二终态。设置操作没有新增后台 Task 或无人观察的异步完成。
+
+用例直接接收 `AppSettingsPreferencesPatch`、返回 `AppSettingsPreferences`，只依赖设置 service、
+`IAppPreferencesEffects` 和初始状态；不依赖 Window/WebView2、JSON、reply sink、更新器或语录客户端。
+`CurrentPreferences` 由用例单独持有；更新检查只调用 `RefreshCurrent`，不附加原生效果。
+get 保持读取、更新 Current、应用原生效果、投影结果的顺序；update 保持托盘准备、持久化、更新
+Current、主题投影、原生应用、结果的顺序。legacy adoption 的 compare-unset 留在原 service；
+后置原生效果失败可能发生在写入成功之后，不能把 `WRITE_FAILED` 解释为未提交或重放命令。
+
+直接用例测试、真实 adapter 测试与 `AppSettingsContractConformanceTests` 分别验证业务、一次终态
+和原始 JSON 边界；打包 S12 验证真实窗口设置、主题和重开，不能仅以纯 mock 代替。
+
 ## 宿主 Product 调用与 Go owner
 
 无 Worker 插件页面使用 `CoreWebView2.FrameCreated` / `CoreWebView2Frame.WebMessageReceived`
@@ -75,6 +92,20 @@ HostSessionFileBroker 属于 runtime 的当前 Go binding，可在 Python 尚未
 第一次 null→client 附着保留既有 grant；真实 client、Sidecar 或 epoch 退休使旧 grant 失效，
 不能迁移到下一 client。短生命周期 gateway Dispose 不退休共享 broker。导出清理始终使用
 发起时捕获的 client 和 broker，不会启动或调用替换代际。
+
+`ProductTableComposition` 构造并拥有 Lazy table gateway、TableWorkspaceService、
+ProductWorkspaceController、GridStateCoordinator、WorkspaceRequestDispatcher 和 sidecar lifecycle，
+直接连接通知回调，无 nullable 回填。runtime、sessions/filter、authority、database-open registry
+由外层借入；组合入口不创建第二 supervisor，也不拥有这些外层资源。runtime 注册是构造最后一步，
+失败时仅回收本次取得的对象与订阅，原注册 owner 不受影响。
+
+MainWindow 保留真实 native adapter、插件/authority transition 与独立 realtime owner，并按原顺序调用
+组合入口的三个幂等释放阶段：realtime 后释放 sidecar lifecycle；authority/registry 后释放请求；
+插件/文档后退订 workspace/table 通知、停止 coordinator 查询并释放 workspace/table gateway。
+组合入口的 Dispose 补齐全部阶段；窗口后续初始化失败复用同一 OnClosed 回收顺序，允许尚未创建的
+对象为空。session request drain→runtime drain、captured binding/epoch 与目录发布门保持原 owner。
+`ProductTableCompositionTests` 在没有 Window/WebView2 的情况下构造真实子图并验证通知、失败回收
+与阶段释放；窗口产品路径仍由同一候选的完整资格检查覆盖。
 
 MainWindow 在 workspace activation 的 Verify 内完成 Go/Product/Table/Document gateway 安装。
 首次 Python 附着不重建这些 gateway、不推进 authority transition、不 resetGrid；插件执行

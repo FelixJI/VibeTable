@@ -143,6 +143,7 @@ internal sealed class HostRequestDispatcher
         HostLifecycleRequestController lifecycle,
         WorkspaceProductController workspaceProduct,
         ApplicationRequestController application,
+        AppPreferencesRequestAdapter appPreferences,
         DocumentRequestController documents,
         NativeProductFileRequestController nativeFiles,
         LegacyLayoutRequestController legacyLayouts,
@@ -160,6 +161,7 @@ internal sealed class HostRequestDispatcher
         ArgumentNullException.ThrowIfNull(lifecycle);
         ArgumentNullException.ThrowIfNull(workspaceProduct);
         ArgumentNullException.ThrowIfNull(application);
+        ArgumentNullException.ThrowIfNull(appPreferences);
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(nativeFiles);
         ArgumentNullException.ThrowIfNull(legacyLayouts);
@@ -177,6 +179,7 @@ internal sealed class HostRequestDispatcher
             new(WorkspaceProductController.Handles,
                 request => _ = workspaceProduct.DispatchAsync(request)),
             new(ClipboardRequestController.Handles, request => _ = clipboard.DispatchAsync(request)),
+            new(AppPreferencesRequestAdapter.Handles, appPreferences.Dispatch),
             new(ApplicationRequestController.Handles,
                 request => _ = application.DispatchAsync(request)),
             new(DeviceSettingsRequestController.Handles,
