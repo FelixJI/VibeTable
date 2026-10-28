@@ -278,9 +278,8 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
   <div class="plugin-center">
     <header class="center-header">
       <div>
-        <span class="section-code">PROJECT / PLUGINS</span>
         <h1>插件中心</h1>
-        <p>安装、权限和运行状态均限定在当前项目。</p>
+        <p>{{ t("pluginCenter.subtitle") }}</p>
       </div>
       <div class="install-source">
         <button type="button" class="quiet-button" data-testid="plugin-refresh" :disabled="store.busy" @click="safely(() => service.list())">刷新目录</button>
@@ -293,7 +292,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
           @keyup.enter="inspectGitHubInstall"
         />
         <button
-          class="install-button"
+          class="quiet-button"
           type="button"
           data-testid="plugin-install-github"
           :disabled="!store.projectContextReady || store.busy || !githubRepository.trim()"
@@ -305,7 +304,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         <button class="install-button" type="button" data-testid="plugin-install-package" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:package')">
           <NIcon :size="15"><Upload /></NIcon> 选择 .vtplugin
         </button>
-        <button class="install-button" type="button" data-testid="plugin-install-folder" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:folder')">
+        <button class="quiet-button" type="button" data-testid="plugin-install-folder" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:folder')">
           <NIcon :size="15"><PackageOpen /></NIcon> 加载本地文件夹
         </button>
       </div>
@@ -322,25 +321,25 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 
     <section v-if="store.installPlan" class="install-plan" data-testid="plugin-install-plan">
       <div class="plan-title">
-        <span>{{ store.installPlan.blockingReasons?.length ? "INSTALL PLAN / BLOCKED" : "INSTALL PLAN / READY" }}</span>
+        <span>{{ store.installPlan.blockingReasons?.length ? t("pluginCenter.plan.blocked") : t("pluginCenter.plan.ready") }}</span>
         <strong>{{ localize(store.installPlan.manifest.displayName, store.installPlan.manifest.pluginId) }} <code>{{ store.installPlan.manifest.version }}</code></strong>
       </div>
-      <div><small>PACKAGE HASH</small><code>{{ store.installPlan.packageHash }}</code></div>
-      <div><small>PERMISSIONS</small><p>{{ permissionDeclarations(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
+      <div><small>{{ t("pluginCenter.plan.packageHash") }}</small><code>{{ store.installPlan.packageHash }}</code></div>
+      <div><small>{{ t("pluginCenter.plan.permissions") }}</small><p>{{ permissionDeclarations(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
       <div v-if="upgradePermissionDelta">
-        <small>PERMISSION CHANGES</small>
+        <small>{{ t("pluginCenter.plan.permissionChanges") }}</small>
         <p v-if="!upgradePermissionDelta.added.length && !upgradePermissionDelta.removed.length">本次升级权限无变化。</p>
         <ul v-else data-testid="plugin-upgrade-permission-delta">
           <li v-for="item in upgradePermissionDelta.added" :key="`+${item}`">+ {{ item }}</li>
           <li v-for="item in upgradePermissionDelta.removed" :key="`-${item}`">- {{ item }}</li>
         </ul>
       </div>
-      <div><small>COMPATIBILITY</small><p>{{ compatibility(store.installPlan.manifest.compatibility) }}</p></div>
-      <div><small>ACTIONS / RISK</small><p>{{ store.installPlan.manifest.actions.map((action) => `${localize(action.displayName, action.actionId)}:${riskLabel(action.risk)}`).join(' · ') || '无动作' }}</p></div>
+      <div><small>{{ t("pluginCenter.plan.compatibility") }}</small><p>{{ compatibility(store.installPlan.manifest.compatibility) }}</p></div>
+      <div><small>{{ t("pluginCenter.plan.actions") }}</small><p>{{ store.installPlan.manifest.actions.map((action) => `${localize(action.displayName, action.actionId)}:${riskLabel(action.risk)}`).join(' · ') || '无动作' }}</p></div>
       <div v-if="store.installPlan.blockingReasons?.length" role="alert" data-testid="plugin-install-blocked">
         此插件需要迁移后才能安装：{{ store.installPlan.blockingReasons.map(blockerLabel).join(' · ') }}
       </div>
-      <div><small>PROJECT REVISION</small><code>{{ store.installPlan.projectRevision }}</code></div>
+      <div><small>{{ t("pluginCenter.plan.workspaceRevision") }}</small><code>{{ store.installPlan.projectRevision }}</code></div>
       <div class="plan-actions">
         <button data-testid="plugin-install-cancel" type="button" class="quiet-button" @click="cancelPlan">取消</button>
         <span
@@ -360,7 +359,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 
     <div class="center-grid">
       <aside class="catalog" aria-label="已安装插件">
-        <div class="catalog-caption"><span>INSTALLED</span><b>{{ store.plugins.length }}</b></div>
+        <div class="catalog-caption"><span>{{ t("pluginCenter.catalog.installed") }}</span><b>{{ store.plugins.length }}</b></div>
         <button
           v-for="item in store.plugins"
           :key="item.pluginId"
@@ -374,7 +373,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
           <span class="plugin-row-copy"><strong>{{ displayName(item) }}</strong><code>{{ item.pluginId }} · v{{ item.version }}</code></span>
           <i :data-health="item.status"></i>
         </button>
-        <div v-if="!store.plugins.length" class="empty-catalog"><PackageOpen :size="24" /><strong>当前项目尚未安装插件</strong><span>先检查 `.vtplugin` 包或本地文件夹。</span></div>
+        <div v-if="!store.plugins.length" class="empty-catalog"><PackageOpen :size="24" /><strong>{{ t("pluginCenter.catalog.empty") }}</strong><span>先检查 `.vtplugin` 包或本地文件夹。</span></div>
       </aside>
 
       <main v-if="plugin" class="plugin-detail">
@@ -386,10 +385,10 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         </div>
 
         <div class="status-strip" :data-health="plugin.status">
-          <div><span>PROJECT STATE</span><strong>{{ statusLabel(plugin.status) }}</strong></div>
-          <div><span>VERSION</span><strong>{{ plugin.version }}</strong></div>
-          <div><span>SOURCE</span><strong>{{ plugin.sourceType === 'local-folder' ? '本地文件夹' : '离线包' }}</strong></div>
-          <div><span>REVISION</span><strong>#{{ plugin.revision }}</strong></div>
+          <div><span>{{ t("pluginCenter.status.state") }}</span><strong>{{ statusLabel(plugin.status) }}</strong></div>
+          <div><span>{{ t("pluginCenter.status.version") }}</span><strong>{{ plugin.version }}</strong></div>
+          <div><span>{{ t("pluginCenter.status.source") }}</span><strong>{{ plugin.sourceType === 'local-folder' ? '本地文件夹' : '离线包' }}</strong></div>
+          <div><span>{{ t("pluginCenter.status.revision") }}</span><strong>#{{ plugin.revision }}</strong></div>
         </div>
 
         <div v-if="plugin.sourceChanged" data-testid="plugin-source-changed" class="global-error" role="status">
@@ -397,8 +396,8 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         </div>
 
         <section class="plugin-preservation">
-          <button data-testid="plugin-preservation-export" type="button" :disabled="pluginPreservationBusy || !plugin.installationId" @click="exportPlugin">保存插件原包与设置</button>
-          <button v-if="pluginPreservationBusy" type="button" @click="cancelPluginPreservation">取消保全</button>
+          <button data-testid="plugin-preservation-export" type="button" class="quiet-button" :disabled="pluginPreservationBusy || !plugin.installationId" @click="exportPlugin">保存插件原包与设置</button>
+          <button v-if="pluginPreservationBusy" type="button" class="quiet-button" @click="cancelPluginPreservation">取消保全</button>
           <p role="status">{{ pluginPreservationStatus }}</p>
         </section>
         <section v-if="blockingReasons(plugin).length" class="blockers">
@@ -407,12 +406,12 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         </section>
 
         <section class="detail-section package-facts">
-          <header><span>PACKAGE / CAPABILITIES</span><h3>包与权限</h3></header>
+          <header><h3>包与权限</h3></header>
           <dl><div><dt>包哈希</dt><dd><code>{{ plugin.packageHash }}</code></dd></div><div><dt>权限声明</dt><dd><span v-for="permission in permissions(plugin)" :key="permission" class="permission-chip">{{ permission }}</span><em v-if="!permissions(plugin).length">无额外权限</em></dd></div></dl>
         </section>
 
         <section class="detail-section audit-log">
-          <header><span>TASKS / AUDIT</span><h3>任务摘要与审计</h3></header>
+          <header><h3>任务摘要与审计</h3></header>
           <div v-if="store.activeTask?.pluginId === plugin.pluginId" class="task-summary"><strong>{{ store.activeTask.actionId }}</strong><span>{{ store.activeTask.state }}</span><code>{{ store.activeTask.runId }}</code></div>
           <article v-for="event in auditEvents" :key="event.eventId">
             <time>{{ formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
@@ -421,7 +420,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         </section>
 
         <section class="detail-section">
-          <header><span>ACTIONS / RISK</span><h3>插件动作</h3></header>
+          <header><h3>插件动作</h3></header>
           <article v-for="action in plugin.manifest.actions" :key="action.actionId" class="action-row">
             <div><strong>{{ localize(action.displayName, action.actionId) }}</strong><code>{{ action.actionId }}</code></div>
             <span class="risk-chip" :data-risk="action.risk">{{ riskLabel(action.risk) }}</span>
@@ -439,7 +438,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         </footer>
       </main>
 
-      <main v-else class="no-selection"><Box :size="32" /><h2>选择一个插件查看项目状态</h2></main>
+      <main v-else class="no-selection"><Box :size="32" /><h2>{{ t("pluginCenter.detail.empty") }}</h2></main>
     </div>
 
   </div>
@@ -448,8 +447,9 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 <style scoped>
 .plugin-center { position: relative; display: flex; height: 100%; flex-direction: column; overflow: hidden; color: var(--vt-fg); background: var(--vt-bg-subtle); }
 .center-header { display: flex; min-height: 86px; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
-.section-code, .catalog-caption span, .detail-section header > span, .install-plan small { color: var(--vt-fg-muted); font: 650 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
-.center-header h1 { margin: 4px 0 1px; font-size: 20px; letter-spacing: -.02em; }
+.section-code { color: var(--vt-fg-muted); font: 550 10px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.catalog-caption span, .install-plan small { color: var(--vt-fg-muted); font-size: 10px; font-weight: 600; }
+.center-header h1 { margin: 0 0 1px; font-size: 20px; letter-spacing: -.02em; }
 .center-header p { margin: 0; color: var(--vt-fg-muted); font-size: 12px; }
 .install-source { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .install-source input { width: 260px; height: 32px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); }
@@ -460,16 +460,18 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 .install-plan { display: grid; grid-template-columns: 1.2fr 1fr 1.4fr .8fr auto; gap: 16px; min-width: 0; align-items: center; padding: 11px 22px; border-bottom: 1px solid var(--vt-color-warning); background: color-mix(in srgb, var(--vt-color-warning) 7%, var(--vt-bg)); }
 .install-plan { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
 .install-plan .plan-title, .install-plan .plan-actions { grid-column: span 2; }
-.install-plan .plan-title { display: grid; gap: 3px; }.install-plan .plan-title > span { color: var(--vt-color-warning); font: 650 10px ui-monospace, monospace; }.install-plan p { margin: 2px 0 0; }.install-plan ul { margin: 0; color: var(--vt-color-danger); }.plan-actions { display: flex; gap: 6px; }
+.install-plan .plan-title { display: grid; gap: 3px; }.install-plan .plan-title > span { color: var(--vt-color-warning); font-size: 10px; font-weight: 650; }.install-plan p { margin: 2px 0 0; }.install-plan ul { margin: 0; color: var(--vt-color-danger); }.plan-actions { display: flex; gap: 6px; }
 .install-plan > div, .install-plan code, .install-plan p { min-width: 0; overflow-wrap: anywhere; }
 .center-grid { display: grid; grid-template-columns: 252px minmax(0, 1fr); flex: 1 1 auto; min-height: 0; }
 .catalog { overflow: auto; border-right: 1px solid var(--vt-border); background: var(--vt-bg); }
-.catalog-caption { display: flex; align-items: center; justify-content: space-between; height: 37px; padding: 0 13px; border-bottom: 1px solid var(--vt-border); }.catalog-caption b { font: 600 11px ui-monospace, monospace; }
+.catalog-caption { display: flex; align-items: center; justify-content: space-between; height: 37px; padding: 0 13px; border-bottom: 1px solid var(--vt-border); }.catalog-caption b { color: var(--vt-fg-muted); font-size: 11px; font-weight: 600; }
 .plugin-row { display: grid; grid-template-columns: 30px 1fr 8px; gap: 8px; width: 100%; align-items: center; padding: 10px 11px; color: var(--vt-fg); text-align: left; border: 0; border-bottom: 1px solid var(--vt-border); background: transparent; cursor: pointer; }.plugin-row:hover { background: var(--vt-bg-subtle); }.plugin-row.active { background: var(--vt-color-primary-50); box-shadow: inset 3px 0 var(--vt-color-primary-500); }.package-glyph { display: grid; width: 28px; height: 28px; place-items: center; color: var(--vt-color-primary-500); border: 1px solid var(--vt-border); border-radius: 5px; background: var(--vt-bg); }.plugin-row-copy { display: grid; min-width: 0; }.plugin-row-copy code { overflow: hidden; color: var(--vt-fg-muted); font-size: 9px; text-overflow: ellipsis; }.plugin-row > i { width: 7px; height: 7px; border-radius: 50%; background: var(--vt-color-success); }.plugin-row > i[data-health="disabled"] { background: var(--vt-color-warning); }.plugin-row > i[data-health="error"] { background: var(--vt-color-danger); }
 .empty-catalog, .no-selection { display: grid; place-items: center; align-content: center; gap: 7px; height: 220px; padding: 20px; color: var(--vt-fg-muted); text-align: center; }.empty-catalog span { font-size: 11px; }
 .plugin-detail { overflow: auto; padding: 18px 22px 30px; }.identity-line { display: flex; align-items: flex-start; justify-content: space-between; }.identity-line h2 { margin: 4px 0 12px; font-size: 21px; }.toggle-button { display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 10px; color: var(--vt-color-danger); border: 1px solid currentColor; border-radius: 4px; background: transparent; cursor: pointer; }.toggle-button.enabled { color: var(--vt-color-success); }
-.status-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--vt-border); border-left: 3px solid var(--vt-color-success); background: var(--vt-bg); }.status-strip[data-health="error"] { border-left-color: var(--vt-color-danger); }.status-strip[data-health="disabled"] { border-left-color: var(--vt-color-warning); }.status-strip div { display: grid; gap: 2px; padding: 8px 11px; border-right: 1px solid var(--vt-border); }.status-strip span { color: var(--vt-fg-muted); font: 600 9px ui-monospace, monospace; letter-spacing: .08em; }.status-strip strong { font-size: 12px; }
-.blockers { margin-top: 12px; color: var(--vt-color-danger); border: 1px solid color-mix(in srgb, var(--vt-color-danger) 30%, var(--vt-border)); background: color-mix(in srgb, var(--vt-color-danger) 5%, var(--vt-bg)); }.blockers header { display: flex; gap: 7px; align-items: center; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger) 18%, var(--vt-border)); }.blockers header span { margin-left: auto; font-size: 10px; }.blockers ul { display: grid; gap: 4px; margin: 8px 10px 9px; padding-left: 19px; }
+.status-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--vt-border); border-left: 3px solid var(--vt-color-success); background: var(--vt-bg); }.status-strip[data-health="error"] { border-left-color: var(--vt-color-danger); }.status-strip[data-health="disabled"] { border-left-color: var(--vt-color-warning); }.status-strip div { display: grid; gap: 2px; padding: 8px 11px; border-right: 1px solid var(--vt-border); }.status-strip span { color: var(--vt-fg-muted); font-size: 10px; font-weight: 600; }.status-strip strong { font-size: 12px; }
+.blockers { margin-top: 12px; color: var(--vt-color-danger); border: 1px solid color-mix(in srgb, var(--vt-color-danger) 30%, var(--vt-border)); background: color-mix(in srgb, var(--vt-color-danger) 5%, var(--vt-bg)); }
+.plugin-preservation { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
+.plugin-preservation > p { flex: 1 1 160px; min-width: 0; margin: 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }.blockers header { display: flex; gap: 7px; align-items: center; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger) 18%, var(--vt-border)); }.blockers header span { margin-left: auto; font-size: 10px; }.blockers ul { display: grid; gap: 4px; margin: 8px 10px 9px; padding-left: 19px; }
 .detail-section { margin-top: 14px; border: 1px solid var(--vt-border); background: var(--vt-bg); }.detail-section > header { display: flex; align-items: baseline; gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--vt-border); }.detail-section h3 { margin: 0; font-size: 13px; }.package-facts dl { margin: 0; }.package-facts dl > div { display: grid; grid-template-columns: 115px minmax(0, 1fr); padding: 8px 11px; border-bottom: 1px solid var(--vt-border); }.package-facts dt { color: var(--vt-fg-muted); }.package-facts dd { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; margin: 0; }.package-facts dd code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }.permission-chip, .risk-chip { max-width: 100%; padding: 2px 6px; overflow-wrap: anywhere; color: var(--vt-fg-secondary); border: 1px solid var(--vt-border); border-radius: 999px; font: 550 10px ui-monospace, monospace; background: var(--vt-bg-subtle); }
 .audit-log article, .task-summary { display: grid; grid-template-columns: 145px 1fr 100px minmax(180px, 1fr) auto; gap: 10px; align-items: center; padding: 7px 11px; border-bottom: 1px solid var(--vt-border); }.audit-log time, .audit-log code, .audit-log small { color: var(--vt-fg-muted); font-size: 9px; }.audit-log span[data-outcome="failed"], .audit-log span[data-outcome="pending-cleanup"] { color: var(--vt-color-danger); }.task-summary { background: var(--vt-bg-subtle); }
 .action-row { display: grid; grid-template-columns: minmax(140px, .7fr) 60px 1fr auto; gap: 10px; align-items: center; min-height: 50px; padding: 7px 10px; border-bottom: 1px solid var(--vt-border); }.action-row > div { display: grid; }.action-row p { margin: 0; color: var(--vt-fg-muted); }.risk-chip[data-risk="write"] { color: var(--vt-color-warning); }.risk-chip[data-risk="destructive"] { color: var(--vt-color-danger); }.run-button, .quiet-button, .danger-text-button { display: inline-flex; min-height: 29px; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.run-button:disabled, .quiet-button:disabled { opacity: .45; cursor: default; }.empty-line { margin: 0; padding: 13px; color: var(--vt-fg-muted); }

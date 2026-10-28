@@ -29,7 +29,6 @@ const emit = defineEmits<{
   <section class="plugin-app-viewport" data-testid="plugin-app-viewport" role="region" :aria-label="title">
     <header class="plugin-app-bar">
       <div class="plugin-app-title">
-        <span>PLUGIN APP</span>
         <strong>{{ title }}</strong>
       </div>
       <div class="plugin-app-actions">
@@ -59,8 +58,7 @@ const emit = defineEmits<{
 .plugin-app-viewport { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; background: var(--vt-bg); }
 .plugin-app-bar { display: flex; flex: 0 0 40px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 .plugin-app-title { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
-.plugin-app-title span { color: var(--vt-color-primary-500); font: 600 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
-.plugin-app-title strong { overflow: hidden; font-size: var(--vt-font-body); text-overflow: ellipsis; white-space: nowrap; }
+.plugin-app-title strong { overflow: hidden; font-size: var(--vt-font-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .plugin-app-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 .plugin-app-actions button { min-height: 26px; padding: 0 10px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: var(--vt-radius-sm); background: var(--vt-bg); cursor: pointer; }
 .plugin-app-actions button:hover { background: var(--vt-bg-sunken); }

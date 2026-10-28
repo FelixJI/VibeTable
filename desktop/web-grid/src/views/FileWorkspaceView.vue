@@ -129,6 +129,12 @@ const operatorOptions = computed<readonly FileDocumentFilter["operator"][]>(() =
   if (filterField.value === "status") return ["eq"];
   return ["eq", "contains"];
 });
+const operatorSelectOptions = computed(() =>
+  operatorOptions.value.map((value) => ({ value, label: t(`files.filter.operator.${value}`) })));
+const operatorLabel = (operator: FileDocumentFilter["operator"]): string =>
+  t(`files.filter.operator.${operator}`);
+const fieldLabel = (field: FileDocumentFilterField): string =>
+  fieldOptions.find((option) => option.value === field)?.label ?? field;
 
 function currentQuery(cursor: string | null = null): FileDocumentQuery {
   const search = store.query.trim();
@@ -366,11 +372,11 @@ watch(
         { value: 'and', label: t('files.filter.and') }, { value: 'or', label: t('files.filter.or') },
       ]" />
       <NSelect v-model:value="filterField" size="small" data-testid="file-filter-field" :options="fieldOptions" />
-      <NSelect v-model:value="filterOperator" size="small" data-testid="file-filter-operator" :options="operatorOptions.map((value) => ({ value, label: value }))" />
+      <NSelect v-model:value="filterOperator" size="small" data-testid="file-filter-operator" :options="operatorSelectOptions" />
       <NInput v-model:value="filterValue" size="small" data-testid="file-filter-value" :placeholder="t('files.filter.value')" @keyup.enter="addMetadataFilter" />
       <NButton size="small" data-testid="file-filter-add" @click="addMetadataFilter">{{ t("files.filter.add") }}</NButton>
       <button v-for="(filter, index) in metadataFilters" :key="`${filter.field}-${index}`" type="button" class="filter-chip" :data-testid="`file-filter-chip-${index}`" @click="removeMetadataFilter(index)">
-        {{ filter.field }} {{ filter.operator }} {{ String(filter.value) }} ×
+        {{ fieldLabel(filter.field) }} {{ operatorLabel(filter.operator) }} {{ String(filter.value) }} ×
       </button>
     </div>
 

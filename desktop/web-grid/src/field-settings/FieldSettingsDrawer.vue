@@ -45,7 +45,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { formatNumberDisplay } from "@/number/numberDisplay";
 import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { formatDashboardDate } from "@/dashboard/format";
-import { getLocale } from "@/i18n";
+import { getLocale, t } from "@/i18n";
 
 const emit = defineEmits<{
   close: [];
@@ -858,7 +858,6 @@ function isTextual(type: LogicalTypeV2): boolean {
       <template #header>
         <div class="drawer-heading">
           <div>
-            <span class="eyebrow">SCHEMA V2</span>
             <strong>{{ store.isExisting ? "字段设置" : "新增字段" }}</strong>
           </div>
           <NTag size="small" :bordered="false">
@@ -1091,7 +1090,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <section v-if="numericDisplayApplicable" class="settings-section">
                   <div class="section-title"><div>
                     <strong>{{ store.draft.logicalType === 'number' ? '数字显示' : '结果数字显示' }}</strong>
-                    <small>{{ numericDisplayHint }}；只改变呈现，不改写原始值，排序、筛选、导出与计算仍用原值</small>
+                    <small>{{ numericDisplayHint }}；排序、筛选、导出与计算仍用原值</small>
                   </div></div>
                   <div class="two-column">
                     <label><span>预设</span><NSelect
@@ -1721,7 +1720,6 @@ function isTextual(type: LogicalTypeV2): boolean {
             <section v-if="store.plan" ref="planCard" class="plan-card" data-testid="field-change-plan">
               <div class="section-title">
                 <div>
-                  <span class="eyebrow">FROZEN PLAN</span>
                   <strong>{{ store.plan.intent.action }} · {{ store.plan.classes.join(" / ") }}</strong>
                   <small data-testid="field-plan-expiry">有效期至 {{ planExpiresAtLocal }}（本地时区）</small>
                 </div>
@@ -1803,7 +1801,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 
             <section v-if="store.migration || store.phase === 'migrating'" class="migration-card">
               <div class="section-title">
-                <div><span class="eyebrow">MIGRATION</span><strong>{{ store.migration?.phase ?? "planned" }}</strong></div>
+                <div><strong>{{ t("pluginMigration.label") }} · {{ store.migration?.phase ?? "planned" }}</strong></div>
                 <NTag size="small">{{ store.migration?.processed ?? 0 }} / {{ store.migration?.total ?? 0 }}</NTag>
               </div>
               <NProgress type="line" :percentage="progress" :processing="store.phase === 'migrating'" />
@@ -1834,7 +1832,6 @@ function isTextual(type: LogicalTypeV2): boolean {
       <template #footer>
         <div class="drawer-footer">
           <span v-if="store.dirty" class="dirty-dot">● 有未保存更改</span>
-          <span v-else>字段身份由 Sidecar 管理</span>
           <NSpace>
             <NButton data-testid="field-close-button" @click="requestClose">关闭</NButton>
             <NButton
@@ -1869,7 +1866,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 .drawer-heading>div:not(.n-tag),.section-title>div:not(.n-tag):not(.n-switch),.recycle-head>div:not(.n-tag):not(.n-switch),.switch-row>div:not(.n-tag):not(.n-switch) {
   display:flex;flex-direction:column;gap:3px;
 }
-.drawer-heading strong{font-size:18px}.eyebrow{font-size:10px;letter-spacing:.14em;color:var(--vt-fg-accent);font-weight:800}
+.drawer-heading strong{font-size:18px}
 small{color:var(--vt-fg-muted);line-height:1.4}.top-alert{margin-bottom:14px}
 .loading-card,.identity-card,.settings-section,.plan-card,.migration-card,.recycle-item {
   border:1px solid var(--vt-border);border-radius:14px;background:var(--vt-bg-elevated);
@@ -1890,6 +1887,7 @@ label{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:650}
 .recycle-head{margin:14px 0}.recycle-item{display:flex;align-items:center;justify-content:space-between;padding:12px;margin-bottom:8px}
 .recycle-item>div{display:flex;align-items:center;gap:10px}.recycle-item span{display:flex;flex-direction:column}
 .drawer-footer{width:100%;font-size:12px;color:var(--vt-fg-muted)}.dirty-dot{color:#d97706}
+.drawer-footer>:deep(.n-space){margin-left:auto}
 .close-confirm{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:14px;border:1px solid color-mix(in srgb,#d97706 45%,var(--vt-border));border-radius:14px;background:color-mix(in srgb,#d97706 7%,var(--vt-bg-elevated))}
 .close-confirm>div{display:flex;flex-direction:column;gap:3px}
 .name-duplicate-hint{color:#d97706}

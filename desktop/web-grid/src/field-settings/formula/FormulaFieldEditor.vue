@@ -573,7 +573,6 @@ function formatPreviewValue(value: unknown): string {
       <div class="editor-summary">
         <span class="editor-mark"><Braces :size="18" /></span>
         <div>
-          <span class="eyebrow">FORMULA WORKBENCH</span>
           <strong>可视化公式</strong>
           <small data-testid="formula-summary-source">
             {{ summarySource || (value.source ? "正在恢复公式文本…" : "尚未配置公式") }}
@@ -883,7 +882,6 @@ function formatPreviewValue(value: unknown): string {
   background: color-mix(in srgb, #8b5cf6 12%, transparent);
 }
 label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 650; }
-.eyebrow { color: #7c3aed; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
 small,.validating { color: var(--vt-fg-muted); }
 @media(max-width:720px) {
   .insert-grid,.aggregate-card,.direct-card,.source-card { grid-template-columns: 1fr; }

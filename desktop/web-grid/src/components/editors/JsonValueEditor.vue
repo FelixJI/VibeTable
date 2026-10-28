@@ -44,10 +44,6 @@ function format(value: unknown): string {
 
 <template>
   <div class="json-editor" :class="{ invalid: parseError || serverError }">
-    <div class="json-editor__bar">
-      <span>JSON</span>
-      <small>结构化值 · 保存时保持类型</small>
-    </div>
     <textarea
       :value="text"
       :readonly="readonly"
@@ -69,7 +65,6 @@ function format(value: unknown): string {
 <style scoped>
 .json-editor { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-sunken); }
 .json-editor.invalid { border-color: var(--vt-color-danger); }
-.json-editor__bar { display: flex; justify-content: space-between; padding: 6px 9px; border-bottom: 1px solid var(--vt-border); color: var(--vt-fg-muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
 textarea { box-sizing: border-box; width: 100%; min-height: 132px; padding: 10px; border: 0; outline: 0; color: var(--vt-fg); background: transparent; font: 12px/1.55 Consolas, "SFMono-Regular", monospace; resize: vertical; }
 p { margin: 0; padding: 6px 9px; border-top: 1px solid color-mix(in srgb, var(--vt-color-danger) 40%, var(--vt-border)); color: var(--vt-color-danger); font-size: 11px; }
 code { margin-right: 6px; }

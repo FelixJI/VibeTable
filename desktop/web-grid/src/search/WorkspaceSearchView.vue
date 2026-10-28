@@ -117,10 +117,9 @@ onMounted(() => void search.refreshStatus());
 
 <template>
   <main class="search-workspace" data-testid="workspace-search-view">
-    <header class="search-hero">
-      <div>
-        <p class="eyebrow">{{ t("workspaceSearch.eyebrow") }}</p>
-        <h1>{{ t("workspaceSearch.title") }}</h1>
+    <header class="search-header">
+      <div class="search-intro">
+        <h1 class="sr-only">{{ t("workspaceSearch.title") }}</h1>
         <p>{{ t("workspaceSearch.description") }}</p>
       </div>
       <div
@@ -338,12 +337,10 @@ onMounted(() => void search.refreshStatus());
 </template>
 
 <style scoped>
-.search-workspace { height: 100%; overflow: auto; padding: clamp(24px, 4vw, 54px); color: var(--vt-fg); background: radial-gradient(circle at 72% -20%, color-mix(in srgb, var(--vt-color-primary-500) 13%, transparent), transparent 42%), var(--vt-bg); }
-.search-hero { display: flex; justify-content: space-between; gap: 32px; max-width: 1120px; margin: 0 auto 24px; }
-.search-hero h1 { margin: 3px 0 6px; font-size: clamp(28px, 3vw, 42px); letter-spacing: -.04em; }
-.search-hero p { max-width: 680px; margin: 0; color: var(--vt-text-secondary); }
-.eyebrow { color: var(--vt-color-primary-500) !important; font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
-.index-state { display: flex; align-items: center; align-self: flex-end; gap: 10px; min-width: 255px; padding: 11px 12px; border: 1px solid var(--vt-border); border-radius: 14px; background: color-mix(in srgb, var(--vt-bg) 85%, white); box-shadow: var(--vt-shadow-sm); }
+.search-workspace { height: 100%; overflow: auto; padding: clamp(24px, 4vw, 54px); color: var(--vt-fg); background: var(--vt-bg-subtle); }
+.search-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; max-width: 1120px; margin: 0 auto 16px; }
+.search-intro p { max-width: 680px; margin: 0; color: var(--vt-text-secondary); font-size: var(--vt-font-caption); }
+.index-state { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; min-width: 255px; padding: 9px 12px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .index-state > span { width: 8px; height: 8px; border-radius: 50%; background: #8b949e; }
 .index-state[data-state="ready"] > span { background: #22a06b; box-shadow: 0 0 0 4px #22a06b22; }
 .index-state[data-state="building"] > span { background: #e5a50a; box-shadow: 0 0 0 4px #e5a50a22; }
@@ -351,7 +348,7 @@ onMounted(() => void search.refreshStatus());
 .index-state div { display: grid; flex: 1; }
 .index-state small { color: var(--vt-text-secondary); }
 .search-console, .result-section { max-width: 1120px; margin: 0 auto; }
-.search-console { padding: 18px; border: 1px solid var(--vt-border); border-radius: 18px; background: color-mix(in srgb, var(--vt-bg) 94%, white); box-shadow: 0 16px 44px #0c1c3010; }
+.search-console { padding: 18px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .search-line { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 .search-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 13px; }
 .segmented { display: flex; padding: 3px; border: 1px solid var(--vt-border); border-radius: 9px; }
@@ -370,8 +367,8 @@ onMounted(() => void search.refreshStatus());
 .result-heading { display: flex; justify-content: space-between; margin: 0 2px 10px; color: var(--vt-text-secondary); font-size: 12px; }
 .result-heading strong { color: var(--vt-fg); }
 .result-list { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
-.result-card { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; width: 100%; padding: 15px; text-align: left; border: 1px solid var(--vt-border); border-radius: 14px; color: inherit; background: var(--vt-bg); cursor: pointer; transition: transform .14s ease, border-color .14s ease, box-shadow .14s ease; }
-.result-card:hover, .result-card:focus-visible { border-color: color-mix(in srgb, var(--vt-color-primary-500) 50%, var(--vt-border)); box-shadow: 0 10px 30px #0c1c3012; transform: translateY(-1px); outline: none; }
+.result-card { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; width: 100%; padding: 15px; text-align: left; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); color: inherit; background: var(--vt-bg); cursor: pointer; transition: border-color .14s var(--vt-ease), box-shadow .14s var(--vt-ease); }
+.result-card:hover, .result-card:focus-visible { border-color: color-mix(in srgb, var(--vt-color-primary-500) 50%, var(--vt-border)); box-shadow: var(--vt-shadow-1); outline: none; }
 .result-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--vt-color-primary-500); background: color-mix(in srgb, var(--vt-color-primary-500) 10%, transparent); }
 .result-copy, .result-title, .result-meta { display: flex; min-width: 0; }
 .result-copy { flex-direction: column; gap: 5px; }
@@ -380,8 +377,8 @@ onMounted(() => void search.refreshStatus());
 .result-snippet { color: var(--vt-text-secondary); }
 .result-meta { gap: 12px; color: var(--vt-fg-muted); font-size: 11px; }
 .result-score { font-variant-numeric: tabular-nums; color: var(--vt-text-secondary); font-size: 11px; }
-.empty-state { display: grid; place-items: center; gap: 7px; max-width: 1120px; min-height: 230px; margin: 22px auto 0; border: 1px dashed var(--vt-border); border-radius: 18px; color: var(--vt-text-secondary); }
+.empty-state { display: grid; place-items: center; gap: 7px; max-width: 1120px; min-height: 230px; margin: 22px auto 0; border: 1px dashed var(--vt-border); border-radius: var(--vt-radius-lg); color: var(--vt-text-secondary); }
 .empty-state strong { color: var(--vt-fg); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
-@media (max-width: 760px) { .search-workspace { padding: 20px 14px; } .search-hero { flex-direction: column; } .index-state { align-self: stretch; } .search-line { grid-template-columns: 1fr; } .filter-grid { grid-template-columns: 1fr; } .result-heading span { display: none; } }
+@media (max-width: 760px) { .search-workspace { padding: 20px 14px; } .search-header { flex-direction: column; align-items: stretch; } .search-line { grid-template-columns: 1fr; } .filter-grid { grid-template-columns: 1fr; } .result-heading span { display: none; } }
 </style>
