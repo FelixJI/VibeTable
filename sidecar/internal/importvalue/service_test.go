@@ -74,6 +74,16 @@ func TestImportAdapterAndNormalizeWriteShareRawInputCorpus(t *testing.T) {
 	}
 }
 
+func TestOrdinaryNumberImportKeepsAllowedNotations(t *testing.T) {
+	definition := importDefinition(t, v2.LogicalNumber)
+	for text, want := range map[string]float64{"+1": 1, ".5": 0.5, "1e3": 1000, "$1,234.50": 1234.5} {
+		result, err := normalizeImportedCell(context.Background(), fieldvalue.New(), definition, text)
+		if err != nil || result.ProductValue != want {
+			t.Fatalf("ordinary import %q=%#v, %v; want %v", text, result.ProductValue, err, want)
+		}
+	}
+}
+
 func jsonEquivalent(left any, right any) bool {
 	leftJSON, leftErr := json.Marshal(left)
 	rightJSON, rightErr := json.Marshal(right)

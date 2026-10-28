@@ -20,11 +20,12 @@ import (
 )
 
 type pluginSurfaceIO struct {
-	models      *schemaFieldChangeDomain
-	stages      surfaceAttachmentStages
-	outputs     surfaceOutputStages
-	plans       *importPlanOwner
-	attachments *attachments.Manager
+	transactionEpoch func() uint64
+	models           *schemaFieldChangeDomain
+	stages           surfaceAttachmentStages
+	outputs          surfaceOutputStages
+	plans            *importPlanOwner
+	attachments      *attachments.Manager
 }
 
 func surfaceIOOwner(input pluginSurfaceAPIRequest) string {

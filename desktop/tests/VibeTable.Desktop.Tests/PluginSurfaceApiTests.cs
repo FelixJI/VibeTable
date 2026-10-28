@@ -879,6 +879,241 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(0, fixture.Http.Calls.Count);
     }
 
+    private const string TransactionPreviewBody = """
+        {"contract":"vibetable.plugin-transactions.v1","workspaceId":"11111111-1111-4111-8111-111111111111","installationId":"record-surface","installationRevision":1,"requestId":"business-id","epoch":1,"status":"prepared",
+        "plan":{"contract":"vibetable.transaction-plan.v1","modelId":"orders","operations":[{"entity":"headers","kind":"create","tempId":"head","values":{"name":"new"}},{"entity":"lines","kind":"create","tempId":"line","values":{"header":{"entity":"headers","tempId":"head"}}}]},
+        "model":{"bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header"}}}},
+        "declaration":{"contract":"vibetable.plugin-transactions.v1","modelId":"orders","version":1,"decimals":[],"rules":[{"id":"unique","kind":"unique","entity":"headers","fields":["name"]}]},"newIds":{"headers":{"head":"actual-head"},"lines":{"line":"actual-line"}},
+        "previewRevision":1,"dataRevisions":{"table-head":"data_0","table-line":"data_0"},"effects":[{"tableId":"table-head","recordId":"actual-head","operation":"insert","schemaRevision":"schema_1"},{"tableId":"table-line","recordId":"actual-line","operation":"insert","schemaRevision":"schema_1"}]}
+        """;
+    private const string TransactionAppliedBody = """
+        {"contract":"vibetable.plugin-transactions.v1","workspaceId":"11111111-1111-4111-8111-111111111111","installationId":"record-surface","requestId":"business-id","status":"applied","newIds":{"headers":{"head":"actual-head"},"lines":{"line":"actual-line"}},
+        "receipt":{"status":"applied","changeSetId":"change-1","rows":[{"tableId":"table-head","recordId":"actual-head","operation":"insert","revision":"row_1","digest":"guard-head"},{"tableId":"table-line","recordId":"actual-line","operation":"insert","revision":"row_1","digest":"guard-line"}],"revisions":{"table-head":"data_1","table-line":"data_1"},"emittedEvents":[],"warnings":[]}}
+        """;
+
+    [TestMethod]
+    public async Task TransactionSubmissionUsesNativeOnlyFullCrossTableConfirmationAndIndependentOperations()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.TransactionStatusBody = TransactionPreviewBody;
+        fixture.OnConfirmation = () =>
+        {
+            var interaction = fixture.LastInteraction!;
+            var decision = new PluginResolveInteractionParams(interaction.RunId, interaction.PendingConfirmation!.InteractionId, "approved");
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(decision).Status);
+            Assert.AreEqual(2, interaction.PendingConfirmation.Preview.SampleRows.Count);
+            Assert.AreEqual("table-head", interaction.PendingConfirmation.Preview.SampleRows[0]["tableId"].GetString());
+            Assert.AreEqual("actual-line", interaction.PendingConfirmation.Preview.SampleRows[1]["recordId"].GetString());
+            Assert.AreEqual("resolved", fixture.Tasks.BeginInteractionResolve(decision, fromNativeHost: true).Status);
+        };
+        for (int i = 0; i < 2; i++)
+            Assert.AreEqual("applied", (await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")).GetProperty("result").GetProperty("status").GetString());
+        var commits = fixture.Http.Calls.Where(call => call.GetProperty("method").GetString() == "transaction.commit").ToArray();
+        Assert.AreEqual(2, commits.Length);
+        Assert.AreNotEqual(commits[0].GetProperty("requestId").GetString(), commits[1].GetProperty("requestId").GetString());
+        Assert.IsTrue(commits.All(call => call.GetProperty("request").GetProperty("requestId").GetString() == "business-id"));
+        Assert.AreEqual(2, fixture.Tasks.ProjectHistory(fixture.Context).Count);
+        Assert.IsFalse(fixture.Api.HasWrites);
+    }
+
+    [TestMethod]
+    [DataRow("workspaceId")]
+    [DataRow("installationId")]
+    [DataRow("requestId")]
+    [DataRow("mapping")]
+    [DataRow("table")]
+    [DataRow("operation")]
+    [DataRow("missing-row")]
+    public async Task TransactionRejectsMismatchedCommitReceiptsAsUnknown(string mismatch)
+    {
+        using var fixture = new Fixture();
+        var receipt = System.Text.Json.Nodes.JsonNode.Parse(TransactionAppliedBody)!;
+        switch (mismatch)
+        {
+            case "mapping": receipt["newIds"]!["headers"]!["head"] = "wrong"; break;
+            case "table": receipt["receipt"]!["rows"]![0]!["tableId"] = "table-line"; break;
+            case "operation": receipt["receipt"]!["rows"]![0]!["operation"] = "update"; break;
+            case "missing-row": receipt["receipt"]!["rows"]!.AsArray().RemoveAt(1); break;
+            default: receipt[mismatch] = "wrong"; break;
+        }
+        fixture.Http.TransactionCommitBody = receipt.ToJsonString();
+        Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")));
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual("aborted", task.State);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    public async Task TransactionSuccessSurvivesRetirementAndLateCancellationAndStatusNeverSubmits()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.AfterReadMethod = "transaction.commit";
+        fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
+        var response = await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}");
+        Assert.AreEqual("applied", response.GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual(0, fixture.LateNotifications);
+        fixture.Tasks.SetWorkspaceContext(fixture.Context);
+        Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(fixture.TaskId, out var task, out _));
+        Assert.AreEqual("succeeded", task.State);
+        using var reopened = new Fixture();
+        reopened.Http.TransactionStatusBody = TransactionAppliedBody;
+        Assert.AreEqual("applied", (await reopened.Call("transaction.status", "{\"requestId\":\"business-id\"}")).GetProperty("result").GetProperty("status").GetString());
+        reopened.Http.TransactionStatusBody = """{"contract":"vibetable.plugin-transactions.v1","requestId":"business-id","status":"unknown"}""";
+        Assert.AreEqual("unknown", (await reopened.Call("transaction.submit", "{\"requestId\":\"business-id\"}")).GetProperty("result").GetProperty("status").GetString());
+        Assert.IsFalse(reopened.Http.Calls.Any(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    public async Task TransactionRejectionCancelsBeforeCommitAndFrameCannotCallCommit()
+    {
+        using var fixture = new Fixture { Decision = "rejected" };
+        Assert.AreEqual(JsonValueKind.Null, (await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")).GetProperty("result").ValueKind);
+        Assert.AreEqual("plugin_api_unsupported", Code(await fixture.Call("transaction.commit", "{\"requestId\":\"business-id\"}")));
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "transaction.commit"));
+        using var cancelled = new Fixture { Decision = "cancel" };
+        Assert.AreEqual("plugin_cancel_requested", Code(await cancelled.Call("transaction.submit", "{\"requestId\":\"business-id\"}")));
+        Assert.IsFalse(cancelled.Http.Calls.Any(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    public async Task TransactionStatusRejectsNewIdMappingWithoutItsInsertReceipt()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.TransactionStatusBody = TransactionAppliedBody.Replace("\"head\":\"actual-head\"", "\"head\":\"unproven-id\"", StringComparison.Ordinal);
+        Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("transaction.status", "{\"requestId\":\"business-id\"}")));
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    [DataRow(false, 1L)]
+    [DataRow(true, 1L)]
+    [DataRow(false, 2147483648L)]
+    public async Task TransactionConfigurationShowsExactRulesAndRequiresNativeApproval(bool omitDecimals, long version)
+    {
+        using var fixture = new Fixture();
+        fixture.OnConfirmation = () =>
+        {
+            var interaction = fixture.LastInteraction!;
+            var confirmation = interaction.PendingConfirmation!;
+            StringAssert.Contains(confirmation.Title, "停用或卸载");
+            Assert.AreEqual("unique", confirmation.Preview.SampleRows[0]["kind"].GetString());
+            Assert.AreEqual("table-head", confirmation.Preview.SampleRows[0]["binding"].GetProperty("tableId").GetString());
+            var request = new PluginResolveInteractionParams(interaction.RunId, confirmation.InteractionId, "approved");
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(request).Status);
+            fixture.Tasks.BeginInteractionResolve(request, fromNativeHost: true);
+        };
+        var declarationNode = System.Text.Json.Nodes.JsonNode.Parse(TransactionPreviewBody)!["declaration"]!;
+        if (omitDecimals) declarationNode.AsObject().Remove("decimals");
+        declarationNode["version"] = version;
+        fixture.Http.TransactionConfigureVersion = version;
+        var declaration = JsonSerializer.SerializeToElement(declarationNode);
+        var response = await fixture.Call("transaction.configure", JsonSerializer.Serialize(new { declaration }));
+        Assert.AreEqual("configured", response.GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual(version, response.GetProperty("result").GetProperty("version").GetInt64());
+        var sent = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "transaction.configure");
+        Assert.AreEqual(declaration.GetRawText(), sent.GetProperty("request").GetProperty("declaration").GetRawText());
+    }
+
+    [TestMethod]
+    public async Task TransactionDrainWaitsForBothIndependentOperationsUsingSameBusinessKey()
+    {
+        using var fixture = new Fixture();
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bothEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int commits = 0;
+        fixture.Http.OnTransactionCommit = async _ =>
+        {
+            int index = Interlocked.Increment(ref commits);
+            if (index == 2) bothEntered.TrySetResult();
+            await (index == 1 ? first.Task : second.Task);
+        };
+        var one = fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}");
+        var two = fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}");
+        await bothEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var drain = fixture.Api.DrainAsync();
+        first.SetResult();
+        await one.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(drain.IsCompleted);
+        Assert.IsTrue(fixture.Api.HasWrites);
+        second.SetResult();
+        await two.WaitAsync(TimeSpan.FromSeconds(3));
+        await drain.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(fixture.Api.HasWrites);
+        Assert.AreEqual(2, fixture.Tasks.ProjectHistory(fixture.Context).Count);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task TransactionConfirmationIncludesDerivedRowsAndReceiptMustCoverExactlyThoseEffects(bool omitDerivedReceipt)
+    {
+        using var fixture = new Fixture();
+        var prepared = System.Text.Json.Nodes.JsonNode.Parse(TransactionPreviewBody)!;
+        prepared["previewRevision"] = 7;
+        prepared["effects"]!.AsArray().Add(System.Text.Json.Nodes.JsonNode.Parse("""{"tableId":"table-head","recordId":"existing-reciprocal","operation":"update","schemaRevision":"schema_1","expectedDigest":"guard-before"}"""));
+        fixture.Http.TransactionStatusBody = prepared.ToJsonString();
+        if (!omitDerivedReceipt)
+        {
+            var applied = System.Text.Json.Nodes.JsonNode.Parse(TransactionAppliedBody)!;
+            applied["receipt"]!["rows"]!.AsArray().Add(System.Text.Json.Nodes.JsonNode.Parse("""{"tableId":"table-head","recordId":"existing-reciprocal","operation":"update","revision":"row_2","digest":"guard-after"}"""));
+            fixture.Http.TransactionCommitBody = applied.ToJsonString();
+        }
+        fixture.OnConfirmation = () =>
+        {
+            var interaction = fixture.LastInteraction!;
+            var confirmation = interaction.PendingConfirmation!;
+            Assert.AreEqual(3, confirmation.Preview.AffectedCount);
+            var derived = confirmation.Preview.SampleRows.Single(row => row["recordId"].GetString() == "existing-reciprocal");
+            Assert.IsTrue(derived["derived"].GetBoolean());
+            Assert.AreEqual("table-head", derived["binding"].GetProperty("tableId").GetString());
+            Assert.AreEqual("guard-before", derived["expectedDigest"].GetString());
+            fixture.Tasks.BeginInteractionResolve(new(interaction.RunId, confirmation.InteractionId, "approved"), fromNativeHost: true);
+        };
+        var response = await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}");
+        if (omitDerivedReceipt) Assert.AreEqual("plugin_commit_unknown", Code(response));
+        else Assert.AreEqual("applied", response.GetProperty("result").GetProperty("status").GetString());
+        var sent = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "transaction.commit");
+        Assert.AreEqual(7L, sent.GetProperty("request").GetProperty("previewRevision").GetInt64());
+    }
+
+    [TestMethod]
+    public async Task TransactionMissingAuthoritativeEffectsCannotReachConfirmationOrCommit()
+    {
+        using var fixture = new Fixture();
+        var prepared = System.Text.Json.Nodes.JsonNode.Parse(TransactionPreviewBody)!;
+        prepared.AsObject().Remove("effects");
+        fixture.Http.TransactionStatusBody = prepared.ToJsonString();
+        Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")));
+        Assert.AreEqual(0, fixture.Confirmations);
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    public async Task TransactionStaleConfirmationRequiresExplicitRefreshAndNewNativeDecision()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.TransactionCommitErrorBody = """{"code":"transaction.plan_stale","commitOutcome":"not-committed"}""";
+        var response = await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}");
+        Assert.AreEqual("transaction.plan_stale", Code(response));
+        Assert.AreEqual(1, fixture.Confirmations);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "transaction.commit"));
+        var prepared = System.Text.Json.Nodes.JsonNode.Parse(TransactionPreviewBody)!;
+        prepared["previewRevision"] = 2;
+        fixture.Http.TransactionStatusBody = prepared.ToJsonString();
+        var refresh = await fixture.Call("transaction.preview", JsonSerializer.Serialize(new
+            { requestId = "business-id", plan = JsonSerializer.SerializeToElement(prepared["plan"]), refresh = true }));
+        Assert.AreEqual(2, refresh.GetProperty("result").GetProperty("previewRevision").GetInt32());
+        Assert.AreEqual(1, fixture.Confirmations);
+        fixture.Http.TransactionCommitErrorBody = null;
+        Assert.AreEqual("applied", (await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual(2, fixture.Confirmations);
+        var commits = fixture.Http.Calls.Where(call => call.GetProperty("method").GetString() == "transaction.commit").ToArray();
+        Assert.AreEqual(2, commits.Length);
+        Assert.AreEqual(1, commits[0].GetProperty("request").GetProperty("previewRevision").GetInt32());
+        Assert.AreEqual(2, commits[1].GetProperty("request").GetProperty("previewRevision").GetInt32());
+    }
+
     private sealed class Fixture : IDisposable, IWebReplySink
     {
         internal PluginSurfaceSessionManager Surfaces { get; } = new();
@@ -1003,6 +1238,11 @@ public sealed class PluginSurfaceApiTests
         internal string? CommitResultBody { get; set; }
         internal string? ModelPreviewBody { get; set; }
         internal string? ModelCommitBody { get; set; }
+        internal string TransactionStatusBody { get; set; } = TransactionPreviewBody;
+        internal string TransactionCommitBody { get; set; } = TransactionAppliedBody;
+        internal long TransactionConfigureVersion { get; set; } = 1;
+        internal string? TransactionCommitErrorBody { get; set; }
+        internal Func<CancellationToken, Task>? OnTransactionCommit { get; set; }
         internal Action? OnCommit { get; set; }
         internal bool CommitObservedCancellation { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -1011,6 +1251,9 @@ public sealed class PluginSurfaceApiTests
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
+            if (method == "transaction.commit" && OnTransactionCommit is { } transactionCommit) await transactionCommit(token);
+            if (method == "transaction.commit" && TransactionCommitErrorBody is { } transactionError)
+                return new(HttpStatusCode.Conflict) { Content = new StringContent(transactionError) };
             if (method == "data.query" && OnQuery is { } onQuery) await onQuery(token);
             if (method == "mutation.commit" && OnCommit is { } onCommit)
             {
@@ -1038,6 +1281,10 @@ public sealed class PluginSurfaceApiTests
                 "mutation.preview" => """{"affectedCount":1}""",
                 "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",
                 "model.commit" => ModelCommitBody ?? "{}",
+                "model.read" => """{"status":"completed","bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header"}}}}""",
+                "transaction.configure" => JsonSerializer.Serialize(new { contract = "vibetable.plugin-transactions.v1", status = "configured", modelId = "orders", version = TransactionConfigureVersion }),
+                "transaction.preview" or "transaction.status" => TransactionStatusBody,
+                "transaction.commit" => TransactionCommitBody,
                 "mutation.commit" => JsonSerializer.Serialize(new { contractVersion = "2.0", status = "applied", affectedRows = call.GetProperty("request").GetProperty("operations").EnumerateArray().Select(operation => new { recordId = "r1", operation = operation.GetProperty("kind").GetString() == "create" ? "insert" : operation.GetProperty("kind").GetString() }) }),
                 _ => "{}",
             };

@@ -7,6 +7,10 @@
     "model.configure",
     "model.read",
     "model.status",
+    "transaction.configure",
+    "transaction.preview",
+    "transaction.submit",
+    "transaction.status",
     "data.describe",
     "data.query",
     "data.releaseCursor",
@@ -92,6 +96,39 @@
     "authorization": "explicit logical-role grants only after complete configuration; current installation rechecked",
     "recovery": "durable per-step progress; read/status after cancellation or unknown reply; never imply rollback or automatically replay",
     "upgrade": "additive schema operations only; renames preserve identity, incompatible changes fail closed"
+  },
+  "transactions": {
+    "contract": "vibetable.plugin-transactions.v1",
+    "declaration": "closed permissions.transactions rules over confirmed model logical entities and fields; unique/reference/conservation/balance/state only; no arbitrary SQL, scripts or unconstrained values",
+    "configuration": "transaction.configure registers the manifest declaration after native confirmation; persisted rules survive plugin disable; declaration modelId must equal permissions.model modelId",
+    "hostOnly": ["transaction.commit"],
+    "numbers": "model-bound Text stores canonical fixed-scale decimal text; verified Number fields may use safe integer minor units; shared bounded integer coefficients parse, compare and sum; no float aggregation or implicit rounding",
+    "limits": {
+      "declarationBytes": 1048576,
+      "rulesPerDeclaration": 64,
+      "decimalsPerDeclaration": 64,
+      "operations": 1000,
+      "messageBytes": 1048576,
+      "previewRevisionMax": 2147483647,
+      "ruleReadRows": 10000,
+      "ruleReadBytes": 1048576
+    },
+    "plan": "transaction.preview persists the normalized plan with a stable requestId; the prepared reply carries effects [{tableId, recordId, operation, schemaRevision, expectedDigest? for rows with a before state}], per-table dataRevisions baselines and a monotonic previewRevision >= 1; temporary references bind pre-allocated row ids across tables and one atomic commit",
+    "previewBoundary": "preview computes effects and baselines by reusing the Kernel write session on an in-memory record overlay: no PocketBase writes, file hooks, business receipts or publishers; it confirms only the affected boundary and never claims business rules such as balance or conservation pass early",
+    "refresh": "explicit {requestId, plan, refresh: true} on transaction.preview reuses the same requestId with an identical plan, keeps newIds, recomputes effects and baselines and increments previewRevision by exactly one; a different plan is input_conflict; requestIds are never rekeyed or auto-refreshed",
+    "submit": "public transaction.submit stays {requestId}; the Host takes the current prepared version through native confirmation and forwards its previewRevision to Host-only transaction.commit, which requires previewRevision >= 1 and equal to the persisted prepared revision",
+    "commit": "Host-only commit re-verifies, inside the same business transaction, that the actual derived write-set effects and per-table base revisions equal the persisted prepared values; any drift is transaction.plan_stale with zero writes and requires an explicit refresh followed by renewed native confirmation; the persisted applied result keeps newIds and the receipt without effects or baselines",
+    "recovery": "transaction.submit consumes one requestId exactly once; missing, stale or epoch-expired ids and unprovable outcomes return unknown; verified success is sticky; never auto-replay, rekey or resubmit",
+    "errors": [
+      "transaction.rules_invalid",
+      "transaction.decimal_invalid",
+      "transaction.read_budget_exceeded",
+      "transaction.budget_exceeded",
+      "transaction.configuration_conflict",
+      "transaction.plan_stale",
+      "transaction.input_conflict",
+      "transaction.unknown"
+    ]
   },
   "notifications": [
     "data.invalidated",

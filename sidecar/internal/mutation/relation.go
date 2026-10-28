@@ -96,6 +96,9 @@ func validateRelationValue(
 			)
 		}
 		seen[recordID] = struct{}{}
+		if pending, ok := ctx.Value(pendingPlanKey{}).(map[RowKey]bool); ok && pending[RowKey{field.Relation.TargetTableID, recordID}] {
+			continue
+		}
 		if field.Relation.TargetTableID == definition.Snapshot.TableID {
 			if _, pending := pendingRecordIDs[recordID]; pending {
 				continue

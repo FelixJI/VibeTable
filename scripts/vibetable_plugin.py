@@ -114,6 +114,7 @@ def _permission_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "files": permissions.get("files", []),
         "privateStorage": permissions.get("privateStorage", False),
         "network": permissions.get("network", {"domains": [], "methods": ["GET"]}),
+        "transactions": permissions.get("transactions"),
         "risks": sorted(
             {action["risk"] for action in manifest.get("actions", [])},
             key=("read", "write", "destructive").index,
@@ -139,6 +140,13 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
         print(f"数据: {declaration['collection']} [{operations}] 字段 [{fields}]")
     print(f"文件能力: {', '.join(report['files']) or '无'}")
     print(f"私有存储: {'是' if report['privateStorage'] else '否'}")
+    if report["transactions"] is not None:
+        declaration = report["transactions"]
+        print(
+            f"业务事务: {declaration['modelId']} v{declaration['version']}，"
+            f"{len(declaration['rules'])} 条规则；原生确认后持续保护普通写入，停用或卸载不解除"
+        )
+        print(json.dumps(declaration, ensure_ascii=False, sort_keys=True))
     network = report["network"]
     print(f"网络域名: {', '.join(network.get('domains', [])) or '无'}")
     print(f"网络方法: {', '.join(network.get('methods', [])) or '无'}")

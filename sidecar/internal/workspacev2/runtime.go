@@ -617,6 +617,8 @@ func (runtime *Runtime) Drain(
 	)
 }
 
+func (runtime *Runtime) BusinessEpoch() uint64 { return runtime.coordinator.BusinessEpoch() }
+
 func (runtime *Runtime) Capabilities() CapabilityDocument {
 	token, _ := runtime.coordinator.Current()
 	registrations := runtime.dispatcher.Methods()

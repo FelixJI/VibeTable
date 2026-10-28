@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>合成原子事务</title>
+<style>body{font:16px system-ui;padding:24px;background:var(--vt-plugin-bg,#fff);color:var(--vt-plugin-text,#111)}button,input{font:inherit;margin:6px;padding:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere}button:focus-visible,input:focus-visible{outline:3px solid var(--vt-plugin-accent,#06c)}</style></head>
+<body><h1>合成原子事务</h1><p>仅使用合成数据。未知结果应查询原请求，不能重新提交新请求。</p>
+<button id="model">创建模型</button><button id="configure">登记保护规则</button>
+<button id="preview">预览三表提交</button><button id="excess">预览再次占用 8</button>
+<p><label for="request">原请求 ID</label><input id="request" size="48"><button id="submit">确认提交</button><button id="recover">查询原结果</button></p>
+<p id="status" role="status">正在连接</p><pre id="result" aria-live="polite"></pre>
+<script type="module" src="../dist/app.js"></script></body></html>

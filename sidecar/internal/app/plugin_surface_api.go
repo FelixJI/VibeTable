@@ -124,7 +124,7 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 			return event.JSON(http.StatusBadRequest, map[string]any{"code": "plugin_capability_invalid"})
 		}
 		budget := 15 * time.Second
-		if input.Method == "mutation.commit" || input.Method == "model.commit" {
+		if input.Method == "mutation.commit" || input.Method == "model.commit" || input.Method == "transaction.commit" {
 			budget = 120 * time.Second
 		}
 		ctx, cancel := context.WithTimeout(event.Request.Context(), budget)
@@ -223,6 +223,12 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		return nil, err
 	}
 	switch input.Method {
+	case "transaction.configure", "transaction.preview", "transaction.status", "transaction.commit":
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return executeSurfaceTransaction(ctx, app, kernel, workspace, input, gate, ports)
 	case "model.catalog", "model.preview", "model.commit", "model.read", "model.status":
 		var domain *schemaFieldChangeDomain
 		if len(ioPorts) > 0 && ioPorts[0] != nil {
@@ -638,7 +644,7 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 			return request, pluginDataError("plugin_capability_invalid")
 		}
 		var values map[string]any
-		if kind != mutation.OperationDelete && kind != mutation.OperationSetAttachments && (decodePluginParams(item.Values, &values) != nil || values == nil) {
+		if kind != mutation.OperationDelete && kind != mutation.OperationSetAttachments && (mutation.DecodeStrict(item.Values, &values) != nil || values == nil) {
 			return request, pluginDataError("plugin_capability_invalid")
 		}
 		request.Operations = append(request.Operations, mutation.Operation{Kind: kind, RecordID: item.PrimaryKey, ExpectedDigest: item.ExpectedDigest, Values: values, FieldID: item.FieldID, UploadHandles: item.UploadHandles, RemoveStoredNames: item.RemoveStoredNames})

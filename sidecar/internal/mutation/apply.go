@@ -26,6 +26,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -136,6 +137,10 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			return previewErr
 		}
 		definition := preview.Definition
+		guards, guardErr := captureBusinessRules(ctx, txApp, preview)
+		if guardErr != nil {
+			return guardErr
+		}
 		tableMeta, collection, metadataErr := loadTableMetadata(txApp, request.TableID)
 		if metadataErr != nil {
 			return metadataErr
@@ -403,6 +408,9 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			ChangeSetID: &changeSetID, AffectedRows: affectedRows,
 			ComputedFields: computedFields, NewRevision: &newRevision,
 			EmittedEvents: emitted, Warnings: []ProductError{},
+		}
+		if err := transactionrules.ValidateGuards(ctx, txApp, guards); err != nil {
+			return businessRuleError(err)
 		}
 		if err := saveIdempotency(txApp, request, requestHash, receipt, kernel.now()); err != nil {
 			return err
@@ -686,6 +694,9 @@ func (kernel *Kernel) applyOperation(
 			return nil, err
 		}
 	case OperationDelete:
+		if ctx.Value(inspectPlanKey{}) == true {
+			return nil, nil
+		}
 		if err := validateRestrictedDelete(
 			ctx, app, definition.Snapshot.TableID, record.Id,
 		); err != nil {
@@ -736,7 +747,7 @@ func (kernel *Kernel) applyOperation(
 		}
 	}
 	record.Set(relatedcomputation.RowRevisionField, rowRevision)
-	if kernel.formulas != nil {
+	if kernel.formulas != nil && ctx.Value(stagingPlanKey{}) != true {
 		calculated, err := kernel.formulas.Calculate(ctx, app, definition, record)
 		if err != nil {
 			var formulaErr *formula.Error
@@ -946,7 +957,7 @@ func (kernel *Kernel) calculateRelatedFormulas(
 	definition schemaexecution.Table,
 	record *core.Record,
 ) error {
-	if kernel.formulas == nil {
+	if kernel.formulas == nil || ctx.Value(stagingPlanKey{}) == true {
 		return nil
 	}
 	calculated, err := kernel.formulas.Calculate(ctx, app, definition, record)
