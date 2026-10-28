@@ -250,10 +250,24 @@ func (materializer *Materializer) plan(
 	}
 	sort.Strings(paths)
 	operations := make([]materializerOperation, 0, len(paths))
+	removedKeys := make(map[string]struct{})
+	// Case-only renames share one Windows path, so removals must precede writes.
+	for _, relative := range paths {
+		if _, exists := nextLeaves[relative]; !exists {
+			key, _ := windowsPathKey(relative) // activeLeaves already validated every path.
+			removedKeys[key] = struct{}{}
+			operations = append(operations, materializerOperation{Path: relative})
+		}
+	}
 	for _, relative := range paths {
 		newLeaf, newExists := nextLeaves[relative]
+		if !newExists {
+			continue
+		}
+		key, _ := windowsPathKey(relative)
+		_, removed := removedKeys[key]
 		// External ingestion may already have installed the exact desired bytes.
-		if newExists {
+		if !removed {
 			matches, matchErr := materializer.diskLeafMatches(
 				relative,
 				newLeaf,
@@ -278,16 +292,10 @@ func (materializer *Materializer) plan(
 				continue
 			}
 		}
-		operation := materializerOperation{
-			Path:    relative,
-			Desired: newExists,
-		}
-		if newExists {
-			operation.ObjectID = string(newLeaf.ObjectID)
-			operation.ContentHash = newLeaf.ContentHash
-			operation.Size = newLeaf.Size
-		}
-		operations = append(operations, operation)
+		operations = append(operations, materializerOperation{
+			Path: relative, Desired: true, ObjectID: string(newLeaf.ObjectID),
+			ContentHash: newLeaf.ContentHash, Size: newLeaf.Size,
+		})
 	}
 	return operations, nil
 }
