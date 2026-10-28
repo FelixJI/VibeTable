@@ -328,7 +328,6 @@ function setCalendarName(name: string): void {
     <aside class="settings-nav">
       <div class="settings-nav-title">
         <span>{{ t("settings.title") }}</span>
-        <small>{{ t("settings.subtitle") }}</small>
       </div>
       <button
         v-for="section in sections"
@@ -351,8 +350,9 @@ function setCalendarName(name: string): void {
           current === 'storage' || current === 'versions' }"
       >
         <template v-if="current === 'general'">
-          <header><h1>{{ t("settings.general") }}</h1><p>{{ t("settings.general.description") }}</p></header>
+          <header><h1>{{ t("settings.general") }}</h1></header>
           <section class="setting-card">
+            <div class="setting-group-title">{{ t("settings.group.appearance") }}</div>
             <div class="setting-row">
               <div><strong>{{ t("settings.language") }}</strong><small>{{ t("settings.language.hint") }}</small></div>
               <NSelect
@@ -365,7 +365,7 @@ function setCalendarName(name: string): void {
               />
             </div>
             <div class="setting-row">
-              <div><strong>{{ t("settings.theme") }}</strong><small>{{ t("settings.theme.hint") }}</small></div>
+              <div><strong>{{ t("settings.theme") }}</strong></div>
               <NSelect
                 :value="ui.themeMode"
                 :aria-label="t('settings.theme')"
@@ -379,10 +379,21 @@ function setCalendarName(name: string): void {
               <small v-if="themeError" class="setting-error" data-testid="theme-error">{{ themeError }}</small>
             </div>
             <div class="setting-row">
-              <div>
-                <strong>{{ t("settings.workspaceStartup") }}</strong>
-                <small>{{ t("settings.workspaceStartup.hint") }}</small>
-              </div>
+              <div><strong>{{ t("settings.density") }}</strong></div>
+              <NRadioGroup
+                :value="ui.density"
+                :aria-label="t('settings.density')"
+                size="small"
+                class="setting-control setting-control--radio"
+                @update:value="ui.setDensity($event as DensityMode)"
+              >
+                <NRadioButton value="comfortable">{{ t("settings.density.comfortable") }}</NRadioButton>
+                <NRadioButton value="compact">{{ t("settings.density.compact") }}</NRadioButton>
+              </NRadioGroup>
+            </div>
+            <div class="setting-group-title">{{ t("settings.group.startup") }}</div>
+            <div class="setting-row">
+              <div><strong>{{ t("settings.workspaceStartup") }}</strong></div>
               <NSelect
                 :value="ui.workspaceStartupPolicy"
                 :aria-label="t('settings.workspaceStartup')"
@@ -393,7 +404,7 @@ function setCalendarName(name: string): void {
               />
             </div>
             <div class="setting-row">
-              <div><strong>{{ t("settings.startup") }}</strong><small>{{ t("settings.startup.hint") }}</small></div>
+              <div><strong>{{ t("settings.startup") }}</strong></div>
               <NSelect
                 :value="ui.startupPage"
                 :aria-label="t('settings.startup')"
@@ -438,12 +449,13 @@ function setCalendarName(name: string): void {
             >
               {{ appPreferencesError }}
             </NAlert>
+            <div class="setting-group-title">{{ t("settings.group.homeContent") }}</div>
             <div class="setting-row">
               <div><strong>{{ t("settings.quote") }}</strong><small>{{ t("settings.quote.hint") }}</small></div>
               <NSwitch :value="ui.showDailyQuote" :aria-label="t('settings.quote')" @update:value="ui.setShowDailyQuote" />
             </div>
             <div class="setting-row setting-row--nested">
-              <div><strong>{{ t("settings.quote.source") }}</strong><small>{{ t("settings.quote.source.hint") }}</small></div>
+              <div><strong>{{ t("settings.quote.source") }}</strong></div>
               <NSelect
                 :value="ui.dailyQuoteSource"
                 :disabled="!ui.showDailyQuote"
@@ -474,21 +486,8 @@ function setCalendarName(name: string): void {
               />
             </div>
             <div class="setting-row">
-              <div><strong>{{ t("settings.calendar") }}</strong><small>{{ t("settings.calendar.hint") }}</small></div>
+              <div><strong>{{ t("settings.calendar") }}</strong></div>
               <NSwitch :value="ui.showMiniCalendar" :aria-label="t('settings.calendar')" @update:value="ui.setShowMiniCalendar" />
-            </div>
-            <div class="setting-row">
-              <div><strong>{{ t("settings.density") }}</strong><small>{{ t("settings.density.hint") }}</small></div>
-              <NRadioGroup
-                :value="ui.density"
-                :aria-label="t('settings.density')"
-                size="small"
-                class="setting-control setting-control--radio"
-                @update:value="ui.setDensity($event as DensityMode)"
-              >
-                <NRadioButton value="comfortable">{{ t("settings.density.comfortable") }}</NRadioButton>
-                <NRadioButton value="compact">{{ t("settings.density.compact") }}</NRadioButton>
-              </NRadioGroup>
             </div>
           </section>
         </template>
@@ -791,9 +790,8 @@ function setCalendarName(name: string): void {
   border-right: 1px solid var(--vt-border);
   background: var(--vt-bg-subtle);
 }
-.settings-nav-title { display: flex; flex-direction: column; padding: 2px 9px 16px; }
+.settings-nav-title { padding: 2px 9px 16px; }
 .settings-nav-title span { font-size: var(--vt-font-title); font-weight: 600; }
-.settings-nav-title small { color: var(--vt-fg-muted); }
 .settings-nav button {
   display: flex;
   align-items: center;
@@ -817,6 +815,7 @@ header { margin-bottom: 22px; }
 h1 { margin: 0 0 5px; font-size: 22px; font-weight: 650; letter-spacing: -0.015em; }
 header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-card { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); }
+.setting-group-title { padding: 12px 16px 2px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 650; letter-spacing: .02em; }
 .setting-row {
   display: flex;
   align-items: center;
@@ -829,17 +828,16 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-row--tall { min-height: 82px; }
 .setting-row--nested { background: color-mix(in srgb, var(--vt-bg-subtle) 55%, transparent); }
-/* 仅文字容器采用列向堆叠；NSwitch/NSelect 的根节点也是 div，命中会破坏
-   开关/下拉的内部布局与居中（用户报告的“状态框/开关不居中”根因同类）。 */
-.setting-row > div:not(.n-switch):not(.n-select) { display: flex; flex-direction: column; }
+/* 仅文字容器采用列向堆叠；NSwitch/NSelect/NRadioGroup 的根节点也是 div，
+   命中会破坏控件内部布局（密度单选被压成竖排的根因）。 */
+.setting-row > div:not(.n-switch):not(.n-select):not(.n-radio-group) { display: flex; flex-direction: column; }
 .setting-row strong, .setting-action strong { font-weight: 500; }
 .setting-row small, .setting-action small { color: var(--vt-fg-muted); }
-.setting-control { width: 170px; }
-/* Naive UI renders `.n-radio-group` as `display: inline-block`, so applying
-   `flex` to the buttons does nothing. Turn the group into a flex container so
-   the density radio buttons share the fixed 170px column side-by-side. */
-.setting-control.setting-control--radio { display: flex; flex-direction: row; width: 170px; }
-.setting-control--radio :deep(.n-radio-button) { flex: 1 1 0; }
+/* 控件列只约束直接容器：右对齐随内容伸缩，长选项（如英文 Last used
+   workspace）不被裁切；radio 组内按钮按内容宽度排列，必要时换行、
+   行高随内容增长，不再挤压到下一分组。 */
+.setting-control { width: auto; min-width: 170px; max-width: min(320px, 46%); }
+.setting-control.setting-control--radio { display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; max-width: none; }
 .setting-card > :deep(.n-alert) { margin: 12px 14px; }
 .calendar-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .calendar-toolbar { display: grid; grid-template-columns: 32px auto auto 1fr 32px; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--vt-border); }
@@ -998,7 +996,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 @media (max-width: 560px) {
   .settings-content { padding: 24px 14px; }
   .setting-row { align-items: stretch; flex-direction: column; gap: 10px; }
-  .setting-row > .setting-control { width: 100%; }
+  .setting-row > .setting-control { width: 100%; max-width: none; }
   .calendar-layout { padding: 12px; }
 }
 </style>

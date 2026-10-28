@@ -130,7 +130,7 @@ onBeforeUnmount(() => {
     :aria-label="title"
   >
     <header v-if="variant !== 'app' && variant !== 'headless'">
-      <div><span>ISOLATED SURFACE</span><strong>{{ title }}</strong></div>
+      <div><strong>{{ title }}</strong></div>
       <button type="button" aria-label="关闭插件页面" @click="close()">×</button>
     </header>
     <iframe
@@ -164,7 +164,6 @@ onBeforeUnmount(() => {
 .surface-frame--hidden { position: absolute; width: 1px; height: 1px; min-height: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
 header { display: flex; flex: 0 0 42px; align-items: center; justify-content: space-between; padding: 0 10px 0 13px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 header div { display: flex; align-items: baseline; gap: 10px; }
-header span { color: var(--vt-color-success); font: 600 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
 header strong { font-size: var(--vt-font-body); }
 header button { width: 28px; height: 28px; color: var(--vt-fg-muted); border: 0; border-radius: var(--vt-radius-sm); background: transparent; cursor: pointer; }
 header button:hover { color: var(--vt-fg); background: var(--vt-bg-sunken); }

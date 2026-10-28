@@ -236,7 +236,7 @@ describe("PluginSurfaceHost", () => {
 
     await wrapper.get('[data-testid="plugin-surface-confirm-approve"]').trigger("click");
 
-    expect(wrapper.text()).toContain("HOST FINAL WRITE CONFIRMATION");
+    expect(wrapper.text()).toContain("VibeTable 最终确认 · 写入");
     expect(wrapper.emitted("resolve")?.[0]).toEqual(["approved", "task-1"]);
   });
 

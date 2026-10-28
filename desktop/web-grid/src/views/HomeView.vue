@@ -207,7 +207,7 @@ watch(
 );
 
 function relativeTime(timestamp: number): string {
-  if (!timestamp) return t("home.recent.available");
+  if (!timestamp) return "";
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
   if (minutes < 1) return t("home.recent.justNow");
   if (minutes < 60) return t("home.recent.minutes", { count: minutes });
@@ -228,7 +228,6 @@ function openTable(name: string) {
       <div>
         <p class="eyebrow">{{ dateText }}</p>
         <h1>{{ t(greetingKey) }}</h1>
-        <p class="home-subtitle">{{ t("home.subtitle") }}</p>
       </div>
       <div class="search-wrap">
         <NInput
@@ -282,10 +281,7 @@ function openTable(name: string) {
       <main class="home-main">
         <section class="content-card continue-card" :style="continueCardStyle">
           <div class="section-heading">
-            <div>
-              <p class="section-kicker">{{ t("home.continue.kicker") }}</p>
-              <h2>{{ t("home.continue.title") }}</h2>
-            </div>
+            <h2>{{ t("home.continue.title") }}</h2>
             <NButton text type="primary" @click="ui.navigate('tables')">
               {{ t("home.allTables") }}
               <template #icon><NIcon :size="15"><ArrowRight /></NIcon></template>
@@ -304,7 +300,7 @@ function openTable(name: string) {
               <span class="table-symbol"><NIcon :size="17"><Table2 /></NIcon></span>
               <span class="recent-name">
                 <strong>{{ collectionLabel(item.collection!, displayNames) }}</strong>
-                <small>{{ relativeTime(item.recent.openedAt) }}</small>
+                <small v-if="relativeTime(item.recent.openedAt)">{{ relativeTime(item.recent.openedAt) }}</small>
               </span>
               <NIcon :size="16" class="row-arrow"><ArrowRight /></NIcon>
             </button>
@@ -422,19 +418,18 @@ function openTable(name: string) {
 .protection-strip p { display: flex; min-width: 0; flex-direction: column; margin: 0; }
 .protection-strip small { color: var(--vt-fg-muted); font-size: 10px; }
 .protection-strip strong { overflow: hidden; font-size: var(--vt-font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.eyebrow, .section-kicker {
+.eyebrow {
   margin: 0 0 4px;
   color: var(--vt-fg-muted);
   font-size: var(--vt-font-caption);
 }
 h1, h2, h3, p { margin-top: 0; }
 h1 {
-  margin-bottom: 4px;
+  margin-bottom: 0;
   font-size: 24px;
   font-weight: 650;
   letter-spacing: -0.02em;
 }
-.home-subtitle { margin-bottom: 0; color: var(--vt-fg-muted); }
 .search-wrap { position: relative; width: min(380px, 38vw); }
 .search-results {
   position: absolute;

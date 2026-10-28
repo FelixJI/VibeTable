@@ -871,4 +871,123 @@ describe("FileWorkspaceView", () => {
     await wrapper.get(".file-error button").trigger("click");
     expect(wrapper.emitted("intent")?.at(-1)?.[0]).toMatchObject({ type: "document.listRequested" });
   });
+
+  // S40 depth-4096 regression: entering history shows a read in flight before
+  // mounting the cached tree. In the app, the workspaceV2Action handler marks
+  // fileHistory.readTree busy synchronously while the click flips the tab, so
+  // every NEW history mount (first entry and re-entry after leaving the tab)
+  // must defer the cached projection behind the loading state and mount the
+  // fresh tree exactly once.
+  it("defers each new history mount behind the readTree loading state", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const selected = entry({
+      documentId: "45454545-4545-4545-8545-454545454545",
+      entryHandle: "deferred-history",
+      displayName: "深度历史.txt",
+      capabilities: ["preview", "history"],
+    });
+    const cached = fileRevision(selected.documentId, "46464646-4646-4646-8646-464646464646");
+    const fresh = fileRevision(
+      selected.documentId,
+      "47474747-4747-4747-8747-474747474747",
+      { parentRevisionId: cached.revisionId, revisionOrdinal: 2, formalVersion: 2 },
+    );
+    store.setEntries([selected]);
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: cached.revisionId,
+      revisions: [cached],
+    });
+    const wrapper = mount(FileWorkspaceView, { attachTo: document.body });
+    await wrapper.get('[data-testid="document-row-deferred-history"]').trigger("click");
+    store.showInspector("history");
+    const lease = protection.beginOperation("fileHistory.readTree");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="file-history-loading"]').attributes("role")).toBe("status");
+    expect(wrapper.find('[data-testid="file-revision-tree"]').exists()).toBe(false);
+    expect(wrapper.find(`[data-revision-id="${cached.revisionId}"]`).exists()).toBe(false);
+
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: fresh.revisionId,
+      revisions: [cached, fresh],
+    });
+    protection.finishOperation(lease!);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(false);
+    expect(wrapper.get(`[data-revision-id="${fresh.revisionId}"]`).attributes("aria-current"))
+      .toBe("true");
+    expect(wrapper.find(`[data-revision-id="${cached.revisionId}"]`).exists()).toBe(true);
+
+    // While the tree stays mounted, a refresh read keeps the interactive tree.
+    const refreshLease = protection.beginOperation("fileHistory.readTree");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(false);
+    expect(wrapper.find(`[data-revision-id="${fresh.revisionId}"]`).exists()).toBe(true);
+    protection.finishOperation(refreshLease!);
+
+    // Leaving the tab unmounts the tree; re-entering the same document defers
+    // the cached tree again instead of re-rendering it twice.
+    store.showInspector("preview");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="file-revision-tree"]').exists()).toBe(false);
+    store.showInspector("history");
+    const reentryLease = protection.beginOperation("fileHistory.readTree");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="file-revision-tree"]').exists()).toBe(false);
+
+    const refreshed = fileRevision(
+      selected.documentId,
+      "50505050-5050-4050-8050-505050505050",
+      { parentRevisionId: fresh.revisionId, revisionOrdinal: 3, formalVersion: 3 },
+    );
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: refreshed.revisionId,
+      revisions: [cached, fresh, refreshed],
+    });
+    protection.finishOperation(reentryLease!);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(false);
+    expect(wrapper.get(`[data-revision-id="${refreshed.revisionId}"]`).attributes("aria-current"))
+      .toBe("true");
+    wrapper.unmount();
+  });
+
+  it("recovers the cached history tree when a first readTree fails", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const selected = entry({
+      documentId: "48484848-4848-4484-8848-484848484848",
+      entryHandle: "failed-history",
+      displayName: "失败恢复.txt",
+      capabilities: ["history"],
+    });
+    const cached = fileRevision(selected.documentId, "49494949-4949-4949-8949-494949494949");
+    store.setEntries([selected]);
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: cached.revisionId,
+      revisions: [cached],
+    });
+    const wrapper = mount(FileWorkspaceView, { attachTo: document.body });
+    await wrapper.get('[data-testid="document-row-failed-history"]').trigger("click");
+    store.showInspector("history");
+    const lease = protection.beginOperation("fileHistory.readTree");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(true);
+
+    protection.finishOperation(lease!, "workspace.read_failed");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="file-history-loading"]').exists()).toBe(false);
+    expect(wrapper.get(`[data-revision-id="${cached.revisionId}"]`).attributes("aria-current"))
+      .toBe("true");
+    wrapper.unmount();
+  });
 });

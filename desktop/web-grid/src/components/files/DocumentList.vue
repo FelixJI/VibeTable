@@ -66,13 +66,23 @@ function onSelect(event: MouseEvent, index: number): void {
   emit("select", index, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
 }
 
-function availabilityLabel(entry: DocumentEntry): string {
+function statusLabel(entry: DocumentEntry): string | null {
   if (entry.status === "deleted") return t("files.deleted");
   if (entry.availability === "missing") return t("files.missing");
   if (entry.availability === "unmounted") return t("files.unmounted");
   if (entry.availability === "unmanaged") return t("files.unmanaged");
   if (entry.availability === "unsafe") return t("files.unsafe");
-  return t("files.authority.workspace");
+  return null;
+}
+
+/** 仅当路径与显示名完全相同（根目录同名文件）时省略；其余非空路径都保留。 */
+function rowDetail(entry: DocumentEntry): string {
+  const parts: string[] = [];
+  const path = entry.relativePath;
+  if (path && path !== entry.displayName) parts.push(path);
+  const status = statusLabel(entry);
+  if (status) parts.push(status);
+  return parts.join(" · ");
 }
 
 function formatSize(bytes: number): string {
@@ -156,6 +166,7 @@ function onDragStart(event: DragEvent, entry: DocumentEntry, index: number): voi
       :draggable="entry.capabilities.includes('dragOut')"
       :title="entry.capabilities.includes('dragOut') ? t('files.dragOut.hint') : undefined"
       :data-testid="`document-row-${entry.entryHandle}`"
+      :data-path="entry.relativePath"
       @click="onSelect($event, index)"
       @focus="focusedHandle = entry.entryHandle"
       @dblclick="entry.capabilities.includes('open') && emit('open', entry)"
@@ -167,8 +178,8 @@ function onDragStart(event: DragEvent, entry: DocumentEntry, index: number): voi
         <NIcon :size="18" class="file-icon"><component :is="iconFor(entry)" /></NIcon>
         <span class="name-copy">
           <strong>{{ entry.displayName }}</strong>
-          <small>
-            <NIcon v-if="!['available', 'remote'].includes(entry.availability)" :size="12"><AlertTriangle /></NIcon>{{ entry.relativePath }} · {{ availabilityLabel(entry) }}
+          <small v-if="rowDetail(entry)">
+            <NIcon v-if="!['available', 'remote'].includes(entry.availability)" :size="12"><AlertTriangle /></NIcon>{{ rowDetail(entry) }}
           </small>
         </span>
       </span>

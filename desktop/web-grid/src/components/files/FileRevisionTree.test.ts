@@ -143,6 +143,12 @@ describe("FileRevisionTree", () => {
     expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(1);
     await first.trigger("keydown", { key: "ArrowRight" });
     expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(2);
+    // End/Home keyboard reachability is orthogonal to tree scale; asserting it
+    // here on the 3-row fixture keeps the 4096 mount free of full-tree patches.
+    await first.trigger("keydown", { key: "End" });
+    expect(document.activeElement?.getAttribute("data-revision-id")).toBe(revisions[2]!.revisionId);
+    await first.trigger("keydown", { key: "Home" });
+    expect(document.activeElement?.getAttribute("data-revision-id")).toBe(revisions[0]!.revisionId);
     wrapper.unmount();
   });
 
@@ -271,6 +277,45 @@ describe("FileRevisionTree", () => {
     expect(wrapper.get('[data-revision-id="revision-4095"]').attributes("aria-current")).toBe("true");
     wrapper.unmount();
   });
+
+  // S40 depth-4096 regression: an all-formal chain has no collapsed autosave
+  // shortcut, so the complete tree must mount with every legal version, its
+  // boundary markers, and a real restore entry. jsdom needs many seconds to
+  // create this DOM under coverage, so this test mounts once and asserts only
+  // scale contracts; interaction semantics (restore click, keyboard roving)
+  // stay on the small fixtures above and below.
+  it("renders the complete 4096 formal chain with boundary markers and a restore entry", () => {
+    const chain: FileRevisionV2[] = Array.from({ length: 4096 }, (_, index) => ({
+      ...revisions[0]!,
+      revisionId: `formal-${index}`,
+      parentRevisionId: index === 0 ? null : `formal-${index - 1}`,
+      revisionOrdinal: index + 1,
+      formalVersion: index + 1,
+      kind: "formal" as const,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 8, 0, 0, index)).toISOString(),
+    }));
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: { documentId, effectiveRevisionId: "formal-4095", revisions: chain },
+        busy: false,
+      },
+    });
+    const rows = wrapper.findAll('[role="treeitem"]');
+    const first = rows[0]!;
+    const effective = rows.at(-1)!;
+    expect(rows).toHaveLength(4096);
+    expect(first.attributes("data-revision-id")).toBe("formal-0");
+    expect(first.attributes("aria-level")).toBe("1");
+    expect(first.text()).toContain("V1");
+    expect(effective.attributes("data-revision-id")).toBe("formal-4095");
+    expect(effective.attributes("aria-current")).toBe("true");
+    expect(effective.text()).toContain("当前有效");
+    expect(
+      first.findAll("button").some((button) => button.text() === "恢复为新版本"),
+    ).toBe(true);
+    expect(first.find("small").text()).toContain("1月1日");
+    wrapper.unmount();
+  }, 60_000);
   it("keeps a real restore entry for non-effective ancestors next to upgrade", async () => {
     const wrapper = mount(FileRevisionTree, {
       props: {

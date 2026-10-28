@@ -108,7 +108,7 @@ describe("PluginCenterView", () => {
     usePluginStore().projectInstallPlan(plan);
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
     expect(wrapper.get('[data-testid="plugin-install-blocked"]').text()).toContain("旧 Worker 插件已停止支持");
-    expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("BLOCKED");
+    expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("已阻断");
     expect(wrapper.get('[data-testid="plugin-install-commit"]').attributes("disabled")).toBeDefined();
     await expect(usePluginService().commitInstall(plan)).rejects.toThrow("插件需要迁移");
     expect(posted.some(request => request.type === "plugin.install.commit")).toBe(false);

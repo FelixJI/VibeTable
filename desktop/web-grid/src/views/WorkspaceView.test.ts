@@ -2885,7 +2885,7 @@ describe("WorkspaceView", () => {
     expect(posted.some(item => item.type === "field.settings.describe")).toBe(false);
     await wrapper.get('[data-testid="field-management-view"] header button').trigger("click");
     await flushPromises();
-    expect(document.body.textContent).toContain("SCHEMA V2");
+    expect(document.body.textContent).toContain("字段设置");
     expect(document.body.textContent).toContain("正在读取字段能力与推荐设置");
     expect(posted).toEqual(expect.arrayContaining([
       expect.objectContaining({

@@ -642,7 +642,7 @@ function applyStoragePlan(): void {
         <template v-if="selected">
           <div class="detail-title">
             <div>
-              <small>SNAPSHOT</small>
+              <small>{{ t("workspaceV2.snapshot.detail") }}</small>
               <strong>{{ formatDate(selected.createdAt) }}</strong>
             </div>
             <NButton
@@ -1329,7 +1329,7 @@ function applyStoragePlan(): void {
 .snapshot-detail { padding: 18px; overflow: auto; background: var(--vt-bg-subtle); }
 .detail-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .detail-title > div { display: flex; min-width: 0; flex-direction: column; }
-.detail-title small { color: var(--vt-color-primary-500); font-size: 9px; font-weight: 700; letter-spacing: .16em; }
+.detail-title small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .detail-title strong { margin-top: 3px; font-size: var(--vt-font-label); }
 .detail-facts { margin: 18px 0; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .detail-facts > div,

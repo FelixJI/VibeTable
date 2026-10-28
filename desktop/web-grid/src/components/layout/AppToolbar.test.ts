@@ -4,7 +4,6 @@ import { createPinia, setActivePinia } from "pinia";
 import { NDropdown } from "naive-ui";
 import AppToolbar from "./AppToolbar.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import { useUiStore } from "@/stores/uiStore";
 
 describe("AppToolbar", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -55,23 +54,17 @@ describe("AppToolbar", () => {
     expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("选择一张数据表");
   });
 
-  it("shows the table label with the local last-modified time instead of the physical id", async () => {
+  it("shows the table label without duplicating the sidebar's local last-modified line", async () => {
     const workspace = useWorkspaceStore();
-    const ui = useUiStore();
     workspace.setOpened([
       { collection: "vt_t_01abc", metadata: {} },
     ], { vt_t_01abc: "客户清单" });
     workspace.selectTable("vt_t_01abc");
     const wrapper = mount(AppToolbar);
     expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("客户清单");
-    // 无本机修改记录时不展示物理 id。
+    // 本机修改时间由侧栏每表展示；工具栏不重复，也不展示物理 id。
     expect(wrapper.text()).not.toContain("vt_t_01abc");
-
-    ui.touchTable("vt_t_01abc");
-    await wrapper.vm.$nextTick();
-    expect(wrapper.get('[data-testid="toolbar-table-description"]').text())
-      .toContain("本机修改");
-    expect(wrapper.get('[data-testid="toolbar-table-description"]').text()).toContain("刚刚");
+    expect(wrapper.find('[data-testid="toolbar-table-description"]').exists()).toBe(false);
   });
 
   it("provides a compact accessible table switcher with every table on narrow layouts", () => {

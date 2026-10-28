@@ -131,10 +131,6 @@ function toggleExpanded(taskId: string): void {
 <template>
   <section class="import-management" data-testid="import-management">
     <header class="import-management-header">
-      <div>
-        <h2>{{ t("importManagement.title") }}</h2>
-        <p>{{ t("importManagement.subtitle") }}</p>
-      </div>
       <NButton
         size="small"
         secondary
@@ -182,7 +178,7 @@ function toggleExpanded(taskId: string): void {
               <span class="import-source-icon"><NIcon :size="19"><component :is="source.icon" /></NIcon></span>
               <span class="import-source-copy">
                 <strong>{{ source.label }}</strong>
-                <small>{{ source.accept ? t("importManagement.source.hint") : t(`importManagement.source.${source.id}Hint`) }}</small>
+                <small v-if="!source.accept">{{ t(`importManagement.source.${source.id}Hint`) }}</small>
               </span>
             </button>
             <NTooltip v-else placement="top" :delay="200">
@@ -352,20 +348,8 @@ function toggleExpanded(taskId: string): void {
 }
 .import-management-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-.import-management-header h2 {
-  margin: 0 0 4px;
-  font-size: var(--vt-font-title, 16px);
-  font-weight: 650;
-  color: var(--vt-fg);
-}
-.import-management-header p {
-  margin: 0;
-  color: var(--vt-fg-muted);
-  font-size: var(--vt-font-caption);
+  align-items: center;
+  justify-content: flex-end;
 }
 .import-active-task {
   display: flex;

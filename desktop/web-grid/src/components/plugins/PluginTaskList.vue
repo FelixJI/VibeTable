@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PluginTaskViewSnapshot } from "@/contracts";
+import { t } from "@/i18n";
 defineProps<{ tasks: readonly PluginTaskViewSnapshot[]; variant?: "panel" | "app" | "headless" }>();
 const emit = defineEmits<{ cancel: [taskId: string]; resolve: [decision: "approved" | "rejected", taskId: string] }>();
 </script>
@@ -17,7 +18,7 @@ const emit = defineEmits<{ cancel: [taskId: string]; resolve: [decision: "approv
         >{{ task.cancelRequested ? '已请求取消' : '请求取消' }}</button>
       </div>
       <section v-if="task.confirmation" class="host-confirmation" role="alertdialog" aria-modal="true">
-        <div><span>HOST FINAL {{ task.confirmation.risk.toUpperCase() }} CONFIRMATION</span><strong>{{ task.confirmation.title }}</strong><p>{{ task.confirmation.summary }}</p></div>
+        <div><span>{{ t("pluginConfirm.hostFinal", { risk: t(`plugin.risk.${task.confirmation.risk}`) }) }}</span><strong>{{ task.confirmation.title }}</strong><p>{{ task.confirmation.summary }}</p></div>
         <p v-if="variant === 'app' || variant === 'headless'">请在宿主原生确认窗口中批准或拒绝。</p>
         <div v-else class="confirmation-actions">
           <button type="button" @click="emit('resolve', 'rejected', task.taskId)">拒绝</button>
@@ -25,7 +26,7 @@ const emit = defineEmits<{ cancel: [taskId: string]; resolve: [decision: "approv
         </div>
       </section>
       <section v-if="task.error" data-testid="plugin-surface-task-error" class="host-error" role="alert">
-        <div><span>SAFE ERROR / {{ task.error.code }}</span><strong>{{ task.error.message }}</strong></div>
+        <div><span>{{ t("pluginTask.error", { code: task.error.code }) }}</span><strong>{{ task.error.message }}</strong></div>
         <p v-if="task.error.code === 'plugin_commit_unknown'">写入结果未知，请核对实际数据；请勿重复执行。</p>
         <p>恢复方式：<code>{{ task.error.recoverability }}</code></p>
       </section>
@@ -46,13 +47,13 @@ const emit = defineEmits<{ cancel: [taskId: string]; resolve: [decision: "approv
 .task-status button:disabled { opacity: .55; }
 .host-confirmation { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px; border-top: 1px solid color-mix(in srgb, var(--vt-color-danger) 35%, var(--vt-border)); border-left: 3px solid var(--vt-color-danger); background: color-mix(in srgb, var(--vt-color-danger) 6%, var(--vt-bg)); }
 .host-confirmation > div:first-child { display: grid; gap: 3px; }
-.host-confirmation span { color: var(--vt-color-danger); font: 650 9px ui-monospace, monospace; letter-spacing: .1em; }
+.host-confirmation span { color: var(--vt-color-danger); font-size: 10px; font-weight: 650; }
 .host-confirmation p { margin: 0; color: var(--vt-fg-muted); }
 .confirmation-actions { display: flex; gap: 7px; }
 .confirmation-actions .approve { color: #fff; border-color: var(--vt-color-danger); background: var(--vt-color-danger); }
 .host-result { padding: 10px 12px; color: var(--vt-color-success); border-top: 1px solid var(--vt-border); }
 .host-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; color: var(--vt-color-danger); border-top: 1px solid var(--vt-border); border-left: 3px solid var(--vt-color-danger); }
 .host-error div { display: grid; gap: 3px; }
-.host-error span { font: 650 9px ui-monospace, monospace; letter-spacing: .1em; }
+.host-error span { font-size: 10px; font-weight: 650; }
 .host-error p { margin: 0; color: var(--vt-fg); }
 </style>

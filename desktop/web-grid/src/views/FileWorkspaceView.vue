@@ -59,6 +59,23 @@ let queryTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisionTree = computed(() =>
   store.primaryEntry ? protection.fileTrees[store.primaryEntry.documentId] ?? null : null);
+// Entering history always re-reads the tree while a cached projection may
+// already exist; mounting the stale cache first renders a deep tree twice
+// (cached mount, then reply replace). Defer only NEW mounts behind the loading
+// state so a mounted tree survives refresh reads with expansion and focus.
+const mountedHistoryDocumentId = ref<string | null>(null);
+const historyTreeLoading = computed(() => {
+  if (store.inspectorTab !== "history") return false;
+  if (protection.busyOperation !== "fileHistory.readTree") return false;
+  const documentId = store.primaryEntry?.documentId;
+  return documentId !== undefined && documentId !== mountedHistoryDocumentId.value;
+});
+watch(() => {
+  if (store.inspectorTab !== "history" || historyTreeLoading.value) return null;
+  return store.primaryEntry?.documentId ?? null;
+}, (documentId) => {
+  mountedHistoryDocumentId.value = documentId;
+}, { immediate: true });
 
 function pendingCandidateEntries(change: PendingFileChange): readonly DocumentEntry[] {
   const ids = new Set(change.candidateDocumentIds);
@@ -129,6 +146,12 @@ const operatorOptions = computed<readonly FileDocumentFilter["operator"][]>(() =
   if (filterField.value === "status") return ["eq"];
   return ["eq", "contains"];
 });
+const operatorSelectOptions = computed(() =>
+  operatorOptions.value.map((value) => ({ value, label: t(`files.filter.operator.${value}`) })));
+const operatorLabel = (operator: FileDocumentFilter["operator"]): string =>
+  t(`files.filter.operator.${operator}`);
+const fieldLabel = (field: FileDocumentFilterField): string =>
+  fieldOptions.find((option) => option.value === field)?.label ?? field;
 
 function currentQuery(cursor: string | null = null): FileDocumentQuery {
   const search = store.query.trim();
@@ -366,11 +389,11 @@ watch(
         { value: 'and', label: t('files.filter.and') }, { value: 'or', label: t('files.filter.or') },
       ]" />
       <NSelect v-model:value="filterField" size="small" data-testid="file-filter-field" :options="fieldOptions" />
-      <NSelect v-model:value="filterOperator" size="small" data-testid="file-filter-operator" :options="operatorOptions.map((value) => ({ value, label: value }))" />
+      <NSelect v-model:value="filterOperator" size="small" data-testid="file-filter-operator" :options="operatorSelectOptions" />
       <NInput v-model:value="filterValue" size="small" data-testid="file-filter-value" :placeholder="t('files.filter.value')" @keyup.enter="addMetadataFilter" />
       <NButton size="small" data-testid="file-filter-add" @click="addMetadataFilter">{{ t("files.filter.add") }}</NButton>
       <button v-for="(filter, index) in metadataFilters" :key="`${filter.field}-${index}`" type="button" class="filter-chip" :data-testid="`file-filter-chip-${index}`" @click="removeMetadataFilter(index)">
-        {{ filter.field }} {{ filter.operator }} {{ String(filter.value) }} ×
+        {{ fieldLabel(filter.field) }} {{ operatorLabel(filter.operator) }} {{ String(filter.value) }} ×
       </button>
     </div>
 
@@ -446,6 +469,7 @@ watch(
         :active-tab="store.inspectorTab"
         :busy="protection.busyOperation !== null"
         :revision-tree="currentRevisionTree"
+        :history-loading="historyTreeLoading"
         :requested-revision-id="props.requestedRevisionId"
         :diff-phase="store.diffPhase"
         :diff-result="store.diffResult"

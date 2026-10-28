@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  documentOrderOracle, documentRefreshReadyInPage, installDocumentPageCaptureInPage, requireDocumentPages,
-  requireAppendedRevision, requireActivatedLeaf,
+  documentOrderOracle, documentRefreshReadyInPage, documentRowHandleInPage, installDocumentPageCaptureInPage,
+  requireDocumentPages, requireAppendedRevision, requireActivatedLeaf,
 } from "./file_document_operations_journey.mjs";
 
 function pagesFixture() {
@@ -153,10 +153,11 @@ test("refresh requires its search terminal, settled list and the response path-b
     }
   });
   let handle = "new";
-  let rowPath = "file.txt · Workspace";
+  let rowPath = "file.txt";
   class Element {
+    constructor() { this.dataset = { path: rowPath }; }
     getAttribute() { return `document-row-${handle}`; }
-    querySelector() { return { textContent: rowPath }; }
+    querySelector() { return null; }
   }
   const roundTrip = { requestId: "old", requestType: "document.listRequested",
     responseType: "document.listLoaded", code: null, startedAt: "same-millisecond" };
@@ -185,9 +186,99 @@ test("refresh requires its search terminal, settled list and the response path-b
   handle = "old-handle";
   assert.equal(ready(), false);
   handle = "new";
-  rowPath = "other-file.txt · Workspace";
+  rowPath = "other-file.txt";
   assert.equal(ready(), false);
-  rowPath = "file.txt · Workspace";
+  rowPath = "file.txt";
   diagnostics.roundTrips[1].code = "DOCUMENT_LIST_FAILED";
   assert.equal(ready(), false);
+});
+
+// Match DocumentList's path/handle attributes while varying its optional subtitle.
+function componentRow({ entryHandle, relativePath, detail = null }) {
+  return {
+    dataset: { path: relativePath },
+    detail,
+    getAttribute(name) { return name === "data-testid" ? `document-row-${entryHandle}` : null; },
+    querySelector(selector) { return selector === "small" ? detail : null; },
+  };
+}
+
+function installRealRowDom(t, rows, { pages, roundTrips, pending = {} }) {
+  const saved = ["window", "document", "HTMLElement"].map(name => [name,
+    Object.getOwnPropertyDescriptor(globalThis, name)]);
+  t.after(() => {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const diagnostics = { roundTrips, pending };
+  Object.defineProperty(globalThis, "window", { configurable: true,
+    value: { __vibetableE2EBridgeDiagnostics: diagnostics, __s41DocumentPages: { pages } } });
+  Object.defineProperty(globalThis, "document", { configurable: true,
+    value: { querySelectorAll: () => rows } });
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true,
+    value: function HTMLElement() {} });
+  for (const row of rows) Object.setPrototypeOf(row, HTMLElement.prototype);
+  return diagnostics;
+}
+
+const searchRoundTrip = requestId => ({ requestId, requestType: "document.listRequested",
+  responseType: "document.listLoaded", code: null, startedAt: "same-millisecond" });
+const searchPage = (requestId, entries) => ({ requestId,
+  query: { filters: [{ field: "displayName", operator: "contains", value: "name" }] },
+  payload: { entries } });
+
+test("refresh readiness accepts a root document row that renders no detail subtitle", t => {
+  installRealRowDom(t, [componentRow({ entryHandle: "new", relativePath: "file.txt" })], {
+    pages: [searchPage("new", [{ relativePath: "file.txt", entryHandle: "new" }])],
+    roundTrips: [searchRoundTrip("old"), searchRoundTrip("new")],
+  });
+  assert.equal(documentRefreshReadyInPage({ priorRequestIds: ["old"], relativePath: "file.txt",
+    previousHandle: "document-row-previous", search: "name" }), true,
+  "a root row without any <small> subtitle must still be identifiable");
+});
+
+test("refresh readiness accepts a nested normal row whose detail line dropped the separator-suffixed label", t => {
+  installRealRowDom(t, [componentRow({ entryHandle: "new", relativePath: "left/same-name.txt",
+    detail: { textContent: "left/same-name.txt" } })], {
+    pages: [searchPage("new", [{ relativePath: "left/same-name.txt", entryHandle: "new" }])],
+    roundTrips: [searchRoundTrip("old"), searchRoundTrip("new")],
+  });
+  assert.equal(documentRefreshReadyInPage({ priorRequestIds: ["old"], relativePath: "left/same-name.txt",
+    previousHandle: "document-row-previous", search: "name" }), true,
+  "a bare nested path detail line without the ` · ` suffix must still be identifiable");
+});
+
+test("document row lookup resolves rows through the exact semantic path anchor", t => {
+  installRealRowDom(t, [
+    componentRow({ entryHandle: "left-new", relativePath: "left/same-name.txt",
+      detail: { textContent: "left/same-name.txt" } }),
+    componentRow({ entryHandle: "root", relativePath: "same-name.txt" }),
+  ], { pages: [], roundTrips: [] });
+  assert.equal(documentRowHandleInPage("left/same-name.txt"), "document-row-left-new");
+  assert.equal(documentRowHandleInPage("same-name.txt"), "document-row-root");
+  assert.equal(documentRowHandleInPage("right/same-name.txt"), null,
+    "a sibling folder row cannot satisfy the lookup");
+  assert.equal(documentRowHandleInPage("ame-name.txt"), null,
+    "path anchoring is exact, not substring based");
+});
+
+test("same basename in different folders resolves through its exact semantic path anchor", t => {
+  const rows = [
+    componentRow({ entryHandle: "left-new", relativePath: "left/same-name.txt",
+      detail: { textContent: "left/same-name.txt" } }),
+    componentRow({ entryHandle: "right-new", relativePath: "right/same-name.txt",
+      detail: { textContent: "right/same-name.txt" } }),
+  ];
+  const pages = [searchPage("new", [
+    { relativePath: "left/same-name.txt", entryHandle: "left-new" },
+    { relativePath: "right/same-name.txt", entryHandle: "right-new" },
+  ])];
+  installRealRowDom(t, rows, { pages, roundTrips: [searchRoundTrip("old"), searchRoundTrip("new")] });
+  const ready = () => documentRefreshReadyInPage({ priorRequestIds: ["old"],
+    relativePath: "right/same-name.txt", previousHandle: "document-row-left-new", search: "name" });
+  assert.equal(ready(), true, "the right-folder row is selected through its exact path");
+  pages[0].payload.entries = [{ relativePath: "left/same-name.txt", entryHandle: "left-new" }];
+  assert.equal(ready(), false, "a left-folder authoritative entry cannot qualify the right row");
 });

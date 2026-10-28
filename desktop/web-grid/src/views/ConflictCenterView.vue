@@ -99,7 +99,6 @@ function inspect(conflictId: string): void {
       <div class="conflict-title">
         <span><GitCompareArrows :size="20" /></span>
         <div>
-          <p>CONFLICT CENTER</p>
           <h1>{{ t("workspaceV2.conflict.title") }}</h1>
           <small>{{ t("workspaceV2.conflict.description") }}</small>
         </div>
@@ -159,7 +158,7 @@ function inspect(conflictId: string): void {
 
       <section v-if="selectedItems.length" class="conflict-detail">
         <header>
-          <div><small>CONFLICT SET</small><strong>{{ selectedItems.length }} {{ t("workspaceV2.conflict.choice") }}</strong></div>
+          <div><small>{{ t("workspaceV2.conflict.list") }}</small><strong>{{ selectedItems.length }} {{ t("workspaceV2.conflict.choice") }}</strong></div>
         </header>
 
         <article v-for="item in selectedItems" :key="item.itemId" class="conflict-item">
@@ -265,8 +264,7 @@ function inspect(conflictId: string): void {
   border-radius: 12px;
   background: var(--vt-color-warning-50);
 }
-.conflict-title p { margin: 0; color: var(--vt-color-warning); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
-.conflict-title h1 { margin: 2px 0; font-size: var(--vt-font-heading); font-weight: 650; letter-spacing: -.02em; }
+.conflict-title h1 { margin: 0 0 2px; font-size: var(--vt-font-heading); font-weight: 650; letter-spacing: -.02em; }
 .conflict-title small { color: var(--vt-fg-muted); }
 .conflict-center > :deep(.n-alert) { max-width: 1080px; margin: 0 auto 14px; }
 .advisory-action { display: flex; justify-content: flex-end; margin-top: 10px; }
@@ -308,7 +306,7 @@ function inspect(conflictId: string): void {
 .conflict-detail { padding: 20px; overflow: auto; background: var(--vt-bg-subtle); }
 .conflict-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .conflict-detail > header > div { display: flex; min-width: 0; flex-direction: column; }
-.conflict-detail > header small { color: var(--vt-color-primary-500); font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.conflict-detail > header small { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .conflict-detail > header strong { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .base-line { margin: 18px 0 10px; padding: 12px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
 .base-line span { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
