@@ -1063,6 +1063,7 @@ def test_native_contrast_actions_only_wait_for_foreground_when_observing(
     monkeypatch.setattr(native, "_observe_owned_chrome", observe)
 
     def change_contrast(requested_action, _evidence):
+        assert window.owner(14) == 12
         assert calls == []
         calls.append(("contrast", requested_action))
         return {"status": "restored" if requested_action == "contrast-off" else "enabled"}
@@ -1089,7 +1090,7 @@ def test_native_contrast_actions_only_wait_for_foreground_when_observing(
     else:
         assert result["status"] == "completed", result
         assert calls[-1] == ("observe", 25.0)
-        assert window.foreground_observation["nullForegroundSamples"] == 1
+        assert result["foreground"]["nullForegroundSamples"] == 1
     assert [name for name, _ in calls].count("activate") == 1
     assert calls[1] == ("synchronize", 2000)
 

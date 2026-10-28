@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
@@ -19,7 +21,7 @@ import (
 // Restore must preserve the published state when a dependency fails, including
 // cancellation after materialization but before the authoritative head CAS.
 func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testing.T) {
-	for _, name := range []string{"cancel_after_materialization", "stage_create_failure", "permission_read", "missing_content", "stale_effective", "missing_revision"} {
+	for _, name := range []string{"cancel_after_materialization", "stage_create_failure", "permission_read", "missing_content", "permission_read_disk_matches", "missing_content_disk_matches", "corrupt_content_disk_matches", "read_failure_disk_matches", "close_failure_disk_matches", "stale_effective", "missing_revision"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			root := t.TempDir()
@@ -87,6 +89,13 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 			}
 			var expected error
 			var blockedStage string
+			beforeBytes := "two"
+			if strings.HasSuffix(name, "_disk_matches") {
+				beforeBytes = "one"
+				if err := os.WriteFile(filepath.Join(materializer.filesRoot, "restore.txt"), []byte(beforeBytes), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			switch name {
 			case "cancel_after_materialization":
 				expected = context.Canceled
@@ -102,12 +111,21 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 					}
 				}
 				expected = os.ErrExist
-			case "permission_read":
+			case "permission_read", "permission_read_disk_matches":
 				repository.target, repository.failure = first.Revision.ObjectID, os.ErrPermission
 				expected = os.ErrPermission
-			case "missing_content":
+			case "missing_content", "missing_content_disk_matches":
 				repository.target, repository.failure = first.Revision.ObjectID, objectrepo.ErrNotFound
 				expected = objectrepo.ErrNotFound
+			case "corrupt_content_disk_matches":
+				repository.target, repository.content = first.Revision.ObjectID, "bad"
+				expected = ErrStateCorrupt
+			case "read_failure_disk_matches":
+				repository.target, repository.readFailure = first.Revision.ObjectID, errRestoreReadFailure
+				expected = errRestoreReadFailure
+			case "close_failure_disk_matches":
+				repository.target, repository.closeFailure = first.Revision.ObjectID, errRestoreCloseFailure
+				expected = errRestoreCloseFailure
 			case "stale_effective":
 				request.ExpectedEffectiveRevision = stringRef(first.Revision.RevisionID)
 				expected = ErrRevisionConflict
@@ -126,6 +144,8 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 				}
 			}
 			repository.target, repository.failure, repository.beforeOpen = "", nil, nil
+			repository.readFailure, repository.closeFailure = nil, nil
+			repository.content = ""
 			document, err := service.Inspect(testDocumentOne)
 			if err != nil || !reflect.DeepEqual(document, second.Document) {
 				t.Fatalf("failed restore changed document: %#v err=%v", document, err)
@@ -134,7 +154,7 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 			if err != nil || !found || head != beforeHead || service.Root() != beforeRoot || coordinator.RecoveryState() != beforeRecovery {
 				t.Fatalf("failed restore advanced published state: head=%#v found=%v err=%v recovery=%#v", head, found, err, coordinator.RecoveryState())
 			}
-			assertMaterializedContent(t, materializer.filesRoot, "restore.txt", "two")
+			assertMaterializedContent(t, materializer.filesRoot, "restore.txt", beforeBytes)
 			if _, found, err := headStore.LoadOperationReceipt(ctx, testWorkspaceID, operationID); err != nil || found {
 				t.Fatalf("failed restore published receipt: found=%v err=%v", found, err)
 			}
@@ -182,11 +202,19 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 	}
 }
 
+var (
+	errRestoreReadFailure  = errors.New("filehistory_test.restore_read_failure")
+	errRestoreCloseFailure = errors.New("filehistory_test.restore_close_failure")
+)
+
 type restoreReadFailureRepository struct {
 	objectrepo.Repository
-	target     objectrepo.ObjectID
-	failure    error
-	beforeOpen func()
+	target       objectrepo.ObjectID
+	failure      error
+	beforeOpen   func()
+	content      string
+	readFailure  error
+	closeFailure error
 }
 
 func (repository *restoreReadFailureRepository) Open(ctx context.Context, id objectrepo.ObjectID) (io.ReadCloser, error) {
@@ -196,5 +224,28 @@ func (repository *restoreReadFailureRepository) Open(ctx context.Context, id obj
 	if id == repository.target && repository.failure != nil {
 		return nil, repository.failure
 	}
+	if id == repository.target && repository.readFailure != nil {
+		return io.NopCloser(iotest.ErrReader(repository.readFailure)), nil
+	}
+	if id == repository.target && repository.closeFailure != nil {
+		inner, err := repository.Repository.Open(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return &restoreCloseErrorReader{ReadCloser: inner, failure: repository.closeFailure}, nil
+	}
+	if id == repository.target && repository.content != "" {
+		return io.NopCloser(strings.NewReader(repository.content)), nil
+	}
 	return repository.Repository.Open(ctx, id)
+}
+
+type restoreCloseErrorReader struct {
+	io.ReadCloser
+	failure error
+}
+
+func (reader *restoreCloseErrorReader) Close() error {
+	_ = reader.ReadCloser.Close()
+	return reader.failure
 }

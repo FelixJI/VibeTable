@@ -168,6 +168,16 @@ describe("headerFilterConditions（列感知往返）", () => {
     ]);
   });
 
+  it("JSON contains only mirrors a unique textual document condition", () => {
+    const condition: FilterCondition = { field: "payload", operator: "contains", value: "two words" };
+    expect(headerFilterConditions([condition], columns)).toEqual([condition]);
+    expect(headerFilterConditions([condition, { ...condition, value: "other" }], columns)).toEqual([]);
+    expect(headerFilterConditions([{ ...condition, value: "" }], columns)).toEqual([]);
+    expect(headerFilterConditions([{ ...condition, value: ["value"] }], columns)).toEqual([]);
+    expect(headerFilterConditions([condition], [{ ...payloadColumn, filterInput: "multiSelect" }])).toEqual([]);
+    expect(headerFilterConditions([condition], [{ ...payloadColumn, filterOperators: ["contains"] }])).toEqual([]);
+  });
+
   it("contains token 组只在普通文本列镜像；其他列与输入往返不一致不镜像", () => {
     const noteGroup: FilterExpression = {
       groupLogic: "OR",
