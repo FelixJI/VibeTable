@@ -3,6 +3,42 @@ import assert from "node:assert/strict";
 import { assertSidebarPluginReachable, commitInspectedApplicationUpgrade, installPluginUpgradeCaptureInPage } from "./plugin_applications.mjs";
 import { captureCompletedInPage, waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 
+test("recovered shell waits for the catalog-backed sidebar application before asserting reachability", async () => {
+  let visible = false;
+  let projectCatalog;
+  const catalogReady = new Promise(resolve => { projectCatalog = () => { visible = true; resolve(); }; });
+  const observations = [];
+  const page = { getByTestId(id) {
+    assert.ok(id === "nav-plugins" || id === "nav-plugin-app-com.vibetable.e2e.application-a/open-app");
+    return {
+      async isVisible() { return id === "nav-plugins" || visible; },
+      async waitFor() { if (id !== "nav-plugins") await catalogReady; },
+    };
+  } };
+  const recorder = { check(name, passed) {
+    observations.push({ name, passed });
+    assert.equal(passed, true);
+  } };
+  let failure;
+  const waiting = assertSidebarPluginReachable(page, recorder, "renderer recovery")
+    .catch(error => { failure = error; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(observations, [], "static navigation is not catalog readiness");
+  projectCatalog();
+  await waiting;
+  assert.equal(failure, undefined);
+  assert.deepEqual(observations, [{ name: "renderer recovery", passed: true }]);
+});
+
+test("sidebar recovery readiness propagates a missing application instead of accepting the static shell", async () => {
+  const failure = new Error("application entry did not become visible");
+  const page = { getByTestId(id) { return { async waitFor() { throw failure; }, async isVisible() { return id === "nav-plugins"; } }; } };
+  let checks = 0;
+  await assert.rejects(assertSidebarPluginReachable(page, { check() { checks++; } }, "renderer recovery"),
+    error => error === failure);
+  assert.equal(checks, 0);
+});
+
 const plan = { planId: "lease", projectKey: "local:workspace", projectRevision: "revision",
   packageHash: "package-v2", manifest: { pluginId: "application", version: "2.0.0" } };
 const request = { type: "plugin.lifecycle.upgrade", requestId: "approved-upgrade", payload: {

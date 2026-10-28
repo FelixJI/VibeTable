@@ -5,12 +5,111 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
+
+func TestMaterializerCaseOnlyRenamePreservesFileAndPublication(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		from            string
+		to              string
+		failPublication bool
+	}{
+		{name: "upper to lower", from: "A.txt", to: "a.txt"},
+		{name: "lower to upper", from: "a.txt", to: "A.txt"},
+		{name: "rollback upper to lower", from: "A.txt", to: "a.txt", failPublication: true},
+		{name: "rollback lower to upper", from: "a.txt", to: "A.txt", failPublication: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newHistoryFixture(t)
+			root := t.TempDir()
+			materializer, err := OpenMaterializer(
+				filepath.Join(root, "files"), filepath.Join(root, "journal"), fixture.repository,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenPersistentHeadStore(filepath.Join(root, "head.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			fixture.service.materializer = materializer
+			fixture.service.headStore = store
+			saved, err := fixture.save(ctx, SaveRequest{
+				Token: fixture.token, DocumentID: testDocumentOne, Path: test.from,
+				Kind: RevisionFormal, Content: []byte("preserved"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeHead, found, err := store.Load(ctx, testWorkspaceID)
+			if err != nil || !found {
+				t.Fatalf("load saved head: found=%v err=%v", found, err)
+			}
+			beforeRecovery := fixture.coordinator.RecoveryState()
+			renameCtx := ctx
+			publicationFailure := errors.New("rename publication failed")
+			if test.failPublication {
+				renameCtx, err = WithOperationReceiptBuilder(ctx, func(Publication) (protocolv2.OperationReceipt, error) {
+					content, readErr := os.ReadFile(filepath.Join(materializer.filesRoot, test.to))
+					if readErr != nil || string(content) != "preserved" {
+						t.Errorf("file missing before publication: content=%q err=%v", content, readErr)
+					}
+					return protocolv2.OperationReceipt{}, publicationFailure
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = fixture.service.Rename(renameCtx, fixture.token, testDocumentOne, test.to,
+				stringRef(saved.Revision.RevisionID))
+			expectedPath := test.to
+			if test.failPublication {
+				if !errors.Is(err, publicationFailure) {
+					t.Fatalf("rename error=%v, want publication failure", err)
+				}
+				expectedPath = test.from
+				head, found, loadErr := store.Load(ctx, testWorkspaceID)
+				document, inspectErr := fixture.service.Inspect(testDocumentOne)
+				if loadErr != nil || !found || head != beforeHead || inspectErr != nil ||
+					!reflect.DeepEqual(document, saved.Document) ||
+					fixture.coordinator.RecoveryState() != beforeRecovery {
+					t.Fatalf("failed rename changed published state: head=%#v document=%#v load=%v inspect=%v",
+						head, document, loadErr, inspectErr)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			assertMaterializedContent(t, materializer.filesRoot, expectedPath, "preserved")
+			entries, err := os.ReadDir(materializer.filesRoot)
+			if err != nil || len(entries) != 1 || entries[0].Name() != expectedPath {
+				t.Fatalf("materialized directory=%v err=%v, want only %s", entries, err, expectedPath)
+			}
+			if _, err := os.Lstat(materializer.journalPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rename left journal: %v", err)
+			}
+			reopened, err := OpenCurrent(ctx, fixture.repository, fixture.coordinator, store,
+				WithMaterializer(materializer))
+			if err != nil {
+				t.Fatal(err)
+			}
+			document, err := reopened.Inspect(testDocumentOne)
+			if err != nil || document.RelativePath != expectedPath ||
+				document.EffectiveRevisionID != saved.Revision.RevisionID ||
+				!reflect.DeepEqual(document.Revisions, saved.Document.Revisions) {
+				t.Fatalf("reopened rename changed path or history: document=%#v err=%v", document, err)
+			}
+		})
+	}
+}
 
 func TestMaterializerTracksEffectiveLeafRenameRestoreAndDelete(t *testing.T) {
 	ctx := context.Background()
@@ -203,6 +302,75 @@ func TestFormalRelinkRematerializesMissingSameContentLeaf(t *testing.T) {
 		t.Fatalf("relink did not create next formal revision: %#v", relinked)
 	}
 	assertMaterializedContent(t, filesRoot, "relink.txt", "same")
+}
+
+func TestMaterializerPlansOnlyMissingOrDifferentBytes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		previous   string
+		disk       string
+		missing    bool
+		unsafe     bool
+		operations int
+	}{
+		{name: "new matching leaf", disk: "new"},
+		{name: "changed matching leaf", previous: "old", disk: "new"},
+		{name: "different bytes", disk: "bad", operations: 1},
+		{name: "missing leaf", missing: true, operations: 1},
+		{name: "unsafe target", unsafe: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newHistoryFixture(t)
+			ctx := context.Background()
+			current := map[string]Document{}
+			request := SaveRequest{
+				Token: fixture.token, DocumentID: testDocumentOne, Path: "external.txt",
+				Kind: RevisionAutosave, Content: []byte("new"),
+			}
+			if test.previous != "" {
+				previous := request
+				previous.Content = []byte(test.previous)
+				result, err := fixture.save(ctx, previous)
+				if err != nil {
+					t.Fatal(err)
+				}
+				current[result.Document.DocumentID] = result.Document
+				request.ExpectedEffectiveRevision = stringRef(result.Revision.RevisionID)
+			}
+			result, err := fixture.save(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			materializer, err := OpenMaterializer(
+				filepath.Join(root, "files"), filepath.Join(root, "journal"), fixture.repository,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "files", "external.txt")
+			if test.unsafe {
+				err = os.Mkdir(target, 0o700)
+			} else if !test.missing {
+				err = os.WriteFile(target, []byte(test.disk), 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations, err := materializer.plan(ctx, current, map[string]Document{
+				result.Document.DocumentID: result.Document,
+			})
+			if test.unsafe {
+				if !errors.Is(err, ErrUnsafeFilePath) {
+					t.Fatalf("unsafe target error = %v", err)
+				}
+				return
+			}
+			if err != nil || len(operations) != test.operations {
+				t.Fatalf("operations = %#v, error = %v; want %d", operations, err, test.operations)
+			}
+		})
+	}
 }
 
 func TestPersistentHeadPublishesAndDrainsAuditOutboxAtomically(t *testing.T) {

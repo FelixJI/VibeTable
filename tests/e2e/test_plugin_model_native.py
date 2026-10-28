@@ -28,7 +28,7 @@ def test_model_native_is_ci_only(tmp_path, monkeypatch):
     assert "controlled GitHub CI" in result["error"]
 
 
-def mapping_harness(monkeypatch, tmp_path, fault=None):
+def mapping_harness(monkeypatch, tmp_path, fault=None, *, deadline=3):
     selections = [
         {"controlId": control_id, "label": f"Expected {control_id}"}
         for control_id in model_native._MODEL_CONTROLS
@@ -41,6 +41,7 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
         "layout": 0,
         "now": 0.0,
         "polls": 0,
+        "focus_pending": 0,
     }
     selected = {}
     inputs = []
@@ -51,6 +52,10 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
     )
 
     def observe(*_args, **_kwargs):
+        if state["focus_pending"]:
+            state["focus_pending"] -= 1
+            if not state["focus_pending"]:
+                state["focused"] = -1 if state["focused"] == -2 else (state["focused"] + 1) % 9
         if state["loading"]:
             state["loading"] -= 1
             state["polls"] += 1
@@ -93,6 +98,9 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
                     "hwnd": 8,
                     "automationId": "PluginModelWindow",
                     "combos": combos,
+                    "buttons": [
+                        {"id": "plugin-model-preview", "pid": 7, "focused": state["focused"] == -1}
+                    ],
                 }
             )
         )
@@ -103,7 +111,11 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
         assert not state["layout"], "must wait for actual visible option bounds before input"
         inputs.append(kwargs)
         if kwargs.get("vkeys") == [0x09]:
-            state["focused"] = (state["focused"] + 1) % 9
+            assert not state["focus_pending"], "must wait for the previous Tab to move focus"
+            if fault == "focus-recovery":
+                state["focus_pending"] = 2
+            else:
+                state["focused"] = (state["focused"] + 1) % 9
         elif kwargs.get("vkeys") == [0x73]:
             state["open"] = True
             state["opening"] = 3
@@ -116,7 +128,8 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
             state["open"] = False
             if index % 3 == 0:
                 state["loading"] = 5
-                state["focused"] += 1
+                # Disabling the selected table can move focus to the ScrollViewer.
+                state["focused"] = -2 if fault == "focus-recovery" else index + 1
 
     def sleep(seconds):
         state["now"] += seconds
@@ -136,7 +149,7 @@ def mapping_harness(monkeypatch, tmp_path, fault=None):
             selections,
             input_owned=lambda: None,
             evidence=tmp_path,
-            deadline=3,
+            deadline=deadline,
             diagnostic=diagnostic,
         )
 
@@ -158,6 +171,19 @@ def test_model_mapping_waits_for_async_fields_and_verifies_every_selected_label(
     assert all(item.get("vkeys") in (None, [0x09], [0x73]) for item in inputs)
     assert diagnostic["wait"] == "complete"
     assert diagnostic["lastCombo"]["id"] == "PluginModelField_assets_quantity"
+
+
+def test_model_mapping_recovers_focus_via_preview_button_after_table_load(tmp_path, monkeypatch):
+    run, state, inputs, selected, diagnostic = mapping_harness(
+        monkeypatch, tmp_path, "focus-recovery", deadline=60
+    )
+    run()
+    assert state["polls"] == 15
+    assert len(selected) == 9
+    assert sum("x" in item for item in inputs) == 9
+    assert sum(item.get("vkeys") == [0x73] for item in inputs) == 9
+    assert sum(item.get("vkeys") == [0x09] for item in inputs) == 23
+    assert diagnostic["wait"] == "complete"
 
 
 @pytest.mark.parametrize(

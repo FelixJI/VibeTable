@@ -156,6 +156,13 @@ async function tree(page, helpers, documentId) {
   return (await helpers.rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId })).result;
 }
 
+// Root rows have no subtitle; identify them by path independently of display copy.
+export function documentRowHandleInPage(relativePath) {
+  const row = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+    .find(candidate => candidate instanceof HTMLElement && candidate.dataset.path === relativePath);
+  return row instanceof HTMLElement ? row.getAttribute("data-testid") : null;
+}
+
 export function documentRefreshReadyInPage({ priorRequestIds, relativePath, previousHandle, search }) {
   const diagnostics = window.__vibetableE2EBridgeDiagnostics;
   const loaded = (window.__s41DocumentPages?.pages ?? []).filter(page =>
@@ -169,16 +176,14 @@ export function documentRefreshReadyInPage({ priorRequestIds, relativePath, prev
     item.requestType !== "document.listRequested");
   return settled && loaded.some(page => [...document.querySelectorAll('[data-testid^="document-row-"]')]
     .some(row => row instanceof HTMLElement && row.getAttribute("data-testid") !== previousHandle
-      && row.querySelector("small")?.textContent?.trim().startsWith(`${relativePath} · `)
+      && row.dataset.path === relativePath
       && page.payload.entries.some(entry => entry.relativePath === relativePath
         && row.getAttribute("data-testid") === `document-row-${entry.entryHandle}`)));
 }
 
 async function refreshRow(page, relativePath) {
   const name = path.posix.basename(relativePath);
-  const previousHandle = await page.evaluate(relativePath => [...document.querySelectorAll('[data-testid^="document-row-"]')]
-    .find(row => row.querySelector("small")?.textContent?.trim().startsWith(`${relativePath} · `))
-    ?.getAttribute("data-testid") ?? null, relativePath);
+  const previousHandle = await page.evaluate(documentRowHandleInPage, relativePath);
   const priorRequestIds = await page.evaluate(() =>
     (window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? []).map(item => item.requestId));
   const search = page.getByTestId("file-workspace").getByRole("textbox").first();
@@ -188,9 +193,9 @@ async function refreshRow(page, relativePath) {
     else await search.fill(name);
     await page.waitForFunction(documentRefreshReadyInPage,
       { priorRequestIds, relativePath, previousHandle, search: name }, { timeout: 30000 });
-    const row = page.locator('[data-testid^="document-row-"]').filter({
-      has: page.locator("small", { hasText: new RegExp(`^\\s*${relativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} · `) }),
-    });
+    const rowTestid = await page.evaluate(documentRowHandleInPage, relativePath);
+    assert.ok(rowTestid, `refreshed document row for ${relativePath} must expose its path anchor`);
+    const row = page.getByTestId(rowTestid);
     await row.waitFor({ state: "visible", timeout: 30000 });
     await row.click();
     await row.and(page.locator('button[aria-selected="true"]')).waitFor({ state: "visible", timeout: 30000 });

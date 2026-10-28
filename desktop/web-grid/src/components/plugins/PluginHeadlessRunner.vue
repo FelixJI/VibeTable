@@ -122,7 +122,6 @@ function cancelRun(): void {
   <section class="headless-runner" data-testid="plugin-headless-runner" role="status" aria-live="polite">
     <header>
       <div>
-        <span>HEADLESS ACTION</span>
         <strong>{{ description.title }}</strong>
       </div>
       <b :data-state="outcome.status">{{ statusLabel }}</b>
@@ -172,7 +171,6 @@ function cancelRun(): void {
 .headless-runner { display: flex; width: min(520px, calc(100vw - 48px)); flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); box-shadow: 0 22px 60px rgb(15 23 42 / 24%); }
 .headless-runner header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .headless-runner header div { display: grid; gap: 3px; }
-.headless-runner span { color: var(--vt-color-primary-500); font: 650 9px ui-monospace, monospace; letter-spacing: .12em; }
 .headless-runner strong { font-size: var(--vt-font-body); }
 .headless-runner b { flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; color: var(--vt-fg-muted); background: var(--vt-bg-sunken); font-size: var(--vt-font-caption); }
 .headless-runner b[data-state="succeeded"] { color: var(--vt-color-success); }

@@ -50,7 +50,16 @@ REQUIRED_STAGES = (
     "workbench-qualification",
     "smoke",
 )
-RACE_LANES = ("race-a", "race-b", "race-c", "race-d")
+RACE_LANES = (
+    "race-a",
+    "race-b",
+    "race-c",
+    "race-d",
+    "race-e",
+    "race-f",
+    "race-g",
+    "race-h",
+)
 LANE_STAGES = {
     "core": (
         "version",
@@ -62,18 +71,24 @@ LANE_STAGES = {
         "sidecar-smoke",
         "upgrade-smoke",
         "dev-build",
+        "smoke",
+    ),
+    "quality": (
         "python",
         "contracts",
         "tooling",
         "dotnet",
         "web-test",
         "web-build",
-        "smoke",
     ),
     "race-a": ("go-race",),
     "race-b": ("go-race",),
     "race-c": ("go-race",),
     "race-d": ("go-race",),
+    "race-e": ("go-race",),
+    "race-f": ("go-race",),
+    "race-g": ("go-race",),
+    "race-h": ("go-race",),
     "resilience": (
         "fault-injection",
         "product-e2e",
@@ -84,7 +99,7 @@ LANE_STAGES = {
     "file-io": ("product-e2e-file-io",),
     "release": ("package",),
 }
-PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io", "file-io")
+PARALLEL_LANES = ("core", "quality", *RACE_LANES, "resilience", "data-io", "file-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
 # Share long product journeys across the parallel product E2E lanes so every
 # stage keeps its unchanged 30-minute budget; resilience executes the rest.

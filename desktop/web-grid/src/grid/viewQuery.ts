@@ -47,6 +47,7 @@ function boundarySafe(
  * Header-expressible entries:
  *  - the field's single `eq` leaf (classic exact-match input) — only on
  *    columns whose header input keeps `eq` semantics (`columns` provided);
+ *  - the JSON field's unique textual `contains` leaf (spaces remain literal);
  *  - the field's complete `contains` token set — a single flat leaf, or the
  *    column-level `FilterGroup(groupLogic: "OR")` produced by the query
  *    adapter (the input renders tokens joined by spaces; the adapter
@@ -115,10 +116,14 @@ export function headerFilterConditions(
       const field = expression.field;
       // 字段条件已由列级组表达（或冲突）时，平铺叶子不可再镜像。
       if (tokenGroupFields.has(field)) continue;
-      // 仅镜像字段唯一的 eq 叶子（既有语义）：高级编辑器创建的同字段
-      // contains/in 等条件不属于表头输入，不得被 runtime 更新误清除；
-      // 输入语义不是 eq 的列（普通文本/JSON/多选）也不镜像，否则仅排序
-      // 的 runtime 捕获就会把保存语义改写成 contains/OR。
+      const column = columnOf(field);
+      // JSON 表头输入保留整个 contains 字符串（含空格），刷新后可原样恢复并清空。
+      if (expression.operator === "contains" && leafCountByField.get(field) === 1
+        && typeof expression.value === "string" && expression.value !== ""
+        && column?.dataType === "json" && column.filterInput !== "multiSelect"
+        && !(column.filterOperators?.includes("contains") && !column.filterOperators.includes("eq"))) {
+        mirrored.push(expression);
+      }
       if (expression.operator === "eq" && flatCount(field, "eq") === 1
         && isNonEmptyScalar(expression.value) && eqMirrorable(field)) {
         mirrored.push(expression);

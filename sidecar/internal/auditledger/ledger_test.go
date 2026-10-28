@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ type testOutbox struct {
 	failOnce     bool
 	pendingError error
 	afterPending func()
+	beforeAck    func()
 }
 
 func (outbox *testOutbox) Pending(
@@ -45,11 +47,17 @@ func (outbox *testOutbox) Pending(
 }
 
 func (outbox *testOutbox) Acknowledge(
-	_ context.Context,
+	ctx context.Context,
 	eventID string,
 	sourceEpoch string,
 	sourceSequence uint64,
 ) error {
+	if outbox.beforeAck != nil {
+		outbox.beforeAck()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if outbox.failOnce {
 		outbox.failOnce = false
 		return errors.New("source acknowledgement failed")
@@ -143,7 +151,7 @@ func TestDrainContinuesUntilAllBatchesAreAcknowledged(t *testing.T) {
 	}
 	report, err := drainer.Drain(context.Background(), outbox)
 	if err != nil ||
-		report.Phase != "completed" || report.PendingCalls != 3 || report.AppendCalls != 3 || report.AcknowledgeCalls != 3 ||
+		report.Phase != "completed" || report.PendingCalls != 3 || report.AppendCalls != 2 || report.AcknowledgeCalls != 3 ||
 		report.Appended != 3 ||
 		report.Acknowledged != 3 ||
 		report.Anchor.SourceEpoch != "epoch-1" ||
@@ -186,6 +194,171 @@ func TestDrainRetriesAcknowledgementWithoutDuplicatingLedgerEvent(t *testing.T) 
 		second.Acknowledged != 1 ||
 		second.Anchor.LedgerSequence != 1 {
 		t.Fatalf("second drain = %#v, %v", second, err)
+	}
+}
+
+func TestDrainCommitsBatchBeforeAcknowledgementAndReplaysAfterReopen(t *testing.T) {
+	root := t.TempDir()
+	ledger, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ledger.Close() }()
+	drainer, err := NewDrainer(ledger, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox := &testOutbox{
+		pending: []Envelope{envelopeAt(t, "event-1", 1), envelopeAt(t, "event-2", 2)},
+		acked:   map[string]bool{}, failOnce: true,
+		beforeAck: func() {
+			reopened, err := Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if reopened.Anchor().LedgerSequence != 2 {
+				t.Fatalf("ack began before the complete batch was durable: %#v", reopened.Anchor())
+			}
+		},
+	}
+	first, err := drainer.Drain(context.Background(), outbox)
+	if err == nil || first.Appended != 2 || first.Acknowledged != 0 {
+		t.Fatalf("first drain: %#v, %v", first, err)
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	drainer, err = NewDrainer(ledger, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := drainer.Drain(context.Background(), outbox)
+	if err != nil || second.Appended != 0 || second.Duplicates != 2 || second.Acknowledged != 2 {
+		t.Fatalf("replayed drain: %#v, %v", second, err)
+	}
+}
+
+func TestDrainBatchFailureDoesNotPublishPrefix(t *testing.T) {
+	for _, failure := range []string{"source_gap", "insert_failure", "commit_failure"} {
+		t.Run(failure, func(t *testing.T) {
+			root := t.TempDir()
+			ledger, err := Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ledger.Close()
+			second := envelopeAt(t, "event-2", 2)
+			if failure == "source_gap" {
+				second = envelopeAt(t, "event-3", 3)
+			} else {
+				statement := `CREATE TRIGGER fail_second BEFORE INSERT ON audit_ledger
+					WHEN NEW.source_sequence = 2 BEGIN SELECT RAISE(ABORT, 'synthetic insert failure'); END`
+				if failure == "commit_failure" {
+					statement = `CREATE TABLE missing_parent (id INTEGER PRIMARY KEY);
+						CREATE TABLE deferred_child (id INTEGER REFERENCES missing_parent(id) DEFERRABLE INITIALLY DEFERRED);
+						CREATE TRIGGER fail_commit AFTER INSERT ON audit_ledger
+						BEGIN INSERT INTO deferred_child VALUES (NEW.ledger_sequence); END`
+				}
+				if _, err := ledger.db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			drainer, err := NewDrainer(ledger, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outbox := &testOutbox{pending: []Envelope{envelopeAt(t, "event-1", 1), second}, acked: map[string]bool{}}
+			report, err := drainer.Drain(context.Background(), outbox)
+			if err == nil || report.Appended != 0 || report.Acknowledged != 0 || ledger.Anchor() != (Anchor{}) {
+				t.Fatalf("failed batch published a prefix: %#v, %v, anchor=%#v", report, err, ledger.Anchor())
+			}
+			if failure == "commit_failure" && !strings.HasPrefix(err.Error(), "flush audit record:") {
+				t.Fatalf("failure did not reach COMMIT: %v", err)
+			}
+			reopened, err := Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if reopened.Anchor() != (Anchor{}) {
+				t.Fatalf("failed batch was persisted: %#v", reopened.Anchor())
+			}
+		})
+	}
+}
+
+func TestDrainCancellationAfterCommitLeavesRetryableBatch(t *testing.T) {
+	ledger, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledger.Close()
+	drainer, err := NewDrainer(ledger, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := &testOutbox{
+		pending: []Envelope{envelopeAt(t, "event-1", 1), envelopeAt(t, "event-2", 2)},
+		acked:   map[string]bool{}, beforeAck: cancel,
+	}
+	first, err := drainer.Drain(ctx, outbox)
+	if !errors.Is(err, context.Canceled) || first.Appended != 2 || first.Acknowledged != 0 || len(outbox.acked) != 0 {
+		t.Fatalf("cancelled drain: %#v, %v", first, err)
+	}
+	outbox.beforeAck = nil
+	second, err := drainer.Drain(context.Background(), outbox)
+	if err != nil || second.Duplicates != 2 || second.Acknowledged != 2 || second.Anchor.LedgerSequence != 2 {
+		t.Fatalf("replayed drain: %#v, %v", second, err)
+	}
+}
+
+func TestAppendBatchKeepsEnvelopeIdentityAndSourceOrder(t *testing.T) {
+	one, two := envelopeAt(t, "event-1", 1), envelopeAt(t, "event-2", 2)
+	conflicting := one
+	conflicting.MutationIdentity = "different-mutation"
+	for _, test := range []struct {
+		name       string
+		envelopes  []Envelope
+		err        error
+		records    int
+		duplicates int
+	}{
+		{name: "empty"},
+		{name: "duplicate", envelopes: []Envelope{one, one, two}, records: 2, duplicates: 1},
+		{name: "event conflict", envelopes: []Envelope{one, conflicting}, err: ErrEventConflict},
+		{name: "source conflict", envelopes: []Envelope{one, envelopeAt(t, "other-event", 1)}, err: ErrSourceConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ledger, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ledger.Close()
+			results, err := ledger.appendBatch(context.Background(), test.envelopes)
+			if !errors.Is(err, test.err) || len(ledger.Records(0, 10)) != test.records {
+				t.Fatalf("batch results=%#v err=%v anchor=%#v", results, err, ledger.Anchor())
+			}
+			duplicates := 0
+			for _, result := range results {
+				if result.Duplicate {
+					duplicates++
+				}
+			}
+			if duplicates != test.duplicates {
+				t.Fatalf("duplicates=%d, want %d", duplicates, test.duplicates)
+			}
+			if err := ledger.Verify(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

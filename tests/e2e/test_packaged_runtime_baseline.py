@@ -175,11 +175,14 @@ class _Session:
         return _working_sets()
 
 
-@pytest.mark.parametrize("rpc_fails", [False, True])
+@pytest.mark.parametrize(
+    ("rpc_fails", "host_preferences_passes"), [(False, True), (True, True), (False, False)]
+)
 def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
     monkeypatch,
     tmp_path: Path,
     rpc_fails: bool,
+    host_preferences_passes: bool,
 ) -> None:
     package_root = tmp_path / "package"
     archive, identity_path, candidate_evidence = _write_candidate(
@@ -230,6 +233,20 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
 
         return rpc
 
+    host_preferences = {
+        "ok": host_preferences_passes,
+        "evidenceKind": "packaged-host-lifecycle",
+        "closeToTrayAndTrayExit": {"status": "passed" if host_preferences_passes else "failed"},
+        "silentStartup": {"status": "passed"},
+    }
+
+    def verify_host_preferences(root: Path, evidence: Path) -> dict[str, object]:
+        assert root == package_root
+        assert evidence == tmp_path / "evidence" / "host-preferences"
+        events.append("host-preferences")
+        return host_preferences
+
+    monkeypatch.setattr(packaged_runtime_baseline, "run_lifecycle", verify_host_preferences)
     monkeypatch.setattr(packaged_runtime_baseline, "opened_packaged_workspace", opened)
     clock = iter((0, 10, 20, 30, 40))
     report_path = tmp_path / "report.json"
@@ -257,12 +274,12 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         "snapshot",
         "rpc",
         "exit",
-    ]
+    ] + ([] if rpc_fails else ["host-preferences"])
     archived_report = next_gate.persist_runtime_baseline_evidence(
         report_path,
         tmp_path / "archived-evidence",
         expected_candidate=candidate_evidence,
-        require_passing_report=not rpc_fails,
+        require_passing_report=not rpc_fails and host_preferences_passes,
     )
     assert archived_report is not None
     assert json.loads(archived_report.read_text(encoding="utf-8")) == report
@@ -273,7 +290,14 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         assert report["errors"][0]["code"] == "RPC_PROBE_FAILED"
         assert json.loads(report_path.read_text(encoding="utf-8")) == report
         return
+    if not host_preferences_passes:
+        assert report["status"] == "failed"
+        assert report["errors"][0]["code"] == "HOST_PREFERENCES_LIFECYCLE_FAILED"
+        assert json.loads(report["errors"][0]["message"]) == host_preferences
+        assert report["lifecycle"] is None
+        return
     assert report["status"] == "passed"
+    assert report["lifecycle"]["hostPreferences"] == host_preferences
     assert report["coverage"]["rpcLatency"] == "measured"
     assert report["rpcLatency"]["methods"]["query.page"]["p50Ms"] == 15
     assert report["rpcLatency"]["methods"]["query.page"]["p95Ms"] == 29

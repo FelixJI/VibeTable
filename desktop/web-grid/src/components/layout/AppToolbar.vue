@@ -3,14 +3,11 @@ import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
 import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2 } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import { useUiStore } from "@/stores/uiStore";
 import type { ExportFormat } from "@/contracts";
 import { collectionLabel } from "./collectionLabel";
-import { localModifiedLabel } from "./tableDescription";
 import { t } from "@/i18n";
 
 const workspace = useWorkspaceStore();
-const ui = useUiStore();
 const props = withDefaults(defineProps<{
   pluginActions?: readonly {
     key: string;
@@ -45,10 +42,6 @@ const currentLabel = computed(() => {
   const item = workspace.collections.find((col) => col.collection === workspace.currentTable);
   return item ? collectionLabel(item, displayNames.value) : t("toolbar.noTable");
 });
-// 表说明：本机最后修改时间；物理 id 不再作为标题副行展示。
-const currentDescription = computed(() => localModifiedLabel(
-  workspace.currentTable ? ui.tableModified[workspace.currentTable] : undefined,
-));
 const tableOptions = computed(() => workspace.collections.map((collection) => ({
   key: collection.collection,
   label: collectionLabel(collection, displayNames.value),
@@ -113,10 +106,6 @@ function onSelectTable(key: string) {
     <div class="table-heading desktop-table-heading">
       <NIcon :size="16"><Table2 /></NIcon>
       <strong data-testid="toolbar-table-title">{{ currentLabel }}</strong>
-      <span
-        v-if="currentDescription"
-        data-testid="toolbar-table-description"
-      >{{ currentDescription }}</span>
     </div>
     <div class="compact-table-switcher">
       <NDropdown

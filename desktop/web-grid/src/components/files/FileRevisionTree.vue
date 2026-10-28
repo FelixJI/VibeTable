@@ -81,6 +81,15 @@ const expanded = ref<ReadonlySet<string>>(new Set());
 const collapsed = ref<ReadonlySet<string>>(new Set());
 const showAutosaves = ref(false);
 const focusedRevisionId = ref<string | null>(null);
+// Deep trees format thousands of timestamps per render; constructing one
+// formatter per row is pure overhead. A single computed instance keeps the
+// exact same output while rebuilding only when the UI locale changes.
+const revisionTimeFormat = computed(() => new Intl.DateTimeFormat(ui.locale, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+}));
 
 const childMap = computed(() => {
   const map = new Map<string | null, FileRevisionV2[]>();
@@ -237,12 +246,7 @@ function onKeydown(event: KeyboardEvent, row: TreeRow, index: number): void {
 }
 
 function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(ui.locale, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return revisionTimeFormat.value.format(new Date(value));
 }
 
 function isProvisional(revision: FileRevisionV2): boolean {

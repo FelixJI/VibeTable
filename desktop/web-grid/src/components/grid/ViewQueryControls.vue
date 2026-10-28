@@ -253,7 +253,7 @@ function isNumericField(field: string): boolean {
 <style scoped>
 .view-controls { display: flex; min-height: 34px; align-items: center; gap: 2px; padding: 3px 10px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 .view-keyword { width: 180px; flex: 0 0 180px; }
-.view-density { width: 95px; flex: 0 0 95px; }
+.view-density { width: auto; min-width: 95px; flex: 0 0 auto; }
 .view-controls b { min-width: 17px; padding: 0 5px; border-radius: 999px; color: var(--vt-fg-accent-strong); background: var(--vt-color-primary-50); font-size: 10px; line-height: 17px; }
 .control-card { display: grid; width: 390px; gap: 10px; padding: 3px; }
 .control-card--wide { width: min(560px, calc(100vw - 36px)); }

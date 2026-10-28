@@ -22,7 +22,7 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 
 ## CD
 
-发布资格以当前候选的 lane 聚合门禁为权威：`qa/release_eligibility.py` 的聚合强制同一候选的九个 lane 报告（core、race-a、race-b、race-c、race-d、resilience、data-io、file-io、release）齐全、全部 stage 返回码为零、commit/artifactHashes/sourceHash/releaseCandidate 与当前候选一致，三个产品 E2E 分片（`product-e2e`、`product-e2e-data-io`、`product-e2e-file-io`）对当前 manifest 精确、不重复覆盖，smoke 必须携带 required-passed 的 WebView2 证据；聚合成功后才会定稿 main 候选，CD 只发布触发它的同 source 候选，真实 run 成功以 CI 的 required 状态为准。
+发布资格以当前候选的 lane 聚合门禁为权威：`qa/release_eligibility.py` 的聚合强制同一候选的十四个 lane 报告（core、quality、race-a 至 race-h、resilience、data-io、file-io、release）齐全、全部 stage 返回码为零、commit/artifactHashes/sourceHash/releaseCandidate 与当前候选一致，三个产品 E2E 分片（`product-e2e`、`product-e2e-data-io`、`product-e2e-file-io`）对当前 manifest 精确、不重复覆盖，smoke 必须携带 required-passed 的 WebView2 证据。Python、contracts、tooling、.NET 和 Web 检查在独立的 quality lane 执行，Go 与开发包构建/smoke 留在 core；24 个必需阶段不变。聚合成功且 CodeQL 全部通过后 required 才通过；CD 只发布触发它的成功 main CI、同 source 的定稿候选。
 
 版本 PR 质量段与 CD 发布前运行的 `uv run python scripts/automation_project.py release-evidence` 只核对[当前证据](e2e-performance.md#当前产品-e2e-证据)文档的一致性与真实性：source SHA、run、契约版本、结果与 manifest 引用必须相互一致，历史样本可以诚实保留 gap/changed，不要求文档差距为零，但谎报闭合或伪造覆盖仍会失败；该检查只比对文档元数据、可追溯 source 与差距声明，不访问 GitHub 验证 run 成功与否。生成器的 `--require-closed-evidence` 保留为可显式调用的严格审计选项。新增或变更场景后，建议尽快用成功主干样本刷新当前证据，不能只清空差距声明或重跑旧提交。
 
@@ -47,9 +47,9 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   独立门禁执行。差异覆盖率以所选基线与当前 HEAD 的 Git merge-base 提交为准，
   报告记录该固定提交；保留工作区及未跟踪 Go 文件的差异，不计入仅在后续 main 上出现的改动。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
-- Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a`、`race-b`、`race-c` 与
-  `race-d` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。普通包先分片再编译，app/workspacev2/integration 从同一 race 二进制发现并分配命名测试。每条 lane 以一个
-  package worker 串行执行，避免无关进程挤占公式墙钟预算；四条 lane 仍并行，包内逐测试独立进程，不减少测试或关闭 race detector。
+- Go race：价值高且成本显著。当前 GitHub PR 与 main 的完整 release smoke 会执行 `race-a` 至 `race-h`
+  八条 lane；本地最小反馈可按改动风险只运行相关 Go 测试。普通包先分片再编译，app/workspacev2/integration 从同一 race 二进制发现并分配命名测试。每条 lane 以一个
+  package worker 串行执行，避免无关进程挤占公式墙钟预算；八条 lane 并行，包内逐测试独立进程，不减少测试或关闭 race detector。
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
 - 涉及真实系统剪贴板的产品 E2E 场景只在隔离环境执行：GitHub hosted runner 原生满足；本机复跑必须显式设置
   `VIBETABLE_NATIVE_CLIPBOARD_TESTS=1`（与 .NET 隔离剪贴板测试同一开关），且仅在剪贴板为空的专用隔离桌面上使用。

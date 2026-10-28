@@ -38,7 +38,13 @@ def _map_model_choices(
     deadline: float,
     diagnostic: dict[str, Any],
 ) -> None:
-    def observe() -> list[dict[str, Any]]:
+    def focused_controls(observation: dict[str, Any]) -> list[str]:
+        # Disabling a selected table can send Tab through the preview button.
+        return [
+            item["id"] for item in observation["combos"] + observation["buttons"] if item["focused"]
+        ]
+
+    def observe() -> dict[str, Any]:
         input_owned()
         remaining = deadline - time.monotonic()
         diagnostic["remainingSeconds"] = round(max(remaining, 0), 3)
@@ -62,7 +68,7 @@ def _map_model_choices(
         ):
             raise ValueError("model combo observation belongs to a different window")
         diagnostic["observations"] = diagnostic.get("observations", 0) + 1
-        diagnostic["focusedControls"] = [item["id"] for item in value["combos"] if item["focused"]]
+        diagnostic["focusedControls"] = focused_controls(value)
         matches = [item for item in value["combos"] if item["id"] == diagnostic["controlId"]]
         if len(matches) == 1:
             current = matches[0]
@@ -75,7 +81,7 @@ def _map_model_choices(
             ]
         value["mapping"] = diagnostic.copy()
         (evidence / "model-native-combos.json").write_text(json.dumps(value), encoding="utf-8")
-        return value["combos"]
+        return value
 
     def control(combos: list[dict[str, Any]], control_id: str) -> dict[str, Any]:
         matches = [item for item in combos if item["id"] == control_id]
@@ -93,7 +99,8 @@ def _map_model_choices(
         )
         tabs = 0
         while True:
-            combos = observe()
+            observation = observe()
+            combos = observation["combos"]
             target = control(combos, control_id)
             if not target["enabled"] or any(
                 not item["enabled"] for item in combos if item["id"].startswith("PluginModelTable_")
@@ -105,18 +112,18 @@ def _map_model_choices(
                 break
             if tabs >= 16:
                 raise ValueError("model combo could not receive keyboard focus")
-            previous_focus = [item["id"] for item in combos if item["focused"]]
+            previous_focus = focused_controls(observation)
             input_owned()
             _send_input(native, vkeys=[0x09])
             tabs += 1
             diagnostic["wait"] = "focus-change"
-            while [item["id"] for item in observe() if item["focused"]] == previous_focus:
+            while focused_controls(observe()) == previous_focus:
                 poll()
         input_owned()
         _send_input(native, vkeys=[0x73])  # F4 opens the actual focused ComboBox.
         diagnostic["wait"] = "expanded"
         while True:
-            target = control(observe(), control_id)
+            target = control(observe()["combos"], control_id)
             if not target["expanded"]:
                 diagnostic["wait"] = "expanded"
                 poll()
@@ -163,12 +170,12 @@ def _map_model_choices(
             break
         diagnostic["wait"] = "selection-and-load"
         while True:
-            target = control(observe(), control_id)
+            target = control(observe()["combos"], control_id)
             if target["enabled"] and not target["expanded"] and target["selected"] == label:
                 break
             poll()
     diagnostic["wait"] = "all-selections"
-    combos = observe()
+    combos = observe()["combos"]
     if any(
         not control(combos, item["controlId"])["enabled"]
         or control(combos, item["controlId"])["selected"] != item["label"]

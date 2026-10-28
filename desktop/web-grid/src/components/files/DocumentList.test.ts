@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import DocumentList from "./DocumentList.vue";
 import type { DocumentEntry } from "@/stores/documentWorkspaceStore";
+import { t } from "@/i18n";
 
 function entry(entryHandle: string, capabilities: DocumentEntry["capabilities"] = []): DocumentEntry {
   return {
@@ -141,5 +142,59 @@ describe("DocumentList", () => {
     expect(wrapper.emitted("select")).toEqual([[0, { toggle: false, range: false }]]);
     expect(wrapper.emitted("preview")).toEqual([[document]]);
     expect(wrapper.emitted("context")).toEqual([[document, { x: 36, y: 24 }]]);
+  });
+
+  it("anchors every row with its stable semantic path for lookup independent of the optional detail line", () => {
+    const sameName = entry("document-a");
+    const renamedRoot = { ...entry("document-b"), displayName: "报价单", relativePath: "quote-2026.pdf" };
+    const missingSubfolder = {
+      ...entry("document-c"),
+      displayName: "合同.pdf",
+      relativePath: "客户/合同.pdf",
+      availability: "missing" as const,
+    };
+    const wrapper = mount(DocumentList, {
+      props: {
+        entries: [sameName, renamedRoot, missingSubfolder],
+        selectedHandles: [],
+        primaryHandle: null,
+      },
+    });
+
+    for (const document of [sameName, renamedRoot, missingSubfolder]) {
+      const row = wrapper.get(`[data-testid="document-row-${document.entryHandle}"]`);
+      expect(row.attributes("data-path")).toBe(document.relativePath);
+    }
+    // 根目录同名行没有可选 small 副标题，语义锚点仍必须完整。
+    expect(wrapper.get('[data-testid="document-row-document-a"]').find("small").exists()).toBe(false);
+  });
+
+  it("omits the detail line only when the path repeats the display name; different root paths and status stay visible", () => {
+    const sameName = entry("document-a");
+    const renamedRoot = { ...entry("document-b"), displayName: "报价单", relativePath: "quote-2026.pdf" };
+    const missingSubfolder = {
+      ...entry("document-c"),
+      displayName: "合同.pdf",
+      relativePath: "客户/合同.pdf",
+      availability: "missing" as const,
+    };
+    const wrapper = mount(DocumentList, {
+      props: {
+        entries: [sameName, renamedRoot, missingSubfolder],
+        selectedHandles: [],
+        primaryHandle: null,
+      },
+    });
+
+    // 根目录同名：路径与显示名重复，整行无详情行。
+    const sameRow = wrapper.get('[data-testid="document-row-document-a"] .name-copy');
+    expect(sameRow.find("small").exists()).toBe(false);
+    // 根目录不同名：非重复路径信息必须保留。
+    expect(wrapper.get('[data-testid="document-row-document-b"] .name-copy').text())
+      .toContain("quote-2026.pdf");
+    // 子目录异常状态：路径与缺失状态同时保留。
+    const missingRow = wrapper.get('[data-testid="document-row-document-c"] .name-copy');
+    expect(missingRow.text()).toContain("客户/合同.pdf");
+    expect(missingRow.text()).toContain(t("files.missing"));
   });
 });

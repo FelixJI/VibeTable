@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from "vue";
 import type { PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
+import { t } from "@/i18n";
 
 interface SchemaField {
   readonly type?: "string" | "number" | "integer" | "boolean";
@@ -72,7 +73,7 @@ watch(() => props.description, resetForm, { immediate: true });
   <aside class="action-panel" aria-label="插件动作">
     <header class="panel-header">
       <div>
-        <span class="eyebrow">ACTION / {{ description.risk.toUpperCase() }}</span>
+        <span class="eyebrow">{{ t("pluginAction.kicker", { risk: t(`plugin.risk.${description.risk}`) }) }}</span>
         <h2>{{ description.title }}</h2>
         <p v-if="description.description">{{ description.description }}</p>
       </div>
@@ -128,7 +129,7 @@ watch(() => props.description, resetForm, { immediate: true });
     </section>
 
     <section v-if="task?.confirmation" data-testid="plugin-confirmation" class="confirmation" role="alertdialog" aria-modal="true">
-      <span class="danger-kicker">FINAL {{ task.confirmation.risk.toUpperCase() }} CONFIRMATION</span>
+      <span class="danger-kicker">{{ t("pluginConfirm.final", { risk: t(`plugin.risk.${task.confirmation.risk}`) }) }}</span>
       <h3>{{ task.confirmation.title }}</h3>
       <p>{{ task.confirmation.summary }}</p>
       <dl>
@@ -142,14 +143,14 @@ watch(() => props.description, resetForm, { immediate: true });
     </section>
 
     <section v-if="task?.error" data-testid="plugin-task-error" class="task-error" role="alert">
-      <span class="danger-kicker">SAFE ERROR / {{ task.error.code }}</span>
+      <span class="danger-kicker">{{ t("pluginTask.error", { code: task.error.code }) }}</span>
       <h3>{{ task.error.message }}</h3>
       <p>恢复方式：<code>{{ task.error.recoverability }}</code></p>
       <small v-if="task.error.causeId">诊断编号 {{ task.error.causeId }}</small>
     </section>
 
     <section v-if="task?.result" class="result-card">
-      <span class="eyebrow">STRUCTURED RESULT / {{ task.result.status.toUpperCase() }}</span>
+      <span class="eyebrow">{{ t("pluginAction.result", { status: task.result.status }) }}</span>
       <h3>{{ task.result.summary }}</h3>
       <div v-if="task.result.metrics.length" class="metrics">
         <div v-for="metric in task.result.metrics" :key="metric.label"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong></div>
@@ -163,7 +164,7 @@ watch(() => props.description, resetForm, { immediate: true });
 <style scoped>
 .action-panel { width: min(430px, 100%); height: 100%; overflow: auto; padding: 16px; color: var(--vt-fg); border-left: 1px solid var(--vt-border); background: var(--vt-bg); box-shadow: -12px 0 32px rgba(20, 28, 38, .06); }
 .panel-header { display: flex; align-items: flex-start; justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid var(--vt-border); }
-.eyebrow, .danger-kicker { color: var(--vt-fg-muted); font: 650 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .11em; }
+.eyebrow, .danger-kicker { color: var(--vt-fg-muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; }
 .panel-header h2, .result-card h3 { margin: 7px 0 2px; font-size: 17px; }
 .panel-header p { margin: 3px 0 0; color: var(--vt-fg-muted); }
 .icon-button { width: 28px; height: 28px; color: var(--vt-fg-muted); border: 0; border-radius: 4px; background: transparent; cursor: pointer; }

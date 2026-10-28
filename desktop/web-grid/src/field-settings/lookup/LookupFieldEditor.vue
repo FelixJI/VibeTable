@@ -561,7 +561,6 @@ function formatPreviewValue(value: unknown): string {
       <div v-if="working.mode === 'path'" class="editor-summary">
         <span class="editor-mark"><GitBranch :size="18" /></span>
         <div>
-          <span class="eyebrow">LOOKUP MODULE</span>
           <strong>引用路径</strong>
           <small class="path-summary">
             <template v-for="(step, index) in value.path" :key="index">
@@ -576,7 +575,6 @@ function formatPreviewValue(value: unknown): string {
       <div v-else class="editor-summary">
         <span class="editor-mark"><Funnel :size="18" /></span>
         <div>
-          <span class="eyebrow">LOOKUP MODULE</span>
           <strong>条件筛选</strong>
           <small class="path-summary">
             <code>{{ sourceTableLabel }}</code>
@@ -928,12 +926,6 @@ label {
   max-width: 150px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.eyebrow {
-  color: #0284c7;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: .14em;
 }
 small { color: var(--vt-fg-muted); }
 .condition-rules { display: flex; flex-direction: column; gap: 10px; }

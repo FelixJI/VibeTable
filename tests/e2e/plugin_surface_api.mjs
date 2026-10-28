@@ -84,7 +84,7 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     const confirmation = page.locator(".host-confirmation");
     await confirmation.waitFor({ timeout: 30_000 });
     recorder.check(`surface ${decision} cannot approve its own plan`,
-      (await confirmation.innerText()).includes("HOST FINAL WRITE CONFIRMATION"), { confirmation: await confirmation.innerText() });
+      /VibeTable (最终确认 · 写入|final confirmation · Write)/u.test(await confirmation.innerText()), { confirmation: await confirmation.innerText() });
     if (decision === "approved") {
       await page.screenshot({ path: path.join(runtime.evidenceDir, "47-surface-confirm.png"), fullPage: true });
       await page.getByTestId("plugin-surface-confirm-approve").click();

@@ -95,8 +95,8 @@ def test_github_workflows_keep_release_build_on_windows() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
-def test_core_tooling_gate_includes_the_project_adapter_contracts() -> None:
-    assert "tooling" in next_gate.LANE_STAGES["core"]
+def test_quality_tooling_gate_includes_the_project_adapter_contracts() -> None:
+    assert "tooling" in next_gate.LANE_STAGES["quality"]
     command, cwd = next_gate.stage_command("tooling")
     assert command[:3] == [sys.executable, "-m", "pytest"]
     assert "tests/test_automation_adapter.py" in command
@@ -783,7 +783,7 @@ def test_race_package_plans_are_partitioned_once_by_recorded_duration(tmp_path: 
     assert second_names == {"medium", "small-a", "small-b"}
 
 
-def test_four_race_shards_compile_only_selected_packages_and_cover_every_name_once(
+def test_eight_race_shards_compile_only_selected_packages_and_cover_every_name_once(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -826,10 +826,10 @@ def test_four_race_shards_compile_only_selected_packages_and_cover_every_name_on
         for name in names
     }
     assignments = []
-    for index in range(4):
+    for index in range(8):
         active_shard = index
         code, _, stderr = next_gate._run_go_race(
-            cwd=str(tmp_path), environment={}, shard=(index, 4)
+            cwd=str(tmp_path), environment={}, shard=(index, 8)
         )
         assert code == 0, stderr
         assignments.append(
@@ -844,14 +844,14 @@ def test_four_race_shards_compile_only_selected_packages_and_cover_every_name_on
     compiled = [
         command[-1] for _, command, _ in observed if command[1:4] == ["test", "-c", "-race"]
     ]
-    assert all(compiled.count(package) == (4 if package in split else 1) for package in packages)
+    assert all(compiled.count(package) == (8 if package in split else 1) for package in packages)
     assert not any("-list" in command for _, command, _ in observed)
     assert not list((tmp_path / "binaries").iterdir())
 
     previous = [(command, cwd) for lane, command, cwd in observed if lane == 0]
     observed.clear()
     active_shard = 0
-    assert next_gate._run_go_race(cwd=str(tmp_path), environment={}, shard=(0, 4))[0] == 0
+    assert next_gate._run_go_race(cwd=str(tmp_path), environment={}, shard=(0, 8))[0] == 0
     assert [(command, cwd) for _, command, cwd in observed] == previous
 
 
@@ -977,7 +977,7 @@ def test_race_lanes_pass_distinct_shard_coordinates(monkeypatch, tmp_path: Path)
     for lane in next_gate.RACE_LANES:
         next_gate.run_lane(lane, tmp_path, tmp_path / "candidate.zip")
 
-    assert observed == [(0, 4), (1, 4), (2, 4), (3, 4)]
+    assert observed == [(index, 8) for index in range(8)]
 
 
 def test_race_package_emits_structured_timing_for_lane_balancing(monkeypatch) -> None:
