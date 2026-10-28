@@ -8,6 +8,129 @@ namespace VibeTable.Desktop.Tests;
 public sealed class DocumentRequestControllerTests
 {
     [TestMethod]
+    public async Task DragOutWaitsUntilTheRendererCallbackHasReturned()
+    {
+        var commands = new FakeDocumentCommands();
+        var sink = new FakeWebReplySink();
+        var queue = new ManualUiQueue();
+        bool callbackActive = true;
+        bool? dragStartedInsideCallback = null;
+        var controller = Controller(sink, commands,
+            dragOut: _ => dragStartedInsideCallback = callbackActive,
+            dispatch: queue.Dispatch);
+
+        Task pending = controller.DispatchAsync(Request(
+            "document.dragOutRequested", """{"handle":"document-handle"}"""));
+
+        Assert.IsFalse(pending.IsCompleted, "Native drag must yield out of the renderer callback.");
+        Assert.IsEmpty(commands.DragHandles);
+        Assert.IsNull(dragStartedInsideCallback);
+        Assert.AreEqual(1, queue.PendingCount);
+        callbackActive = false;
+        queue.RunNext();
+        await pending;
+        Assert.IsFalse(dragStartedInsideCallback);
+        CollectionAssert.AreEqual(new[] { "document-handle" }, commands.DragHandles);
+        Assert.IsEmpty(sink.Replies);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task QueuedDragFailuresKeepTheDocumentFailureContract(bool unexpectedCancellation)
+    {
+        var commands = new FakeDocumentCommands();
+        var sink = new FakeWebReplySink();
+        var queue = new ManualUiQueue();
+        Exception failure = unexpectedCancellation
+            ? new OperationCanceledException() : new InvalidOperationException("OLE failed");
+        var controller = Controller(sink, commands,
+            dragOut: _ => throw failure,
+            dispatch: queue.Dispatch);
+
+        Task pending = controller.DispatchAsync(Request(
+            "document.dragOutRequested", """{"handle":"document-handle"}"""));
+        Assert.IsEmpty(sink.Replies);
+        queue.RunNext();
+        await pending;
+
+        AssertFailure(sink.Replies.Single(), "DOCUMENT_DRAG_OUT_FAILED");
+    }
+
+    [TestMethod]
+    public async Task QueuedDragUsesTheOriginalCancellationToken()
+    {
+        var commands = new FakeDocumentCommands();
+        var sink = new FakeWebReplySink();
+        var queue = new ManualUiQueue();
+        using var original = new CancellationTokenSource();
+        using var replacement = new CancellationTokenSource();
+        CancellationToken token = original.Token;
+        int drags = 0;
+        var controller = Controller(sink, commands, dragOut: _ => drags++,
+            dispatch: queue.Dispatch, sessionToken: () => token);
+
+        Task pending = controller.DispatchAsync(Request(
+            "document.dragOutRequested", """{"handle":"document-handle"}"""));
+        token = replacement.Token;
+        original.Cancel();
+        queue.RunNext();
+        await pending;
+
+        Assert.IsEmpty(commands.DragHandles);
+        Assert.AreEqual(0, drags);
+        Assert.IsEmpty(sink.Replies);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task QueuedDragCannotMoveAnOldHandleToAnotherWorkspace(bool closed)
+    {
+        var original = new FakeDocumentCommands();
+        var replacement = new FakeDocumentCommands();
+        IWorkspaceDocumentCommands? current = original;
+        var sink = new FakeWebReplySink();
+        var queue = new ManualUiQueue();
+        int drags = 0;
+        var controller = new DocumentRequestController(sink, () => current, () => [],
+            _ => drags++, queue.Dispatch);
+
+        Task pending = controller.DispatchAsync(Request(
+            "document.dragOutRequested", """{"handle":"document-handle"}"""));
+        current = closed ? null : replacement;
+        queue.RunNext();
+        await pending;
+
+        Assert.IsEmpty(original.DragHandles);
+        Assert.IsEmpty(replacement.DragHandles);
+        Assert.AreEqual(0, drags);
+        AssertFailure(sink.Replies.Single(), "DOCUMENT_SESSION_STALE");
+    }
+
+    [TestMethod]
+    public async Task QueuedDragResolvesTheCapabilityOnlyWhenItActuallyRuns()
+    {
+        var commands = new FakeDocumentCommands();
+        var sink = new FakeWebReplySink();
+        var queue = new ManualUiQueue();
+        int drags = 0;
+        var controller = Controller(sink, commands, dragOut: _ => drags++,
+            dispatch: queue.Dispatch);
+
+        Task pending = controller.DispatchAsync(Request(
+            "document.dragOutRequested", """{"handle":"document-handle"}"""));
+        commands.DragFailure = new DocumentFileOperationException(
+            "工作区会话已切换，请刷新后重试。", "DOCUMENT_SESSION_STALE");
+        queue.RunNext();
+        await pending;
+
+        CollectionAssert.AreEqual(new[] { "document-handle" }, commands.DragHandles);
+        Assert.AreEqual(0, drags);
+        AssertFailure(sink.Replies.Single(), "DOCUMENT_SESSION_STALE");
+    }
+
+    [TestMethod]
     public async Task DispatchesImportRelinkAndDragThroughOneClosedInterface()
     {
         var commands = new FakeDocumentCommands();
@@ -160,12 +283,50 @@ public sealed class DocumentRequestControllerTests
         FakeWebReplySink sink,
         IWorkspaceDocumentCommands? commands,
         IReadOnlyList<string>? nativePaths = null,
-        Action<string>? dragOut = null)
+        Action<string>? dragOut = null,
+        Func<Action, CancellationToken, Task>? dispatch = null,
+        Func<CancellationToken>? sessionToken = null)
         => new(
             sink,
             () => commands,
             () => nativePaths ?? [],
-            dragOut ?? (_ => { }));
+            dragOut ?? (_ => { }),
+            dispatch ?? ((action, _) => { action(); return Task.CompletedTask; }),
+            sessionToken);
+
+    private sealed class ManualUiQueue
+    {
+        private readonly Queue<(Action Action, CancellationToken Token, TaskCompletionSource Done)>
+            _pending = [];
+
+        public int PendingCount => _pending.Count;
+
+        public Task Dispatch(Action action, CancellationToken token)
+        {
+            var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pending.Enqueue((action, token, done));
+            return done.Task;
+        }
+
+        public void RunNext()
+        {
+            var (action, token, done) = _pending.Dequeue();
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                action();
+                done.SetResult();
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                done.SetCanceled(token);
+            }
+            catch (Exception exception)
+            {
+                done.SetException(exception);
+            }
+        }
+    }
 
     private static RoutedWebRequest Request(string type, string json)
     {
@@ -207,6 +368,7 @@ public sealed class DocumentRequestControllerTests
         public List<string> DragHandles { get; } = [];
         public int? FailImportAtCall { get; init; }
         public Exception? ImportFailure { get; init; }
+        public Exception? DragFailure { get; set; }
         public string DragPath { get; init; } = @"C:\workspace\files\document.txt";
 
         public Task<WorkspaceDocumentImportResult?> ImportFromPickerAsync(
@@ -247,6 +409,8 @@ public sealed class DocumentRequestControllerTests
         public string ResolveDragOutPath(string handle)
         {
             DragHandles.Add(handle);
+            if (DragFailure is not null)
+                throw DragFailure;
             return DragPath;
         }
     }

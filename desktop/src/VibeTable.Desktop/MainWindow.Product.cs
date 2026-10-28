@@ -413,6 +413,8 @@ public partial class MainWindow : Window
                 () => _documentWorkspace,
                 () => _webBridge.CurrentNativeFilePaths?.ToArray() ?? [],
                 BeginDocumentDragOut,
+                (action, token) => Dispatcher.InvokeAsync(
+                    action, System.Windows.Threading.DispatcherPriority.Normal, token).Task,
                 () => _session.Token);
             _nativeProductFiles = new NativeProductFileRequestController(
                 _webBridge,

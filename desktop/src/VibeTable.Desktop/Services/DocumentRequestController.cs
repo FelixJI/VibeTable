@@ -39,6 +39,7 @@ public sealed class DocumentRequestController
     private readonly Func<IWorkspaceDocumentCommands?> _workspace;
     private readonly Func<IReadOnlyList<string>> _nativePaths;
     private readonly Action<string> _dragOut;
+    private readonly Func<Action, CancellationToken, Task> _dispatch;
     private readonly Func<CancellationToken> _sessionToken;
 
     public DocumentRequestController(
@@ -46,12 +47,14 @@ public sealed class DocumentRequestController
         Func<IWorkspaceDocumentCommands?> workspace,
         Func<IReadOnlyList<string>> nativePaths,
         Action<string> dragOut,
+        Func<Action, CancellationToken, Task> dispatch,
         Func<CancellationToken>? sessionToken = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _nativePaths = nativePaths ?? throw new ArgumentNullException(nameof(nativePaths));
         _dragOut = dragOut ?? throw new ArgumentNullException(nameof(dragOut));
+        _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
     }
 
@@ -156,26 +159,38 @@ public sealed class DocumentRequestController
         }
     }
 
-    private Task DragOutAsync(JsonElement payload)
+    private async Task DragOutAsync(JsonElement payload)
     {
         IWorkspaceDocumentCommands? workspace = RequireWorkspace();
         if (workspace is null)
-            return Task.CompletedTask;
+            return;
         string? handle = ReadString(payload, "handle");
         if (string.IsNullOrWhiteSpace(handle))
         {
             PostFailure("缺少文档授权。", "BAD_PAYLOAD");
-            return Task.CompletedTask;
+            return;
         }
+        CancellationToken cancellationToken = default;
         try
         {
-            _dragOut(workspace.ResolveDragOutPath(handle));
+            cancellationToken = _sessionToken();
+            // OLE's nested message loop must start after WebMessageReceived returns.
+            await _dispatch(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(workspace, _workspace()))
+                    throw new DocumentFileOperationException(
+                        "工作区会话已切换，请刷新后重试。", "DOCUMENT_SESSION_STALE");
+                _dragOut(workspace.ResolveDragOutPath(handle));
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception exception)
         {
             PostFailure(exception, "DOCUMENT_DRAG_OUT_FAILED");
         }
-        return Task.CompletedTask;
     }
 
     private IWorkspaceDocumentCommands? RequireWorkspace()
