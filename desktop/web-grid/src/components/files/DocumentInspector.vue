@@ -16,6 +16,7 @@ const props = defineProps<{
   busy: boolean;
   requestedRevisionId?: string | null;
   revisionTree?: FileRevisionTreeProjection | null;
+  historyLoading?: boolean;
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
   diffChanges?: readonly DocumentDiffChange[];
@@ -161,7 +162,19 @@ async function moveTab(event: KeyboardEvent, currentTab: InspectorTab): Promise<
       </section>
 
       <section v-else-if="effectiveTab === 'history'" class="history-panel">
+        <!-- First entry into history defers the cached tree behind the fresh
+             readTree so a huge tree is mounted once, not twice. -->
+        <div
+          v-if="historyLoading"
+          class="history-loading"
+          role="status"
+          aria-live="polite"
+          data-testid="file-history-loading"
+        >
+          <strong>{{ t("history.loading") }}</strong>
+        </div>
         <FileRevisionTree
+          v-else
           :tree="revisionTree ?? null"
           :busy="busy"
           :requested-revision-id="requestedRevisionId"
@@ -200,6 +213,8 @@ async function moveTab(event: KeyboardEvent, currentTab: InspectorTab): Promise<
 .missing-card { display: grid; grid-template-columns: 22px 1fr auto; align-items: start; gap: 8px; margin: 14px; padding: 12px; color: #9a6700; border: 1px solid color-mix(in srgb, var(--vt-color-warning) 34%, var(--vt-border)); border-radius: var(--vt-radius-lg); background: color-mix(in srgb, var(--vt-color-warning) 8%, var(--vt-bg)); }
 .missing-card p { margin: 2px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .history-panel { flex: 1; min-height: 0; overflow: auto; }
+.history-loading { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; min-height: 240px; padding: 28px; color: var(--vt-fg-muted); text-align: center; }
+.history-loading strong { color: var(--vt-fg-secondary); font-weight: 500; }
 @media (max-width: 680px) {
   .document-inspector { min-width: 0; flex-basis: 100%; max-width: none; border-top: 1px solid var(--vt-border); border-left: 0; }
 }

@@ -7117,7 +7117,7 @@ async function scenario11(page, recorder, _network, runtime) {
     recorder.check(`surface ${decision} requires Host-owned final confirmation`,
       before.collection === pluginTable.tableId && before.runId === pending.runId
         && pending.pendingConfirmation.preview.affectedCount === 1
-        && /FINAL WRITE CONFIRMATION/u.test(await confirmation.innerText()), { pending });
+        && /VibeTable (最终确认 · 写入|final confirmation · Write)/u.test(await confirmation.innerText()), { pending });
     if (decision === "approved") await page.getByTestId("plugin-surface-confirm-approve").click();
     else if (decision === "rejected") await confirmation.getByRole("button", { name: "拒绝", exact: true }).click();
     else await frame.locator("#cancel").click();

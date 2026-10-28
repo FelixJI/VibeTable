@@ -271,6 +271,53 @@ describe("FileRevisionTree", () => {
     expect(wrapper.get('[data-revision-id="revision-4095"]').attributes("aria-current")).toBe("true");
     wrapper.unmount();
   });
+
+  // S40 depth-4096 regression: an all-formal chain has no collapsed autosave
+  // shortcut, so the complete tree must mount with every legal version, its
+  // boundary markers, a real restore action, and working keyboard traversal.
+  // jsdom needs several seconds to create this DOM; one mount covers all
+  // assertions, and the per-test timeout keeps it inside the suite budget.
+  it("renders the complete 4096 formal chain with markers, restore action, and keyboard reach", async () => {
+    const chain: FileRevisionV2[] = Array.from({ length: 4096 }, (_, index) => ({
+      ...revisions[0]!,
+      revisionId: `formal-${index}`,
+      parentRevisionId: index === 0 ? null : `formal-${index - 1}`,
+      revisionOrdinal: index + 1,
+      formalVersion: index + 1,
+      kind: "formal" as const,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 8, 0, 0, index)).toISOString(),
+    }));
+    const wrapper = mount(FileRevisionTree, {
+      attachTo: document.body,
+      props: {
+        tree: { documentId, effectiveRevisionId: "formal-4095", revisions: chain },
+        busy: false,
+      },
+    });
+    const rows = wrapper.findAll('[role="treeitem"]');
+    expect(rows).toHaveLength(4096);
+    expect(rows[0]!.attributes("data-revision-id")).toBe("formal-0");
+    expect(rows[0]!.text()).toContain("V1");
+    expect(rows.at(-1)!.attributes("aria-current")).toBe("true");
+    expect(rows.at(-1)!.text()).toContain("当前有效");
+    const restore = rows[0]!
+      .findAll("button")
+      .find((button) => button.text() === "恢复为新版本");
+    expect(restore).toBeDefined();
+    await restore!.trigger("click");
+    expect(wrapper.emitted("restore")?.[0]?.[0]).toMatchObject({
+      revisionId: "formal-0",
+      formalVersion: 1,
+    });
+    const first = rows[0]!;
+    await first.trigger("focus");
+    await first.trigger("keydown", { key: "End" });
+    expect(document.activeElement?.getAttribute("data-revision-id")).toBe("formal-4095");
+    await first.trigger("keydown", { key: "Home" });
+    expect(document.activeElement?.getAttribute("data-revision-id")).toBe("formal-0");
+    expect(wrapper.text()).toContain("1月1日");
+    wrapper.unmount();
+  }, 60_000);
   it("keeps a real restore entry for non-effective ancestors next to upgrade", async () => {
     const wrapper = mount(FileRevisionTree, {
       props: {

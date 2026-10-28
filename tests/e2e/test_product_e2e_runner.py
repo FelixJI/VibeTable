@@ -5393,7 +5393,10 @@ def test_plugin_confirmation_assertion_is_not_constant_true() -> None:
         'recorder.check("authorized mutation plan required explicit confirmation", true'
     )
     assert constant_true_assertion not in source
-    assert "/FINAL WRITE CONFIRMATION/u.test(await confirmation.innerText())" in source
+    assert (
+        "/VibeTable (最终确认 · 写入|final confirmation · Write)/u.test(await confirmation.innerText())"
+        in source
+    )
     assert "pending.pendingConfirmation.preview.affectedCount === 1" in source
     assert 'getByTestId("plugin-surface-confirm-approve").click()' in source
     assert 'getByTestId("plugin-toggle")' in source

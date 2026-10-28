@@ -59,6 +59,23 @@ let queryTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisionTree = computed(() =>
   store.primaryEntry ? protection.fileTrees[store.primaryEntry.documentId] ?? null : null);
+// Entering history always re-reads the tree while a cached projection may
+// already exist; mounting the stale cache first renders a deep tree twice
+// (cached mount, then reply replace). Defer only NEW mounts behind the loading
+// state so a mounted tree survives refresh reads with expansion and focus.
+const mountedHistoryDocumentId = ref<string | null>(null);
+const historyTreeLoading = computed(() => {
+  if (store.inspectorTab !== "history") return false;
+  if (protection.busyOperation !== "fileHistory.readTree") return false;
+  const documentId = store.primaryEntry?.documentId;
+  return documentId !== undefined && documentId !== mountedHistoryDocumentId.value;
+});
+watch(() => {
+  if (store.inspectorTab !== "history" || historyTreeLoading.value) return null;
+  return store.primaryEntry?.documentId ?? null;
+}, (documentId) => {
+  mountedHistoryDocumentId.value = documentId;
+}, { immediate: true });
 
 function pendingCandidateEntries(change: PendingFileChange): readonly DocumentEntry[] {
   const ids = new Set(change.candidateDocumentIds);
@@ -452,6 +469,7 @@ watch(
         :active-tab="store.inspectorTab"
         :busy="protection.busyOperation !== null"
         :revision-tree="currentRevisionTree"
+        :history-loading="historyTreeLoading"
         :requested-revision-id="props.requestedRevisionId"
         :diff-phase="store.diffPhase"
         :diff-result="store.diffResult"
