@@ -115,6 +115,14 @@ rg -n 'schema\.getTable' desktop backend contracts tests
 - Workspace 内层方法仍由 `generate_rpc_catalog.py` 的 `RPC_REGISTRY` 与 `workspace-rpc-capability-policy.json` 经 `generate_workspace_rpc_capability_manifest.py` 生成原 manifest/TS 投影；它们与补充表无同名方法，`workspace.v2.request` 只是外层 envelope，不另建内层目录。
 - 设置族纵切（`appPreferences.get/update`、`appearance.changed`）的单一权威是 `contracts/v2/app-settings-contract.json`；`uv run python contracts/v2/app_settings_contract.py` 生成 TS/C# 两端投影，`--check` 拒绝陈旧产物，共享 fixture 在 `contracts/v2/fixtures/app-settings-conformance.json`。设置成功/appearance 与 `operation.failed` 在实际 bridge 严格解码：错误 `message` 必须是 string，`code/operation/operationId` 允许缺省、null 或 string；未知 code 保留。畸形成功或错误均为 `AppSettingsProtocolError`、结果未知，不据此推断未提交或自动重放。其它消息族的 payload 继续使用现有契约，本轮不宣称全仓统一。
 
+设置请求适合用来区分协议与用例：`HostRequestDispatcher` 将该闭集直接交给同步
+`AppPreferencesRequestAdapter`，由它解码原始 JSON、关联 requestId、映射错误并尝试一次终态。
+`AppPreferencesUseCases` 只接收生成的 typed patch，返回生成的结果，复用设置 service 和窄原生端口；
+可以用隔离存储直接测试，无需 Window/WebView2、回包器或更新/语录客户端。它持有唯一 Current，
+`ApplicationRequestController` 的更新检查只刷新该状态，不重复应用主题/托盘效果。
+先对照 `AppPreferencesUseCasesTests` 与 `AppPreferencesRequestAdapterTests`，再读共享 raw fixture
+conformance 和真实设置重开场景，区分持久化前拒绝、写入后原生效果失败与传输结果未知。
+
 阅读对应的 `hostBridge.test.ts`、`WebMessageRouterTests.cs` 和
 `ProductDataRpcRegistryTests.cs`，至少找出一条成功用例和一条拒绝非法输入的用例。
 
@@ -177,7 +185,9 @@ rg -n 'schema\.getTable' desktop backend contracts tests
 2. `Services/ProductionWorkspaceRuntime.cs`
 3. `Services/WebMessageRouter.cs`
 4. `Services/WorkspaceRequestDispatcher.cs` 和具体 gateway 接口
-5. `MainWindow.Product.cs` 中对应的组合位置
+5. `Services/ProductTableComposition.cs`：无窗口的 table 子图装配、通知绑定和三阶段回收
+6. `Services/AppPreferencesRequestAdapter.cs` / `AppPreferencesUseCases.cs`：协议与类型化用例分界
+7. `MainWindow.Product.cs`：真实 native adapter、realtime/session owner 和组合入口的接线位置
 
 WPF 层最重要的不是页面绘制，而是生命周期、能力授权、会话隔离、取消和 typed routing。
 

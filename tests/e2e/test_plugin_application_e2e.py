@@ -1027,7 +1027,7 @@ def test_native_plugin_click_on_zero_bounds_button_fails_without_input(tmp_path,
         ("contrast-off", "contrast"),
     ],
 )
-def test_native_contrast_actions_preserve_input_and_settings_boundaries(
+def test_native_contrast_actions_only_wait_for_foreground_when_observing(
     tmp_path, monkeypatch, action, stage
 ):
     from types import SimpleNamespace
@@ -1079,7 +1079,7 @@ def test_native_contrast_actions_preserve_input_and_settings_boundaries(
         host_pid=12,
         evidence=tmp_path,
     )
-    if action != "observe":
+    if action in {"contrast-on", "contrast-off"}:
         assert result["status"] == "completed", result
         assert calls == [("contrast", action)]
         return

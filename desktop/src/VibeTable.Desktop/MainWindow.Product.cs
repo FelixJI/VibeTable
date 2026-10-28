@@ -44,12 +44,7 @@ public partial class MainWindow : Window
     private readonly WorkspacePathGrantStore _workspacePathGrants;
     private readonly WorkspaceProductController _workspaceProduct;
     private readonly IDatabasePicker _databasePicker;
-    private readonly LazyProductTableGateway _tableGateway;
-    private readonly TableWorkspaceService _workspace;
-    private readonly GridStateCoordinator _coordinator;
-    private readonly ProductWorkspaceController _productWorkspace;
-    private readonly WorkspaceRequestDispatcher _dispatcher;
-    private readonly IProductSidecarGatewayLifecycle _productSidecarGatewayLifecycle;
+    private readonly ProductTableComposition _tableComposition;
     private readonly ProductRealtimeSession _productRealtime;
     private HostProductRpcBinding? _configuredProductBinding;
     private JsonRpcClient? _pluginClient;
@@ -383,211 +378,199 @@ public partial class MainWindow : Window
                     ? Path.Combine(WorkspaceLayout.Paths(ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace)).Data,
                         "state", "plugin-packages") : null;
             });
-        var dailyQuotes = new DailyQuoteHostClient();
         _webBridge.PluginInteractionRequested += OnPluginInteractionRequested;
-        _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
-        _workspace = new TableWorkspaceService(_tableGateway);
-        ProductWorkspaceController? productWorkspace = null;
-        _coordinator = new GridStateCoordinator(
-            _tableGateway,
-            notification => productWorkspace!.OnNotification(notification));
-        _tableGateway.BindingChanged += _coordinator.ResetForTableChange;
-        _productWorkspace = new ProductWorkspaceController(
-            _webBridge,
-            _runtime,
-            _workspaceSessions,
-            _databasePicker,
-            _workspace,
-            () => _router.IsReady,
-            () => Volatile.Read(ref _closing) != 0,
-            HasCurrentProductGateways,
-            message => _readiness?.Trace(message),
-            typeof(MainWindow).Assembly.GetName().Version?.ToString()
-                ?? "unknown",
-            authority: productAuthority,
-            databaseOpens: _databaseOpens,
-            sessionEnvelopeFilter: _workspaceSessionFilter);
-        productWorkspace = _productWorkspace;
-        _workspace.Notification += _productWorkspace.OnNotification;
-        _dispatcher = new WorkspaceRequestDispatcher(
-            _workspace,
-            _databasePicker,
-            _webBridge,
-            _coordinator,
-            sessionEnvelopeFilter: _workspaceSessionFilter,
-            pluginContext: () => PluginProjectContext.FromSession(_workspaceSessions.Current),
-            authority: productAuthority,
-            databaseOpens: _databaseOpens);
-        _productSidecarGatewayLifecycle =
-            new ProductSidecarGatewayLifecycle(_runtime, _dispatcher);
-        _runtime.RegisterProductSidecarGatewayLifecycle(
-            _productSidecarGatewayLifecycle,
-            BindProductGatewaysAsync);
-        _productRealtime = new ProductRealtimeSession(_runtime,
-            () => Volatile.Read(ref _updateHealthProbeInProgress) == 0
-                ? _runtime.CaptureProductSidecarGeneration() : null,
-            _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
-            _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
-            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent,
-            observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate),
-            beginCatalogTurn: _workspace.BeginCatalogTurn);
-        _authorityTransition = new ProductAuthorityTransitionCoordinator(
-            productAuthority,
-            _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
-            _pluginDispatcher.SetProjectContextAfterAuthorityTransition,
-            _dispatcher.PostRetiredDatabaseOpenCancellations);
-        _documentRequests = new DocumentRequestController(
-            _webBridge,
-            () => _documentWorkspace,
-            () => _webBridge.CurrentNativeFilePaths?.ToArray() ?? [],
-            BeginDocumentDragOut,
-            () => _session.Token);
-        _nativeProductFiles = new NativeProductFileRequestController(
-            _webBridge,
-            new ProductFileRpcGatewayAdapter(() => _productGateway),
-            new WindowsNativeProductFileHost(
-                this,
-                () => _webBridge.CurrentNativeFilePaths?.ToArray() ?? [],
-                _e2eControlsDir,
-                _attachmentPreviewRoot,
-                _attachmentPreview),
-            () => _session.Token,
-            message => _readiness?.Trace(message));
-        _legacyLayouts = new LegacyLayoutRequestController(_webBridge, _workspaceSessionFilter,
-            () => _productGateway, ResolveLegacyLayoutBroker,
-            () => Dispatcher.Invoke(() => LegacyLayoutSaveDialog.Select(this, _e2eControlsDir)));
-        _pluginPreservation = new PluginPreservationRequestController(_webBridge, _workspaceSessionFilter,
-            () => _productGateway, ResolveLegacyLayoutBroker,
-            () => PluginProjectContext.FromSession(_workspaceSessions.Current), ResolvePluginPackageCacheRoot,
-            () => Dispatcher.Invoke(() => PluginPreservationSaveDialog.Select(this, _e2eControlsDir)));
-        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
-            () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
-            subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
-            preparePrint: _webBridge.PreparePluginPrintAsync,
-            showPrint: () => (AppWebView.CoreWebView2
-                ?? throw new InvalidOperationException("The product renderer is unavailable.")).ShowPrintUI(),
-            releasePrint: _webBridge.ReleasePluginPrintAsync,
-            files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
-            fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
-            pickFile: pick => Dispatcher.InvokeAsync(pick).Task,
-            dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."));
-        _applicationRequests = new ApplicationRequestController(
-            _webBridge,
-            new ApplicationRequestHost(
-                ApplyAppPreferences,
-                () => _ = EnsureTrayIcon(),
-                RequestExit,
-                message => _readiness?.Trace(message)),
-            _appPreferencesService,
-            releaseUpdateCoordinator,
-            dailyQuotes,
-            _appearance,
-            startupPreferences,
-            () => _session.Token);
-        _hostRequests = new HostRequestDispatcher(
-            _webBridge,
-            new HostLifecycleRequestController(
-                _webBridge,
-                new HostLifecycleActions(
-                    OnRendererReady,
-                    RequestExit,
-                    RetryStartup,
-                    OpenPocketBaseAdmin,
-                    HandleDiagnosticsGetAsync)),
-            _workspaceProduct,
-            _applicationRequests,
-            _documentRequests,
-            _nativeProductFiles,
-            _legacyLayouts,
-            _pluginDispatcher,
-            _dispatcher,
-            new DeviceSettingsRequestController(
-                _webBridge,
-                _workspaceSessionFilter,
-                () => _runtime.CurrentWorkspace),
-            new GridPresentationRequestController(
-                _webBridge,
-                _workspaceSessionFilter,
-                new HostGridStateStore(Path.Combine(_productDataRoot, "grid-presentation"))),
-            new HostCommandRequestController(
-                _webBridge, _workspaceSessionFilter,
-                new HostShortcutStore(Path.Combine(_productDataRoot, "commands")),
-                new WindowsHostCommandActions(this, () => _productGateway as IHostCommandExportGateway,
-                    new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
-                    _e2eControlsDir), message => _readiness?.Trace(message)),
-            new HostSourceImportRequestController(_webBridge, _workspaceSessionFilter,
-                new HostSourceImportActions(OpenSourceImportAsync)),
-            new ClipboardRequestController(_webBridge, _workspaceSessionFilter, new WindowsTextClipboard()),
-            TraceHostRequest, pluginPreservation: _pluginPreservation);
-
-        _runtime.ClientReady += OnRuntimeClientReady;
-        _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
-        _runtime.BindingChanged += OnRuntimeBindingChanged;
-        _workspaceSessions.Changed += OnWorkspaceSessionChanged;
-        _viewModel = new MainWindowViewModel(
-            _runtime,
-            _webBridge,
-            stopPlugins: StopAllPluginSurfaces,
-            returnToPlatform: ReturnToPlatformFromNativeChrome,
-            managePlugins: ManagePluginsFromNativeChrome,
-            recoverRenderer: RecoverRendererAsync);
-        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
-        DataContext = _viewModel;
-        // Native plugin chrome visibility follows the live surface registry;
-        // the Changed event can fire from non-UI threads, so hop to the
-        // dispatcher before touching the view model.
-        _pluginResources.SurfacesChanged += UpdateNativePluginChrome;
-        UpdateNativePluginChrome();
-
-        SourceInitialized += (_, _) => _rendererRecoveryMenu = new RendererRecoveryMenu(
-            (System.Windows.Interop.HwndSource?)System.Windows.PresentationSource.FromVisual(this)
-                ?? throw new InvalidOperationException("无法绑定原生界面恢复菜单。"),
-            _viewModel.RecoverRendererCommand);
-        Loaded += OnLoaded;
-        Closing += OnClosing;
-        Closed += OnClosed;
-        Application.Current.SessionEnding += OnSessionEnding;
-        ApplyAppearanceResources(_appearance.Projection);
-        _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
-        ApplyAppPreferences(_applicationRequests.CurrentPreferences);
-        // UI-driven E2E stays visible. The explicit tray-lifecycle submode is
-        // allowed to exercise the production auto-start visibility policy;
-        // its harness observes fixed host state files instead of clicking UI.
-        _startHidden = (!startup.TestMode || startup.TestModeTrayLifecycle)
-            && StartupVisibilityPolicy.ShouldStartHidden(
-                startup.AutoStart,
-                _applicationRequests.CurrentPreferences.MinimizeToTrayOnClose);
-        if (_e2eControlsDir is not null)
+        try
         {
-            StartDocumentNativeObservation();
-            _testModeHost = new TestModeHostController(
-                _e2eControlsDir,
-                new TestModeHost(
-                    () => Volatile.Read(ref _closing) == 0
-                        && !Dispatcher.HasShutdownStarted
-                        && !Dispatcher.HasShutdownFinished,
-                    action =>
-                    {
-                        _ = Dispatcher.BeginInvoke(
-                            async () => await action().ConfigureAwait(true));
-                    },
-                    RequestExit,
-                    Close,
-                    async (workspaceId, cancellationToken) =>
-                    {
-                        _ = await _workspaceProduct.OpenAsync(
-                            workspaceId,
-                            WorkspaceOpenMode.Writable,
-                            switching: false,
-                            cancellationToken);
-                    },
-                    () => new TestModeHostState(
-                        IsVisible,
-                        _trayIcon?.Visible == true,
-                        _workspaceSessions.Current),
-                    message => _readiness?.Trace(message)),
+            _tableComposition = new ProductTableComposition(
+                _runtime,
+                _workspaceSessions,
+                _workspaceSessionFilter,
+                _webBridge,
+                _databasePicker,
+                productAuthority,
+                _databaseOpens,
+                () => _router.IsReady,
+                () => Volatile.Read(ref _closing) != 0,
+                HasCurrentProductGateways,
+                message => _readiness?.Trace(message),
+                typeof(MainWindow).Assembly.GetName().Version?.ToString() ?? "unknown",
+                BindProductGatewaysAsync);
+            _productRealtime = new ProductRealtimeSession(_runtime,
+                () => Volatile.Read(ref _updateHealthProbeInProgress) == 0
+                    ? _runtime.CaptureProductSidecarGeneration() : null,
+                _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
+                _tableComposition.Workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
+                projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent,
+                observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate),
+                beginCatalogTurn: _tableComposition.Workspace.BeginCatalogTurn);
+            _authorityTransition = new ProductAuthorityTransitionCoordinator(
+                productAuthority,
+                _tableComposition.Dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
+                _pluginDispatcher.SetProjectContextAfterAuthorityTransition,
+                _tableComposition.Dispatcher.PostRetiredDatabaseOpenCancellations);
+            _documentRequests = new DocumentRequestController(
+                _webBridge,
+                () => _documentWorkspace,
+                () => _webBridge.CurrentNativeFilePaths?.ToArray() ?? [],
+                BeginDocumentDragOut,
+                () => _session.Token);
+            _nativeProductFiles = new NativeProductFileRequestController(
+                _webBridge,
+                new ProductFileRpcGatewayAdapter(() => _productGateway),
+                new WindowsNativeProductFileHost(
+                    this,
+                    () => _webBridge.CurrentNativeFilePaths?.ToArray() ?? [],
+                    _e2eControlsDir,
+                    _attachmentPreviewRoot,
+                    _attachmentPreview),
                 () => _session.Token,
-                RunTestModeSourceImportAsync);
+                message => _readiness?.Trace(message));
+            _legacyLayouts = new LegacyLayoutRequestController(_webBridge, _workspaceSessionFilter,
+                () => _productGateway, ResolveLegacyLayoutBroker,
+                () => Dispatcher.Invoke(() => LegacyLayoutSaveDialog.Select(this, _e2eControlsDir)));
+            _pluginPreservation = new PluginPreservationRequestController(_webBridge, _workspaceSessionFilter,
+                () => _productGateway, ResolveLegacyLayoutBroker,
+                () => PluginProjectContext.FromSession(_workspaceSessions.Current), ResolvePluginPackageCacheRoot,
+                () => Dispatcher.Invoke(() => PluginPreservationSaveDialog.Select(this, _e2eControlsDir)));
+            _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
+                () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
+                subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
+                preparePrint: _webBridge.PreparePluginPrintAsync,
+                showPrint: () => (AppWebView.CoreWebView2
+                    ?? throw new InvalidOperationException("The product renderer is unavailable.")).ShowPrintUI(),
+                releasePrint: _webBridge.ReleasePluginPrintAsync,
+                files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
+                fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
+                pickFile: pick => Dispatcher.InvokeAsync(pick).Task,
+                dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."));
+            var preferences = new AppPreferencesUseCases(
+                _appPreferencesService,
+                new AppPreferencesEffects(
+                    _appearance,
+                    ApplyAppPreferences,
+                    () => _ = EnsureTrayIcon()),
+                startupPreferences);
+            var preferenceRequests = new AppPreferencesRequestAdapter(
+                _webBridge, preferences, message => _readiness?.Trace(message));
+            _applicationRequests = new ApplicationRequestController(
+                _webBridge,
+                new ApplicationRequestHost(RequestExit, message => _readiness?.Trace(message)),
+                preferences,
+                releaseUpdateCoordinator,
+                new DailyQuoteHostClient(),
+                () => _session.Token);
+            _hostRequests = new HostRequestDispatcher(
+                _webBridge,
+                new HostLifecycleRequestController(
+                    _webBridge,
+                    new HostLifecycleActions(
+                        OnRendererReady,
+                        RequestExit,
+                        RetryStartup,
+                        OpenPocketBaseAdmin,
+                        HandleDiagnosticsGetAsync)),
+                _workspaceProduct,
+                _applicationRequests,
+                preferenceRequests,
+                _documentRequests,
+                _nativeProductFiles,
+                _legacyLayouts,
+                _pluginDispatcher,
+                _tableComposition.Dispatcher,
+                new DeviceSettingsRequestController(
+                    _webBridge,
+                    _workspaceSessionFilter,
+                    () => _runtime.CurrentWorkspace),
+                new GridPresentationRequestController(
+                    _webBridge,
+                    _workspaceSessionFilter,
+                    new HostGridStateStore(Path.Combine(_productDataRoot, "grid-presentation"))),
+                new HostCommandRequestController(
+                    _webBridge, _workspaceSessionFilter,
+                    new HostShortcutStore(Path.Combine(_productDataRoot, "commands")),
+                    new WindowsHostCommandActions(this, () => _productGateway as IHostCommandExportGateway,
+                        new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
+                        _e2eControlsDir), message => _readiness?.Trace(message)),
+                new HostSourceImportRequestController(_webBridge, _workspaceSessionFilter,
+                    new HostSourceImportActions(OpenSourceImportAsync)),
+                new ClipboardRequestController(_webBridge, _workspaceSessionFilter, new WindowsTextClipboard()),
+                TraceHostRequest, pluginPreservation: _pluginPreservation);
+
+            _runtime.ClientReady += OnRuntimeClientReady;
+            _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
+            _runtime.BindingChanged += OnRuntimeBindingChanged;
+            _workspaceSessions.Changed += OnWorkspaceSessionChanged;
+            _viewModel = new MainWindowViewModel(
+                _runtime,
+                _webBridge,
+                stopPlugins: StopAllPluginSurfaces,
+                returnToPlatform: ReturnToPlatformFromNativeChrome,
+                managePlugins: ManagePluginsFromNativeChrome,
+                recoverRenderer: RecoverRendererAsync);
+            _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+            DataContext = _viewModel;
+            // Native plugin chrome visibility follows the live surface registry;
+            // the Changed event can fire from non-UI threads, so hop to the
+            // dispatcher before touching the view model.
+            _pluginResources.SurfacesChanged += UpdateNativePluginChrome;
+            UpdateNativePluginChrome();
+
+            SourceInitialized += (_, _) => _rendererRecoveryMenu = new RendererRecoveryMenu(
+                (System.Windows.Interop.HwndSource?)System.Windows.PresentationSource.FromVisual(this)
+                    ?? throw new InvalidOperationException("无法绑定原生界面恢复菜单。"),
+                _viewModel.RecoverRendererCommand);
+            Loaded += OnLoaded;
+            Closing += OnClosing;
+            Closed += OnClosed;
+            Application.Current.SessionEnding += OnSessionEnding;
+            ApplyAppearanceResources(_appearance.Projection);
+            _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
+            ApplyAppPreferences(_applicationRequests.CurrentPreferences);
+            // UI-driven E2E stays visible. The explicit tray-lifecycle submode is
+            // allowed to exercise the production auto-start visibility policy;
+            // its harness observes fixed host state files instead of clicking UI.
+            _startHidden = (!startup.TestMode || startup.TestModeTrayLifecycle)
+                && StartupVisibilityPolicy.ShouldStartHidden(
+                    startup.AutoStart,
+                    _applicationRequests.CurrentPreferences.MinimizeToTrayOnClose);
+            if (_e2eControlsDir is not null)
+            {
+                StartDocumentNativeObservation();
+                _testModeHost = new TestModeHostController(
+                    _e2eControlsDir,
+                    new TestModeHost(
+                        () => Volatile.Read(ref _closing) == 0
+                            && !Dispatcher.HasShutdownStarted
+                            && !Dispatcher.HasShutdownFinished,
+                        action =>
+                        {
+                            _ = Dispatcher.BeginInvoke(
+                                async () => await action().ConfigureAwait(true));
+                        },
+                        RequestExit,
+                        Close,
+                        async (workspaceId, cancellationToken) =>
+                        {
+                            _ = await _workspaceProduct.OpenAsync(
+                                workspaceId,
+                                WorkspaceOpenMode.Writable,
+                                switching: false,
+                                cancellationToken);
+                        },
+                        () => new TestModeHostState(
+                            IsVisible,
+                            _trayIcon?.Visible == true,
+                            _workspaceSessions.Current),
+                        message => _readiness?.Trace(message)),
+                    () => _session.Token,
+                    RunTestModeSourceImportAsync);
+            }
+        }
+        catch
+        {
+            // Construction has no Loaded/Closed lifetime yet; use the same owned teardown.
+            OnClosed(this, EventArgs.Empty);
+            throw;
         }
     }
 
@@ -689,7 +672,7 @@ public partial class MainWindow : Window
         ProductSidecarGenerationSnapshot snapshot = _runtime.CaptureProductSidecarGeneration()
             ?? throw new BackendUnavailableException("The workspace Sidecar generation is unavailable.");
         if (!await CompleteProductGatewayBindingAsync(
-                _productSidecarGatewayLifecycle.TryReplaceAsync(snapshot, binding.Token),
+                _tableComposition.SidecarGatewayLifecycle.TryReplaceAsync(snapshot, binding.Token),
                 () => ConfigureRpcGatewaysAsync(snapshot, binding.Token)).ConfigureAwait(false)
             || !HasCurrentProductGateways())
             throw new BackendUnavailableException("The workspace gateway binding was retired.");
@@ -701,7 +684,7 @@ public partial class MainWindow : Window
         try
         {
             await CompleteProductGatewayBindingAsync(
-                _productSidecarGatewayLifecycle.TryReplaceAsync(snapshot, _session.Token),
+                _tableComposition.SidecarGatewayLifecycle.TryReplaceAsync(snapshot, _session.Token),
                 () => ConfigureRpcGatewaysAsync(snapshot, _session.Token)).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (
@@ -783,11 +766,11 @@ public partial class MainWindow : Window
     private void ConfigureRpcGateways(HostProductRpcBinding binding)
     {
         _authorityTransition.Transition(null);
-        _tableGateway.Bind(binding);
+        _tableComposition.TableGateway.Bind(binding);
 
         if (_productGateway is not null)
         {
-            _dispatcher.ClearProductDataGateway(_productGateway);
+            _tableComposition.Dispatcher.ClearProductDataGateway(_productGateway);
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }
@@ -795,7 +778,7 @@ public partial class MainWindow : Window
         _productGateway.EnableHostFiles();
         _productGateway.TaskChanged += OnProductTaskChanged;
         binding.BindSourceImportCatalogRefresh(_productRealtime.RefreshCatalogAsync);
-        _dispatcher.SetProductDataGateway(_productGateway);
+        _tableComposition.Dispatcher.SetProductDataGateway(_productGateway);
 
 
         if (_pluginGateway is not null)
@@ -820,7 +803,7 @@ public partial class MainWindow : Window
             new OpenXmlDocumentDiffEngine(),
             Path.Combine(_productDataRoot, "document-diff"),
             Path.Combine(AppContext.BaseDirectory, "resources", "document-diff", "VibeTable.DocumentDiff.Worker.exe"));
-        _dispatcher.SetDocumentWorkspace(_documentWorkspace);
+        _tableComposition.Dispatcher.SetDocumentWorkspace(_documentWorkspace);
         _configuredProductBinding = binding;
         _authorityTransition.Transition(
             PluginProjectContext.FromSession(_workspaceSessions.Current),
@@ -948,7 +931,7 @@ public partial class MainWindow : Window
             {
                 bool sameGoBinding = _configuredProductBinding?.Matches(binding) == true;
                 if (!sameGoBinding) _authorityTransition.Transition(null);
-                _tableGateway.Bind(binding);
+                _tableComposition.TableGateway.Bind(binding);
                 if (binding.Client is null && _pluginGateway is not null)
                 {
                     _pluginDispatcher.ClearGatewayAfterAuthorityTransition(_pluginGateway);
@@ -958,14 +941,14 @@ public partial class MainWindow : Window
                 }
                 return;
             }
-            _tableGateway.Unbind();
+            _tableComposition.TableGateway.Unbind();
             _authorityTransition.Transition(null);
             _webBridge.PostNotification(
                 "plugin.projectContext.unavailable",
                 new { reason = "backend-binding-unavailable" });
             if (_productGateway is not null)
             {
-                _dispatcher.ClearProductDataGateway(_productGateway);
+                _tableComposition.Dispatcher.ClearProductDataGateway(_productGateway);
                 _productGateway.TaskChanged -= OnProductTaskChanged;
                 _productGateway.Dispose();
                 _productGateway = null;
@@ -1192,7 +1175,7 @@ public partial class MainWindow : Window
     private void OnRendererReady(RendererReadyPhase phase)
     {
         _router.IsReady = true;
-        _dispatcher.RotateDocumentCapabilityEpoch();
+        _tableComposition.Dispatcher.RotateDocumentCapabilityEpoch();
         _pluginResources.CloseAllSurfaces();
         if (phase == RendererReadyPhase.Business)
         {
@@ -1322,7 +1305,7 @@ public partial class MainWindow : Window
     }
 
     private void OpenProductWorkspaceWhenReady()
-        => _productWorkspace.OpenWhenReady();
+        => _tableComposition.ProductWorkspace.OpenWhenReady();
 
     private void OnProductTaskChanged(JsonElement change)
     {
@@ -1439,8 +1422,8 @@ public partial class MainWindow : Window
         HostThemeResources.Remove(Application.Current.Resources);
         HostThemeResources.Remove(Resources);
         _appearance.Dispose();
-        _productRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _productSidecarGatewayLifecycle.Dispose();
+        _productRealtime?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _tableComposition?.DisposeSidecarGateway();
         _testModeHost?.Dispose();
         StopDocumentNativeObservation();
         Application.Current.SessionEnding -= OnSessionEnding;
@@ -1452,26 +1435,25 @@ public partial class MainWindow : Window
         _runtime.BindingChanged -= OnRuntimeBindingChanged;
         _workspaceSessions.Changed -= OnWorkspaceSessionChanged;
         _pluginResources.SurfacesChanged -= UpdateNativePluginChrome;
-        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        if (_viewModel is not null)
+            _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         if (_productGateway is not null)
         {
-            _dispatcher.ClearProductDataGateway(_productGateway);
+            _tableComposition?.Dispatcher.ClearProductDataGateway(_productGateway);
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }
-        _authorityTransition.Dispose();
+        _authorityTransition?.Dispose();
         _databaseOpens.Dispose();
-        _dispatcher.Dispose();
+        _tableComposition?.DisposeRequests();
         _pluginDispatcher.Dispose();
         _webBridge.PluginApi?.Dispose();
-        _applicationRequests.Dispose();
+        _applicationRequests?.Dispose();
         _pluginGateway?.Dispose();
         _pluginResources.Dispose();
         _attachmentPreview.Dispose();
         _documentWorkspace?.Dispose();
-        _workspace.Notification -= _productWorkspace.OnNotification;
-        _productWorkspace.Dispose();
-        _tableGateway.Dispose();
+        _tableComposition?.DisposeWorkspace();
         try
         {
             _workspaceProduct.DisposeAsync().AsTask()
