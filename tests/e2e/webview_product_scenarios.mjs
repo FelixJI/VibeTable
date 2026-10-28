@@ -1,6 +1,8 @@
 import { seedLegacyLayoutProduct, resumeLegacyLayoutProduct, rejectLegacyRoutes, runRetiredNativeOutput } from "./legacy_layout_product.mjs";
 import { runRecordManagerProduct } from "./record_manager_product.mjs";
 import { runCapabilityServices } from "./plugin_capability_services.mjs";
+import { runPluginModels } from "./plugin_models.mjs";
+
 import { runPluginSurfaceOutputs } from "./plugin_surface_outputs.mjs";
 import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
 import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
@@ -12177,6 +12179,8 @@ const scenarios = {
   }),
   "52-plugin-capability-services": (page, recorder, _network, runtime) => runCapabilityServices(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
   "53-record-manager": (page, recorder, _network, runtime) => runRecordManagerProduct(page, recorder, runtime, { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest }),
+  "54-plugin-models": (page, recorder, _network, runtime) => runPluginModels(page, recorder, runtime, { waitForShell, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, activateRestartedWorkspace, applyProductMutation, createV2Field }),
+
   "55-plugin-surface-outputs": (page, recorder, _network, runtime) => runPluginSurfaceOutputs(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
 
 };
@@ -12424,7 +12428,7 @@ async function main() {
     browser = await chromium.connectOverCDP(
       args["cdp-url"],
       // S46 must exercise Host-owned downloads, without Playwright download overrides.
-      ["46-dashboard-native-output", "49-plugin-application-security"].includes(args.scenario) ? { noDefaults: true } : undefined,
+      ["46-dashboard-native-output", "49-plugin-application-security", "54-plugin-models"].includes(args.scenario) ? { noDefaults: true } : undefined,
     );
     context = browser.contexts()[0];
     if (!context) throw new Error("WebView2 exposed no browser context over CDP");
@@ -12481,7 +12485,7 @@ async function main() {
             waitForCapturedBridgeMessage, captureRestoreCrashCheckpoint: runtime.captureRestoreCrashCheckpoint,
           });
         }
-        if (args.scenario === "48-plugin-applications") return scenarios[args.scenario](candidate, checks, network, runtime);
+        if (["48-plugin-applications", "54-plugin-models"].includes(args.scenario)) return scenarios[args.scenario](candidate, checks, network, runtime);
         return seedNaturalRetentionAging(candidate, checks);
       }
       : args["persistent-phase"] === "resume"
@@ -12507,6 +12511,7 @@ async function main() {
             openWorkspaceCenterFromSwitcher, beginWritableWorkspaceBootstrapCapture, switchWorkspaceByName,
             beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
           }, args.state);
+          if (args.scenario === "54-plugin-models") return runPluginModels(candidate, checks, runtime, { waitForShell, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, activateRestartedWorkspace, applyProductMutation, createV2Field }, args.state);
           return resumeNaturalRetentionAging(candidate, checks, args.state);
         }
         : scenarios[args.scenario];

@@ -44,6 +44,39 @@ const plan = { planId: "lease", projectKey: "local:workspace", projectRevision: 
 const request = { type: "plugin.lifecycle.upgrade", requestId: "approved-upgrade", payload: {
   projectKey: plan.projectKey, projectRevision: plan.projectRevision, pluginId: plan.manifest.pluginId, planId: plan.planId } };
 const updated = { pluginId: plan.manifest.pluginId, projectKey: plan.projectKey, version: "2.0.0", packageHash: plan.packageHash };
+
+test("renderer recovery waits for the installed application projection before checking reachability", async () => {
+  let reveal;
+  const projected = new Promise(resolve => { reveal = resolve; });
+  let visible = false;
+  const observed = [];
+  const page = { getByTestId(id) { return {
+    async waitFor(options) {
+      assert.equal(options.state, "visible");
+      assert.equal(options.timeout, 60000);
+      if (id.startsWith("nav-plugin-app-")) await projected;
+    },
+    async isVisible() { return id === "nav-plugins" || visible; },
+  }; } };
+  const waiting = assertSidebarPluginReachable(page, { check(...args) { observed.push(args); } }, "recovered");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(observed, []);
+  visible = true; reveal();
+  await waiting;
+  assert.deepEqual(observed, [["recovered", true, {}]]);
+});
+
+test("renderer recovery cannot pass when its installed application never becomes visible", async () => {
+  const missing = new Error("installed application projection timed out");
+  const page = { getByTestId(id) { return {
+    async waitFor() { if (id.startsWith("nav-plugin-app-")) throw missing; },
+    async isVisible() { return id === "nav-plugins"; },
+  }; } };
+  await assert.rejects(assertSidebarPluginReachable(page, {
+    check() { assert.fail("an unavailable application must not reach the successful check"); },
+  }, "recovered"), error => error === missing);
+});
+
 function fixture() {
   const listeners = new Set(); const outbound = []; let predicate; let argument; let resolveWait;
   let reads = 0; let hiddenChecks = 0;

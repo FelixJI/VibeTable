@@ -484,6 +484,12 @@ func tableReceiptHash(receipt v2.TableCreateReceipt) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// PreviewTableID uses the same identity as Create without writing a table.
+func PreviewTableID(operationID string) string {
+	id, _ := tableIdentities(operationID)
+	return id
+}
+
 func tableSettingsHash(receipt v2.TableSettingsReceipt) string {
 	raw, _ := json.Marshal(receipt)
 	sum := sha256.Sum256(raw)

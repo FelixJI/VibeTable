@@ -117,7 +117,9 @@ public sealed class ProductRealtimeSessionTests
         }
     }
     [TestMethod]
-    public async Task ExplicitCatalogReadFailureReportsSeparateSafeProjectionFailure()
+    [DataRow("source_import")]
+    [DataRow("plugin_model")]
+    public async Task ExplicitCatalogReadFailureReportsSeparateSafeProjectionFailure(string operation)
     {
         int applications = 0;
         await using var fixture = await Fixture.OpenAsync(applyCatalog: _ => applications++);
@@ -125,12 +127,13 @@ public sealed class ProductRealtimeSessionTests
         fixture.Http.CatalogFailure = true;
         fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
-        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None, operation);
         (await fixture.NextPost())();
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(0, applications);
         Assert.AreEqual("operation.failed", fixture.Posted.Single().Topic);
-        Assert.AreEqual("source_import.catalog_refresh_failed", fixture.Posted.Single().Payload.GetProperty("code").GetString());
+        Assert.AreEqual(operation + ".catalog_refresh_failed", fixture.Posted.Single().Payload.GetProperty("code").GetString());
+        Assert.AreEqual(operation + ".catalog", fixture.Posted.Single().Payload.GetProperty("operation").GetString());
         Assert.DoesNotContain("secret", fixture.Posted.Single().Payload.ToString());
         Assert.AreEqual(1, fixture.Http.CatalogReads);
     }

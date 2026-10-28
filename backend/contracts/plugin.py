@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from backend._version import __version__
+from backend.contracts.plugin_model import PluginModelDeclaration
 
 
 def _camel(value: str) -> str:
@@ -107,6 +108,10 @@ class PluginManifest(PluginContract):
     @model_validator(mode="after")
     def validate_execution_contract(self) -> PluginManifest:
         native = self.schema_id == "vibetable.plugin-manifest.v2"
+        if "model" in self.permissions:
+            if not native:
+                raise ValueError("model permissions require native plugin API 3.x")
+            PluginModelDeclaration.model_validate(self.permissions["model"])
         if native != (self.compatibility.get("pluginApi") == "3.x"):
             raise ValueError("manifest/API version mismatch")
         if native and any(action.worker_entry is not None for action in self.actions):

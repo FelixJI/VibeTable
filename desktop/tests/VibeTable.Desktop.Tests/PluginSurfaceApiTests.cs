@@ -769,6 +769,116 @@ public sealed class PluginSurfaceApiTests
     private static string? Code(JsonElement result) => result.GetProperty("error").GetProperty("code").GetString();
     private static string? Code(string result) => Code(JsonDocument.Parse(result).RootElement);
 
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task CompletedModelRefreshesCatalogWithoutDowngradingItsReceipt(bool refreshFails, bool retire)
+    {
+        using var fixture = new Fixture();
+        int refreshes = 0;
+        fixture.RefreshModelCatalog = (generation, _) =>
+        {
+            Assert.AreEqual(fixture.Context.SessionGeneration, generation.Identity.SessionEpoch);
+            refreshes++;
+            if (retire) fixture.RetireAfterReceipt();
+            if (refreshFails) throw new IOException("synthetic catalog refresh failure");
+            return Task.CompletedTask;
+        };
+        JsonElement response = await fixture.Call("model.configure", "{\"mode\":\"create\"}");
+        Assert.AreEqual("completed", response.GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual(1, refreshes);
+        Assert.AreEqual(0, fixture.LateNotifications);
+        Assert.AreEqual(0, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "model.commit"));
+    }
+
+    [TestMethod]
+    [DataRow("completed")]
+    [DataRow("partial")]
+    [DataRow("wrong-request")]
+    [DataRow("wrong-installation")]
+    [DataRow("incomplete")]
+    public async Task ModelCommitReceiptSettlesCapturedTaskAfterRetirement(string receipt)
+    {
+        using var fixture = new Fixture();
+        fixture.Http.ModelPreviewBody = """{"contract":"vibetable.plugin-model.v1","requestId":"model-request","installationId":"record-surface","installationRevision":1,"model":{"modelId":"items","version":1},"status":"pending","total":2}""";
+        fixture.Http.ModelCommitBody = JsonSerializer.Serialize(new
+        {
+            contract = "vibetable.plugin-model.v1",
+            requestId = receipt == "wrong-request" ? "other" : "model-request",
+            installationId = receipt == "wrong-installation" ? "other" : "record-surface",
+            installationRevision = 1,
+            model = new { modelId = "items", version = 1 },
+            status = receipt == "partial" ? "partial" : "completed",
+            completed = receipt == "incomplete" ? 1 : 2, total = 2,
+        });
+        fixture.Http.AfterReadMethod = "model.commit";
+        fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
+        var response = await fixture.Call("model.configure", "{\"mode\":\"create\"}");
+        if (receipt == "completed") Assert.AreEqual("completed", response.GetProperty("result").GetProperty("status").GetString());
+        else Assert.IsTrue(response.TryGetProperty("error", out _));
+        Assert.AreEqual(0, fixture.LateNotifications);
+        fixture.Tasks.SetWorkspaceContext(fixture.Context);
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual(receipt == "completed" ? "succeeded" : "failed", task.State);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "model.commit"));
+    }
+
+    [TestMethod]
+    [DataRow("model.read")]
+    [DataRow("model.status")]
+    public async Task ModelReadsStillRejectLateRetirement(string method)
+    {
+        using var fixture = new Fixture();
+        fixture.Http.AfterReadMethod = method;
+        fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call(method, "{}")));
+    }
+
+    [TestMethod]
+    public async Task NativeModelCatalogLoadsEverySummaryThenOnlySelectedFieldsWithRevision()
+    {
+        var calls = new List<JsonElement>();
+        Task<JsonElement> Read(JsonElement request, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            calls.Add(request.Clone());
+            string response = request.TryGetProperty("tableId", out var selected)
+                ? request.TryGetProperty("offset", out _) ? """{"tableId":"selected","schemaRevision":"schema_0007","fields":[{"fieldId":"last"}],"nextOffset":null}"""
+                    : """{"tableId":"selected","schemaRevision":"schema_0007","fields":[{"fieldId":"first"}],"nextOffset":32}"""
+                : request.TryGetProperty("afterTableId", out _) ? """{"tables":[{"tableId":"selected","schemaRevision":"schema_0007"}],"nextAfterTableId":null}"""
+                    : """{"model":{},"tables":[{"tableId":"other","schemaRevision":"schema_0001"}],"nextAfterTableId":"other"}""";
+            if (request.TryGetProperty("tableId", out selected))
+            {
+                Assert.AreEqual("selected", selected.GetString());
+                Assert.AreEqual("schema_0007", request.GetProperty("schemaRevision").GetString());
+            }
+            return Task.FromResult(JsonDocument.Parse(response).RootElement.Clone());
+        }
+        var catalog = await PluginSurfaceApi.ReadModelCatalogAsync(Read, CancellationToken.None);
+        Assert.AreEqual(2, catalog.GetProperty("tables").GetArrayLength());
+        Assert.IsTrue(calls.All(call => !call.TryGetProperty("tableId", out _)));
+        var fields = await PluginSurfaceApi.ReadModelCatalogAsync(Read, CancellationToken.None, "selected", "schema_0007");
+        Assert.AreEqual(2, fields.GetProperty("fields").GetArrayLength());
+        Assert.AreEqual(4, calls.Count);
+        Assert.AreEqual(32, calls[3].GetProperty("offset").GetInt32());
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => PluginSurfaceApi.ReadModelCatalogAsync(Read, cancelled.Token));
+        Assert.AreEqual(4, calls.Count);
+    }
+
+    [TestMethod]
+    [DataRow("model.catalog")]
+    [DataRow("model.preview")]
+    [DataRow("model.commit")]
+    public async Task FrameCannotCallNativeModelProtocol(string method)
+    {
+        using var fixture = new Fixture();
+        Assert.AreEqual("plugin_api_unsupported", Code(await fixture.Call(method, "{}")));
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
     private sealed class Fixture : IDisposable, IWebReplySink
     {
         internal PluginSurfaceSessionManager Surfaces { get; } = new();
@@ -784,6 +894,7 @@ public sealed class PluginSurfaceApiTests
         internal Action? OnPrint { get; set; }
         internal int PrintReleases { get; private set; }
         internal Func<PluginSurfaceSession, CancellationToken, Task<bool>> PreparePrint { get; set; } = (_, _) => Task.FromResult(true);
+        internal Func<ProductSidecarGenerationSnapshot, CancellationToken, Task> RefreshModelCatalog { get; set; } = (_, _) => Task.CompletedTask;
         internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
         internal Action? OnConfirmation { get; set; }
         internal int LateNotifications { get; private set; }
@@ -824,7 +935,9 @@ public sealed class PluginSurfaceApiTests
             Api = new(Surfaces, Tasks, () => _generation, this, Http,
                 preparePrint: (surface, _, token) => PreparePrint(surface, token),
                 showPrint: () => { Prints++; OnPrint?.Invoke(); },
-                releasePrint: _ => { PrintReleases++; return Task.CompletedTask; });
+                releasePrint: _ => { PrintReleases++; return Task.CompletedTask; },
+                refreshModelCatalog: (generation, token) => RefreshModelCatalog(generation, token),
+                confirmModel: (_, _) => Task.FromResult(true));
         }
         internal string Wire(string method, string parameters, string? token = null, string? version = null) => JsonSerializer.Serialize(new
         { contract = version ?? PluginSurfaceApi.Contract, surfaceToken = token ?? Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement });
@@ -888,6 +1001,8 @@ public sealed class PluginSurfaceApiTests
         internal string? ContextError { get; set; }
         internal string? CommitErrorBody { get; set; }
         internal string? CommitResultBody { get; set; }
+        internal string? ModelPreviewBody { get; set; }
+        internal string? ModelCommitBody { get; set; }
         internal Action? OnCommit { get; set; }
         internal bool CommitObservedCancellation { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -921,6 +1036,8 @@ public sealed class PluginSurfaceApiTests
             {
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
+                "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",
+                "model.commit" => ModelCommitBody ?? "{}",
                 "mutation.commit" => JsonSerializer.Serialize(new { contractVersion = "2.0", status = "applied", affectedRows = call.GetProperty("request").GetProperty("operations").EnumerateArray().Select(operation => new { recordId = "r1", operation = operation.GetProperty("kind").GetString() == "create" ? "insert" : operation.GetProperty("kind").GetString() }) }),
                 _ => "{}",
             };

@@ -69,7 +69,10 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
 
     private void OnSessionChanged(object? sender, WorkspaceSessionChangedEventArgs args) => Refresh();
 
-    internal async Task RefreshCatalogAsync(ProductSidecarGenerationSnapshot snapshot, CancellationToken token)
+    internal Task RefreshCatalogAsync(ProductSidecarGenerationSnapshot snapshot, CancellationToken token)
+        => RefreshCatalogAsync(snapshot, token, "source_import");
+
+    internal async Task RefreshCatalogAsync(ProductSidecarGenerationSnapshot snapshot, CancellationToken token, string operation)
     {
         Binding? binding;
         lock (_gate) binding = !_disposed && _requested?.Snapshot.Matches(snapshot) == true ? _requested : null;
@@ -106,13 +109,13 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
             catch (OperationCanceledException) when (call.IsCancellationRequested) { }
             catch (Exception error)
             {
-                _failed("source_import.catalog_refresh_failed:" + error.GetType().Name);
+                _failed(operation + ".catalog_refresh_failed:" + error.GetType().Name);
                 if (call.IsCancellationRequested) return;
                 await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
                 {
                     post("operation.failed", new
                     {
-                        operation = "source_import.catalog", code = "source_import.catalog_refresh_failed",
+                        operation = operation + ".catalog", code = operation + ".catalog_refresh_failed",
                         message = "目标表已保存，但目录刷新失败；重新打开工作区后可查看。",
                     });
                     return true;

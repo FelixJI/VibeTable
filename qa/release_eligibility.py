@@ -130,6 +130,7 @@ FILE_IO_SCENARIO_IDS = (
     "51-plugin-application-commit-unknown",
     "52-plugin-capability-services",
     "53-record-manager",
+    "54-plugin-models",
     "55-plugin-surface-outputs",
 )
 LANE_STAGE_SCENARIO_IDS = {

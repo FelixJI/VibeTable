@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, ClassVar
 
+from pydantic import ValidationError
+
 from backend._version import __version__
 from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
+from backend.contracts.plugin_model import PluginModelDeclaration
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -348,6 +351,13 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         raise PluginPackageError("manifest_invalid", "displayName must contain localized text")
 
     permissions = _require_object(manifest.get("permissions"), "permissions")
+    if "model" in permissions:
+        try:
+            PluginModelDeclaration.model_validate(permissions["model"])
+            if manifest.get("compatibility", {}).get("pluginApi") != "3.x":
+                raise ValueError("model permissions require native plugin API 3.x")
+        except (ValidationError, ValueError) as error:
+            raise PluginPackageError("permissions_invalid", str(error)) from error
     _validate_compatibility(manifest.get("compatibility"))
     if native != (manifest["compatibility"]["pluginApi"] == "3.x"):
         raise PluginPackageError("version_incompatible", "manifest/API version mismatch")

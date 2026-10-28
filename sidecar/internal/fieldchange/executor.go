@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaaudit"
@@ -231,6 +232,14 @@ func (executor *Executor) apply(
 		if replayed != nil {
 			receipt = *replayed
 			return nil
+		}
+		if err := pluginmodel.ProtectField(ctx, txApp, plan.Intent.TableID, plan.Intent.FieldID, plan.Before, plan.After); err != nil {
+			return err
+		}
+		for _, related := range plan.RelatedChanges {
+			if err := pluginmodel.ProtectField(ctx, txApp, related.TableID, related.FieldID, related.Before, related.After); err != nil {
+				return err
+			}
 		}
 		expiresAt, expiryErr := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
 		if expiryErr != nil || !expiresAt.After(executor.clock().UTC()) {

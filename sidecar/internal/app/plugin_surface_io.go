@@ -20,6 +20,7 @@ import (
 )
 
 type pluginSurfaceIO struct {
+	models      *schemaFieldChangeDomain
 	stages      surfaceAttachmentStages
 	outputs     surfaceOutputStages
 	plans       *importPlanOwner
@@ -31,12 +32,7 @@ func surfaceIOOwner(input pluginSurfaceAPIRequest) string {
 }
 
 func surfaceIOGrant(installed pluginSurfaceInstallation, input pluginSurfaceAPIRequest, table, operation string) *pluginReadGrant {
-	for _, grant := range installed.Manifest.Permissions.Data {
-		if (grant.Collection == table || grant.Collection == "$active" && table == input.ActiveCollection) && pluginHas(grant.Operations, operation) {
-			return &grant
-		}
-	}
-	return nil
+	return installed.grantFor(table, input.ActiveCollection, operation)
 }
 
 func surfaceImportGrant(installed pluginSurfaceInstallation, input pluginSurfaceAPIRequest, table, mode string) *pluginReadGrant {

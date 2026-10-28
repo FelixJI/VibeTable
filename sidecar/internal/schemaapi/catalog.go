@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
@@ -486,6 +487,9 @@ func (catalog *Catalog) DeleteTable(
 		}
 		if referenceErr := catalog.rejectReferencedDelete(txApp, tableID); referenceErr != nil {
 			return referenceErr
+		}
+		if err := pluginmodel.ProtectTable(ctx, txApp, tableID); err != nil {
+			return err
 		}
 
 		collection, collectionErr := txApp.FindCollectionByNameOrId(

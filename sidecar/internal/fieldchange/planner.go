@@ -264,6 +264,18 @@ func (planner *Planner) plan(
 	if err := planner.rejectDuplicateActiveFieldNames(ctx, intent, before, after, relatedChanges); err != nil {
 		return v2.FieldChangePlan{}, err
 	}
+	if protector, ok := planner.source.(interface {
+		ProtectModelField(context.Context, string, string, *v2.FieldDefinition, *v2.FieldDefinition) error
+	}); ok {
+		if err := protector.ProtectModelField(ctx, intent.TableID, intent.FieldID, before, after); err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		for _, related := range relatedChanges {
+			if err := protector.ProtectModelField(ctx, related.TableID, related.FieldID, related.Before, related.After); err != nil {
+				return v2.FieldChangePlan{}, err
+			}
+		}
+	}
 	classes := classifyIntent(intent, before, after)
 	for _, related := range relatedChanges {
 		for _, class := range classifyIntent(intent, related.Before, related.After) {

@@ -1775,6 +1775,16 @@ def persist_product_e2e_evidence(
                 if not copied and item["status"] == "passed":
                     raise ValueError(f"passing S42 report lacks native evidence: {filename}")
         phase_evidence = {
+            "54-plugin-models": {
+                "seed": (
+                    "54-models.json",
+                    "54-model-native-create.png",
+                    "54-model-native-map.png",
+                    "54-model-native-upgrade.png",
+                    "54-plugin-models-trace.zip",
+                ),
+                "resume": ("54-models-reopened.json", "54-plugin-models-trace.zip"),
+            },
             "48-plugin-applications": {
                 "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
                 "resume": (
@@ -1952,6 +1962,7 @@ def persist_product_e2e_evidence(
             "39-file-workflow-combination",
             "44-file-restore-crash",
             "48-plugin-applications",
+            "54-plugin-models",
         }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
@@ -1971,6 +1982,13 @@ def persist_product_e2e_evidence(
                         f"{scenario_id}.png",
                     ):
                         _copy_if_file(phase_run / filename, retained / filename)
+                    if scenario_id == "54-plugin-models":
+                        for filename in (
+                            "model-native-combos.json",
+                            "plugin-native-result.json",
+                            "plugin-native-observation.json",
+                        ):
+                            _copy_if_file(phase_run / filename, retained / filename)
                     if scenario_id == "48-plugin-applications":
                         for filename in (
                             "48-plugin-print-preview.json",

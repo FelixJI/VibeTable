@@ -34,6 +34,7 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
   };
   async function dispatch(method: string, params: Record<string, unknown>, signal: AbortSignal, requestId: string): Promise<unknown> {
     if ((options.pluginApi ?? "3.x") !== "3.x") fail("plugin_api_unsupported");
+    if (method.startsWith("model.")) fail("plugin_api_unsupported");
     if (method === "context.read") return host.capabilities.context.read();
     if (method === "data.describe") return host.capabilities.data.describe(params as unknown as Parameters<typeof host.capabilities.data.describe>[0]);
     if (method === "data.releaseCursor") {

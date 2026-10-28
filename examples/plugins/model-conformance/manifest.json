@@ -1,0 +1,29 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.model-conformance",
+  "version": "1.0.0",
+  "displayName": {"zh-CN": "合成三表模型"},
+  "description": {"zh-CN": "初始化、映射、升级与恢复的合成模型示例"},
+  "compatibility": {"minHostVersion": "0.5.3", "pluginApi": "3.x"},
+  "permissions": {
+    "model": {
+      "contract": "vibetable.plugin-model.v1", "modelId": "synthetic", "version": 1,
+      "entities": [
+        {"key": "people", "label": "合成人员", "operations": ["read", "query", "create", "update"], "fields": [
+          {"key": "name", "label": "姓名", "type": "text"},
+          {"key": "tickets", "label": "工单", "type": "relation", "relation": {"entity": "tickets", "field": "person", "cardinality": "many"}}
+        ]},
+        {"key": "tickets", "label": "合成工单", "operations": ["read", "query", "create"], "fields": [
+          {"key": "title", "label": "主题", "type": "text"},
+          {"key": "person", "label": "人员", "type": "relation", "relation": {"entity": "people", "field": "tickets", "cardinality": "one"}}
+        ]},
+        {"key": "assets", "label": "合成资产", "operations": ["read", "query"], "fields": [
+          {"key": "name", "label": "名称", "type": "text"},
+          {"key": "quantity", "label": "数量", "type": "number", "precision": "integer"}
+        ]}
+      ]
+    }
+  },
+  "actions": [{"actionId": "open-model", "displayName": {"zh-CN": "打开合成模型"}, "description": {}, "mode": "local", "risk": "write", "invocation": "manual", "placements": [], "presentation": "application", "entry": "ui/index.html"}],
+  "ui": {"customViews": []}
+}

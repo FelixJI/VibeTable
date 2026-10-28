@@ -31,6 +31,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private readonly Func<PluginSurfaceSession, string, CancellationToken, Task<bool>>? _preparePrint;
     private readonly Action? _showPrint;
     private readonly Func<string, Task>? _releasePrint;
+    private readonly Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? _refreshModelCatalog;
+    private readonly Func<JsonElement, CancellationToken, Task<bool>> _confirmModel;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
     private sealed record NativeWrite(PluginProjectContext Context, TaskCompletionSource Completion);
     private readonly ConcurrentDictionary<string, Task> _cleanups = new(StringComparer.Ordinal);
@@ -45,9 +47,13 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         Action? showPrint = null,
         Func<string, Task>? releasePrint = null,
         Func<HostSessionFileBroker>? files = null, INativeProductFileHost? fileHost = null,
-        Func<Func<string?>, Task<string?>>? pickFile = null, Func<PluginDataIoPort>? dataIo = null)
+        Func<Func<string?>, Task<string?>>? pickFile = null, Func<PluginDataIoPort>? dataIo = null,
+        Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? refreshModelCatalog = null,
+        Func<JsonElement, CancellationToken, Task<bool>>? confirmModel = null)
     {
         _preparePrint = preparePrint; _showPrint = showPrint; _releasePrint = releasePrint;
+        _refreshModelCatalog = refreshModelCatalog;
+        _confirmModel = confirmModel ?? NativePluginModelWindow.ConfirmAsync;
         _dataIo = dataIo; _files = files; _fileHost = fileHost; _pickFile = pickFile;
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
         _subscriptionSource = subscriptionSource;
@@ -89,7 +95,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "model.configure" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
@@ -200,6 +206,12 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "storage.delete":
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
+                    break;
+                case "model.configure":
+                case "model.read":
+                case "model.status":
+                    result = await HandleModelAsync(surface, request.Method, request.Params, deadline.Token);
+                    if (request.Method == "model.configure" && result is JsonElement modelReceipt && modelReceipt.GetProperty("status").GetString() == "completed") committed = true;
                     break;
                 case "attachments.list":
                 case "attachments.read":
@@ -469,7 +481,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
 
     private async Task<JsonElement> CallAsync(PluginSurfaceSession surface, string method, JsonElement parameters,
         CancellationToken token, string? cursor = null, JsonElement? dependencies = null, string? commitId = null,
-        ProductSidecarGenerationSnapshot? auditGeneration = null)
+        ProductSidecarGenerationSnapshot? auditGeneration = null, JsonElement? modelPlan = null)
     {
         bool terminalAudit = (method is "audit.finish" or "attachment.drop" or "import.drop" or "import.settle") && auditGeneration is not null;
         if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
@@ -506,6 +518,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         // A fully read and validated commit receipt settles the captured run even
         // when retirement follows the response. Other responses require a live session.
         if (method == "mutation.commit") ValidateReceipt(document.RootElement, parameters);
+        else if (method == "model.commit") ValidateModelReceipt(document.RootElement, surface, parameters, modelPlan);
         else if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         return document.RootElement.Clone();
     }
