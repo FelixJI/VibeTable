@@ -5165,6 +5165,8 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
         runner.NODE_RUNNER.with_name("file_document_native_operations_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_document_operations_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_restore_crash_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("source_import_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("isolated_native_clipboard_guard.test.mjs"),
     ]

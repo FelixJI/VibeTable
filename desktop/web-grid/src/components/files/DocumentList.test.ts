@@ -144,6 +144,31 @@ describe("DocumentList", () => {
     expect(wrapper.emitted("context")).toEqual([[document, { x: 36, y: 24 }]]);
   });
 
+  it("anchors every row with its stable semantic path for lookup independent of the optional detail line", () => {
+    const sameName = entry("document-a");
+    const renamedRoot = { ...entry("document-b"), displayName: "报价单", relativePath: "quote-2026.pdf" };
+    const missingSubfolder = {
+      ...entry("document-c"),
+      displayName: "合同.pdf",
+      relativePath: "客户/合同.pdf",
+      availability: "missing" as const,
+    };
+    const wrapper = mount(DocumentList, {
+      props: {
+        entries: [sameName, renamedRoot, missingSubfolder],
+        selectedHandles: [],
+        primaryHandle: null,
+      },
+    });
+
+    for (const document of [sameName, renamedRoot, missingSubfolder]) {
+      const row = wrapper.get(`[data-testid="document-row-${document.entryHandle}"]`);
+      expect(row.attributes("data-path")).toBe(document.relativePath);
+    }
+    // 根目录同名行没有可选 small 副标题，语义锚点仍必须完整。
+    expect(wrapper.get('[data-testid="document-row-document-a"]').find("small").exists()).toBe(false);
+  });
+
   it("omits the detail line only when the path repeats the display name; different root paths and status stay visible", () => {
     const sameName = entry("document-a");
     const renamedRoot = { ...entry("document-b"), displayName: "报价单", relativePath: "quote-2026.pdf" };

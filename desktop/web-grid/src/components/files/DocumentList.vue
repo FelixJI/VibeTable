@@ -166,6 +166,7 @@ function onDragStart(event: DragEvent, entry: DocumentEntry, index: number): voi
       :draggable="entry.capabilities.includes('dragOut')"
       :title="entry.capabilities.includes('dragOut') ? t('files.dragOut.hint') : undefined"
       :data-testid="`document-row-${entry.entryHandle}`"
+      :data-path="entry.relativePath"
       @click="onSelect($event, index)"
       @focus="focusedHandle = entry.entryHandle"
       @dblclick="entry.capabilities.includes('open') && emit('open', entry)"

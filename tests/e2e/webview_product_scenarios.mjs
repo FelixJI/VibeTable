@@ -12428,7 +12428,10 @@ async function main() {
     );
     context = browser.contexts()[0];
     if (!context) throw new Error("WebView2 exposed no browser context over CDP");
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+    // Full DOM sampling of the 4096-row tree distorts its frozen UI latency budget.
+    await context.tracing.start({
+      screenshots: true, snapshots: args.scenario !== "40-file-history-capacity", sources: false,
+    });
     const observedPages = new WeakSet();
     const observePage = (candidate) => {
       if (observedPages.has(candidate)) return;
