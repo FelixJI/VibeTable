@@ -860,9 +860,6 @@ function isTextual(type: LogicalTypeV2): boolean {
           <div>
             <strong>{{ store.isExisting ? "字段设置" : "新增字段" }}</strong>
           </div>
-          <NTag size="small" :bordered="false">
-            {{ store.result?.schemaRevision ?? "正在读取…" }}
-          </NTag>
         </div>
       </template>
 
