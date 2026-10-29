@@ -209,6 +209,7 @@ func TestInstallReplicaCoordinatorRestoresMonotonicHighWatermarks(t *testing.T) 
 		options,
 		record,
 		anchor,
+		9,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +224,9 @@ func TestInstallReplicaCoordinatorRestoresMonotonicHighWatermarks(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer coordinator.Close()
+	if coordinator.BusinessEpoch() != 10 {
+		t.Fatalf("restored business epoch = %d", coordinator.BusinessEpoch())
+	}
 	recovery := coordinator.RecoveryState()
 	highWatermark := coordinator.HighWatermark()
 	if recovery.Counters.MutationRevision != record.MutationRevision ||

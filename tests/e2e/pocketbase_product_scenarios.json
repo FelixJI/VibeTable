@@ -508,5 +508,11 @@
       "plugin.output.artifacts",
       "plugin.attachments"
     ]
+  },
+  {
+    "id": "56-plugin-transactions",
+    "title": "插件三表原子提交、余额保护与原结果恢复",
+    "requirement": "真实WPF/WebView2合成插件通过公开SDK和原生确认登记规则、提交三表计划。预览及取消零业务写入，同requestId重复提交及重开查询返回原结果，新增占用超过余额整笔拒绝且不留下孤儿行；缺失requestId明确unknown。并发、撤权及丢回执故障由同契约Go/Host测试补足。",
+    "capabilities": ["plugin.surface-api", "plugin.transactions", "plugin.models", "plugin.lifecycle"]
   }
 ]

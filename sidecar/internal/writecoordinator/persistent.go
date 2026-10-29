@@ -85,6 +85,9 @@ func RotatePersistentAuditEpoch(
 	}
 	db.SetMaxOpenConns(1)
 	defer db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return err
+	}
 	if err := ensureAuditEpochColumn(db); err != nil {
 		return err
 	}
@@ -122,6 +125,39 @@ func RotatePersistentAuditEpoch(
 		return errors.Join(ErrRecoveryRequired, err)
 	}
 	return transaction.Commit()
+}
+
+// ReadPersistentBusinessEpoch reads the live authority, never the restored snapshot.
+func ReadPersistentBusinessEpoch(ctx context.Context, databasePath, workspaceID string) (uint64, error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return 0, ErrInvalidIdentity
+	}
+	path, cleanup, err := stageCoordinationDatabaseForRead(databasePath)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return 0, err
+	}
+	var epoch uint64
+	err = db.QueryRowContext(ctx, "SELECT audit_epoch_counter FROM coordination_state WHERE singleton=1 AND workspace_id=?", workspaceID).Scan(&epoch)
+	if err != nil {
+		return 0, err
+	}
+	if epoch == 0 {
+		return 0, ErrRecoveryRequired
+	}
+	if epoch >= math.MaxInt64 {
+		return 0, ErrCounterExhausted
+	}
+	return epoch, nil
 }
 
 type persistedState struct {

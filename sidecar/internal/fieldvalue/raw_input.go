@@ -125,7 +125,7 @@ func normalizeRawNumber(raw any) (any, error) {
 	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
 		return nil, fmt.Errorf("value is not a finite number")
 	}
-	return number, nil
+	return json.Number(strings.TrimSpace(text)), nil
 }
 
 func normalizeRawBoolean(raw any) (any, error) {

@@ -1653,6 +1653,15 @@ def persist_product_e2e_evidence(
                 "53-confirm-delete-approved.png",
                 "52-picker-export-select.png",
             ),
+            "56-plugin-transactions": (
+                "56-transactions.json",
+                "56-transactions.png",
+                "56-rules.png",
+                "56-cancel.png",
+                "56-commit.png",
+                "56-balance-rejected.png",
+                "56-plugin-transactions-trace.zip",
+            ),
             "55-plugin-surface-outputs": (
                 "55-output-conformance.png",
                 "55-plugin-surface-outputs-trace.zip",

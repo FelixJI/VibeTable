@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -10,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_valid
 
 from backend._version import __version__
 from backend.contracts.plugin_model import PluginModelDeclaration
+from backend.contracts.plugin_transactions import PluginTransactionsDeclaration
 
 
 def _camel(value: str) -> str:
@@ -112,6 +114,21 @@ class PluginManifest(PluginContract):
             if not native:
                 raise ValueError("model permissions require native plugin API 3.x")
             PluginModelDeclaration.model_validate(self.permissions["model"])
+        if "transactions" in self.permissions:
+            if not native:
+                raise ValueError("transactions permissions require native plugin API 3.x")
+            declaration = PluginTransactionsDeclaration.model_validate(
+                self.permissions["transactions"]
+            )
+            # Go rejects a transactions permission without a decodable sibling model.
+            model = PluginModelDeclaration.model_validate(self.permissions.get("model"))
+            if declaration.model_id != model.model_id:
+                raise ValueError("transactions rules must reference the declared model")
+            # Go Decode applies the same 1 MiB budget to the serialized declaration.
+            if len(json.dumps(self.permissions["transactions"], ensure_ascii=False).encode()) > (
+                1 << 20
+            ):
+                raise ValueError("transactions declaration exceeds the 1 MiB budget")
         if native != (self.compatibility.get("pluginApi") == "3.x"):
             raise ValueError("manifest/API version mismatch")
         if native and any(action.worker_entry is not None for action in self.actions):

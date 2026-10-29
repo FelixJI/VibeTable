@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 	"io"
 	"os"
 	"path/filepath"
@@ -829,6 +830,13 @@ func applyConflictTables(
 	tables []workspaceConflictTableStage,
 	sources map[objectrepo.ObjectID]*conflictCandidateSource,
 ) error {
+	touched := make(map[string]bool, len(tables))
+	for _, table := range tables {
+		touched[table.TableID] = true
+	}
+	if err := transactionrules.ProtectReplacement(context.Background(), txApp, touched); err != nil {
+		return err
+	}
 	sorted := append([]workspaceConflictTableStage(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].TableID < sorted[j].TableID

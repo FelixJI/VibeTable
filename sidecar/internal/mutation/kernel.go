@@ -12,9 +12,11 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
+	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
 
 const (
@@ -278,6 +280,13 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 		}
 	}
 	fields := make(map[string]v2.FieldDefinition)
+	var integerInputs map[string][]exactdecimal.Format
+	if app != nil {
+		integerInputs, err = transactionrules.IntegerInputs(ctx, app, request.TableID)
+		if err != nil {
+			return PreviewResult{}, businessRuleError(err)
+		}
+	}
 	for _, field := range definition.Snapshot.Fields {
 		fields[field.Identity.FieldID] = field
 		fields[field.Identity.PhysicalName] = field
@@ -444,6 +453,11 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 					)
 				}
 				input = rawInput
+			}
+			for _, format := range integerInputs[field.Identity.FieldID] {
+				if _, err := format.Parse(input.Value); err != nil {
+					return PreviewResult{}, businessRuleError(err)
+				}
 			}
 			result, normalizeErr := fieldvalue.New().NormalizeWrite(ctx, field, mode, input)
 			if normalizeErr != nil {

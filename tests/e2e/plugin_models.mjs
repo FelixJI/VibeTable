@@ -93,7 +93,7 @@ export async function waitForModelCatalog(page, bindings, afterRevision) {
   return page.evaluate(readModelCatalogInPage);
 }
 
-async function nativeModel(runtime, action, buttonId, stage, selections) {
+export async function nativeModel(runtime, action, buttonId, stage, selections) {
   const requestId = `model-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const target = path.join(runtime.evidenceDir, "plugin-native-request.json");
   await fs.writeFile(`${target}.tmp`, JSON.stringify({ requestId, action, buttonId, stage, ...(selections ? { selections } : {}) }));

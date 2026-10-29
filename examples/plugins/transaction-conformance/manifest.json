@@ -1,0 +1,44 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.transaction-conformance",
+  "version": "1.0.0",
+  "displayName": {"zh-CN": "合成原子事务"},
+  "description": {"zh-CN": "三表原子提交、余额约束与原结果恢复"},
+  "compatibility": {"minHostVersion": "0.5.7", "pluginApi": "3.x"},
+  "permissions": {
+    "model": {
+      "contract": "vibetable.plugin-model.v1", "modelId": "transaction_example", "version": 1,
+      "entities": [
+        {"key": "heads", "label": "合成业务头", "operations": ["read", "query", "create", "update", "delete"], "fields": [
+          {"key": "code", "label": "合成编号", "type": "text"},
+          {"key": "budget", "label": "精确限额", "type": "text"},
+          {"key": "lines", "label": "业务行", "type": "relation", "relation": {"entity": "lines", "field": "head", "cardinality": "many"}}
+        ]},
+        {"key": "lines", "label": "合成业务行", "operations": ["read", "query", "create", "update", "delete"], "fields": [
+          {"key": "amount", "label": "精确数量", "type": "text"},
+          {"key": "head", "label": "业务头", "type": "relation", "relation": {"entity": "heads", "field": "lines", "cardinality": "one"}},
+          {"key": "allocations", "label": "来源分配", "type": "relation", "relation": {"entity": "allocations", "field": "line", "cardinality": "many"}}
+        ]},
+        {"key": "allocations", "label": "合成来源分配", "operations": ["read", "query", "create", "update", "delete"], "fields": [
+          {"key": "amount", "label": "精确分配", "type": "text"},
+          {"key": "line", "label": "业务行", "type": "relation", "relation": {"entity": "lines", "field": "allocations", "cardinality": "one"}}
+        ]}
+      ]
+    },
+    "transactions": {
+      "contract": "vibetable.plugin-transactions.v1", "modelId": "transaction_example", "version": 1,
+      "decimals": [
+        {"entity": "heads", "field": "budget", "storage": "decimalText", "scale": 2, "digits": 18},
+        {"entity": "lines", "field": "amount", "storage": "decimalText", "scale": 2, "digits": 18},
+        {"entity": "allocations", "field": "amount", "storage": "decimalText", "scale": 2, "digits": 18}
+      ],
+      "rules": [
+        {"id": "unique-code", "kind": "unique", "entity": "heads", "fields": ["code"]},
+        {"id": "head-limit", "kind": "balance", "entity": "lines", "target": "heads", "relation": "head", "amount": "amount", "limit": "budget"},
+        {"id": "line-total", "kind": "conservation", "entity": "allocations", "target": "lines", "relation": "line", "amount": "amount", "limit": "amount"}
+      ]
+    }
+  },
+  "actions": [{"actionId": "open-transactions", "displayName": {"zh-CN": "打开合成事务"}, "description": {}, "mode": "local", "risk": "write", "invocation": "manual", "placements": [], "presentation": "application", "entry": "ui/index.html"}],
+  "ui": {"customViews": []}
+}

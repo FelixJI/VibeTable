@@ -108,6 +108,60 @@ def test_native_cli_accepts_explicit_v2_without_worker_and_rejects_unknown_api(
     assert json.loads(rejected.stdout)["code"] == "version_incompatible"
 
 
+def test_transactions_cli_uses_shared_closed_validation_and_reports_persistent_rules(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "transactions"
+    _write_readonly_plugin(plugin)
+    manifest_path = plugin / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["$schema"] = "vibetable.plugin-manifest.v2"
+    manifest["compatibility"]["pluginApi"] = "3.x"
+    manifest["actions"][0].pop("workerEntry")
+    manifest["actions"][0].update(
+        {"risk": "write", "presentation": "application", "entry": "ui/index.html"}
+    )
+    manifest["actions"][0].pop("inputSchema")
+    manifest["actions"][0].pop("outputSchema")
+    (plugin / "ui").mkdir()
+    (plugin / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    manifest["permissions"]["model"] = {
+        "contract": "vibetable.plugin-model.v1",
+        "modelId": "orders",
+        "version": 1,
+        "entities": [
+            {
+                "key": "headers",
+                "label": "合成头",
+                "operations": ["read", "query", "create", "update"],
+                "fields": [{"key": "number", "label": "单号", "type": "text"}],
+            }
+        ],
+    }
+    declaration = {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "orders",
+        "version": 1,
+        "decimals": [],
+        "rules": [{"id": "unique", "kind": "unique", "entity": "headers", "fields": ["number"]}],
+    }
+    manifest["permissions"]["transactions"] = declaration
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    validated = _run_cli("validate", str(plugin), "--json")
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    report = _run_cli("inspect-permissions", str(plugin), "--json")
+    assert report.returncode == 0, report.stdout + report.stderr
+    assert json.loads(report.stdout)["transactions"] == declaration
+    text_report = _run_cli("inspect-permissions", str(plugin), env={"PYTHONIOENCODING": "utf-8"})
+    assert "停用或卸载不解除" in text_report.stdout
+    declaration["rules"][0]["code"] = "arbitrary()"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    rejected = _run_cli("validate", str(plugin), "--json")
+    assert rejected.returncode == 2
+    assert "Traceback" not in rejected.stderr
+    assert json.loads(rejected.stdout)["code"] == "permissions_invalid"
+
+
 @pytest.mark.parametrize("bad_action", [None, "read", 3])
 def test_build_reports_structured_error_for_malformed_action_entries(
     tmp_path: Path, bad_action: object
