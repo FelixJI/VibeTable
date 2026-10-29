@@ -10,7 +10,7 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class PluginSurfaceApiTests
 {
-    internal const string DatasetBody = """{"contract":"vibetable.plugin-dataset.v1","scope":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]},"groupBy":[],"sums":[]}],"versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"filteredRows":2,"totalRows":2,"complete":true,"summary":{"count":2,"complete":true,"sums":[{"field":"amount","value":"9007199254740993.02","complete":true}],"groups":[]}}]}""";
+    internal const string DatasetBody = """{"contract":"vibetable.plugin-dataset.v1","scope":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]},"groupBy":[],"sums":[]}],"versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"filteredRows":2,"totalRows":2,"complete":true,"summary":{"count":2,"complete":true,"sums":[{"field":"amount","value":"9007199254740993.02","complete":true}],"groups":[]}}]}""";
     private const string DatasetRequest = """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""";
 
     [TestMethod]

@@ -12,6 +12,42 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceFilesTests
 {
     [TestMethod]
+    [DataRow("{\"fresh\":true,\"value\":\"x\",\"other\":42}")]
+    [DataRow("{\"fresh\":true}")]
+    public async Task DatasetCsvPreservesOrdinaryJsonWithEnvelopeNamedProperties(string value)
+    {
+        await using var f = new Fixture();
+        var content = JsonNode.Parse(PluginSurfaceApiTests.DatasetBody)!;
+        var source = content["sources"]![0]!;
+        source["computedFields"] = new JsonArray();
+        source["items"] = new JsonArray(new JsonObject { ["id"] = "a", ["amount"] = JsonNode.Parse(value) });
+        source["filteredRows"] = 1;
+        source["totalRows"] = 1;
+        f.Http.DatasetResultBody = content.ToJsonString();
+        string id = (await f.Call("dataset.open", """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""")).GetProperty("result").GetProperty("datasetId").GetString()!;
+        var page = (await f.Call("dataset.page", JsonSerializer.Serialize(new { datasetId = id, collection = "orders", offset = 0, pageSize = 200 }))).GetProperty("result");
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(value), JsonNode.Parse(page.GetProperty("items")[0].GetProperty("amount").GetRawText())));
+        var exported = await f.Call("dataset.export", JsonSerializer.Serialize(new { datasetId = id, collection = "orders", suggestedName = "synthetic.csv" }));
+        Assert.IsTrue(exported.TryGetProperty("result", out var receipt), exported.GetRawText());
+        Assert.IsTrue(receipt.GetProperty("committed").GetBoolean());
+        Assert.AreEqual("\"id\",\"amount\"\r\n\"a\",\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"\r\n", File.ReadAllText(f.Target));
+    }
+
+    [TestMethod]
+    public async Task DatasetCsvUnwrapsOnlyAnAuthoritativelyDeclaredComputedField()
+    {
+        await using var f = new Fixture();
+        var content = JsonNode.Parse(PluginSurfaceApiTests.DatasetBody)!;
+        content["sources"]![0]!["computedFields"] = new JsonArray("amount");
+        content["sources"]![0]!["items"] = new JsonArray(new JsonObject { ["id"] = "a", ["amount"] = new JsonObject { ["state"] = "ready", ["fresh"] = true, ["value"] = "12.34" } });
+        f.Http.DatasetResultBody = content.ToJsonString();
+        string id = (await f.Call("dataset.open", """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""")).GetProperty("result").GetProperty("datasetId").GetString()!;
+        var exported = await f.Call("dataset.export", JsonSerializer.Serialize(new { datasetId = id, collection = "orders", suggestedName = "synthetic.csv" }));
+        Assert.IsTrue(exported.GetProperty("result").GetProperty("committed").GetBoolean());
+        Assert.AreEqual("\"id\",\"amount\"\r\n\"a\",\"12.34\"\r\n", File.ReadAllText(f.Target));
+    }
+
+    [TestMethod]
     public async Task DatasetCsvUsesTheDisplayedRowsAndNativeCancellationOrStalePreservesTarget()
     {
         await using var f = new Fixture();
@@ -1240,6 +1276,7 @@ public sealed class PluginSurfaceFilesTests
     {
         internal List<JsonElement> Calls { get; } = [];
         internal bool DatasetStale;
+        internal string DatasetResultBody = PluginSurfaceApiTests.DatasetBody;
         internal Action? AfterAuthorize;
         internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
@@ -1289,7 +1326,7 @@ public sealed class PluginSurfaceFilesTests
             }
             string body = method switch
             {
-                "dataset.open" => PluginSurfaceApiTests.DatasetBody,
+                "dataset.open" => DatasetResultBody,
                 "dataset.validate" => """{"valid":true}""",
                 "data.describe" => "{\"schemaRevision\":\"schema_1\"}",
                 "mutation.preview" => "{\"affectedCount\":1}",

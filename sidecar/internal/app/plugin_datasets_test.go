@@ -29,6 +29,8 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 	request := pluginDatasetRequest{Contract: pluginDatasetContract}
 	grants := []any{}
 	var hidden v2.FieldDefinition
+	jsonFieldID := ""
+	ordinaryJSON := []map[string]any{{"fresh": true, "value": "x", "other": 42}, {"fresh": true}}
 	for i := 0; i < 3; i++ {
 		table, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: fmt.Sprintf("Synthetic dataset %d", i), OperationID: fmt.Sprintf("dataset-%d", i), Actor: v2.Actor{ID: "local-user", Kind: "user"}})
 		if err != nil {
@@ -37,6 +39,11 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 		amount := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Amount", fmt.Sprintf("dataset-amount-%d", i)).Definition
 		group := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Group", fmt.Sprintf("dataset-group-%d", i)).Definition
 		hidden = *createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Hidden", fmt.Sprintf("dataset-hidden-%d", i)).Definition
+		var payload *v2.FieldDefinition
+		if i == 0 {
+			payload = createSchemaProductField(t, pb, table.TableID, v2.LogicalJSON, "Payload", "dataset-ordinary-json").Definition
+			jsonFieldID = payload.Identity.FieldID
+		}
 		description, err := schemaexecution.Describe(ctx, pb, table.TableID)
 		if err != nil {
 			t.Fatal(err)
@@ -55,6 +62,10 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 				if j == 0 {
 					r.Set(amount.Identity.PhysicalName, "9007199254740993.01")
 				}
+				if payload != nil && j < len(ordinaryJSON) {
+					r.Set(payload.Identity.PhysicalName, ordinaryJSON[j])
+					r.Set(payload.Value.Presence.PhysicalName, true)
+				}
 				if err := tx.Save(r); err != nil {
 					return err
 				}
@@ -68,6 +79,9 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 		fields := []string{"id", amount.Identity.FieldID, group.Identity.FieldID}
+		if payload != nil {
+			fields = append(fields, payload.Identity.FieldID)
+		}
 		grants = append(grants, map[string]any{"collection": table.TableID, "operations": []string{"read", "query"}, "fields": fields})
 		request.Sources = append(request.Sources, pluginDatasetSource{Query: pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: table.TableID, Fields: fields}, GroupBy: []string{group.Identity.FieldID}, Sums: []pluginDatasetSum{{Field: amount.Identity.FieldID, Format: exactdecimal.Format{Storage: "decimalText", Scale: 2, Digits: 38}}}})
 	}
@@ -112,6 +126,9 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 	}
 	for _, value := range opened["sources"].([]any) {
 		output := value.(map[string]any)
+		if len(output["computedFields"].([]string)) != 0 {
+			t.Fatal("ordinary fields were classified as computed")
+		}
 		if len(output["items"].([]map[string]any)) != 205 {
 			t.Fatalf("source did not span >one page: %#v", output)
 		}
@@ -120,6 +137,26 @@ func TestPluginDatasetThreeTablesExactSnapshotBudgetsAndGrants(t *testing.T) {
 		if sum["value"] != "9007199254740995.05" || sum["complete"] != true || len(summary["groups"].([]any)) != 2 {
 			t.Fatalf("inexact dataset summary: %#v", summary)
 		}
+	}
+	jsonRows := opened["sources"].([]any)[0].(map[string]any)["items"].([]map[string]any)
+	seenJSON := map[string]bool{}
+	for _, row := range jsonRows {
+		if value := row[jsonFieldID]; value != nil {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seenJSON[string(raw)] = true
+		}
+	}
+	for _, value := range ordinaryJSON {
+		raw, _ := json.Marshal(value)
+		if !seenJSON[string(raw)] {
+			t.Fatalf("ordinary JSON changed during dataset projection: %#v", seenJSON)
+		}
+	}
+	if len(seenJSON) != len(ordinaryJSON) {
+		t.Fatalf("ordinary JSON projection: %#v", seenJSON)
 	}
 	encoded, _ := json.Marshal(opened)
 	if len(encoded) > pluginDatasetBytes || strings.Contains(string(encoded), strings.Repeat("x", 128)) {
@@ -412,6 +449,9 @@ func TestPluginDatasetRelationTargetsAndComputedDependenciesRequireGrants(t *tes
 		t.Fatal(err)
 	}
 	output := opened["sources"].([]any)[0].(map[string]any)
+	if fields := output["computedFields"].([]string); len(fields) != 1 || fields[0] != computed {
+		t.Fatalf("computed field metadata is not canonical: %#v", fields)
+	}
 	summary := output["summary"].(map[string]any)
 	if output["complete"] != false || summary["complete"] != false || summary["sums"].([]any)[0].(map[string]any)["value"] != nil {
 		t.Fatalf("empty pending computed projection falsely complete: %#v", output)

@@ -75,7 +75,7 @@ export async function runPluginDatasets(page, recorder, runtime, helpers) {
     frame = await openApplication(page, "com.vibetable.examples.transaction-conformance", "open-transactions");
     await action("dataset");
   }
-  recorder.check("repeated remounts reclaim datasets and bounded subscriptions", await frame.locator("#dataset-state").innerText() === "current");
+  recorder.check("repeated remounts can reopen a current dataset", await frame.locator("#dataset-state").innerText() === "current");
   await fs.writeFile(path.join(runtime.evidenceDir, "57-datasets.json"), JSON.stringify({ model: prior.model, transaction: applied, opened, detail, saved, stale, staleExport, refreshed }, null, 2));
   await page.screenshot({ path: path.join(runtime.evidenceDir, "57-datasets.png"), fullPage: true });
 }

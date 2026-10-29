@@ -3,13 +3,24 @@ import test from "node:test";
 import { sdk, testing } from "./load-sdk.mjs";
 
 const request = { contract: "vibetable.plugin-dataset.v1", sources: [{ query: { contract: "vibetable.plugin-query.v2", collection: "synthetic", fields: ["id", "amount"] }, groupBy: [], sums: [{ field: "amount", storage: "decimalText", scale: 2, digits: 38 }] }] };
-const info = { contract: "vibetable.plugin-dataset.v1", datasetId: "owned", versions: { synthetic: { schemaRevision: "s1", dataRevision: 1, clockPeriod: "", computed: {} } }, sources: [{ collection: "synthetic", fields: ["id", "amount"], filteredRows: 201, totalRows: 201, complete: true }], expiresAt: "2026-10-29T00:05:00Z" };
+const info = { contract: "vibetable.plugin-dataset.v1", datasetId: "owned", versions: { synthetic: { schemaRevision: "s1", dataRevision: 1, clockPeriod: "", computed: {} } }, sources: [{ collection: "synthetic", fields: ["id", "amount"], computedFields: [], filteredRows: 201, totalRows: 201, complete: true }], expiresAt: "2026-10-29T00:05:00Z" };
 
 function channel() {
   const calls = [], listeners = new Set();
   return { calls, postMessage: message => calls.push(message), addEventListener: (_, listener) => listeners.add(listener), removeEventListener: (_, listener) => listeners.delete(listener),
     reply(call, result, error) { for (const listener of listeners) listener({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: call.requestId, ...(error ? { error: { code: error } } : { result }) } }); } };
 }
+
+test("dataset preserves authoritative computed field metadata and ordinary JSON object keys", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const metadata = structuredClone(info); metadata.sources[0].fields = ["payload", "computed"]; metadata.sources[0].computedFields = ["computed"];
+  const opening = client.dataset.open(request); transport.reply(transport.calls.at(-1), metadata); const dataset = await opening;
+  assert.deepEqual(dataset.sources[0].computedFields, ["computed"]);
+  const items = [{ payload: { fresh: true, value: "x", other: 42 }, computed: { state: "ready", fresh: true, value: "12.34" } }, { payload: { fresh: true }, computed: { state: "ready", fresh: true, value: null } }];
+  const reading = dataset.page("synthetic"); transport.reply(transport.calls.at(-1), { items, nextOffset: null });
+  assert.deepEqual((await reading).items, items);
+  client.dispose();
+});
 
 test("dataset page/summary/export keep one handle/version and generator finally releases on consumer failure", async () => {
   const transport = channel(), client = sdk.createSurfaceClient("surface", transport);

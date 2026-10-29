@@ -19,7 +19,7 @@ internal sealed partial class PluginSurfaceApi
         if (Encoding.UTF8.GetByteCount(content.GetRawText()) > DatasetBytes || content.GetProperty("contract").GetString() != "vibetable.plugin-dataset.v1") throw Error("plugin_dataset_limit");
         var validation = JsonSerializer.SerializeToElement(new { contract = "vibetable.plugin-dataset.v1", sources = content.GetProperty("scope"), versions = content.GetProperty("versions") });
         var summaries = content.GetProperty("sources").EnumerateArray().Select(item => new
-        { collection = item.GetProperty("collection"), fields = item.GetProperty("fields"), filteredRows = item.GetProperty("filteredRows"), totalRows = item.GetProperty("totalRows"), complete = item.GetProperty("complete") }).ToArray();
+        { collection = item.GetProperty("collection"), fields = item.GetProperty("fields"), computedFields = item.GetProperty("computedFields"), filteredRows = item.GetProperty("filteredRows"), totalRows = item.GetProperty("totalRows"), complete = item.GetProperty("complete") }).ToArray();
         string handle = Guid.NewGuid().ToString("N");
         var dataset = new Dataset(content, validation, DateTimeOffset.UtcNow.AddMinutes(5), requestId);
         var generation = _generation() ?? throw Error("plugin_session_stale");
@@ -86,6 +86,7 @@ internal sealed partial class PluginSurfaceApi
         try
         {
             var fields = source.GetProperty("fields").EnumerateArray().Select(item => item.GetString()!).ToArray();
+            var computedFields = source.GetProperty("computedFields").EnumerateArray().Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);
             static string Csv(string text) => "\"" + text.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
             var csv = new StringBuilder(string.Join(",", fields.Select(Csv))).Append("\r\n");
             foreach (var row in source.GetProperty("items").EnumerateArray())
@@ -93,7 +94,7 @@ internal sealed partial class PluginSurfaceApi
                 csv.AppendJoin(",", fields.Select(field =>
                 {
                     var cell = row.GetProperty(field);
-                    if (cell.ValueKind == JsonValueKind.Object && cell.TryGetProperty("fresh", out _)) cell = cell.GetProperty("value");
+                    if (computedFields.Contains(field)) cell = cell.GetProperty("value");
                     return Csv(cell.ValueKind == JsonValueKind.String ? cell.GetString()! : cell.GetRawText());
                 })).Append("\r\n");
             }

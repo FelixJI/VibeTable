@@ -18,7 +18,8 @@ export interface DatasetInfo {
   readonly contract: typeof SURFACE_DATASET_CONTRACT;
   readonly datasetId: string;
   readonly versions: Readonly<Record<string, DatasetVersion>>;
-  readonly sources: readonly { readonly collection: string; readonly fields: readonly string[]; readonly filteredRows: number; readonly totalRows: number; readonly complete: boolean }[];
+  /** computedFields comes from authoritative schema, never inferred from a cell's object keys. */
+  readonly sources: readonly { readonly collection: string; readonly fields: readonly string[]; readonly computedFields: readonly string[]; readonly filteredRows: number; readonly totalRows: number; readonly complete: boolean }[];
   readonly expiresAt: string;
 }
 export interface DatasetPage {

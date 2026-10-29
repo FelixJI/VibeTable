@@ -234,6 +234,9 @@ computed pending 分别计数；有未知、未分配或 pending 时 `value:null
 `page.complete`/source `complete` 表示投影中的计算值就绪，是否已读完分页由 `nextOffset:null`
 判断；`dataset.summary` 顶层和内层 `summary.complete` 一致，表示计算与精确汇总均已知。
 行读取完整但金额含未知文本时，汇总的两个完整性标记均为 false，金额保持 null。
+每个 source 的 `computedFields` 由 Go 权威字段定义给出 canonical ID，Host/SDK 原样提供。
+CSV 仅对这些字段解封 computed envelope；普通 JSON 即使含 `fresh`、`value` 或 `state` 属性，
+仍完整序列化为 JSON，不通过对象形状推断字段类型。
 
 全部源合计最多 2000 行、每源 16 字段/8 汇总/2 分组字段。SQLite 在数据跨驱动前量测投影字节；
 完整 Go JSON（范围、版本、明细和分组汇总）还必须≤512 KiB，超限拒绝开集，不返回截断的完整结果。

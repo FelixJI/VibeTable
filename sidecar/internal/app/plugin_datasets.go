@@ -168,10 +168,14 @@ func executePluginDataset(ctx context.Context, tx core.App, source *queryschema.
 		}
 		remainingRows -= len(rows)
 		items := []map[string]any{}
+		computedFields := []string{}
 		complete := true
 		for _, id := range r.Fields {
-			if field := scoped.computed[scoped.names[id]]; field.ComputedEnvelope && !field.ComputedReady {
-				complete = false
+			if field := scoped.computed[scoped.names[id]]; field.ComputedEnvelope {
+				computedFields = append(computedFields, id)
+				if !field.ComputedReady {
+					complete = false
+				}
 			}
 		}
 		for _, row := range rows {
@@ -208,7 +212,7 @@ func executePluginDataset(ctx context.Context, tx core.App, source *queryschema.
 			summaryComplete = summaryComplete && sum["complete"] == true
 		}
 		summary["complete"] = summaryComplete
-		outputs = append(outputs, map[string]any{"collection": schema.TableID, "fields": r.Fields, "items": items, "filteredRows": count, "totalRows": total, "complete": complete, "summary": summary})
+		outputs = append(outputs, map[string]any{"collection": schema.TableID, "fields": r.Fields, "computedFields": computedFields, "items": items, "filteredRows": count, "totalRows": total, "complete": complete, "summary": summary})
 	}
 	if operation == "dataset.validate" {
 		if !reflect.DeepEqual(request.Versions, versions) {

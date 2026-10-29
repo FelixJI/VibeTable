@@ -47,6 +47,7 @@ def test_dataset_contract_budgets_and_closed_methods_match_the_sdk() -> None:
         "dataset.release",
     }
     assert "dataset.validate" not in contract["methods"]
+    assert "computedFields" in contract["datasets"]
 
 
 def test_independent_saved_csv_reader_rejects_row_or_source_drift(tmp_path: Path) -> None:
