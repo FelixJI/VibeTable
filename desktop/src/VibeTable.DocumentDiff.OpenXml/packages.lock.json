@@ -4,9 +4,9 @@
     "net10.0": {
       "System.IO.Packaging": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "FgYKAXorO7YEaWXaoK0toZ6qz73xtv4Zj+J0ykw/2iHaLJK0Fk4llKRa/YnyQGnOM6zc7PiOErzhPvgy5ehRZQ=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "wCHQ/0zZ3N+6mUFPhFwt5CAkBUXwx4gxqemlLGjMac/djyaC40YwaEEYoOJLHrJp/5Q3RsuJZ+WLOCT5PvoqwQ=="
       },
       "vibetable.workspace": {
         "type": "Project"

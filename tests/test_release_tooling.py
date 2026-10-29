@@ -105,8 +105,8 @@ def _release_modules(
 def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
     versions = collect_release_versions(REPO_ROOT)
-    assert versions.pocketbase == "0.40.5"
-    assert versions.cel == "0.32.0"
+    assert versions.pocketbase == "0.40.6"
+    assert versions.cel == "0.33.1"
     assert versions.contract == "v1"
     assert versions.schema == "18"
     assert len(versions.migration_hash) == 64
@@ -146,14 +146,14 @@ def test_release_dependency_versions_fail_fast_before_packaging(tmp_path: Path) 
     go_mod = tmp_path / "sidecar/go.mod"
     go_mod.write_text(
         go_mod.read_text(encoding="utf-8").replace(
-            "cel.dev/cel-go v0.32.0",
+            "cel.dev/cel-go v0.33.1",
             "cel.dev/cel-go v0.26.1",
         ),
         encoding="utf-8",
     )
 
     assert check_release_dependency_versions(tmp_path) == [
-        "sidecar go.mod dependency version mismatch: cel.dev/cel-go (expected v0.32.0, got v0.26.1)"
+        "sidecar go.mod dependency version mismatch: cel.dev/cel-go (expected v0.33.1, got v0.26.1)"
     ]
 
 
@@ -367,8 +367,8 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["components"]["web"] == {"version": version}
     assert manifest["components"]["sidecar"] == {
         "version": version,
-        "pocketBaseVersion": "0.40.5",
-        "celVersion": "0.32.0",
+        "pocketBaseVersion": "0.40.6",
+        "celVersion": "0.33.1",
         "contractVersion": "2.0",
         "schemaVersion": "18",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
@@ -2101,7 +2101,7 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
         build_info=build_info,
         modules=_release_modules(
             license_dir,
-            ("github.com/pocketbase/pocketbase", "v0.40.5"),
+            ("github.com/pocketbase/pocketbase", "v0.40.6"),
         ),
     )
 
@@ -2205,8 +2205,8 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
             "dir": str(license_dir),
         }
         for name, version in (
-            ("github.com/pocketbase/pocketbase", "v0.40.5"),
-            ("cel.dev/cel-go", "v0.32.0"),
+            ("github.com/pocketbase/pocketbase", "v0.40.6"),
+            ("cel.dev/cel-go", "v0.33.1"),
             ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
             ("filippo.io/age", build_next.AGE_VERSION),
         )
@@ -2415,7 +2415,7 @@ def test_recovery_tool_versions_and_sums_have_one_committed_lock() -> None:
 
 
 def test_release_build_prefers_the_exact_versioned_go_toolchain(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     suffix = "go.exe" if os.name == "nt" else "go"
     exact = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go" / "bin" / suffix
@@ -2424,8 +2424,110 @@ def test_release_build_prefers_the_exact_versioned_go_toolchain(
     stale.parent.mkdir(parents=True)
     exact.write_bytes(b"exact")
     stale.write_bytes(b"stale")
+    probe = Mock(
+        return_value=subprocess.CompletedProcess(
+            [], 0, stdout=f"go version go{build_next.RECOVERY_GO_VERSION} windows/amd64\n"
+        )
+    )
+    monkeypatch.setattr(build_next.subprocess, "run", probe)
 
     assert build_next.resolve_go(tmp_path) == str(exact)
+    assert probe.call_args.args[0] == [str(exact), "version"]
+    assert probe.call_count == 1
+
+
+def test_release_build_skips_stale_unversioned_go_when_path_matches_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    stale = tmp_path / ".tools" / "go" / "bin" / suffix
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+    on_path = str(tmp_path / "system" / suffix)
+    monkeypatch.setattr(build_next.shutil, "which", lambda _name: on_path)
+    monkeypatch.setenv("GOTOOLCHAIN", "auto")
+    probe = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout="go version go1.26.4 windows/amd64\n"),
+            subprocess.CompletedProcess(
+                [], 0, stdout=f"go version go{build_next.RECOVERY_GO_VERSION} windows/amd64\n"
+            ),
+        ]
+    )
+    monkeypatch.setattr(build_next.subprocess, "run", probe)
+
+    assert build_next.resolve_go(tmp_path) == on_path
+    assert [call.args[0] for call in probe.call_args_list] == [
+        [str(stale), "version"],
+        [on_path, "version"],
+    ]
+    for call in probe.call_args_list:
+        assert call.kwargs["env"]["GOTOOLCHAIN"] == "local"
+        assert call.kwargs["env"]["PATH"] == os.environ["PATH"]
+        assert 0 < call.kwargs["timeout"] <= 5
+    assert os.environ["GOTOOLCHAIN"] == "auto"
+
+
+@pytest.mark.parametrize("failure", [OSError("unusable"), subprocess.TimeoutExpired("go", 3)])
+def test_release_build_checks_legacy_go_after_an_unusable_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    exact = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go" / "bin" / suffix
+    legacy = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    for candidate in (exact, legacy):
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"fixture")
+    monkeypatch.setattr(build_next.shutil, "which", lambda _name: None)
+    probe = Mock(
+        side_effect=[
+            failure,
+            subprocess.CompletedProcess(
+                [], 0, stdout=f"go version go{build_next.RECOVERY_GO_VERSION} windows/amd64\n"
+            ),
+        ]
+    )
+    monkeypatch.setattr(build_next.subprocess, "run", probe)
+
+    assert build_next.resolve_go(tmp_path) == str(legacy)
+    assert probe.call_args.args[0] == [str(legacy), "version"]
+
+
+def test_release_build_keeps_unmatched_go_fallback_for_consumption_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    stale = tmp_path / ".tools" / "go" / "bin" / suffix
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+    monkeypatch.setattr(build_next.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        build_next.subprocess,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout="go version go1.26.4 windows/amd64\n"
+            )
+        ),
+    )
+
+    assert build_next.resolve_go(tmp_path) == str(stale)
+
+
+def test_qa_command_construction_does_not_require_an_installed_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qa import next as next_gate
+
+    monkeypatch.setattr(build_next.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
+    probe = Mock()
+    monkeypatch.setattr(build_next.subprocess, "run", probe)
+
+    assert build_next.resolve_go(tmp_path) == "go"
+    command, _cwd = next_gate.stage_command("version")
+    assert command[-1] == "qa/version_check.py"
+    probe.assert_not_called()
 
 
 def test_release_candidate_report_binds_the_exact_package_tree_and_archive(

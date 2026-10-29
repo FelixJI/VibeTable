@@ -9,10 +9,10 @@ import (
 
 func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	info := Current("abc123")
-	if info.PocketBaseVersion != "0.40.5" {
+	if info.PocketBaseVersion != "0.40.6" {
 		t.Fatalf("PocketBase version = %q", info.PocketBaseVersion)
 	}
-	if info.CELVersion != "0.32.0" {
+	if info.CELVersion != "0.33.1" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
 	if info.SchemaVersion != "18" {

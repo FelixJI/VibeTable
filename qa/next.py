@@ -359,7 +359,6 @@ def stage_command(
     package_root: Path | None = None,
     package_archive: Path | None = None,
 ) -> tuple[list[str], str]:
-    go = _resolve("go")
     if stage == "version":
         return [sys.executable, "qa/version_check.py"], str(REPO_ROOT)
     if stage == "package":
@@ -372,19 +371,19 @@ def stage_command(
     if stage == "go-fmt":
         return [sys.executable, str(GO_FORMAT_CHECK)], str(REPO_ROOT)
     if stage == "go-vet":
-        return [go, "vet", "./..."], str(SIDECAR_DIR)
+        return [_resolve("go"), "vet", "./..."], str(SIDECAR_DIR)
     if stage == "go-test":
-        return [go, "test", "./..."], str(SIDECAR_DIR)
+        return [_resolve("go"), "test", "./..."], str(SIDECAR_DIR)
     if stage == "go-coverage":
         return [
             sys.executable,
             str(REPO_ROOT / "qa" / "go_coverage.py"),
             "--go",
-            go,
+            _resolve("go"),
         ], str(REPO_ROOT)
     if stage == "go-race":
         return [
-            go,
+            _resolve("go"),
             "test",
             "-race",
             "all non-integration packages, then integration tests in isolated batches",
@@ -394,7 +393,7 @@ def stage_command(
             REPO_ROOT / "build" / "qa" / ("vibetable-pb.exe" if os.name == "nt" else "vibetable-pb")
         )
         return [
-            go,
+            _resolve("go"),
             "build",
             "-trimpath",
             "-buildvcs=true",
@@ -525,7 +524,7 @@ def stage_command(
         ], str(REPO_ROOT)
     if stage == "workbench-qualification":
         return [
-            go,
+            _resolve("go"),
             "run",
             "./cmd/workbench-qualification",
             "--profile",

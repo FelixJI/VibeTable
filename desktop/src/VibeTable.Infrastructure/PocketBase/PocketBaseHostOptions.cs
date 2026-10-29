@@ -138,7 +138,7 @@ public static class PocketBaseHostOptions
         }
         var identity = new IdentityFile(
             ContractVersion: "v1",
-            PocketBaseVersion: "0.40.5",
+            PocketBaseVersion: "0.40.6",
             SchemaVersion: schemaVersion,
             MigrationHash: Convert.ToHexString(
                 SHA256.HashData(File.ReadAllBytes(manifest))).ToLowerInvariant());
