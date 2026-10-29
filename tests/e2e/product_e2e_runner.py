@@ -394,6 +394,7 @@ _NODE_FREE_HOST_SCENARIOS = frozenset(
         "55-plugin-surface-outputs",
         "56-plugin-transactions",
         "57-plugin-datasets",
+        "58-plugin-integration-evidence",
     }
 )
 
@@ -1587,12 +1588,20 @@ class _DocumentNativeWindows:
         self.user32.SetThreadDpiAwarenessContext(self.previous_dpi)
 
     def owner(self, hwnd: int) -> int:
+        """Process id of the window (historical name; not the Win32 owner)."""
         from ctypes import wintypes
 
         pid = wintypes.DWORD()
         if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
             raise OSError("native document HWND no longer exists")
         return int(pid.value)
+
+    def win32_owner(self, hwnd: int) -> int:
+        """Read-only Win32 owner HWND (GW_OWNER); zero for unowned windows."""
+        get_window = self.user32.GetWindow
+        get_window.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        get_window.restype = ctypes.c_void_p
+        return int(get_window(ctypes.c_void_p(hwnd), 4) or 0)
 
     def windows(self) -> list[dict[str, Any]]:
         windows: list[dict[str, Any]] = []
@@ -2310,6 +2319,7 @@ def _run_node_runner_guarded(
                 "53-record-manager",
                 "55-plugin-surface-outputs",
                 "57-plugin-datasets",
+                "58-plugin-integration-evidence",
             }:
                 file_result = {
                     "requestId": file_dialog_request.get("requestId"),
@@ -2380,6 +2390,7 @@ def _run_node_runner_guarded(
                     "55-plugin-surface-outputs",
                     "56-plugin-transactions",
                     "57-plugin-datasets",
+                    "58-plugin-integration-evidence",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -2388,7 +2399,11 @@ def _run_node_runner_guarded(
                     }
                 elif command[command.index("--scenario") + 1] == "54-plugin-models" or (
                     command[command.index("--scenario") + 1]
-                    in {"56-plugin-transactions", "57-plugin-datasets"}
+                    in {
+                        "56-plugin-transactions",
+                        "57-plugin-datasets",
+                        "58-plugin-integration-evidence",
+                    }
                     and str(plugin_native_request.get("buttonId", "")).startswith("plugin-model-")
                 ):
                     from tests.e2e.plugin_model_native import handle_plugin_model_request
@@ -3153,7 +3168,11 @@ def run_scenario(
         from tests.e2e.plugin_surface_outputs import prepare_output_package
 
         prepare_output_package(controls_dir)
-    if scenario.id in {"56-plugin-transactions", "57-plugin-datasets"}:
+    if scenario.id in {
+        "56-plugin-transactions",
+        "57-plugin-datasets",
+        "58-plugin-integration-evidence",
+    }:
         from tests.e2e.plugin_capability_packages import _pack_example
 
         _pack_example(
@@ -3507,6 +3526,12 @@ def run_scenario(
                 from tests.e2e.plugin_datasets import verify_dataset_file
 
                 result["datasetFileVerification"] = verify_dataset_file(controls_dir)
+            if scenario.id == "58-plugin-integration-evidence" and result.get("status") == "passed":
+                from tests.e2e.plugin_integration import verify_integration_artifacts
+
+                result["integrationArtifactVerification"] = verify_integration_artifacts(
+                    controls_dir
+                )
         except Exception as exc:
             infrastructure_error = str(exc)
             result = _failure_result(
@@ -3765,6 +3790,7 @@ def run_product_acceptance(
             "55-plugin-surface-outputs",
             "56-plugin-transactions",
             "57-plugin-datasets",
+            "58-plugin-integration-evidence",
         }
         for scenario in scenarios
     ):
@@ -3802,6 +3828,7 @@ def run_product_acceptance(
                 "55-plugin-surface-outputs",
                 "56-plugin-transactions",
                 "57-plugin-datasets",
+                "58-plugin-integration-evidence",
             }
             and native_observer_error is not None
         ):

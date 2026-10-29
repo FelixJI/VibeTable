@@ -520,5 +520,11 @@
     "title": "三表一致数据集、逐分汇总与同源原生导出",
     "requirement": "固定组合的真实WPF/WebView2应用公开SDK建模及受保护事务提交头、行、分配，产生两表各201行，分页明细与精确汇总同源；原生取消与保存后由独立CSV读取器逐行对账，并发改动明确stale、显式刷新、重挂载释放资源。",
     "capabilities": ["plugin.surface-api", "plugin.datasets", "plugin.transactions", "plugin.models", "plugin.lifecycle"]
+  },
+  {
+    "id": "58-plugin-integration-evidence",
+    "title": "双Host确认窗口并发争用与实际数据集 T01 产物闭环",
+    "requirement": "同一真实WPF/WebView2工作区经公开SDK建立余额10合成头，两个各申请8的独立请求在任一提交前均prepared并同时提交，产生两个同时待决的原生Host确认窗口；按窗口effects集合精确绑定后分别批准，恰好一个applied、另一个明确未提交/失效，权威查询占用8剩余2无孤儿行。同一路径打开同版本三表数据集，从真实canonical行生成T01模板产物，原生取消/保存、归档普通file字段、关闭重开、重印及改数后重印由独立解析器对账行、精确金额、完整版本与不可变原版本。",
+    "capabilities": ["plugin.surface-api", "plugin.transactions", "plugin.datasets", "plugin.output.artifacts", "plugin.attachments"]
   }
 ]

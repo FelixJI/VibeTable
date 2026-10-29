@@ -22,7 +22,10 @@ def test_dataset_example_manifest_pins_version_and_preserves_canonical_grants() 
         "vibetable.plugin-dataset.v1"
     )
     assert manifest["permissions"]["files"] == ["pickWrite"]
-    assert "data" not in manifest["permissions"]
+    # The T01 archive uses only the explicitly granted active attachment table.
+    assert manifest["permissions"]["data"] == [
+        {"collection": "$active", "operations": ["read", "query", "update"], "fields": ["*"]}
+    ]
     assert {item["key"] for item in manifest["permissions"]["model"]["entities"]} == {
         "heads",
         "lines",

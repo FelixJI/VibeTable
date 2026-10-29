@@ -27,6 +27,9 @@ TITLES = {
     "output-reprint": "保存托管附件",
     "output-next": "保存托管附件",
     "dataset": "保存托管附件",
+    "t01": "保存托管附件",
+    "t01-reprint": "保存托管附件",
+    "t01-changed": "保存托管附件",
 }
 FILES = {
     "read": "52-input.csv",
@@ -47,6 +50,9 @@ FILES = {
     "output-reprint": "reprint.xlsx",
     "output-next": "new-template.xlsx",
     "dataset": "57-dataset.csv",
+    "t01": "58-t01.xlsx",
+    "t01-reprint": "58-t01-reprint.xlsx",
+    "t01-changed": "58-t01-reprint-changed.xlsx",
 }
 # Scenario 35's own import pickers keep the scenario evidence prefix; the
 # shared capability-service kinds keep their historical 52- evidence names.
@@ -58,6 +64,9 @@ EVIDENCE_PREFIXES = {
     "output-reprint": "55",
     "output-next": "55",
     "dataset": "57",
+    "t01": "58",
+    "t01-reprint": "58",
+    "t01-changed": "58",
 }
 
 

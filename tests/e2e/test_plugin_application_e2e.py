@@ -83,6 +83,208 @@ def test_native_menu_recovery_rejects_other_controls_and_stages(change):
         _validate_request(request)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"expectCount": 0},
+        {"expectCount": 5},
+        {"expectCount": "2"},
+        {"expectCount": True},
+        {"buttonId": "plugin-confirm-reject"},
+        {"stage": "concurrent"},
+    ],
+)
+def test_pending_confirmation_scope_is_closed(change):
+    request = {
+        "requestId": "pending-request",
+        "action": "confirm-pending",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "pending",
+        "expectCount": 2,
+    }
+    request.update(change)
+    with pytest.raises(ValueError, match="pending confirmation scope"):
+        _validate_request(request)
+
+
+def test_pending_confirmation_rejects_foreign_fields() -> None:
+    request = {
+        "requestId": "pending-request",
+        "action": "confirm-pending",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "pending",
+        "expectCount": 2,
+        "hwnd": 12,
+    }
+    with pytest.raises(ValueError, match="request fields are invalid"):
+        _validate_request(request)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"hwnd": 0},
+        {"hwnd": True},
+        {"hwnd": "12"},
+        {"expectEffects": []},
+        {"expectEffects": ["tbl_head:rec1"]},
+        {"expectEffects": ["tbl_head:rec1:upsert"]},
+        {"expectEffects": ["tbl_head:rec1:insert", "../escape:rec1:insert"]},
+        {"expectEffects": "tbl_head:rec1:insert"},
+        {"buttonId": "plugin-recover"},
+        {"stage": "approved"},
+    ],
+)
+def test_exact_confirmation_scope_is_closed(change):
+    request = {
+        "requestId": "exact-request",
+        "action": "confirm-exact",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "concurrent",
+        "hwnd": 4242,
+        "expectEffects": ["tbl_head:rec1:update", "tbl_line:rec2:insert"],
+    }
+    request.update(change)
+    with pytest.raises(ValueError, match="exact confirmation scope"):
+        _validate_request(request)
+
+
+def test_exact_confirmation_scope_accepts_only_its_own_field_set():
+    request = {
+        "requestId": "exact-request",
+        "action": "confirm-exact",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "concurrent",
+        "hwnd": 4242,
+        "expectEffects": ["tbl_head:rec1:update"],
+    }
+    request["expectRecords"] = ["tbl_head:rec1"]
+    with pytest.raises(ValueError, match="request fields are invalid"):
+        _validate_request(request)
+
+
+def test_confirmation_effects_parse_only_the_details_edit_top_level() -> None:
+    from tests.e2e.plugin_application_native import _parse_confirmation_effects
+
+    details = json.dumps(
+        [
+            {
+                "tableId": "tbl_head",
+                "recordId": "head1",
+                "operation": "update",
+                "kind": "update",
+                "requested": {"tableId": "tbl_line", "recordId": "decoy1", "operation": None},
+                "binding": {"tableId": "tbl_alloc"},
+            },
+            {"tableId": "tbl_line", "recordId": "line1", "operation": "insert"},
+        ]
+    )
+    observation = {
+        "texts": [
+            {
+                "kind": "text",
+                "value": "插件 com.vibetable.examples.transaction-conformance · 动作 open-transactions",
+            },
+            {"kind": "edit", "value": details, "truncated": False},
+        ]
+    }
+    assert _parse_confirmation_effects(observation) == [
+        "tbl_head:head1:update",
+        "tbl_line:line1:insert",
+    ]
+
+
+def test_confirmation_effects_fail_closed_without_exactly_one_details_array() -> None:
+    from tests.e2e.plugin_application_native import _parse_confirmation_effects
+
+    good = json.dumps([{"tableId": "t", "recordId": "r", "operation": "insert"}])
+    for texts in (
+        [{"kind": "edit", "value": good, "truncated": False}, {"kind": "edit", "value": good}],
+        [{"kind": "edit", "value": "[not json", "truncated": False}],
+        [{"kind": "edit", "value": good, "truncated": True}],
+        [{"kind": "text", "value": good}],
+        [{"kind": "edit", "value": json.dumps([{"tableId": "t"}])}],
+    ):
+        with pytest.raises(ValueError, match=r"canonical effect identity|detail|array"):
+            _parse_confirmation_effects({"texts": texts})
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "missing", "owner", "cycle", "effects", "truncated", "overflow", "disabled", "obscured"],
+)
+def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
+    tmp_path, monkeypatch, failure
+):
+    import time
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    sent, focused = [], []
+    window = {"hwnd": 20, "pid": 12, "visible": True, "title": "VibeTable 插件确认"}
+    host = {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"}
+    api = SimpleNamespace(
+        windows=lambda: [host] if failure == "missing" else [host, window],
+        owner=lambda hwnd: 99 if failure == "owner" and hwnd == 14 else 12,
+        win32_owner=lambda hwnd: (
+            {20: 21, 21: 14, 14: 20}[hwnd] if failure == "cycle" else 14 if hwnd == 20 else 0
+        ),
+        foreground=lambda *args: focused.append(args),
+        foreground_observation={"hostHwnd": 20, "hostPid": 12},
+        _root_at=lambda *_args: 999 if failure == "obscured" else 20,
+    )
+    detail = {
+        "tableId": "tbl_head",
+        "recordId": "foreign" if failure == "effects" else "head1",
+        "operation": "update",
+    }
+    observation = {
+        "texts": [
+            {"kind": "edit", "value": json.dumps([detail]), "truncated": failure == "truncated"}
+        ],
+        "textOverflow": 1 if failure == "overflow" else 0,
+        "buttons": [
+            {
+                "id": "plugin-confirm-approve",
+                "pid": 12,
+                "enabled": failure != "disabled",
+                "x": 10,
+                "y": 20,
+                "width": 40,
+                "height": 20,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        native, "_observe_confirmation_chrome", lambda *_args, **_kwargs: observation
+    )
+    monkeypatch.setattr(native, "_send_input", lambda _native, **kwargs: sent.append(kwargs))
+    request = {
+        "requestId": "exact-request",
+        "hwnd": 20,
+        "buttonId": "plugin-confirm-approve",
+        "stage": "concurrent",
+        "expectEffects": ["tbl_head:head1:update"],
+    }
+    if failure:
+        with pytest.raises((OSError, ValueError)):
+            native._handle_confirmation_exact(
+                api, tmp_path / "observer.exe", 12, request, tmp_path, deadline=time.monotonic() + 5
+            )
+        assert sent == []
+    else:
+        result = native._handle_confirmation_exact(
+            api, tmp_path / "observer.exe", 12, request, tmp_path, deadline=time.monotonic() + 5
+        )
+        assert focused == [(20, 12)]
+        assert sent == [{"x": 30, "y": 30}]
+        assert result["hwnd"] == 20
+        assert result["win32OwnerRoot"] == 14
+        assert result["boundEffects"] == ["tbl_head:head1:update"]
+        assert result["input"] == "SendInput"
+
+
 @pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background", "dpi"])
 def test_native_recovery_uses_the_owned_enabled_window_menu_without_renderer_uia(
     tmp_path, monkeypatch, failure

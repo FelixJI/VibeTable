@@ -358,6 +358,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "53-record-manager",
         "54-plugin-models",
         "55-plugin-surface-outputs",
+        "58-plugin-integration-evidence",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -3109,6 +3110,8 @@ def _prepare_complete_product_reports(
             _write_output_artifacts(run_root)
         if "57-plugin-datasets" in selected[stage]:
             _write_dataset_artifacts(run_root)
+        if "58-plugin-integration-evidence" in selected[stage]:
+            _write_integration_artifacts(run_root)
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
                 "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
@@ -4062,7 +4065,38 @@ def _write_dataset_artifacts(run: Path) -> None:
         (controls / filename).write_bytes(filename.encode())
 
 
+INTEGRATION_ARTIFACTS = (
+    "58-t01.xlsx",
+    "58-t01-reprint.xlsx",
+    "58-t01-reprint-changed.xlsx",
+    "58-t01-proof.json",
+)
+
+
+def _write_integration_artifacts(run: Path) -> None:
+    controls = run / "_runtime" / "58" / "controls"
+    controls.mkdir(parents=True)
+    for filename in INTEGRATION_ARTIFACTS:
+        (controls / filename).write_bytes(filename.encode())
+
+
 SCENARIO_SCREENSHOTS = {
+    "58-plugin-integration-evidence": (
+        "58-integration.json",
+        "58-integration.png",
+        "58-rules.png",
+        "58-seed-commit.png",
+        "58-native-pending-0.png",
+        "58-native-pending-1.png",
+        "58-native-concurrent.png",
+        "58-native-concurrent-second.png",
+        "58-archive-confirmation.png",
+        "58-picker-t01-cancel.png",
+        "58-picker-t01-select.png",
+        "58-picker-t01-reprint-select.png",
+        "58-picker-t01-changed-select.png",
+        "58-plugin-integration-evidence-trace.zip",
+    ),
     "57-plugin-datasets": (
         "57-datasets.json",
         "57-datasets.png",
@@ -4241,6 +4275,8 @@ def _scenario_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> P
         _write_output_artifacts(run)
     if scenario_id == "57-plugin-datasets":
         _write_dataset_artifacts(run)
+    if scenario_id == "58-plugin-integration-evidence":
+        _write_integration_artifacts(run)
     (directory / "unrelated.png").write_bytes(b"unrelated")
     (directory / "workspace.db").write_bytes(b"private workspace")
     return run
@@ -4274,6 +4310,11 @@ def test_scenario_screenshots_archive_only_declared_images(
             relative = f"_runtime/57/controls/{filename}"
             expected.add(relative)
             assert (retained / relative).read_bytes() == filename.encode()
+    if scenario_id == "58-plugin-integration-evidence":
+        for filename in INTEGRATION_ARTIFACTS:
+            relative = f"_runtime/58/controls/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == filename.encode()
     assert {
         path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
     } == expected
@@ -4294,6 +4335,25 @@ def test_output_evidence_requires_saved_artifact(tmp_path: Path) -> None:
     run = _scenario_screenshot_run(tmp_path, "55-plugin-surface-outputs", "passed")
     (run / "_runtime/55/controls/reprint.xlsx").unlink()
     with pytest.raises(ValueError, match=r"reprint\.xlsx"):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        *(
+            f"58-plugin-integration-evidence/{filename}"
+            for filename in SCENARIO_SCREENSHOTS["58-plugin-integration-evidence"]
+        ),
+        *(f"_runtime/58/controls/{filename}" for filename in INTEGRATION_ARTIFACTS),
+    ],
+)
+def test_integration_evidence_rejects_each_missing_current_proof(
+    tmp_path: Path, relative: str
+) -> None:
+    run = _scenario_screenshot_run(tmp_path, "58-plugin-integration-evidence", "passed")
+    (run / relative).unlink()
+    with pytest.raises(ValueError, match=Path(relative).name):
         next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
 
 
