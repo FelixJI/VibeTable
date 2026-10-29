@@ -67,7 +67,7 @@
 - VibeTable 是仅支持 Windows 10/11 x64 的离线优先桌面产品：`.NET 10 WPF/WebView2` 宿主在 `desktop/src/`，Vue 3/TypeScript grid 在 `desktop/web-grid/`，Python 3.14 BFF 在 `backend/`，Go/PocketBase sidecar 在 `sidecar/`，共享 JSON contracts 在 `contracts/`，插件 SDK/示例在 `sdk/plugin/` 与 `examples/plugins/`。
 - PocketBase 是唯一数据权威；前端不得切换 authority，Python BFF 不直接拥有 SQLite 写路径。workspace UUID 才是身份，重新定位必须核对 `.vibetable/workspace.json`，禁止用同名空目录替代。
 - 权威本地入口：`uv sync --frozen --group dev --group build`、`uv run python scripts/dev.py`、`uv run pytest`；Web 在 `desktop/web-grid` 运行 `npm ci`/`npm run test`/`npm run build`；.NET 运行 `dotnet test desktop/VibeTable.Desktop.sln --configuration Release`；Go 在 `sidecar` 运行 `go test ./...`。
-- `.ci/project.json` 通过 `scripts/automation_project.py` 集中 bootstrap/quality/build/smoke。质量阶段还覆盖版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、五个 Node 项目、Go format/vet/test/build 和 .NET tests；完整发布门禁是 `uv run python qa/next.py --ci --json-report build/qa/report.json`。
+- `.ci/project.json` 通过 `scripts/automation_project.py` 集中 bootstrap/quality/build/smoke。质量阶段还覆盖版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、全部声明的 Node 项目、Go format/vet/test/build 和 .NET tests；完整发布门禁是 `uv run python qa/next.py --ci --json-report build/qa/report.json`。
 - Python/C# 4 空格，TypeScript/Vue 2 空格，Ruff 双引号/100 列；Go 必须 gofmt。Python 测试为 `test_*.py`，integration/slow/E2E 使用已注册 marker，后端覆盖率不低于 85%。修改 Go/Web 时在相邻位置加聚焦回归。
 - 唯一版本来源是 `backend/_version.py`，只通过 `scripts/release.py` 更新；pyproject、desktop assembly、sidecar buildinfo/contracts/schema 与 package identity 均为派生契约。
 - 发布候选固定为 VibeTable win-x64 ZIP、同名 `.sha256`、`build-identity.json` 与 SPDX SBOM；ZIP 必须无软链/危险路径并与包目录树一致。`scripts/build_next.py --release` 和 `qa/next.py --ci` 是发布资格入口。

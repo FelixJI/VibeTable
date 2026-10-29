@@ -24,7 +24,7 @@
 - GitHub run：[main CI 40074440901](https://github.com/FelixJI/VibeTable/actions/runs/40074440901)
 - 报告契约：`contractVersion=2.0`
 - 结果：52/52 passed、0 failed、0 skipped。
-- 当前 manifest gap：3（`54-plugin-models`、`55-plugin-surface-outputs`、`56-plugin-transactions`）。
+- 当前 manifest gap：4（`54-plugin-models`、`55-plugin-surface-outputs`、`56-plugin-transactions`、`57-plugin-datasets`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：1（`49-plugin-application-security`）。
 
@@ -33,6 +33,8 @@ S49 随顶部原生栏移除，改为真实 WebView 应用/恢复侧栏截图，
 S54 新增受控三表建模、原生手动映射和无损升级，分配至 file-io lane；其同候选真实桌面证据尚待包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 
 S55 新增合成插件模板输出、原生选址、归档重开及独立 XLSX 内容核验；其真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
+
+S57 复用公开建模和受保护三表事务，形成两表各 201 行的一致数据集、逐分汇总及同源原生 CSV；并发改动明确失效，重挂载释放资源。其同候选真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 
 S56 新增合成三表原子提交、原生确认与拒绝、持久结果恢复和余额约束，分配至 resilience lane；其真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 

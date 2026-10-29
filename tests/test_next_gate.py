@@ -8,6 +8,7 @@ import sys
 import threading
 from contextlib import suppress
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -132,6 +133,23 @@ def test_go_commands_target_sidecar_module() -> None:
     assert "packaged_sidecar_matrix.py" in " ".join(command)
     assert "--json-report" in command
     assert Path(cwd) == next_gate.REPO_ROOT
+
+
+@pytest.mark.parametrize("stage", ["version", "python", "web-test", "go-fmt"])
+def test_non_go_command_construction_does_not_probe_an_available_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    executable = tmp_path / ("go.exe" if os.name == "nt" else "go")
+    executable.write_bytes(b"fixture")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert next_gate.shutil.which("go") is not None
+    probe = Mock(side_effect=AssertionError("non-Go command construction probed Go"))
+    monkeypatch.setattr(subprocess, "run", probe)
+
+    next_gate.stage_command(stage)
+
+    probe.assert_not_called()
 
 
 def test_package_stage_binds_release_candidate_to_the_archive(
@@ -3089,6 +3107,8 @@ def _prepare_complete_product_reports(
             _write_s35_audit_drain_log(run_root, ("business", "file"))
         if "55-plugin-surface-outputs" in selected[stage]:
             _write_output_artifacts(run_root)
+        if "57-plugin-datasets" in selected[stage]:
+            _write_dataset_artifacts(run_root)
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
                 "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
@@ -4032,7 +4052,24 @@ def _write_output_artifacts(run: Path) -> None:
         (controls / filename).write_bytes(filename.encode())
 
 
+DATASET_ARTIFACTS = ("57-dataset.csv", "57-dataset-proof.json")
+
+
+def _write_dataset_artifacts(run: Path) -> None:
+    controls = run / "_runtime" / "57" / "controls"
+    controls.mkdir(parents=True)
+    for filename in DATASET_ARTIFACTS:
+        (controls / filename).write_bytes(filename.encode())
+
+
 SCENARIO_SCREENSHOTS = {
+    "57-plugin-datasets": (
+        "57-datasets.json",
+        "57-datasets.png",
+        "57-picker-dataset-cancel.png",
+        "57-picker-dataset-select.png",
+        "57-plugin-datasets-trace.zip",
+    ),
     "56-plugin-transactions": (
         "56-transactions.json",
         "56-transactions.png",
@@ -4202,6 +4239,8 @@ def _scenario_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> P
         (directory / filename).write_bytes(filename.encode())
     if scenario_id == "55-plugin-surface-outputs":
         _write_output_artifacts(run)
+    if scenario_id == "57-plugin-datasets":
+        _write_dataset_artifacts(run)
     (directory / "unrelated.png").write_bytes(b"unrelated")
     (directory / "workspace.db").write_bytes(b"private workspace")
     return run
@@ -4228,6 +4267,11 @@ def test_scenario_screenshots_archive_only_declared_images(
     if scenario_id == "55-plugin-surface-outputs":
         for filename in OUTPUT_ARTIFACTS:
             relative = f"_runtime/55/controls/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == filename.encode()
+    if scenario_id == "57-plugin-datasets":
+        for filename in DATASET_ARTIFACTS:
+            relative = f"_runtime/57/controls/{filename}"
             expected.add(relative)
             assert (retained / relative).read_bytes() == filename.encode()
     assert {
@@ -4820,7 +4864,14 @@ def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(
         executable.parent.mkdir(parents=True)
         executable.touch()
     monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
+    probe = Mock(
+        return_value=subprocess.CompletedProcess(
+            [], 0, stdout=f"go version go{build_next.RECOVERY_GO_VERSION} windows/amd64\n"
+        )
+    )
+    monkeypatch.setattr(subprocess, "run", probe)
     assert next_gate._resolve("go") == str(pinned)
+    assert probe.call_args.args[0] == [str(pinned), "version"]
 
 
 def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(tmp_path):

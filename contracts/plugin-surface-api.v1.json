@@ -16,6 +16,11 @@
     "data.releaseCursor",
     "data.subscribe",
     "data.unsubscribe",
+    "dataset.open",
+    "dataset.page",
+    "dataset.summary",
+    "dataset.export",
+    "dataset.release",
     "storage.get",
     "file.pickRead",
     "file.pickWrite",
@@ -78,6 +83,21 @@
     "outputBlockBytes": 262144,
     "outputsPerSurface": 2,
     "outputLifetimeSeconds": 600
+  },
+  "datasets": {
+    "contract": "vibetable.plugin-dataset.v1",
+    "sources": "1-3 explicit canonical single-table query projections with existing read/query grants; no arbitrary joins, SQL or DSL",
+    "authorization": "explicit field grants or configured model roles; wildcard field grants cannot open datasets; existing single-table wildcard behavior is unchanged",
+    "numbers": "same exactdecimal coefficient arithmetic as transactions; decimalText/integerUnits, scale <= 18 and digits <= 38; sums return fixed-scale strings; unknown/pending/unallocated never become a complete zero",
+    "snapshot": "all source schemas, rows, clocks and computed versions are read in one short PocketBase transaction; immutable Host cache is not a second authority",
+    "validation": "every page, summary and export rechecks current installation, grant closure and the full version vector in Go; any change is stale, never silently refreshed",
+    "projection": "explicit canonical fields; relation IDs require target table/id grants; local formula dependencies require recursive field grants; lookup, cross-table computed paths and computed filters are explicitly unsupported",
+    "computedFields": "each source carries canonical computed field IDs derived only from Go schema descriptors; Host forwards this metadata and unwraps only these fields for CSV; ordinary JSON preserves every key even when named fresh/value/state",
+    "limits": { "sources": 3, "rows": 2000, "encodedBytes": 524288, "fieldsPerSource": 16, "sumsPerSource": 8, "groupFields": 2, "perSurface": 2, "total": 8, "seconds": 300, "pageRows": 200 },
+    "budget": "SQLite measures only projected cells before driver materialization; all sources share a raw byte budget, then the complete Go JSON envelope including scope, rows, summaries and versions must fit encodedBytes or the open is rejected",
+    "export": "CSV from the exact immutable source rows and canonical fields, current authorization and versions rechecked before atomic file commit; existing native file picker and ordinary file authorization apply; no implicit newer query",
+    "lifecycle": "opaque surface/workspace/session/installation-bound handle; release, cancel, retirement, expiry and stale authorization reclaim it; SDK pages finally and dispose release ownership; existing bounded subscriptions provide invalidation",
+    "errors": ["plugin_dataset_stale", "plugin_dataset_limit", "plugin_dataset_pending", "plugin_dataset_computed_unsupported", "plugin_dataset_group_unsupported", "plugin_dataset_decimal_invalid", "plugin_dataset_decimal_overflow", "plugin_read_denied"]
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "model": {

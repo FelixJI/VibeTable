@@ -192,6 +192,71 @@ Host 将确认的版本传给 commit，Go 在同一业务事务内核对该版�
 重试 submit，不以 `unknown` 换 key 补交。用户拒绝确认返回 null；迟到取消和后续通知失败不撤回
 已确认成功。每次 Host task 独立于持久业务 requestId，任务列表不会把并发操作合并成一个任务。
 
+## 一致数据集与精确汇总
+
+API 3.x 增量能力 `vibetable.plugin-dataset.v1` 提供同一短事务中的 1–3 表只读投影。
+需要该能力的 manifest 可声明 `compatibility.dataset: "vibetable.plugin-dataset.v1"`；SDK
+`dataset.open` 协商精确 contract，不兼容的 Host 明确报 `plugin_api_unsupported`。Host 产品版本
+不用于推断该能力是否存在。数据集不增加权限：复用 `data` 或已确认模型的 `read/query` 授权，
+字段使用显式 canonical ID，不把用户后来添加的字段自动并入结果。
+数据集要求显式字段授权或受控模型角色；仅有 `*`/`$configured` 通配符的单表授权不能开集，
+旧单表查询继续沿用原语义。
+
+```ts
+const dataset = await api.dataset.open({
+  contract: "vibetable.plugin-dataset.v1",
+  sources: [{
+    query: { contract: "vibetable.plugin-query.v2", collection, fields: ["id", amountFieldId] },
+    groupBy: [],
+    sums: [{ field: amountFieldId, storage: "decimalText", scale: 2, digits: 38 }],
+  }],
+}, signal);
+try {
+  const total = await dataset.summary(collection, signal);
+  const firstPage = await dataset.page(collection, 0, 200, signal);
+  // 展示 firstPage 与 total；用户点击保存时仍使用这个 dataset。
+  const saved = await dataset.export(collection, "合成明细.csv", signal);
+  // null 是原生选址取消；成功回执包含同一 datasetId、versions 和 rowsWritten。
+} finally {
+  await dataset.release();
+}
+```
+
+源查询复用既有 filters/sorts/ids，不接受 cursor/pageSize、SQL、join 或新查询 DSL；分组和
+求和字段必须显式出现在投影中。关系仅返回原始 ID，目标表及其 ID 也必须获准；本地公式递归
+核对依赖字段授权。跨表公式、lookup、关系路径计算及 computed 筛选明确报
+`plugin_dataset_computed_unsupported` 或既有 computed unsupported 错误，不回退原始 label。
+
+金额与受保护事务共用整数系数：`decimalText` 保存定标十进制文本，`integerUnits` 保存安全
+整数最小单位，scale≤18、digits≤38；汇总始终返回定标字符串。null、0、未知文本、空白未分配和
+computed pending 分别计数；有未知、未分配或 pending 时 `value:null/complete:false`，不伪造完整 0。
+分组键包含 `state/value`，因此 null 与空白组不同。明细仍保留原值或 computed freshness envelope。
+`page.complete`/source `complete` 表示投影中的计算值就绪，是否已读完分页由 `nextOffset:null`
+判断；`dataset.summary` 顶层和内层 `summary.complete` 一致，表示计算与精确汇总均已知。
+行读取完整但金额含未知文本时，汇总的两个完整性标记均为 false，金额保持 null。
+每个 source 的 `computedFields` 由 Go 权威字段定义给出 canonical ID，Host/SDK 原样提供。
+CSV 仅对这些字段解封 computed envelope；普通 JSON 即使含 `fresh`、`value` 或 `state` 属性，
+仍完整序列化为 JSON，不通过对象形状推断字段类型。
+
+全部源合计最多 2000 行、每源 16 字段/8 汇总/2 分组字段。SQLite 在数据跨驱动前量测投影字节；
+完整 Go JSON（范围、版本、明细和分组汇总）还必须≤512 KiB，超限拒绝开集，不返回截断的完整结果。
+Host 每页面最多 2 个、全局最多 8 个快照，5 分钟到期；每页最多 200 行。每次 page/summary/export
+均由 Go 核验安装、权限闭包及全部来源版本；并发 CRUD、schema、clock 或 computed 变化报
+`plugin_dataset_stale`。请明确标记旧展示失效，并由用户显式重开数据集，不拼接新旧页。
+
+CSV 直接消费同一不可变数据集，继续使用 `files:["pickWrite"]` 的原生选择及原子文件替换，保存前
+再验当前版本和权限；取消/提交前失败不改原文件。保留原始金额字符串，不把它转为浮点。现有
+单表 `data.export` 保持原有 CSV/XLSX 与 DataIO 任务语义。
+
+使用既有 `data.subscribe` 对最多三个来源有界订阅以标记失效；退出时取消订阅并 release。
+`dataset.pages(collection)` 是消费型 async generator，在耗尽、break、取消及消费者异常的 finally
+中释放整个数据集；需要边分页边保留总览/导出时使用显式 `page` 并在最后 release。`api.dispose`
+和 Host 页面离开/重挂载/撤权会回收资源，取消后的晚响应不能重新登记到新页面。
+
+`examples/plugins/transaction-conformance` 与 S57 以同一 SDK/CLI/Host/Go 组合串联公开建模、受保护
+三表提交、两表各 201 行、精确汇总和同源原生 CSV；独立 Python CSV/Decimal 读取器逐行对账。
+S57 只在受控真实桌面 runner 执行，本地合同测试不替代真实桌面结果。
+
 ## 导出与任务
 
 ```ts

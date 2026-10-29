@@ -61,6 +61,27 @@ func (source *Source) DescribeSelectionTable(
 	return source.describeSelectionTable(ctx, app, tableID, nil, nil)
 }
 
+// DescribeProjectionTable avoids resolving unrelated computed/relation descriptors.
+// Identities are canonical field IDs; the archive predicate remains internal.
+func (source *Source) DescribeProjectionTable(ctx context.Context, app core.App, tableID string, ids []string) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	table, err := schemaexecution.Describe(ctx, app, tableID)
+	if err != nil {
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
+	}
+	selected := map[string]bool{}
+	for _, id := range ids {
+		if field, ok := table.Field(id); ok {
+			selected[field.Identity.PhysicalName] = true
+		}
+	}
+	if table.ArchivePolicy.FieldID != nil {
+		if field, ok := table.Field(*table.ArchivePolicy.FieldID); ok {
+			selected[field.Identity.PhysicalName] = true
+		}
+	}
+	return source.describeSelectionTable(ctx, app, tableID, &table, selected)
+}
+
 // DescribeResolvedMatchTable describes only predicate and archive fields for
 // a TABLE source scan. Projection freshness stays with the computed reader;
 // unrelated relations must not expand this scan's schema or dependency graph.

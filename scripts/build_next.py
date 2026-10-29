@@ -293,18 +293,38 @@ def _resolve_executable(name: str, *, repo_root: Path | None = None) -> str:
 
 def resolve_go(repo_root: Path) -> str:
     suffix = "go.exe" if os.name == "nt" else "go"
-    candidates = (
+    local_paths = (
         repo_root / ".tools" / f"go-{RECOVERY_GO_VERSION}" / "go" / "bin" / suffix,
         repo_root / ".tools" / "go" / "bin" / suffix,
     )
-    local = next((str(path) for path in candidates if path.is_file()), None)
-    if local is not None:
-        return local
-    on_path = shutil.which("go")
-    if on_path is not None:
-        return on_path
+    candidates = [str(path) for path in local_paths if path.is_file()]
+    if on_path := shutil.which("go"):
+        candidates.append(on_path)
     legacy = repo_root / ".tools" / "go-full" / "go" / "bin" / suffix
-    return str(legacy) if legacy.is_file() else "go"
+    if legacy.is_file():
+        candidates.append(str(legacy))
+    for candidate in dict.fromkeys(candidates):
+        try:
+            version = subprocess.run(
+                [candidate, "version"],
+                cwd=repo_root,
+                env={**os.environ, "GOTOOLCHAIN": "local"},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+                check=False,
+            )
+        except OSError, subprocess.TimeoutExpired:
+            continue
+        if version.returncode == 0 and re.fullmatch(
+            rf"go version go{re.escape(RECOVERY_GO_VERSION)} \S+\s*", version.stdout
+        ):
+            return candidate
+    # Preserve command construction when tools are missing or mismatched; the
+    # consumption entry points retain their strict toolchain checks.
+    return candidates[0] if candidates else "go"
 
 
 def build_npm_build_command(_paths: RepoPaths) -> list[str]:

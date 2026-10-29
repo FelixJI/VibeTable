@@ -359,7 +359,6 @@ def stage_command(
     package_root: Path | None = None,
     package_archive: Path | None = None,
 ) -> tuple[list[str], str]:
-    go = _resolve("go")
     if stage == "version":
         return [sys.executable, "qa/version_check.py"], str(REPO_ROOT)
     if stage == "package":
@@ -372,19 +371,19 @@ def stage_command(
     if stage == "go-fmt":
         return [sys.executable, str(GO_FORMAT_CHECK)], str(REPO_ROOT)
     if stage == "go-vet":
-        return [go, "vet", "./..."], str(SIDECAR_DIR)
+        return [_resolve("go"), "vet", "./..."], str(SIDECAR_DIR)
     if stage == "go-test":
-        return [go, "test", "./..."], str(SIDECAR_DIR)
+        return [_resolve("go"), "test", "./..."], str(SIDECAR_DIR)
     if stage == "go-coverage":
         return [
             sys.executable,
             str(REPO_ROOT / "qa" / "go_coverage.py"),
             "--go",
-            go,
+            _resolve("go"),
         ], str(REPO_ROOT)
     if stage == "go-race":
         return [
-            go,
+            _resolve("go"),
             "test",
             "-race",
             "all non-integration packages, then integration tests in isolated batches",
@@ -394,7 +393,7 @@ def stage_command(
             REPO_ROOT / "build" / "qa" / ("vibetable-pb.exe" if os.name == "nt" else "vibetable-pb")
         )
         return [
-            go,
+            _resolve("go"),
             "build",
             "-trimpath",
             "-buildvcs=true",
@@ -525,7 +524,7 @@ def stage_command(
         ], str(REPO_ROOT)
     if stage == "workbench-qualification":
         return [
-            go,
+            _resolve("go"),
             "run",
             "./cmd/workbench-qualification",
             "--profile",
@@ -1662,6 +1661,13 @@ def persist_product_e2e_evidence(
                 "56-balance-rejected.png",
                 "56-plugin-transactions-trace.zip",
             ),
+            "57-plugin-datasets": (
+                "57-datasets.json",
+                "57-datasets.png",
+                "57-picker-dataset-cancel.png",
+                "57-picker-dataset-select.png",
+                "57-plugin-datasets-trace.zip",
+            ),
             "55-plugin-surface-outputs": (
                 "55-output-conformance.png",
                 "55-plugin-surface-outputs-trace.zip",
@@ -1751,6 +1757,14 @@ def persist_product_e2e_evidence(
                     and item["status"] == "passed"
                 ):
                     raise ValueError(f"passing {scenario_id} lacks saved output: {filename}")
+        if scenario_id == "57-plugin-datasets":
+            for filename in ("57-dataset.csv", "57-dataset-proof.json"):
+                relative = Path("_runtime") / "57" / "controls" / filename
+                if (
+                    not _copy_if_file(run_source / relative, run_destination / relative)
+                    and item["status"] == "passed"
+                ):
+                    raise ValueError(f"passing {scenario_id} lacks saved dataset: {filename}")
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
             # stays failure-only. A passed S35 needs one operationId whose

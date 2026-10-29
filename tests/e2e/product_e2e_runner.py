@@ -393,6 +393,7 @@ _NODE_FREE_HOST_SCENARIOS = frozenset(
         "54-plugin-models",
         "55-plugin-surface-outputs",
         "56-plugin-transactions",
+        "57-plugin-datasets",
     }
 )
 
@@ -2308,6 +2309,7 @@ def _run_node_runner_guarded(
                 "52-plugin-capability-services",
                 "53-record-manager",
                 "55-plugin-surface-outputs",
+                "57-plugin-datasets",
             }:
                 file_result = {
                     "requestId": file_dialog_request.get("requestId"),
@@ -2377,6 +2379,7 @@ def _run_node_runner_guarded(
                     "54-plugin-models",
                     "55-plugin-surface-outputs",
                     "56-plugin-transactions",
+                    "57-plugin-datasets",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -2384,7 +2387,8 @@ def _run_node_runner_guarded(
                         "error": "native plugin scenario not authorized",
                     }
                 elif command[command.index("--scenario") + 1] == "54-plugin-models" or (
-                    command[command.index("--scenario") + 1] == "56-plugin-transactions"
+                    command[command.index("--scenario") + 1]
+                    in {"56-plugin-transactions", "57-plugin-datasets"}
                     and str(plugin_native_request.get("buttonId", "")).startswith("plugin-model-")
                 ):
                     from tests.e2e.plugin_model_native import handle_plugin_model_request
@@ -3149,7 +3153,7 @@ def run_scenario(
         from tests.e2e.plugin_surface_outputs import prepare_output_package
 
         prepare_output_package(controls_dir)
-    if scenario.id == "56-plugin-transactions":
+    if scenario.id in {"56-plugin-transactions", "57-plugin-datasets"}:
         from tests.e2e.plugin_capability_packages import _pack_example
 
         _pack_example(
@@ -3499,6 +3503,10 @@ def run_scenario(
                 from tests.e2e.plugin_surface_outputs import verify_output_files
 
                 result["outputFileVerification"] = verify_output_files(controls_dir)
+            if scenario.id == "57-plugin-datasets" and result.get("status") == "passed":
+                from tests.e2e.plugin_datasets import verify_dataset_file
+
+                result["datasetFileVerification"] = verify_dataset_file(controls_dir)
         except Exception as exc:
             infrastructure_error = str(exc)
             result = _failure_result(
@@ -3756,6 +3764,7 @@ def run_product_acceptance(
             "54-plugin-models",
             "55-plugin-surface-outputs",
             "56-plugin-transactions",
+            "57-plugin-datasets",
         }
         for scenario in scenarios
     ):
@@ -3792,6 +3801,7 @@ def run_product_acceptance(
                 "54-plugin-models",
                 "55-plugin-surface-outputs",
                 "56-plugin-transactions",
+                "57-plugin-datasets",
             }
             and native_observer_error is not None
         ):

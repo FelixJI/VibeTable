@@ -115,6 +115,7 @@ def _permission_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "privateStorage": permissions.get("privateStorage", False),
         "network": permissions.get("network", {"domains": [], "methods": ["GET"]}),
         "transactions": permissions.get("transactions"),
+        "dataset": manifest.get("compatibility", {}).get("dataset"),
         "risks": sorted(
             {action["risk"] for action in manifest.get("actions", [])},
             key=("read", "write", "destructive").index,
@@ -140,6 +141,8 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
         print(f"数据: {declaration['collection']} [{operations}] 字段 [{fields}]")
     print(f"文件能力: {', '.join(report['files']) or '无'}")
     print(f"私有存储: {'是' if report['privateStorage'] else '否'}")
+    if report["dataset"] is not None:
+        print(f"数据集: {report['dataset']}；复用显式读授权，同源导出仍需原生文件授权")
     if report["transactions"] is not None:
         declaration = report["transactions"]
         print(
