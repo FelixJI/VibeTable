@@ -14,6 +14,7 @@ import ctypes
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -27,18 +28,44 @@ _ALLOWED_BUTTONS = frozenset(
     }
 )
 
+_CONFIRMATION_TITLE = "VibeTable 插件确认"
+_EXPECT_EFFECT_OPERATIONS = frozenset({"insert", "update", "delete", "archive", "restore"})
+_EXPECT_EFFECT_PATTERN = re.compile(r"^([A-Za-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}):([a-z]{4,7})$")
+
+
+def _expect_effects(value: Any) -> bool:
+    if not isinstance(value, list) or not 1 <= len(value) <= 16:
+        return False
+    for item in value:
+        if not isinstance(item, str):
+            return False
+        match = _EXPECT_EFFECT_PATTERN.fullmatch(item)
+        if match is None or match.group(3) not in _EXPECT_EFFECT_OPERATIONS:
+            return False
+    return True
+
 
 def _validate_request(request: dict[str, Any]) -> None:
-    if set(request) != {"requestId", "action", "buttonId", "stage"}:
-        raise ValueError("native plugin request fields are invalid")
-    if request["action"] not in {
+    actions = {
         "observe",
         "click",
         "escape",
         "recover",
         "contrast-on",
         "contrast-off",
-    }:
+        "confirm-pending",
+        "confirm-exact",
+    }
+    base = {"requestId", "action", "buttonId", "stage"}
+    if request.get("action") == "confirm-pending":
+        if set(request) != base | {"expectCount"}:
+            raise ValueError("native plugin request fields are invalid")
+    elif request.get("action") == "confirm-exact":
+        if set(request) != base | {"hwnd", "expectEffects"}:
+            raise ValueError("native plugin request fields are invalid")
+    elif set(request) != base:
+        raise ValueError("native plugin request fields are invalid")
+    if request["action"] not in actions:
         raise ValueError("native plugin action is invalid")
     if request["action"] == "recover" and (
         request["buttonId"] != "plugin-recover" or request["stage"] not in {"loop", "cancelled"}
@@ -50,6 +77,23 @@ def _validate_request(request: dict[str, Any]) -> None:
         raise ValueError("native plugin contrast scope is invalid")
     if request["buttonId"] not in _ALLOWED_BUTTONS:
         raise ValueError("native plugin button is outside the closed set")
+    if request["action"] == "confirm-pending" and (
+        request["buttonId"] != "plugin-confirm-approve"
+        or request["stage"] != "pending"
+        or not isinstance(request["expectCount"], int)
+        or isinstance(request["expectCount"], bool)
+        or not 1 <= request["expectCount"] <= 4
+    ):
+        raise ValueError("native pending confirmation scope is invalid")
+    if request["action"] == "confirm-exact" and (
+        request["buttonId"] not in {"plugin-confirm-approve", "plugin-confirm-reject"}
+        or request["stage"] not in {"concurrent", "concurrent-second", "pending"}
+        or not isinstance(request["hwnd"], int)
+        or isinstance(request["hwnd"], bool)
+        or request["hwnd"] <= 0
+        or not _expect_effects(request["expectEffects"])
+    ):
+        raise ValueError("native exact confirmation scope is invalid")
     if request["stage"] not in {
         "application",
         "confirm",
@@ -63,6 +107,9 @@ def _validate_request(request: dict[str, Any]) -> None:
         "dark",
         "contrast",
         "contrast-restored",
+        "pending",
+        "concurrent",
+        "concurrent-second",
     }:
         raise ValueError("native plugin evidence stage is invalid")
     if (
@@ -437,6 +484,249 @@ def _observe_recovery_menu(native: Any, hwnd: int, host_pid: int) -> dict[str, A
     return matches[0]
 
 
+def _confirmation_windows(native: Any, host_pid: int) -> list[dict[str, Any]]:
+    """All current visible Host-owned native confirmation windows."""
+    return sorted(
+        (
+            item
+            for item in native.windows()
+            if item["pid"] == host_pid and item["visible"] and item["title"] == _CONFIRMATION_TITLE
+        ),
+        key=lambda item: item["hwnd"],
+    )
+
+
+def _owned_confirmation_root(native: Any, hwnd: int, host_pid: int) -> int:
+    """Verify the real Win32 owner chain ends at the Host's main window.
+
+    The confirmation popups are GW_OWNER children of the main "VibeTable"
+    window of the same process; a foreign or reparented window fails closed.
+    """
+    current = hwnd
+    for _ in range(8):
+        if native.owner(current) != host_pid:
+            raise ValueError("confirmation window left its Host process")
+        parent = native.win32_owner(current)
+        if parent == 0:
+            break
+        current = parent
+    else:
+        raise ValueError("confirmation owner chain is cyclic or exceeds the observation bound")
+    titles = [
+        item["title"]
+        for item in native.windows()
+        if item["hwnd"] == current and item["pid"] == host_pid
+    ]
+    if titles != ["VibeTable"]:
+        raise ValueError("confirmation window is not owned by the Host main window")
+    return current
+
+
+def _observe_confirmation_chrome(
+    native: Any,
+    observer: Path,
+    hwnd: int,
+    host_pid: int,
+    screenshot: Path,
+    *,
+    deadline: float,
+) -> dict[str, Any]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise OSError("confirmation observation exceeded its request budget")
+    result = subprocess.run(
+        [str(observer), "--screenshot", str(hwnd), str(screenshot.resolve())],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=remaining,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    observation = json.loads(result.stdout)
+    if (
+        observation.get("pid") != host_pid
+        or observation.get("hwnd") != hwnd
+        or native.owner(hwnd) != host_pid
+    ):
+        raise ValueError("confirmation observation belongs to a different window")
+    return observation
+
+
+def _parse_confirmation_effects(observation: dict[str, Any]) -> list[str]:
+    """Parse the top-level effects array of the read-only confirmation details.
+
+    Only the details Edit control's own value is decoded; the canonical
+    (tableId, recordId, operation) triple of every displayed effect is taken
+    from the array's top level, never from nested requested/binding echoes, so
+    an effect identity cannot be fabricated by a field name collision.
+    """
+    arrays = []
+    for item in observation.get("texts", []):
+        if item.get("kind") != "edit" or item.get("truncated"):
+            continue
+        value = str(item.get("value", ""))
+        if not value.lstrip().startswith("["):
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, list):
+            arrays.append(decoded)
+    if len(arrays) != 1:
+        raise ValueError("confirmation window does not expose exactly one parseable detail array")
+    effects: list[str] = []
+    for entry in arrays[0]:
+        if not isinstance(entry, dict):
+            raise ValueError("confirmation detail entry is not an object")
+        table_id = entry.get("tableId")
+        record_id = entry.get("recordId")
+        operation = entry.get("operation")
+        if not all(isinstance(part, str) and part for part in (table_id, record_id, operation)):
+            raise ValueError("confirmation detail entry lacks its canonical effect identity")
+        effects.append(f"{table_id}:{record_id}:{operation}")
+    if not effects:
+        raise ValueError("confirmation detail array carries no effects")
+    return effects
+
+
+def _require_complete_confirmation_text(observation: dict[str, Any]) -> None:
+    for item in observation.get("texts", []):
+        if item.get("truncated"):
+            raise ValueError("confirmation window text was truncated; binding is not complete")
+    if observation.get("textOverflow", 0):
+        raise ValueError("confirmation window had more text than the bounded observation")
+
+
+def _enabled_button(observation: dict[str, Any], button_id: str, host_pid: int) -> dict[str, Any]:
+    matches = [
+        button
+        for button in observation.get("buttons", [])
+        if button.get("id") == button_id and button.get("pid") == host_pid
+    ]
+    if len(matches) != 1 or not matches[0].get("enabled"):
+        raise OSError("confirmation window lacks exactly one enabled expected button")
+    return matches[0]
+
+
+def _handle_confirmation_pending(
+    native: Any,
+    observer: Path,
+    host_pid: int,
+    request: dict[str, Any],
+    evidence: Path,
+    *,
+    deadline: float,
+) -> dict[str, Any]:
+    expected = request["expectCount"]
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError(
+                f"expected {expected} pending owned confirmation windows; "
+                "they did not settle within the request budget"
+            )
+        windows = _confirmation_windows(native, host_pid)
+        if len(windows) > expected:
+            raise OSError(
+                f"expected {expected} pending owned confirmation windows, found {len(windows)}"
+            )
+        if len(windows) < expected:
+            # The WPF Dispatcher may not have shown the second window yet; only
+            # the observable readiness is awaited, never a replayed submit.
+            time.sleep(min(0.05, remaining))
+            continue
+        observations = []
+        for index, window in enumerate(windows):
+            hwnd = window["hwnd"]
+            owner_root = _owned_confirmation_root(native, hwnd, host_pid)
+            native.foreground(hwnd, host_pid)
+            observation = _observe_confirmation_chrome(
+                native,
+                observer,
+                hwnd,
+                host_pid,
+                evidence / f"48-native-pending-{index}.png",
+                deadline=deadline,
+            )
+            # Detail parsing and bounded-text failures are stable evidence
+            # errors and fail closed immediately, not transient waits.
+            _require_complete_confirmation_text(observation)
+            approve = _enabled_button(observation, "plugin-confirm-approve", host_pid)
+            observations.append(
+                {
+                    "hwnd": hwnd,
+                    "pid": host_pid,
+                    "win32OwnerRoot": owner_root,
+                    "effects": _parse_confirmation_effects(observation),
+                    "texts": observation.get("texts", []),
+                    "approveButton": approve,
+                }
+            )
+        # Re-verify the exact same pending set is still present after the full
+        # observation pass; a peer that expired mid-pass restarts the wait.
+        current = [item["hwnd"] for item in _confirmation_windows(native, host_pid)]
+        if current != [item["hwnd"] for item in windows]:
+            continue
+        for observed in observations:
+            if native.owner(observed["hwnd"]) != host_pid:
+                raise ValueError("confirmation window left its Host process")
+        return {
+            "requestId": request["requestId"],
+            "status": "completed",
+            "action": "confirm-pending",
+            "windows": observations,
+            "input": None,
+            "foreground": native.foreground_observation,
+        }
+
+
+def _handle_confirmation_exact(
+    native: Any,
+    observer: Path,
+    host_pid: int,
+    request: dict[str, Any],
+    evidence: Path,
+    *,
+    deadline: float,
+) -> dict[str, Any]:
+    windows = _confirmation_windows(native, host_pid)
+    if not any(item["hwnd"] == request["hwnd"] for item in windows):
+        raise OSError("exact confirmation window is not among the pending owned windows")
+    hwnd = request["hwnd"]
+    owner_root = _owned_confirmation_root(native, hwnd, host_pid)
+    native.foreground(hwnd, host_pid)
+    screenshot = evidence / f"48-native-{request['stage']}.png"
+    observation = _observe_confirmation_chrome(
+        native, observer, hwnd, host_pid, screenshot, deadline=deadline
+    )
+    _require_complete_confirmation_text(observation)
+    effects = _parse_confirmation_effects(observation)
+    if sorted(effects) != sorted(request["expectEffects"]):
+        raise ValueError("confirmation effects do not exactly match the prepared request boundary")
+    if time.monotonic() >= deadline:
+        raise OSError("native plugin input exceeded its request budget")
+    button = _enabled_button(observation, request["buttonId"], host_pid)
+    x = button["x"] + button["width"] / 2
+    y = button["y"] + button["height"] / 2
+    if native._root_at(x, y) != hwnd:
+        raise OSError("exact confirmation button is obscured")
+    _send_input(native, x=x, y=y)
+    return {
+        "requestId": request["requestId"],
+        "status": "completed",
+        "action": "confirm-exact",
+        "hwnd": hwnd,
+        "win32OwnerRoot": owner_root,
+        "boundEffects": effects,
+        "observation": observation,
+        "screenshot": str(screenshot),
+        "input": "SendInput",
+        "foreground": native.foreground_observation,
+    }
+
+
 def handle_plugin_native_request(
     request: dict[str, Any], *, host_pid: int, evidence: Path
 ) -> dict[str, Any]:
@@ -450,13 +740,31 @@ def handle_plugin_native_request(
             runner._prepare_native_uia_observer()
         native = runner._DocumentNativeWindows()
         confirm = request["buttonId"].startswith("plugin-confirm-")
+        if request["action"] == "confirm-pending":
+            return _handle_confirmation_pending(
+                native,
+                runner.NATIVE_UIA_OBSERVER_EXE,
+                host_pid,
+                request,
+                evidence,
+                deadline=deadline,
+            )
+        if request["action"] == "confirm-exact":
+            return _handle_confirmation_exact(
+                native,
+                runner.NATIVE_UIA_OBSERVER_EXE,
+                host_pid,
+                request,
+                evidence,
+                deadline=deadline,
+            )
         windows = [
             item
             for item in native.windows()
             if item["pid"] == host_pid
             and item["visible"]
             and (
-                (item["title"] == "VibeTable 插件确认") if confirm else item["title"] == "VibeTable"
+                (item["title"] == _CONFIRMATION_TITLE) if confirm else item["title"] == "VibeTable"
             )
         ]
         if len(windows) != 1:

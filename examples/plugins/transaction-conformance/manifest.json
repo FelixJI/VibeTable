@@ -1,12 +1,13 @@
 {
   "$schema": "vibetable.plugin-manifest.v2",
   "pluginId": "com.vibetable.examples.transaction-conformance",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": {"zh-CN": "合成原子事务"},
   "description": {"zh-CN": "三表原子提交、余额约束与原结果恢复"},
   "compatibility": {"minHostVersion": "0.5.7", "pluginApi": "3.x", "dataset": "vibetable.plugin-dataset.v1"},
   "permissions": {
     "files": ["pickWrite"],
+    "data": [{ "collection": "$active", "operations": ["read", "query", "update"], "fields": ["*"] }],
     "model": {
       "contract": "vibetable.plugin-model.v1", "modelId": "transaction_example", "version": 1,
       "entities": [

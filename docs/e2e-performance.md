@@ -4,7 +4,7 @@
 
 ## 当前 CI 分片
 
-`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程、S48–S53 插件应用、能力服务与记录管理块、S54 受控建模及 S55 模板产物保存与重印；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程、S48–S53 插件应用、能力服务与记录管理块、S54 受控建模、S55 模板产物保存与重印及 S58 双窗口并发与 T01 产物集成证据；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
 
 分片调整依据为：
 
@@ -24,7 +24,7 @@
 - GitHub run：[main CI 40074440901](https://github.com/FelixJI/VibeTable/actions/runs/40074440901)
 - 报告契约：`contractVersion=2.0`
 - 结果：52/52 passed、0 failed、0 skipped。
-- 当前 manifest gap：4（`54-plugin-models`、`55-plugin-surface-outputs`、`56-plugin-transactions`、`57-plugin-datasets`）。
+- 当前 manifest gap：5（`54-plugin-models`、`55-plugin-surface-outputs`、`56-plugin-transactions`、`57-plugin-datasets`、`58-plugin-integration-evidence`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：1（`49-plugin-application-security`）。
 
@@ -35,6 +35,8 @@ S54 新增受控三表建模、原生手动映射和无损升级，分配至 fil
 S55 新增合成插件模板输出、原生选址、归档重开及独立 XLSX 内容核验；其真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 
 S57 复用公开建模和受保护三表事务，形成两表各 201 行的一致数据集、逐分汇总及同源原生 CSV；并发改动明确失效，重挂载释放资源。其同候选真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
+
+S58 新增双 Host 确认窗口并发争用与实际数据集 T01 产物闭环：同一工作区两个各申请 8 的独立请求同时待决、按窗口 effects 集合精确绑定批准，恰好一个 applied；同路径从真实 canonical 行生成 T01 产物并经原生保存/归档/重开/重印由独立解析器对账，分配至 file-io lane。其同候选真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 
 S56 新增合成三表原子提交、原生确认与拒绝、持久结果恢复和余额约束，分配至 resilience lane；其真实桌面证据须由包含该场景的受控 Windows CI 补齐，不计入下方历史通过数。
 

@@ -196,6 +196,7 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "53-record-manager",
         "54-plugin-models",
         "55-plugin-surface-outputs",
+        "58-plugin-integration-evidence",
     }
 
 

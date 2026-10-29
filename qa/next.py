@@ -1668,6 +1668,22 @@ def persist_product_e2e_evidence(
                 "57-picker-dataset-select.png",
                 "57-plugin-datasets-trace.zip",
             ),
+            "58-plugin-integration-evidence": (
+                "58-integration.json",
+                "58-integration.png",
+                "58-rules.png",
+                "58-seed-commit.png",
+                "58-native-pending-0.png",
+                "58-native-pending-1.png",
+                "58-native-concurrent.png",
+                "58-native-concurrent-second.png",
+                "58-archive-confirmation.png",
+                "58-picker-t01-cancel.png",
+                "58-picker-t01-select.png",
+                "58-picker-t01-reprint-select.png",
+                "58-picker-t01-changed-select.png",
+                "58-plugin-integration-evidence-trace.zip",
+            ),
             "55-plugin-surface-outputs": (
                 "55-output-conformance.png",
                 "55-plugin-surface-outputs-trace.zip",
@@ -1765,6 +1781,19 @@ def persist_product_e2e_evidence(
                     and item["status"] == "passed"
                 ):
                     raise ValueError(f"passing {scenario_id} lacks saved dataset: {filename}")
+        if scenario_id == "58-plugin-integration-evidence":
+            for filename in (
+                "58-t01.xlsx",
+                "58-t01-reprint.xlsx",
+                "58-t01-reprint-changed.xlsx",
+                "58-t01-proof.json",
+            ):
+                relative = Path("_runtime") / "58" / "controls" / filename
+                if (
+                    not _copy_if_file(run_source / relative, run_destination / relative)
+                    and item["status"] == "passed"
+                ):
+                    raise ValueError(f"passing {scenario_id} lacks saved T01 artifact: {filename}")
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
             # stays failure-only. A passed S35 needs one operationId whose

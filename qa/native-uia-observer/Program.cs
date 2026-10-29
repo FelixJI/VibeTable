@@ -65,6 +65,8 @@ internal static class Program
         Stage("plugin-root end");
         var buttons = new List<object>();
         var combos = new List<object>();
+        var texts = new List<object>();
+        int textOverflow = 0;
         var nativeElements = new Stack<AutomationElement>();
         nativeElements.Push(root);
         int visited = 0;
@@ -82,6 +84,21 @@ internal static class Program
                 child = TreeWalker.ControlViewWalker.GetNextSibling(child);
             }
             string id = element.Current.AutomationId;
+            var controlType = element.Current.ControlType;
+            // Read-only bounded text projection of the native chrome (labels and
+            // read-only detail boxes). Patterns are only read, never invoked.
+            if (controlType == ControlType.Text || controlType == ControlType.Edit)
+            {
+                if (texts.Count >= 16) textOverflow++;
+                else
+                {
+                    string textValue = ReadState(element);
+                    bool truncated = textValue.Length > 12288;
+                    texts.Add(new { id, kind = controlType == ControlType.Edit ? "edit" : "text",
+                        name = element.Current.Name, value = truncated ? textValue[..12288] : textValue,
+                        truncated, length = textValue.Length, pid = element.Current.ProcessId });
+                }
+            }
             if (root.Current.AutomationId == "PluginModelWindow"
                 && element.Current.ControlType == ControlType.ComboBox
                 && (id.StartsWith("PluginModelTable_", StringComparison.Ordinal) || id.StartsWith("PluginModelField_", StringComparison.Ordinal)))
@@ -147,7 +164,8 @@ internal static class Program
             title = root.Current.Name, x = bounds.IsEmpty ? 0 : bounds.X, y = bounds.IsEmpty ? 0 : bounds.Y,
             width = bounds.IsEmpty ? 0 : bounds.Width, height = bounds.IsEmpty ? 0 : bounds.Height,
             automationId = root.Current.AutomationId,
-            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons, combos }));
+            dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons, combos,
+            texts, textOverflow }));
         Stage("plugin-serialize end");
         return 0;
     }
