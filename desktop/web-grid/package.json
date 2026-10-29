@@ -14,16 +14,16 @@
     "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
-    "@lucide/vue": "1.61.0",
+    "@lucide/vue": "1.63.0",
     "@vue/devtools-api": "8.2.1",
     "echarts": "6.1.0",
     "naive-ui": "2.45.3",
     "pinia": "4.1.0",
-    "tabulator-tables": "6.7.0",
+    "tabulator-tables": "6.7.1",
     "vue": "3.5.44"
   },
   "devDependencies": {
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "@vitejs/plugin-vue": "6.0.10",
     "@vitest/coverage-v8": "5.0.5",
     "@vue/test-utils": "2.5.1",
