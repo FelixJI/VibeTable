@@ -5,6 +5,12 @@ import { nativeModel } from "./plugin_models.mjs";
 
 const PLUGIN = "com.vibetable.examples.transaction-conformance";
 
+export async function requestTransactionNativeInput(page, button, input) {
+  await button.click();
+  await page.locator(".host-confirmation").waitFor({ timeout: 30000 });
+  return input();
+}
+
 export function assertAppliedTransaction(value, preview) {
   if (value?.status !== "applied" || value.receipt?.status !== "applied"
     || value.requestId !== preview.requestId || value.workspaceId !== preview.workspaceId
@@ -37,8 +43,8 @@ export async function runPluginTransactions(page, recorder, runtime, helpers) {
     return finish(expected);
   }
   async function confirm(id, approve, stage, expected = "succeeded") {
-    await frame.locator(`#${id}`).click();
-    const native = await nativePluginInput(runtime, "click", approve ? "plugin-confirm-approve" : "plugin-confirm-reject", approve ? "approved" : "rejected");
+    const native = await requestTransactionNativeInput(page, frame.locator(`#${id}`),
+      () => nativePluginInput(runtime, "click", approve ? "plugin-confirm-approve" : "plugin-confirm-reject", approve ? "approved" : "rejected"));
     recorder.check(`${stage} uses owned native input`, native.status === "completed", { native });
     await fs.copyFile(path.join(runtime.evidenceDir, `48-native-${approve ? "approved" : "rejected"}.png`), path.join(runtime.evidenceDir, `56-${stage}.png`));
     return finish(expected);
