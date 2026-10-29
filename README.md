@@ -163,7 +163,7 @@ flowchart LR
 | Python | 3.14+，依赖统一由 `uv` 和 `uv.lock` 管理 |
 | Node.js | 26.10.0；允许 26.x，见 `.nvmrc` 与各 `package.json` |
 | .NET SDK | 10.0.401，见 `global.json` |
-| Go | 1.27.1，见 `sidecar/go.mod` |
+| Go | 1.27.3，见 `sidecar/go.mod` |
 | WebView2 Runtime | Windows 桌面界面运行必需 |
 
 Go、Node.js 和 Python 构建工具只用于源码开发与打包；正式发布包不会在运行时从网络下载组件。
