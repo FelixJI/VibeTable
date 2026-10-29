@@ -13,6 +13,8 @@ export interface OfflineSurfaceOptions extends OfflineHostOptions {
   /** Explicit synthetic authority ports. No default successful mutation or query. */
   readonly previewMutation?: (plan: SurfaceMutationPlan) => Promise<void>;
   readonly submitMutation?: (plan: SurfaceMutationPlan, signal: AbortSignal) => Promise<SurfaceMutationOutcome>;
+  /** Explicit Go-produced dataset corpus/authority adapter; never a second query engine. */
+  readonly datasetAdapter?: (method: string, params: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
 }
 function fail(code: string): never { throw new PluginCapabilityError(code, "Synthetic surface request rejected."); }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -34,6 +36,10 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
   };
   async function dispatch(method: string, params: Record<string, unknown>, signal: AbortSignal, requestId: string): Promise<unknown> {
     if ((options.pluginApi ?? "3.x") !== "3.x") fail("plugin_api_unsupported");
+    if (method.startsWith("dataset.")) {
+      if (!options.datasetAdapter) fail("plugin_api_unsupported");
+      return options.datasetAdapter(method, params, signal);
+    }
     if (method.startsWith("model.")) fail("plugin_api_unsupported");
     if (method === "context.read") return host.capabilities.context.read();
     if (method === "data.describe") return host.capabilities.data.describe(params as unknown as Parameters<typeof host.capabilities.data.describe>[0]);

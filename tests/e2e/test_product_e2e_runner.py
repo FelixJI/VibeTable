@@ -5130,6 +5130,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("plugin_models.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_surface_outputs.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_transactions.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_datasets.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_sdk_examples.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),

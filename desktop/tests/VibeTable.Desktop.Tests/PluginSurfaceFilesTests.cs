@@ -12,6 +12,30 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceFilesTests
 {
     [TestMethod]
+    public async Task DatasetCsvUsesTheDisplayedRowsAndNativeCancellationOrStalePreservesTarget()
+    {
+        await using var f = new Fixture();
+        string id = (await f.Call("dataset.open", """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""")).GetProperty("result").GetProperty("datasetId").GetString()!;
+        string parameters = JsonSerializer.Serialize(new { datasetId = id, collection = "orders", suggestedName = "synthetic.csv" });
+        f.CancelPick = true;
+        Assert.AreEqual(JsonValueKind.Null, (await f.Call("dataset.export", parameters)).GetProperty("result").ValueKind);
+        Assert.AreEqual("old", File.ReadAllText(f.Target));
+        f.CancelPick = false;
+        f.AfterPick = () => f.Http.DatasetStale = true;
+        var stale = await f.Call("dataset.export", parameters);
+        Assert.AreEqual("plugin_dataset_stale", stale.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual("old", File.ReadAllText(f.Target));
+        Assert.AreEqual(0, f.Leases);
+        f.AfterPick = null; f.Http.DatasetStale = false;
+        id = (await f.Call("dataset.open", """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""")).GetProperty("result").GetProperty("datasetId").GetString()!;
+        var receipt = (await f.Call("dataset.export", JsonSerializer.Serialize(new { datasetId = id, collection = "orders", suggestedName = "synthetic.csv" }))).GetProperty("result");
+        Assert.IsTrue(receipt.GetProperty("committed").GetBoolean());
+        Assert.AreEqual(id, receipt.GetProperty("datasetId").GetString());
+        Assert.AreEqual(2, receipt.GetProperty("rowsWritten").GetInt32());
+        Assert.AreEqual("\"id\",\"amount\"\r\n\"a\",\"9007199254740993.01\"\r\n\"b\",\"0.01\"\r\n", File.ReadAllText(f.Target));
+        Assert.AreEqual(0, f.Leases);
+    }
+    [TestMethod]
     public async Task ImportReservationIsReleasedWhenLastPlanSlotFillsDuringFreeze()
     {
         await using var f = new Fixture();
@@ -1215,6 +1239,7 @@ public sealed class PluginSurfaceFilesTests
     private sealed class Peer : HttpMessageHandler
     {
         internal List<JsonElement> Calls { get; } = [];
+        internal bool DatasetStale;
         internal Action? AfterAuthorize;
         internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
@@ -1245,6 +1270,7 @@ public sealed class PluginSurfaceFilesTests
                 }
             }
             var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
+            if (method == "dataset.validate" && DatasetStale) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"plugin_dataset_stale"}""") };
             if (method == "storage.set" && HoldStorageSet is { } parked) { Interlocked.Increment(ref _storageSetHeld); await parked.Task.WaitAsync(token); }
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
@@ -1263,6 +1289,8 @@ public sealed class PluginSurfaceFilesTests
             }
             string body = method switch
             {
+                "dataset.open" => PluginSurfaceApiTests.DatasetBody,
+                "dataset.validate" => """{"valid":true}""",
                 "data.describe" => "{\"schemaRevision\":\"schema_1\"}",
                 "mutation.preview" => "{\"affectedCount\":1}",
                 "import.freeze" => "{\"attempt\":1,\"plan\":{\"contract\":\"vibetable.surface-mutation-plan.v1\",\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"operations\":[{\"kind\":\"create\",\"values\":{\"name\":\"new\"}}]}}",

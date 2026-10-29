@@ -10,6 +10,91 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class PluginSurfaceApiTests
 {
+    internal const string DatasetBody = """{"contract":"vibetable.plugin-dataset.v1","scope":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]},"groupBy":[],"sums":[]}],"versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"filteredRows":2,"totalRows":2,"complete":true,"summary":{"count":2,"complete":true,"sums":[{"field":"amount","value":"9007199254740993.02","complete":true}],"groups":[]}}]}""";
+    private const string DatasetRequest = """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""";
+
+    [TestMethod]
+    public async Task DatasetUnknownAmountKeepsBothSummaryCompletenessSignalsFalse()
+    {
+        using var f = new Fixture();
+        f.Http.DatasetResultBody = DatasetBody.Replace("\"summary\":{\"count\":2,\"complete\":true", "\"summary\":{\"count\":2,\"complete\":false", StringComparison.Ordinal)
+            .Replace("\"value\":\"9007199254740993.02\",\"complete\":true", "\"value\":null,\"complete\":false,\"unknownCount\":1", StringComparison.Ordinal);
+        var opened = (await f.Call("dataset.open", DatasetRequest)).GetProperty("result");
+        Assert.IsTrue(opened.GetProperty("sources")[0].GetProperty("complete").GetBoolean(), "the source rows were fully read");
+        string id = opened.GetProperty("datasetId").GetString()!;
+        var summary = (await f.Call("dataset.summary", JsonSerializer.Serialize(new { datasetId = id, collection = "orders" }))).GetProperty("result");
+        Assert.IsFalse(summary.GetProperty("complete").GetBoolean());
+        Assert.IsFalse(summary.GetProperty("summary").GetProperty("complete").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, summary.GetProperty("summary").GetProperty("sums")[0].GetProperty("value").ValueKind);
+        Assert.AreEqual(1, summary.GetProperty("summary").GetProperty("sums")[0].GetProperty("unknownCount").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task DatasetIsImmutableBoundedAndReleaseRemainsScoped()
+    {
+        using var f = new Fixture();
+        string first = (await f.Call("dataset.open", DatasetRequest)).GetProperty("result").GetProperty("datasetId").GetString()!;
+        string second = (await f.Call("dataset.open", DatasetRequest)).GetProperty("result").GetProperty("datasetId").GetString()!;
+        Assert.AreEqual("plugin_dataset_limit", Code(await f.Call("dataset.open", DatasetRequest)));
+        var page = (await f.Call("dataset.page", JsonSerializer.Serialize(new { datasetId = first, collection = "orders", offset = 0, pageSize = 1 }))).GetProperty("result");
+        Assert.AreEqual("9007199254740993.01", page.GetProperty("items")[0].GetProperty("amount").GetString());
+        Assert.AreEqual(1, page.GetProperty("nextOffset").GetInt32());
+        var summary = (await f.Call("dataset.summary", JsonSerializer.Serialize(new { datasetId = first, collection = "orders" }))).GetProperty("result");
+        Assert.AreEqual("9007199254740993.02", summary.GetProperty("summary").GetProperty("sums")[0].GetProperty("value").GetString());
+        Assert.AreEqual(page.GetProperty("versions").GetRawText(), summary.GetProperty("versions").GetRawText());
+        var validations = f.Http.Calls.Where(call => call.GetProperty("method").GetString() == "dataset.validate").ToArray();
+        Assert.AreEqual(2, validations.Length);
+        Assert.IsTrue(validations.All(call => call.GetProperty("request").GetProperty("sources")[0].GetProperty("query").GetProperty("collection").GetString() == "orders"));
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "data.query"));
+        int calls = f.Http.Calls.Count;
+        foreach (string handle in new[] { first, first, "foreign" }) Assert.IsTrue((await f.Call("dataset.release", JsonSerializer.Serialize(new { datasetId = handle }))).GetProperty("result").GetProperty("released").GetBoolean());
+        Assert.AreEqual(calls, f.Http.Calls.Count);
+        Assert.AreEqual("plugin_dataset_stale", Code(await f.Call("dataset.summary", JsonSerializer.Serialize(new { datasetId = first, collection = "orders" }))));
+        Assert.IsTrue((await f.Call("dataset.open", DatasetRequest)).TryGetProperty("result", out _));
+        f.Http.DatasetValidationCode = "plugin_read_denied";
+        Assert.AreEqual("plugin_read_denied", Code(await f.Call("dataset.summary", JsonSerializer.Serialize(new { datasetId = second, collection = "orders" }))));
+        f.Http.DatasetValidationCode = null;
+        Assert.AreEqual("plugin_dataset_stale", Code(await f.Call("dataset.summary", JsonSerializer.Serialize(new { datasetId = second, collection = "orders" }))));
+    }
+
+    [TestMethod]
+    public async Task DatasetOversizeEnvelopeAndRetirementNeverPublishLateHandles()
+    {
+        using (var f = new Fixture())
+        {
+            f.Http.DatasetResultBody = DatasetBody.Replace("s1", new string('x', 512 * 1024), StringComparison.Ordinal);
+            Assert.AreEqual("plugin_dataset_limit", Code(await f.Call("dataset.open", DatasetRequest)));
+            f.Http.DatasetResultBody = DatasetBody.Replace("\"filteredRows\":2,", "", StringComparison.Ordinal);
+            for (int i = 0; i < 3; i++) Assert.AreEqual("plugin_capability_invalid", Code(await f.Call("dataset.open", DatasetRequest)));
+            f.Http.DatasetResultBody = DatasetBody;
+            Assert.IsTrue((await f.Call("dataset.open", DatasetRequest)).TryGetProperty("result", out _));
+            Assert.IsTrue((await f.Call("dataset.open", DatasetRequest)).TryGetProperty("result", out _));
+        }
+        using (var f = new Fixture())
+        {
+            f.Http.AfterReadMethod = "dataset.open";
+            f.Http.AfterCommitRead = f.RetireAfterReceipt;
+            Assert.AreEqual("plugin_source_denied", Code(await f.Call("dataset.open", DatasetRequest)));
+        }
+    }
+
+    [TestMethod]
+    public async Task CancelledDatasetOpenCannotConsumeCapacityAfterItsLateResponse()
+    {
+        using var f = new Fixture();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Http.OnDatasetOpen = _ => { entered.TrySetResult(); return resume.Task; };
+        string wire = f.Wire("dataset.open", DatasetRequest);
+        string id = JsonDocument.Parse(wire).RootElement.GetProperty("requestId").GetString()!;
+        Task<string> opening = f.Api.HandleAsync(f.Surface.SurfaceToken, f.Source, wire);
+        await entered.Task;
+        await f.Call("request.cancel", JsonSerializer.Serialize(new { requestId = id }));
+        resume.SetResult();
+        Assert.AreEqual("plugin_cancel_requested", Code(JsonDocument.Parse(await opening).RootElement));
+        f.Http.OnDatasetOpen = null;
+        for (int i = 0; i < 2; i++) Assert.IsTrue((await f.Call("dataset.open", DatasetRequest)).TryGetProperty("result", out _));
+    }
     [TestMethod]
     public async Task CursorReleaseIsScopedIdempotentAndDoesNotCallAuthority()
     {
@@ -1251,6 +1336,9 @@ public sealed class PluginSurfaceApiTests
         internal bool LoseCommit { get; set; }
         internal bool Conflict { get; set; }
         internal Func<CancellationToken, Task>? OnQuery { get; set; }
+        internal Func<CancellationToken, Task>? OnDatasetOpen { get; set; }
+        internal string DatasetResultBody { get; set; } = DatasetBody;
+        internal string? DatasetValidationCode { get; set; }
         internal string? QueryResultBody { get; set; }
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
@@ -1276,6 +1364,8 @@ public sealed class PluginSurfaceApiTests
             if (method == "transaction.commit" && TransactionCommitErrorBody is { } transactionError)
                 return new(HttpStatusCode.Conflict) { Content = new StringContent(transactionError) };
             if (method == "data.query" && OnQuery is { } onQuery) await onQuery(token);
+            if (method == "dataset.open" && OnDatasetOpen is { } onDataset) await onDataset(token);
+            if (method == "dataset.validate" && DatasetValidationCode is { } datasetCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = datasetCode })) };
             if (method == "mutation.commit" && OnCommit is { } onCommit)
             {
                 onCommit();
@@ -1298,6 +1388,8 @@ public sealed class PluginSurfaceApiTests
 
             string result = method switch
             {
+                "dataset.open" => DatasetResultBody,
+                "dataset.validate" => """{"valid":true}""",
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
                 "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",

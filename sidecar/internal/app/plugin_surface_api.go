@@ -321,13 +321,16 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			return err
 		})
 		return nil, err
-	case "data.describe", "data.query", "data.exportQuery":
+	case "data.describe", "data.query", "data.exportQuery", "dataset.open", "dataset.validate":
 		operation := "describe"
 		if input.Method == "data.query" {
 			operation = "query"
 		}
 		if input.Method == "data.exportQuery" {
 			operation = "exportQuery"
+		}
+		if strings.HasPrefix(input.Method, "dataset.") {
+			operation = input.Method
 		}
 		return executePluginData(ctx, app, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
 	case "file.authorize":

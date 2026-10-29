@@ -3,6 +3,7 @@ import { runRecordManagerProduct } from "./record_manager_product.mjs";
 import { runCapabilityServices } from "./plugin_capability_services.mjs";
 import { runPluginModels } from "./plugin_models.mjs";
 import { runPluginTransactions } from "./plugin_transactions.mjs";
+import { runPluginDatasets } from "./plugin_datasets.mjs";
 
 import { runPluginSurfaceOutputs } from "./plugin_surface_outputs.mjs";
 import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
@@ -12184,6 +12185,7 @@ const scenarios = {
 
   "55-plugin-surface-outputs": (page, recorder, _network, runtime) => runPluginSurfaceOutputs(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
   "56-plugin-transactions": (page, recorder, _network, runtime) => runPluginTransactions(page, recorder, runtime, { waitForShell, rawBridgeRequest }),
+  "57-plugin-datasets": (page, recorder, _network, runtime) => runPluginDatasets(page, recorder, runtime, { waitForShell, rawBridgeRequest, applyProductMutation }),
 
 };
 
@@ -12430,7 +12432,7 @@ async function main() {
     browser = await chromium.connectOverCDP(
       args["cdp-url"],
       // S46 must exercise Host-owned downloads, without Playwright download overrides.
-      ["46-dashboard-native-output", "49-plugin-application-security", "54-plugin-models", "56-plugin-transactions"].includes(args.scenario) ? { noDefaults: true } : undefined,
+      ["46-dashboard-native-output", "49-plugin-application-security", "54-plugin-models", "56-plugin-transactions", "57-plugin-datasets"].includes(args.scenario) ? { noDefaults: true } : undefined,
     );
     context = browser.contexts()[0];
     if (!context) throw new Error("WebView2 exposed no browser context over CDP");

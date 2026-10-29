@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：55
-- 唯一能力：75
-- 场景—能力关联：141
+- 场景：56
+- 唯一能力：76
+- 场景—能力关联：146
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -56,17 +56,18 @@
 | `plugin.applications` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.attachments` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>55-plugin-surface-outputs</code>（插件有界模板产物保存、归档与原样重印） |
 | `plugin.data-io` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
+| `plugin.datasets` | <code>57-plugin-datasets</code>（三表一致数据集、逐分汇总与同源原生导出） |
 | `plugin.files` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `plugin.headless` | <code>50-plugin-headless-budget</code>（无界面插件原生执行预算） |
 | `plugin.isolation` | <code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复） |
-| `plugin.lifecycle` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复） |
-| `plugin.models` | <code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复） |
+| `plugin.lifecycle` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复）、<code>57-plugin-datasets</code>（三表一致数据集、逐分汇总与同源原生导出） |
+| `plugin.models` | <code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复）、<code>57-plugin-datasets</code>（三表一致数据集、逐分汇总与同源原生导出） |
 | `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.output.artifacts` | <code>55-plugin-surface-outputs</code>（插件有界模板产物保存、归档与原样重印） |
 | `plugin.output.print` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期） |
 | `plugin.subscriptions` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
-| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径）、<code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>55-plugin-surface-outputs</code>（插件有界模板产物保存、归档与原样重印）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复） |
-| `plugin.transactions` | <code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复） |
+| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径）、<code>54-plugin-models</code>（插件受控三表建模、手动映射与无损升级）、<code>55-plugin-surface-outputs</code>（插件有界模板产物保存、归档与原样重印）、<code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复）、<code>57-plugin-datasets</code>（三表一致数据集、逐分汇总与同源原生导出） |
+| `plugin.transactions` | <code>56-plugin-transactions</code>（插件三表原子提交、余额保护与原结果恢复）、<code>57-plugin-datasets</code>（三表一致数据集、逐分汇总与同源原生导出） |
 | `plugin.ui-services` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
@@ -151,3 +152,4 @@
 | <code>54-plugin-models</code> | 插件受控三表建模、手动映射与无损升级 | 真实WPF/WebView2合成插件经原生精确计划确认创建三表及原生关系，重复初始化保持canonical身份；原生映射异名逻辑字段至已有表，未配置和升级待确认期间不授予隐式权限；确认增量字段后重开恢复持久绑定，frame不能请求未授权目录。 | `plugin.surface-api`、`plugin.models`、`plugin.lifecycle`、`schema.v2` |
 | <code>55-plugin-surface-outputs</code> | 插件有界模板产物保存、归档与原样重印 | 真实WPF/WebView2中的合成插件通过公开SDK生成普通及大于1MiB的XLSX，原生选址落盘、Host确认归档；重开页面读取不可变原产物并原样重印，新模板生成新实例，超出32MiB明确拒绝。独立ZIP/XML读取器核对文件内容与字节一致，保存和重印不改变业务字段。 | `plugin.surface-api`、`plugin.output.artifacts`、`plugin.attachments` |
 | <code>56-plugin-transactions</code> | 插件三表原子提交、余额保护与原结果恢复 | 真实WPF/WebView2合成插件通过公开SDK和原生确认登记规则、提交三表计划。预览及取消零业务写入，同requestId重复提交及重开查询返回原结果，新增占用超过余额整笔拒绝且不留下孤儿行；缺失requestId明确unknown。并发、撤权及丢回执故障由同契约Go/Host测试补足。 | `plugin.surface-api`、`plugin.transactions`、`plugin.models`、`plugin.lifecycle` |
+| <code>57-plugin-datasets</code> | 三表一致数据集、逐分汇总与同源原生导出 | 固定组合的真实WPF/WebView2应用公开SDK建模及受保护事务提交头、行、分配，产生两表各201行，分页明细与精确汇总同源；原生取消与保存后由独立CSV读取器逐行对账，并发改动明确stale、显式刷新、重挂载释放资源。 | `plugin.surface-api`、`plugin.datasets`、`plugin.transactions`、`plugin.models`、`plugin.lifecycle` |

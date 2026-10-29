@@ -173,6 +173,12 @@ def _validate_compatibility(
             "version_incompatible",
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
         )
+    if "dataset" in compatibility and (
+        plugin_api != "3.x" or compatibility["dataset"] != "vibetable.plugin-dataset.v1"
+    ):
+        raise PluginPackageError(
+            "version_incompatible", "compatibility.dataset requires native dataset v1"
+        )
 
     retired_provider = "".join(["di", "rectus"])
     legacy = sorted(set(compatibility) & {retired_provider})

@@ -90,6 +90,9 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 	}
 
 	fields := sortedFieldNames(descriptor.Fields)
+	if descriptor.ProjectionFields != nil {
+		fields = descriptor.ProjectionFields
+	}
 	selects := make([]string, 0, len(fields))
 	for _, name := range fields {
 		valueSQL := quote(descriptor.Fields[name].PhysicalName)

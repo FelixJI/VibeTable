@@ -235,6 +235,10 @@ type TableDescriptor struct {
 	SchemaRevision string                     `json:"schemaRevision"`
 	DataRevision   int64                      `json:"dataRevision"`
 	Fields         map[string]FieldDescriptor `json:"fields"`
+
+	// ProjectionFields narrows read-only projections independently of predicate fields.
+	// Nil retains the ordinary full-row query contract.
+	ProjectionFields []string `json:"-"`
 	// DigestFields includes every normalized product field, including
 	// non-queryable secrets. QueryPort hashes their raw values server-side but
 	// never returns those values.

@@ -1662,6 +1662,13 @@ def persist_product_e2e_evidence(
                 "56-balance-rejected.png",
                 "56-plugin-transactions-trace.zip",
             ),
+            "57-plugin-datasets": (
+                "57-datasets.json",
+                "57-datasets.png",
+                "57-picker-dataset-cancel.png",
+                "57-picker-dataset-select.png",
+                "57-plugin-datasets-trace.zip",
+            ),
             "55-plugin-surface-outputs": (
                 "55-output-conformance.png",
                 "55-plugin-surface-outputs-trace.zip",
@@ -1751,6 +1758,14 @@ def persist_product_e2e_evidence(
                     and item["status"] == "passed"
                 ):
                     raise ValueError(f"passing {scenario_id} lacks saved output: {filename}")
+        if scenario_id == "57-plugin-datasets":
+            for filename in ("57-dataset.csv", "57-dataset-proof.json"):
+                relative = Path("_runtime") / "57" / "controls" / filename
+                if (
+                    not _copy_if_file(run_source / relative, run_destination / relative)
+                    and item["status"] == "passed"
+                ):
+                    raise ValueError(f"passing {scenario_id} lacks saved dataset: {filename}")
         if scenario_id == "35-data-io-interoperability":
             # Bounded measurements for every outcome; the full runtime tree
             # stays failure-only. A passed S35 needs one operationId whose

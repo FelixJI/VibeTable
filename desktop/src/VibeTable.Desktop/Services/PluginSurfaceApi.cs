@@ -59,6 +59,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         _subscriptionSource = subscriptionSource;
         _surfaces.Closed += RetireState;
         _http = new HttpClient(handler ?? new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
+        _datasetExpiry = new Timer(_ => SweepDatasets(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     internal async Task<string> HandleAsync(string frameToken, string source, string raw)
@@ -71,6 +72,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         ApiRequest? request = null;
         bool admitted = false;
         string? createdCursor = null;
+        string? createdDataset = null;
         try
         {
             if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
@@ -95,7 +97,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "transaction.configure" or "transaction.submit" or "model.configure" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "transaction.configure" or "transaction.submit" or "model.configure" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "dataset.export" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
@@ -104,6 +106,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 // Cancel before scanning: allocation may finish between the Pending lookup and this request.
                 // The query checks its token before publishing; an already delivered handle is reclaimed here.
                 foreach (var pair in state.Cursors.Where(pair => pair.Value.RequestId == target)) state.Cursors.TryRemove(pair.Key, out _);
+                foreach (var pair in state.Datasets.Where(pair => pair.Value.RequestId == target)) state.Datasets.TryRemove(pair.Key, out _);
                 return Reply(requestId, new { cancelRequested = true });
             }
             if (request.Method == "data.io.cancel")
@@ -138,6 +141,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 state.Cursors.TryRemove(ReadHandle(request.Params, "cursor"), out _);
                 return Reply(requestId, new { released = true });
             }
+            if (request.Method == "dataset.release")
+            {
+                state.Datasets.TryRemove(ReadHandle(request.Params, "datasetId"), out _);
+                return Reply(requestId, new { released = true });
+            }
             if (!state.Pending.TryAdd(requestId, deadline)) throw Error("plugin_request_duplicate");
             admitted = true;
             if (state.Pending.Count > 8) throw Error("plugin_concurrency_limit");
@@ -147,6 +155,15 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             object? result;
             switch (request.Method)
             {
+                case "dataset.open":
+                    (createdDataset, result) = await OpenDatasetAsync(surface, state, requestId, request.Params, deadline.Token);
+                    break;
+                case "dataset.page":
+                case "dataset.summary":
+                case "dataset.export":
+                    result = await UseDatasetAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    if (request.Method == "dataset.export" && result is JsonElement datasetReceipt && datasetReceipt.TryGetProperty("committed", out var savedDataset) && savedDataset.GetBoolean()) committed = true;
+                    break;
                 case "output.create":
                 case "output.write":
                 case "output.seal":
@@ -407,7 +424,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                     }
                 default: throw Error("plugin_api_unsupported");
             }
-            if (request.Method == "data.query") deadline.Token.ThrowIfCancellationRequested();
+            if (!committed && (request.Method == "data.query" || request.Method.StartsWith("dataset.", StringComparison.Ordinal))) deadline.Token.ThrowIfCancellationRequested();
             if (!committed && !printOpened) CurrentSurface(frameToken, source);
             string response = request.Method is "file.read" or "attachments.read"
                 ? ReadBlockReply(requestId, result) : Reply(requestId, result);
@@ -417,6 +434,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         catch (Exception ex)
         {
             if (createdCursor is not null) state?.Cursors.TryRemove(createdCursor, out _);
+            if (createdDataset is not null) state?.Datasets.TryRemove(createdDataset, out _);
             string code = committing ? "plugin_commit_unknown" : ex switch
             {
                 PluginSurfacePolicyException policy => policy.Code,
@@ -594,9 +612,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         ReleaseOutputs(token);
         _attachmentRefs.TryRemove(token, out _);
         if (_states.TryRemove(token, out var state))
-        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); }
+        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); state.Datasets.Clear(); }
     }
-    public void Dispose() { _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _ = DisposeHttpAsync(); }
+    public void Dispose() { _datasetExpiry.Dispose(); _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _ = DisposeHttpAsync(); }
     private void TrackCleanup(Task cleanup)
     {
         if (cleanup.IsCompleted) return;
@@ -629,6 +647,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         internal ConcurrentDictionary<string, bool> Seen { get; } = new();
         internal ConcurrentQueue<string> Order { get; } = new();
         internal ConcurrentDictionary<string, Cursor> Cursors { get; } = new();
+        internal ConcurrentDictionary<string, Dataset> Datasets { get; } = new();
         internal ConcurrentDictionary<string, Plan> Plans { get; } = new();
     }
 }

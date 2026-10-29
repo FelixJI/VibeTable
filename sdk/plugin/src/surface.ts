@@ -6,6 +6,7 @@ import { PluginCapabilityError } from "./capabilities.js";
 import { createSurfaceModel, type SurfaceModel } from "./surface-model.js";
 import { createSurfaceTransaction, type SurfaceTransaction } from "./surface-transaction.js";
 import { createSurfaceOutputClient, type SurfaceOutputClient } from "./surface-output.js";
+import { createSurfaceDatasets, type SurfaceDatasets } from "./surface-dataset.js";
 
 export const SURFACE_API_CONTRACT = "vibetable.plugin-api.v1";
 export interface SurfaceMutationPlan {
@@ -60,6 +61,7 @@ export interface SurfaceTransport {
   removeEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
 }
 export interface SurfaceCapabilities {
+  readonly dataset: SurfaceDatasets;
   readonly model: SurfaceModel;
   readonly transaction: SurfaceTransaction;
   readonly context: { read(): Promise<CommandContext>; current(): Promise<SurfacePresentation>; onChanged(listener: (value: SurfacePresentation) => void): () => void };
@@ -172,8 +174,8 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   channel.addEventListener("message", receive);
   function call<T>(method: string, params: unknown, signal?: AbortSignal, onSent?: () => void): Promise<T> {
     if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
-    const releaseMethod = method === "data.unsubscribe" || method === "data.releaseCursor";
-    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe" || request.method === "data.releaseCursor").length;
+    const releaseMethod = method === "data.unsubscribe" || method === "data.releaseCursor" || method === "dataset.release";
+    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe" || request.method === "data.releaseCursor" || request.method === "dataset.release").length;
     const ioCancels = [...pending.values()].filter(request => request.method === "data.io.cancel").length;
     if (releaseMethod ? releases >= 8 : method === "data.io.cancel" ? ioCancels >= 8 : pending.size - releases - ioCancels >= 8)
       return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
@@ -182,15 +184,15 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     return new Promise<T>((resolve, reject) => {
       const cancel = (): void => {
         try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } }); }
-        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
+        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
       };
       const cleanup = (): void => signal?.removeEventListener("abort", cancel);
       const timer = setTimeout(() => {
         pending.delete(requestId);
         cleanup();
         cancel();
-        reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
-      }, method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "model.configure" || method === "output.save" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "attachments.previewChange" ? 125_000 : 20_000);
+        reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
+      }, method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "model.configure" || method === "output.save" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "dataset.export" || method === "attachments.previewChange" ? 125_000 : 20_000);
       pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
       try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); onSent?.(); }
@@ -439,7 +441,9 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     return output;
   }
   const outputs = createSurfaceOutputClient(call, release);
+  const datasets = createSurfaceDatasets(call, release);
   return {
+    dataset: datasets,
     model: createSurfaceModel(call),
     transaction: createSurfaceTransaction(call),
     context: {
@@ -484,6 +488,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     dispose: () => {
       if (closed) return;
       closed = true;
+      datasets.dispose();
       outputs.dispose();
       presentation.dispose();
       for (const [subscriptionId, subscription] of subscriptions) {
@@ -499,10 +504,10 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       channel.removeEventListener("message", receive);
       // A sent submit may already be committing; dispose reports unknown and resends nothing.
       for (const [requestId, request] of pending) {
-        if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
+        if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "dataset.open", "dataset.export", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
-        request.reject((request.method === "mutation.submit" || request.method === "transaction.submit" || request.method === "transaction.configure" || request.method === "file.write" || request.method === "model.configure" || request.method === "output.save")
+        request.reject((request.method === "mutation.submit" || request.method === "transaction.submit" || request.method === "transaction.configure" || request.method === "file.write" || request.method === "model.configure" || request.method === "output.save" || request.method === "dataset.export")
           ? new PluginCapabilityError("plugin_commit_unknown", "Plugin surface closed before the commit receipt; outcome unknown; no automatic retry.")
           : new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
       }

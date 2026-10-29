@@ -3089,6 +3089,8 @@ def _prepare_complete_product_reports(
             _write_s35_audit_drain_log(run_root, ("business", "file"))
         if "55-plugin-surface-outputs" in selected[stage]:
             _write_output_artifacts(run_root)
+        if "57-plugin-datasets" in selected[stage]:
+            _write_dataset_artifacts(run_root)
         if "48-plugin-applications" in selected[stage]:
             for phase, filenames in {
                 "seed": ("48-application-sidebar.png", "48-plugin-applications-trace.zip"),
@@ -4032,7 +4034,24 @@ def _write_output_artifacts(run: Path) -> None:
         (controls / filename).write_bytes(filename.encode())
 
 
+DATASET_ARTIFACTS = ("57-dataset.csv", "57-dataset-proof.json")
+
+
+def _write_dataset_artifacts(run: Path) -> None:
+    controls = run / "_runtime" / "57" / "controls"
+    controls.mkdir(parents=True)
+    for filename in DATASET_ARTIFACTS:
+        (controls / filename).write_bytes(filename.encode())
+
+
 SCENARIO_SCREENSHOTS = {
+    "57-plugin-datasets": (
+        "57-datasets.json",
+        "57-datasets.png",
+        "57-picker-dataset-cancel.png",
+        "57-picker-dataset-select.png",
+        "57-plugin-datasets-trace.zip",
+    ),
     "56-plugin-transactions": (
         "56-transactions.json",
         "56-transactions.png",
@@ -4202,6 +4221,8 @@ def _scenario_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> P
         (directory / filename).write_bytes(filename.encode())
     if scenario_id == "55-plugin-surface-outputs":
         _write_output_artifacts(run)
+    if scenario_id == "57-plugin-datasets":
+        _write_dataset_artifacts(run)
     (directory / "unrelated.png").write_bytes(b"unrelated")
     (directory / "workspace.db").write_bytes(b"private workspace")
     return run
@@ -4228,6 +4249,11 @@ def test_scenario_screenshots_archive_only_declared_images(
     if scenario_id == "55-plugin-surface-outputs":
         for filename in OUTPUT_ARTIFACTS:
             relative = f"_runtime/55/controls/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == filename.encode()
+    if scenario_id == "57-plugin-datasets":
+        for filename in DATASET_ARTIFACTS:
+            relative = f"_runtime/57/controls/{filename}"
             expected.add(relative)
             assert (retained / relative).read_bytes() == filename.encode()
     assert {

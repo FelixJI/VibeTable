@@ -63,6 +63,7 @@ type pluginInstallation struct {
 	Manifest       struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
+			Dataset   string `json:"dataset,omitempty"`
 		} `json:"compatibility"`
 		Permissions struct {
 			Transactions   *transactionrules.Declaration `json:"transactions,omitempty"`
@@ -171,6 +172,16 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			return err
 		}
 		switch input.Operation {
+		case "dataset.open", "dataset.validate":
+			if installed.Manifest.Compatibility.PluginAPI != "3.x" || installed.Manifest.Compatibility.Dataset != "" && installed.Manifest.Compatibility.Dataset != pluginDatasetContract {
+				return pluginDataError("plugin_api_unsupported")
+			}
+			var request pluginDatasetRequest
+			if decodePluginParams(input.Request, &request) != nil {
+				return pluginDataError("plugin_capability_invalid")
+			}
+			result, err = executePluginDataset(ctx, tx, source, installed, input.ActiveCollection, input.Operation, request)
+			return err
 		case "describe":
 			var request pluginDescribeRequest
 			if decodePluginParams(input.Request, &request) != nil || !reflect.DeepEqual(request.Accepts, []string{pluginDataContract}) {
@@ -364,6 +375,7 @@ func pluginTableMetadata(schema v2.SchemaSnapshot, descriptor query.TableDescrip
 
 // Narrow only this plugin port. Ordinary product queries keep their existing behavior.
 type pluginQuerySource struct {
+	readonly   bool
 	source     *queryschema.Source
 	grant      pluginReadGrant
 	request    pluginQueryRequest
@@ -382,7 +394,26 @@ func (s *pluginQuerySource) DescribeSelectionTable(ctx context.Context, app core
 	if table != s.request.Collection {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, pluginDataError("plugin_cursor_invalid")
 	}
-	d, schema, err := s.source.DescribeSelectionTable(ctx, app, table)
+	var d query.TableDescriptor
+	var schema v2.SchemaSnapshot
+	var err error
+	if s.readonly {
+		ids := append([]string{}, s.request.Fields...)
+		var visit func([]query.FilterExpression)
+		visit = func(filters []query.FilterExpression) {
+			for _, f := range filters {
+				ids = append(ids, f.Field)
+				visit(f.Filters)
+			}
+		}
+		visit(s.request.Filters)
+		for _, sort := range s.request.Sorts {
+			ids = append(ids, sort.Field)
+		}
+		d, schema, err = s.source.DescribeProjectionTable(ctx, app, table, ids)
+	} else {
+		d, schema, err = s.source.DescribeSelectionTable(ctx, app, table)
+	}
 	if err != nil {
 		return d, schema, pluginDataError("plugin_query_failed")
 	}

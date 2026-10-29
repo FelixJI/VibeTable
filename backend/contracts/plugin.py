@@ -110,6 +110,10 @@ class PluginManifest(PluginContract):
     @model_validator(mode="after")
     def validate_execution_contract(self) -> PluginManifest:
         native = self.schema_id == "vibetable.plugin-manifest.v2"
+        if "dataset" in self.compatibility and (
+            not native or self.compatibility["dataset"] != "vibetable.plugin-dataset.v1"
+        ):
+            raise ValueError("dataset compatibility requires native dataset v1")
         if "model" in self.permissions:
             if not native:
                 raise ValueError("model permissions require native plugin API 3.x")
