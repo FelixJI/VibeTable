@@ -113,6 +113,11 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		if len(storage) > 0 && storage[0] == "deny-create" {
 			m.Entities[2].Operations = []string{"read", "query", "update", "delete"}
 		}
+		if len(storage) > 0 && storage[0] == "one-to-one" {
+			m.Entities = m.Entities[:2]
+			m.Entities[0].Fields = []pluginmodel.Field{{Key: "code", Label: "单号", Type: v2.LogicalText}, {Key: "peer", Label: "配对", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "peer", Cardinality: "one"}}}
+			m.Entities[1].Fields = []pluginmodel.Field{{Key: "code", Label: "单号", Type: v2.LogicalText}, {Key: "peer", Label: "配对", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "headers", Field: "peer", Cardinality: "one"}}}
+		}
 	})
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
 	if len(storage) > 0 && storage[0] == "state" {
@@ -124,6 +129,10 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 			format = "integerUnits"
 		}
 		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: entity, Field: "amount", Format: exactdecimal.Format{Storage: format, Scale: 2, Digits: 38}})
+	}
+	if len(storage) > 0 && storage[0] == "one-to-one" {
+		d.Decimals = []transactionrules.Decimal{}
+		d.Rules = []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}}
 	}
 	store := pluginstore.New(pb, workspace)
 	raw, err := store.GetInstallation(context.Background(), input.ProjectKey, input.PluginID)

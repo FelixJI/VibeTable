@@ -820,6 +820,18 @@ func (kernel *Kernel) syncReciprocalRelations(
 	before map[string]any,
 	after map[string]any,
 ) ([]reciprocalRecordChange, error) {
+	return kernel.syncReciprocalRelationPhase(ctx, app, definition, sourceRecordID, before, after, relationSyncAll)
+}
+
+type relationSyncPhase uint8
+
+const (
+	relationSyncAll relationSyncPhase = iota
+	relationSyncRemove
+	relationSyncAdd
+)
+
+func (kernel *Kernel) syncReciprocalRelationPhase(ctx context.Context, app core.App, definition schemaexecution.Table, sourceRecordID string, before, after map[string]any, phase relationSyncPhase) ([]reciprocalRecordChange, error) {
 	changes := make([]reciprocalRecordChange, 0)
 	for _, field := range definition.Snapshot.Fields {
 		relation := field.Relation
@@ -836,6 +848,11 @@ func (kernel *Kernel) syncReciprocalRelations(
 			return nil, err
 		}
 		removed, added := relationIDDiff(beforeIDs, afterIDs)
+		if phase == relationSyncRemove {
+			added = nil
+		} else if phase == relationSyncAdd {
+			removed = nil
+		}
 		if len(removed) == 0 && len(added) == 0 {
 			continue
 		}

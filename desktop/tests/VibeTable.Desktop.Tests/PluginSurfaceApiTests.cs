@@ -1090,6 +1090,27 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    [DataRow("transaction.plan_stale", "not-committed", "transaction.plan_stale", "failed")]
+    [DataRow("transaction.unique_violation", "not-committed", "transaction.unique_violation", "failed")]
+    [DataRow("plugin_read_denied", "not-committed", "plugin_read_denied", "failed")]
+    [DataRow("plugin_commit_unknown", "unknown", "plugin_commit_unknown", "aborted")]
+    [DataRow("transaction.plan_stale", null, "plugin_commit_unknown", "aborted")]
+    public async Task TransactionHttpOutcomePreservesProvenRejectionsAndNeverReplays(
+        string code, string? outcome, string expectedCode, string expectedState)
+    {
+        using var fixture = new Fixture();
+        fixture.Http.TransactionCommitErrorBody = outcome is null
+            ? JsonSerializer.Serialize(new { code, message = "plugin request could not be completed" })
+            : JsonSerializer.Serialize(new { code, commitOutcome = outcome, message = "plugin request could not be completed" });
+        Assert.AreEqual(expectedCode, Code(await fixture.Call("transaction.submit", "{\"requestId\":\"business-id\"}")));
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual(expectedState, task.State);
+        Assert.AreEqual(expectedCode, task.Error!.Code);
+        Assert.AreEqual(1, fixture.Confirmations);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
     public async Task TransactionStaleConfirmationRequiresExplicitRefreshAndNewNativeDecision()
     {
         using var fixture = new Fixture();

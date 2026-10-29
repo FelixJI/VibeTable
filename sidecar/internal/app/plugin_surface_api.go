@@ -147,7 +147,7 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 				code = "plugin_timeout"
 			}
 			failure := map[string]any{"code": code, "message": "plugin request could not be completed"}
-			if input.Method == "mutation.commit" {
+			if input.Method == "mutation.commit" || input.Method == "transaction.commit" || input.Method == "transaction.configure" {
 				outcome := surfaceCommitOutcome(ctx, app, workspace, input, result, code)
 				failure["commitOutcome"] = outcome
 				if outcome == "unknown" {
@@ -174,21 +174,56 @@ func surfaceCommitRejection(code string) bool {
 // Error type/status alone cannot establish rollback: the workspace writer can
 // fail after PB committed. Only an exact rejection plus absent recovery proof can.
 func surfaceCommitOutcome(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, result any, code string) string {
-	if !surfaceCommitRejection(code) {
+	kind, identity := "plugin.surface.mutation", input.RequestID
+	rejected := surfaceCommitRejection(code)
+	if input.Method == "transaction.configure" || input.Method == "transaction.commit" {
+		rejected = rejected || surfaceTransactionRejection(code)
+		kind = "plugin." + input.Method
+		if input.Method == "transaction.commit" {
+			var request struct {
+				RequestID string `json:"requestId"`
+			}
+			if json.Unmarshal(input.Request, &request) != nil || request.RequestID == "" {
+				return "unknown"
+			}
+			identity = request.RequestID
+		}
+	}
+	if !rejected {
 		return "unknown"
 	}
 	if receipt, ok := result.(mutation.Receipt); ok && receipt.Status != "" {
+		return "unknown"
+	}
+	if receipt, ok := result.(transactionResult); ok && receipt.Status != "" {
 		return "unknown"
 	}
 	proofContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancel()
 	// The route already validates the current session. A completion from any
 	// session or imported snapshot is stronger evidence than a current receipt.
-	committed, err := writecoordinator.HasPocketBaseReceiptIdentity(proofContext, app, workspace, "plugin.surface.mutation", input.RequestID)
+	committed, err := writecoordinator.HasPocketBaseReceiptIdentity(proofContext, app, workspace, kind, identity)
 	if err != nil || committed {
 		return "unknown"
 	}
 	return "not-committed"
+}
+
+func surfaceTransactionRejection(code string) bool {
+	switch code {
+	case "transaction.plan_stale", "transaction.request_invalid", "transaction.declaration_invalid", "transaction.model_required",
+		"transaction.configuration_denied", "transaction.configuration_conflict", "transaction.configuration_required",
+		"transaction.plan_invalid", "transaction.operation_invalid", "transaction.duplicate_row", "transaction.id_required",
+		"transaction.budget_exceeded", "transaction.result_budget_exceeded", "transaction.rule_budget_exceeded", "transaction.read_budget_exceeded",
+		"transaction.input_conflict", "transaction.relation_conflict", "transaction.reference_invalid", "transaction.binding_stale",
+		"transaction.decimal_invalid", "transaction.decimal_noncanonical", "transaction.decimal_scale_mismatch",
+		"transaction.unique_null", "transaction.unique_violation", "transaction.reference_violation",
+		"transaction.conservation_violation", "transaction.balance_violation", "transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied",
+		"mutation.relation.cardinality", "mutation.relation.reciprocal_cardinality", "mutation.relation.target_not_found":
+		return true
+	default:
+		return false
+	}
 }
 
 func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate, ioPorts ...*pluginSurfaceIO) (any, error) {

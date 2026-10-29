@@ -100,7 +100,8 @@ func transactionUnknown(id string) map[string]any {
 
 func loadTransactionEvent(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, id, kind string, target any) (found bool, err error) {
 	err = app.RunInTransaction(func(tx core.App) error {
-		if _, err := surfaceInstallation(ctx, tx, workspace, input); err != nil {
+		installed, err := surfaceInstallation(ctx, tx, workspace, input)
+		if err != nil {
 			return err
 		}
 		raw, err := pluginstore.New(tx, workspace).GetAudit(ctx, input.ProjectKey, input.PluginID, "transaction:"+kind+":"+id)
@@ -123,10 +124,61 @@ func loadTransactionEvent(ctx context.Context, app core.App, workspace string, i
 		if json.Unmarshal(raw, &event) != nil || mutation.DecodeStrict(event.Details, target) != nil {
 			return pluginDataError("transaction.result_corrupt")
 		}
+		if result, ok := target.(*transactionResult); kind == "result" && ok && validTransactionResult(*result, workspace, input.InstallationID, id) {
+			if err := authorizeTransactionRecovery(ctx, tx, workspace, input, installed, *result); err != nil {
+				return err
+			}
+		}
 		found = true
 		return nil
 	})
 	return found, err
+}
+
+// A completed receipt survives enable/disable revisions. Recovery uses the
+// current manifest's read grants for the original, still valid model bindings;
+// this does not make that old model ready for any new transaction.
+func authorizeTransactionRecovery(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, result transactionResult) error {
+	var preview transactionPreview
+	found, err := loadTransactionEvent(ctx, app, workspace, input, result.RequestID, "preview", &preview)
+	if err != nil {
+		return err
+	}
+	if !found || preview.WorkspaceID != workspace || preview.InstallationID != input.InstallationID || installed.Manifest.Permissions.Model == nil || !pluginmodel.Equal(preview.Model.Model, *installed.Manifest.Permissions.Model) || !reflect.DeepEqual(installed.Manifest.Permissions.Transactions, &preview.Declaration) {
+		return pluginDataError("plugin_read_denied")
+	}
+	states, err := pluginmodel.States(ctx, app, input.ProjectKey, input.PluginID)
+	if err != nil {
+		return err
+	}
+	compatible := false
+	for i := len(states) - 1; i >= 0; i-- {
+		state := states[i]
+		if state.Status != "completed" || state.InstallationID != input.InstallationID || !pluginmodel.Equal(state.Model, *installed.Manifest.Permissions.Model) {
+			continue
+		}
+		if !reflect.DeepEqual(state.Bindings, preview.Model.Bindings) {
+			return pluginDataError("plugin_read_denied")
+		}
+		if err := modelValidateBindings(ctx, app, state); err != nil {
+			return err
+		}
+		for _, entity := range state.Model.Entities {
+			binding := state.Bindings[entity.Key]
+			installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: binding.TableID, Fields: []string{"id"}, Operations: entity.Operations})
+		}
+		compatible = true
+		break
+	}
+	if !compatible {
+		return pluginDataError("plugin_read_denied")
+	}
+	for _, row := range result.Receipt.Rows {
+		if grant := installed.grant(row.TableID, input.ActiveCollection); grant == nil || !pluginHas(grant.Fields, "id") && !pluginHas(grant.Fields, "*") {
+			return pluginDataError("plugin_read_denied")
+		}
+	}
+	return nil
 }
 
 func transactionModel(ctx context.Context, app core.App, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation) (pluginmodel.State, error) {
@@ -176,12 +228,15 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 	if err != nil {
 		return nil, err
 	}
-	model, err := transactionModel(ctx, app, input, installed)
-	if err != nil {
-		return nil, err
+	if d := installed.Manifest.Permissions.Transactions; d == nil || d.Validate() != nil || installed.Manifest.Permissions.Model == nil || d.ModelID != installed.Manifest.Permissions.Model.ModelID {
+		return nil, pluginDataError("transaction.declaration_invalid")
 	}
 	declaration := *installed.Manifest.Permissions.Transactions
 	if input.Method == "transaction.configure" {
+		model, err := transactionModel(ctx, app, input, installed)
+		if err != nil {
+			return nil, err
+		}
 		var request struct {
 			Declaration transactionrules.Declaration `json:"declaration"`
 		}
@@ -307,6 +362,10 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 	}
 	if input.Method == "transaction.preview" && request.Plan == nil {
 		return nil, pluginDataError("transaction.request_invalid")
+	}
+	model, err := transactionModel(ctx, app, input, installed)
+	if err != nil {
+		return nil, err
 	}
 	var preview transactionPreview
 	if request.RequestID != "" {

@@ -226,61 +226,76 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 				return err
 			}
 		}
-		// All explicit rows exist now; reciprocal writes share the same session images.
-		for _, key := range append([]RowKey(nil), keys...) {
-			row := rows[key]
-			after := row.after
-			if row.deleted {
-				after = nil
-			}
-			changes, err := kernel.syncReciprocalRelations(staging, tx, row.definition, key.RecordID, row.before, after)
-			if err != nil {
-				return err
-			}
-			for _, change := range changes {
-				target := RowKey{change.definition.Snapshot.TableID, change.recordID}
-				other := rows[target]
-				if err := authorize(ctx, tx, target.TableID, string(OperationUpdate)); err != nil {
+		// Freeze the intended explicit images before reciprocal writes update the
+		// session. Remove every old edge before adding any new edge so cardinality
+		// is checked against the final graph, including one-to-one swaps.
+		explicitKeys := append([]RowKey(nil), keys...)
+		explicitFinal := map[RowKey]map[string]any{}
+		for _, key := range explicitKeys {
+			explicitFinal[key] = rows[key].after
+		}
+		for _, phase := range []relationSyncPhase{relationSyncRemove, relationSyncAdd} {
+			for _, key := range explicitKeys {
+				row := rows[key]
+				after := explicitFinal[key]
+				if row.deleted {
+					after = nil
+				}
+				changes, err := kernel.syncReciprocalRelationPhase(staging, tx, row.definition, key.RecordID, row.before, after, phase)
+				if err != nil {
 					return err
 				}
-				if other == nil {
-					if len(rows) >= maxOperations {
-						return mutationError("transaction.budget_exceeded", nil, "derived writes exceed the plan budget", nil, false)
-					}
-					rev, err := committedRowRevision(ctx, tx, target.TableID, target.RecordID)
-					if err != nil {
+				for _, change := range changes {
+					target := RowKey{change.definition.Snapshot.TableID, change.recordID}
+					other := rows[target]
+					if err := authorize(ctx, tx, target.TableID, string(OperationUpdate)); err != nil {
 						return err
 					}
-					request := row.request
-					request.TableID = target.TableID
-					request.SchemaRevision = change.definition.Snapshot.SchemaRevision
-					other = &sessionRow{request: request, definition: change.definition, operation: NormalizedOperation{Kind: OperationUpdate}, before: change.before, revision: rev, relations: map[string]any{}}
-					rows[target] = other
-					keys = append(keys, target)
-				}
-				if other.deleted {
-					for name, value := range row.relations {
-						field, _ := row.definition.Field(name)
-						if field.Relation.TargetTableID != target.TableID {
-							continue
+					if other == nil {
+						if len(rows) >= maxOperations {
+							return mutationError("transaction.budget_exceeded", nil, "derived writes exceed the plan budget", nil, false)
 						}
-						ids, err := normalizeRelationIDs(value)
+						rev, err := committedRowRevision(ctx, tx, target.TableID, target.RecordID)
 						if err != nil {
 							return err
 						}
-						if stringIn(ids, target.RecordID) {
-							return mutationError("transaction.relation_conflict", nil, "explicit relation targets a deleted row", nil, false)
+						request := row.request
+						request.TableID = target.TableID
+						request.SchemaRevision = change.definition.Snapshot.SchemaRevision
+						other = &sessionRow{request: request, definition: change.definition, operation: NormalizedOperation{Kind: OperationUpdate}, before: change.before, revision: rev, relations: map[string]any{}}
+						rows[target] = other
+						keys = append(keys, target)
+					}
+					if other.deleted {
+						for name, value := range row.relations {
+							field, _ := row.definition.Field(name)
+							if field.Relation.TargetTableID != target.TableID {
+								continue
+							}
+							ids, err := normalizeRelationIDs(value)
+							if err != nil {
+								return err
+							}
+							if stringIn(ids, target.RecordID) {
+								return mutationError("transaction.relation_conflict", nil, "explicit relation targets a deleted row", nil, false)
+							}
 						}
+						continue
 					}
-					continue
+					other.record = change.record
+					other.after = change.after
 				}
-				for name, value := range other.relations {
-					if !reflect.DeepEqual(value, change.after[name]) {
-						return mutationError("transaction.relation_conflict", nil, "explicit and reciprocal relations disagree", nil, false)
-					}
+			}
+		}
+		for _, key := range explicitKeys {
+			row := rows[key]
+			if row.deleted {
+				continue
+			}
+			for name := range row.relations {
+				if !reflect.DeepEqual(explicitFinal[key][name], row.after[name]) {
+					return mutationError("transaction.relation_conflict", nil, "explicit and reciprocal relations disagree", nil, false)
 				}
-				other.record = change.record
-				other.after = change.after
 			}
 		}
 		for _, key := range keys {
