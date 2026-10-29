@@ -12,7 +12,10 @@ import (
 	"math/big"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
@@ -209,34 +212,93 @@ func (r Registration) Read(ctx context.Context, app core.App) (Images, error) {
 				}
 			}
 		}
-		rows, err := app.FindRecordsByFilter(table.PhysicalName, "", "id", MaxRows-count+1, 0)
+		collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
 		if err != nil {
 			return nil, err
 		}
-		count += len(rows)
-		if count > MaxRows {
-			return nil, failure("read_budget_exceeded")
+		columns := map[string]bool{"id": true}
+		for _, field := range selected {
+			columns[field.Identity.PhysicalName] = true
+			if name := field.Value.Presence.PhysicalName; name != "" {
+				columns[name] = true
+			}
+		}
+		names := make([]string, 0, len(columns))
+		for name := range columns {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		sizes := make([]string, 0, len(names))
+		for _, name := range names {
+			sizes = append(sizes, "COALESCE(octet_length("+app.DB().QuoteSimpleColumnName(name)+"),0)")
+		}
+		sizeSQL := "(" + strings.Join(sizes, "+") + ")"
+		selects := []string{sizeSQL + " AS [[__transaction_rule_bytes]]"}
+		for _, name := range names {
+			quoted := app.DB().QuoteSimpleColumnName(name)
+			selects = append(selects, "CASE WHEN "+sizeSQL+" <= "+strconv.Itoa(MaxBytes-bytes)+" THEN "+quoted+" ELSE NULL END AS "+quoted)
+		}
+		// octet_length inspects stored byte lengths; oversized cells never cross
+		// the driver boundary. Rows are consumed one at a time, not materialized.
+		rows, err := app.RecordQuery(collection).Select(selects...).OrderBy("id").Limit(int64(MaxRows - count + 1)).WithContext(ctx).Rows()
+		if err != nil {
+			return nil, err
 		}
 		images[entity] = map[string]map[string]any{}
-		for _, row := range rows {
-			if err := ctx.Err(); err != nil {
-				return nil, err
+		readErr := func() error {
+			defer rows.Close()
+			for rows.Next() {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				data := dbx.NullStringMap{}
+				if err := rows.ScanMap(data); err != nil {
+					return err
+				}
+				rawSize, err := strconv.Atoi(data["__transaction_rule_bytes"].String)
+				if err != nil {
+					return err
+				}
+				count++
+				if count > MaxRows || rawSize > MaxBytes-bytes {
+					return failure("read_budget_exceeded")
+				}
+				row := core.NewRecord(collection)
+				for _, name := range names {
+					field := collection.Fields.GetByName(name)
+					if field == nil {
+						return failure("binding_stale")
+					}
+					var value any
+					if stored := data[name]; stored.Valid {
+						value = stored.String
+					}
+					decoded, err := field.PrepareValue(row, value)
+					if err != nil {
+						return err
+					}
+					row.SetRaw(name, decoded)
+				}
+				physical := productrow.Project(selected, row)
+				values := map[string]any{}
+				for field := range fields {
+					definition, _ := table.Field(binding.Fields[field])
+					values[field] = physical[definition.Identity.PhysicalName]
+				}
+				raw, err := json.Marshal(values)
+				if err != nil {
+					return err
+				}
+				bytes += len(raw) + len(row.Id)
+				if bytes > MaxBytes {
+					return failure("read_budget_exceeded")
+				}
+				images[entity][row.Id] = values
 			}
-			physical := productrow.Project(selected, row)
-			values := map[string]any{}
-			for field := range fields {
-				definition, _ := table.Field(binding.Fields[field])
-				values[field] = physical[definition.Identity.PhysicalName]
-			}
-			raw, err := json.Marshal(values)
-			if err != nil {
-				return nil, err
-			}
-			bytes += len(raw) + len(row.Id)
-			if bytes > MaxBytes {
-				return nil, failure("read_budget_exceeded")
-			}
-			images[entity][row.Id] = values
+			return rows.Err()
+		}()
+		if readErr != nil {
+			return nil, readErr
 		}
 	}
 	return images, nil

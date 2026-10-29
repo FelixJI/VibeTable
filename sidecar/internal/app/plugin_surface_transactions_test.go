@@ -107,8 +107,17 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 			}
 			m.Entities[0].Fields = append(m.Entities[0].Fields, pluginmodel.Field{Key: "quantity", Label: "普通数量", Type: v2.LogicalNumber, Precision: "float64"})
 		}
+		if len(storage) > 0 && storage[0] == "state" {
+			m.Entities[0].Fields = append(m.Entities[0].Fields, pluginmodel.Field{Key: "status", Label: "合成状态", Type: v2.LogicalText})
+		}
+		if len(storage) > 0 && storage[0] == "deny-create" {
+			m.Entities[2].Operations = []string{"read", "query", "update", "delete"}
+		}
 	})
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
+	if len(storage) > 0 && storage[0] == "state" {
+		d.Rules = append(d.Rules, transactionrules.Rule{ID: "posted", Kind: "state", Entity: "headers", Field: "status", Fields: []string{"code"}, Transitions: map[string][]string{"draft": {"posted"}, "posted": {}}, FrozenStates: []string{"posted"}})
+	}
 	for _, entity := range []string{"headers", "lines", "allocations"} {
 		format := "decimalText"
 		if integerUnits {
