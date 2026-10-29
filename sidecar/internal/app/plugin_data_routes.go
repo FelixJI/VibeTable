@@ -18,6 +18,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
 
 const pluginDataPath = "/api/vibetable/v2/plugins/data"
@@ -64,10 +65,11 @@ type pluginInstallation struct {
 			PluginAPI string `json:"pluginApi"`
 		} `json:"compatibility"`
 		Permissions struct {
-			Model          *pluginmodel.Declaration `json:"model,omitempty"`
-			Data           []pluginReadGrant        `json:"data"`
-			PrivateStorage bool                     `json:"privateStorage"`
-			Files          []string                 `json:"files"`
+			Transactions   *transactionrules.Declaration `json:"transactions,omitempty"`
+			Model          *pluginmodel.Declaration      `json:"model,omitempty"`
+			Data           []pluginReadGrant             `json:"data"`
+			PrivateStorage bool                          `json:"privateStorage"`
+			Files          []string                      `json:"files"`
 		} `json:"permissions"`
 	} `json:"manifest"`
 }

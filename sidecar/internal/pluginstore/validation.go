@@ -3,6 +3,7 @@ package pluginstore
 import (
 	"encoding/json"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 	"path"
 	"strings"
 )
@@ -48,6 +49,18 @@ func validateManifest(value any, pluginID, version string) error {
 		}
 	}
 	ui := manifest["ui"].(map[string]any)
+	if value, exists := manifest["permissions"].(map[string]any)["transactions"]; exists {
+		raw, err := json.Marshal(value)
+		if !native || err != nil {
+			return invalidPayload()
+		}
+		declaration, err := transactionrules.Decode(raw)
+		modelRaw, modelErr := json.Marshal(manifest["permissions"].(map[string]any)["model"])
+		model, decodeErr := pluginmodel.Decode(modelRaw)
+		if err != nil || modelErr != nil || decodeErr != nil || declaration.ModelID != model.ModelID {
+			return invalidPayload()
+		}
+	}
 	if value, exists := manifest["permissions"].(map[string]any)["model"]; exists {
 		raw, err := json.Marshal(value)
 		if !native || err != nil {

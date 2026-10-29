@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -837,12 +838,17 @@ func installReplicaRecovery(
 	); err != nil {
 		return err
 	}
+	previousEpoch, err := recoveredBusinessEpoch(ctx, filepath.Join(dataDir, "data.db"), options.WorkspaceID, record, selection.bundle.Objects)
+	if err != nil {
+		return err
+	}
 	if err := installReplicaCoordinator(
 		ctx,
 		filepath.Join(metadata, "coordination", "write-coordinator.db"),
 		options,
 		record,
 		anchor,
+		previousEpoch,
 	); err != nil {
 		return err
 	}
@@ -851,6 +857,89 @@ func installReplicaRecovery(
 		options.WorkspaceID,
 		selection,
 	)
+}
+
+// Replica recovery creates a new activity directory. Only admissions actually
+// present in its verified snapshot can execute; absent keys remain unknown.
+// Invalidate every such admission before opening this directory as a workspace.
+func recoveredBusinessEpoch(ctx context.Context, databasePath, workspace string, record snapshot.Record, objects map[objectrepo.ObjectID][]byte) (uint64, error) {
+	maximum := uint64(1)
+	observe := func(epoch uint64) error {
+		if epoch == 0 || epoch >= 1<<63-1 {
+			return writecoordinator.ErrCounterExhausted
+		}
+		if epoch > maximum {
+			maximum = epoch
+		}
+		return nil
+	}
+	raw, err := replicaObject(record, objects, "audit-prefix")
+	if err != nil {
+		return 0, err
+	}
+	if _, err := auditledger.VerifyPrefix(raw); err != nil {
+		return 0, err
+	}
+	var prefix auditledger.Prefix
+	if err := decodeStrictReplicaOneShot(raw, &prefix); err != nil {
+		return 0, err
+	}
+	for _, event := range prefix.Records {
+		// This is the same counter serialized by writecoordinator.businessAuditSourceEpoch.
+		stem := "business-v2:" + workspace + ":"
+		if strings.HasPrefix(event.Envelope.SourceEpoch, stem) {
+			epoch, err := strconv.ParseUint(strings.TrimPrefix(event.Envelope.SourceEpoch, stem), 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			if err := observe(epoch); err != nil {
+				return 0, err
+			}
+		}
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return 0, err
+	}
+	var exists int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='vibetable_plugin_records'").Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists == 0 {
+		return maximum, nil
+	}
+	rows, err := db.QueryContext(ctx, "SELECT payload_json FROM vibetable_plugin_records WHERE kind='audit' AND json_extract(payload_json,'$.eventType')='transaction.preview'")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return 0, err
+		}
+		var event struct {
+			Details struct {
+				WorkspaceID string `json:"workspaceId"`
+				Epoch       uint64 `json:"epoch"`
+			} `json:"details"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return 0, err
+		}
+		if event.Details.WorkspaceID == "" {
+			return 0, writecoordinator.ErrRecoveryRequired
+		}
+		if err := observe(event.Details.Epoch); err != nil {
+			return 0, err
+		}
+	}
+	return maximum, rows.Err()
 }
 
 func installReplicaDatabaseAndFiles(
@@ -1152,7 +1241,11 @@ func installReplicaCoordinator(
 	options ReplicaOneShotOptions,
 	record snapshot.Record,
 	anchor auditledger.Anchor,
+	previousEpoch uint64,
 ) error {
+	if previousEpoch == 0 || previousEpoch >= 1<<63-1 {
+		return writecoordinator.ErrCounterExhausted
+	}
 	coordinator, err := writecoordinator.OpenPersistent(
 		databasePath,
 		options.WorkspaceID,
@@ -1170,11 +1263,14 @@ func installReplicaCoordinator(
 	if err != nil {
 		return err
 	}
+	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return errors.Join(err, db.Close())
+	}
 	result, err := db.ExecContext(ctx, `
 		UPDATE coordination_state
 		SET mutation_revision = ?, snapshot_sequence = ?,
 		    audit_source_epoch = ?, audit_source_sequence = ?,
-		    audit_chain_hash = ?
+		    audit_chain_hash = ?, audit_epoch_counter = ?
 		WHERE singleton = 1 AND workspace_id = ?
 		      AND session_epoch = ? AND fence_epoch = ? AND claim_id = ?`,
 		record.MutationRevision,
@@ -1182,6 +1278,7 @@ func installReplicaCoordinator(
 		anchor.SourceEpoch,
 		anchor.SourceSequence,
 		anchor.Hash,
+		previousEpoch+1,
 		options.WorkspaceID,
 		options.SessionEpoch,
 		options.FenceEpoch,

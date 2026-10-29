@@ -42,18 +42,19 @@ internal sealed partial class PluginSurfaceApi
         CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         string requestId = preview.GetProperty("requestId").GetString()!;
         string taskId = $"plugin-task-{Guid.NewGuid():N}";
+        string runId = $"plugin-run-{Guid.NewGuid():N}";
         var binding = _tasks.CaptureNative() ?? throw Error("plugin_session_stale");
         if (binding.Context != surface.Context) throw Error("plugin_session_stale");
-        var snapshot = new PluginRuntimeTaskSnapshot(taskId, requestId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
+        var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
             null, preview.GetProperty("total").GetInt32(), "write", "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
         var task = _tasks.NativeTask(binding, snapshot, nativeOnlyApproval: true);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(token, task.Token);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _writes[requestId] = new(binding.Context, completion);
+        _writes[taskId] = new(binding.Context, completion);
         try
         {
             _reply.PostNotification("plugin.task.changed", task.Envelope);
-            var result = await CallAsync(surface, "model.commit", JsonSerializer.SerializeToElement(new { requestId }), operation.Token, commitId: requestId, modelPlan: preview);
+            var result = await CallAsync(surface, "model.commit", JsonSerializer.SerializeToElement(new { requestId }), operation.Token, commitId: runId, modelPlan: preview);
             var finished = _tasks.FinishNative(taskId, "succeeded", new PluginRuntimeResult(PluginContractVersions.Result, "success", "数据模型配置完成", [], null, [], null, []));
             if (finished is not null) _reply.PostNotification("plugin.task.changed", finished);
             await RefreshModelCatalogAsync(generation, token);
@@ -65,7 +66,7 @@ internal sealed partial class PluginSurfaceApi
             if (finished is not null) _reply.PostNotification("plugin.task.changed", finished);
             throw;
         }
-        finally { _writes.TryRemove(requestId, out _); completion.TrySetResult(); }
+        finally { _writes.TryRemove(taskId, out _); completion.TrySetResult(); }
     }
 
     internal static async Task<JsonElement> ReadModelCatalogAsync(Func<JsonElement, CancellationToken, Task<JsonElement>> read,

@@ -17,6 +17,10 @@ from pydantic import ValidationError
 from backend._version import __version__
 from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
 from backend.contracts.plugin_model import PluginModelDeclaration
+from backend.contracts.plugin_transactions import (
+    MAX_DECLARATION_BYTES,
+    PluginTransactionsDeclaration,
+)
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -356,6 +360,19 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             PluginModelDeclaration.model_validate(permissions["model"])
             if manifest.get("compatibility", {}).get("pluginApi") != "3.x":
                 raise ValueError("model permissions require native plugin API 3.x")
+        except (ValidationError, ValueError) as error:
+            raise PluginPackageError("permissions_invalid", str(error)) from error
+    if "transactions" in permissions:
+        try:
+            declaration = PluginTransactionsDeclaration.model_validate(permissions["transactions"])
+            model = PluginModelDeclaration.model_validate(permissions.get("model"))
+            if declaration.model_id != model.model_id:
+                raise ValueError("transactions rules must reference the declared model")
+            if manifest.get("compatibility", {}).get("pluginApi") != "3.x":
+                raise ValueError("transactions permissions require native plugin API 3.x")
+            # Go Decode applies the same declaration budget at the write boundary.
+            if len(_canonical_json(permissions["transactions"])) > MAX_DECLARATION_BYTES:
+                raise ValueError("transactions declaration exceeds the 1 MiB budget")
         except (ValidationError, ValueError) as error:
             raise PluginPackageError("permissions_invalid", str(error)) from error
     _validate_compatibility(manifest.get("compatibility"))

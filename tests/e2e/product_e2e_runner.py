@@ -392,6 +392,7 @@ _NODE_FREE_HOST_SCENARIOS = frozenset(
         "53-record-manager",
         "54-plugin-models",
         "55-plugin-surface-outputs",
+        "56-plugin-transactions",
     }
 )
 
@@ -2375,13 +2376,17 @@ def _run_node_runner_guarded(
                     "53-record-manager",
                     "54-plugin-models",
                     "55-plugin-surface-outputs",
+                    "56-plugin-transactions",
                 }:
                     native_result = {
                         "requestId": native_id,
                         "status": "failed",
                         "error": "native plugin scenario not authorized",
                     }
-                elif command[command.index("--scenario") + 1] == "54-plugin-models":
+                elif command[command.index("--scenario") + 1] == "54-plugin-models" or (
+                    command[command.index("--scenario") + 1] == "56-plugin-transactions"
+                    and str(plugin_native_request.get("buttonId", "")).startswith("plugin-model-")
+                ):
                     from tests.e2e.plugin_model_native import handle_plugin_model_request
 
                     native_result = handle_plugin_model_request(
@@ -3144,6 +3149,14 @@ def run_scenario(
         from tests.e2e.plugin_surface_outputs import prepare_output_package
 
         prepare_output_package(controls_dir)
+    if scenario.id == "56-plugin-transactions":
+        from tests.e2e.plugin_capability_packages import _pack_example
+
+        _pack_example(
+            ROOT / "examples/plugins/transaction-conformance",
+            controls_dir,
+            "transaction-conformance",
+        )
     if scenario.id in {"16-dashboard-lifecycle", "17-interface-lifecycle", "53-record-manager"}:
         from tests.e2e.plugin_capability_packages import prepare_record_manager_package
 
@@ -3742,6 +3755,7 @@ def run_product_acceptance(
             "53-record-manager",
             "54-plugin-models",
             "55-plugin-surface-outputs",
+            "56-plugin-transactions",
         }
         for scenario in scenarios
     ):
@@ -3777,6 +3791,7 @@ def run_product_acceptance(
                 "53-record-manager",
                 "54-plugin-models",
                 "55-plugin-surface-outputs",
+                "56-plugin-transactions",
             }
             and native_observer_error is not None
         ):

@@ -209,7 +209,7 @@ public sealed class NativePluginConfirmationWindow : Window
         {
             panel.Children.Add(new TextBlock
             {
-                Text = "当前计划的操作样本（最多 10 条）", Margin = new Thickness(0, 0, 0, 4),
+                Text = "当前计划的操作明细", Margin = new Thickness(0, 0, 0, 4),
             });
             panel.Children.Add(new TextBox
             {

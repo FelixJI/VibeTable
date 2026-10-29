@@ -4033,6 +4033,15 @@ def _write_output_artifacts(run: Path) -> None:
 
 
 SCENARIO_SCREENSHOTS = {
+    "56-plugin-transactions": (
+        "56-transactions.json",
+        "56-transactions.png",
+        "56-rules.png",
+        "56-cancel.png",
+        "56-commit.png",
+        "56-balance-rejected.png",
+        "56-plugin-transactions-trace.zip",
+    ),
     "55-plugin-surface-outputs": (
         "55-output-conformance.png",
         "55-plugin-surface-outputs-trace.zip",

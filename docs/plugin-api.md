@@ -51,6 +51,10 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `data.unsubscribe(subscriptionId)` | `Promise<void>` | 释放本页面订阅 |
 | `mutation.preview(plan)` | `{planId, affectedCount}` | 单表 create/update/delete 计划；不会写入 |
 | `mutation.submit(planId, signal?)` | `{status, taskId}` | 请求原生确认；`status` 为 `succeeded` 或 `rejected` |
+| `transaction.configure({declaration}, signal?)` | 配置回执或 null | 已安装声明与已确认模型；精确原生确认后登记持久保护规则 |
+| `transaction.preview({plan, requestId?, refresh?}, signal?)` | `TransactionStatus` | 保存规范计划并签发业务 ID；显式 refresh 保留原 ID，更新影响边界并重新确认 |
+| `transaction.submit({requestId}, signal?)` | `TransactionApplied \| TransactionUnknown \| null` | 精确原生确认后单次原子提交；没有自动重试 |
+| `transaction.status({requestId}, signal?)` | `TransactionStatus` | 当前授权下读取 prepared/applied/unknown；不触发提交 |
 | `storage.get/set/delete(key, ...)` | JSON 值 / 完成回执 | `privateStorage`；工作区及插件私有设置，不能代替业务表 |
 | `file.pickRead(options?)` | `ReadGrant \| null` | `pickRead`，调用 `read()` 得到字节；取消为 null |
 | `file.pickWrite(options)` | `WriteGrant \| null` | `pickWrite`，调用 `write(bytes)`；不返回文件路径 |
@@ -133,10 +137,60 @@ if (outcome.status === "rejected") return; // 保留表单，不显示“保存�
 更新操作形态为 `{kind:"update", primaryKey, expectedDigest, values}`，删除为
 `{kind:"delete", primaryKey, expectedDigest}`。`expectedDigest` 必须取自最近查询的
 `page.rowGuards[primaryKey]`，不能本地计算。它是 Go 的既有并发保护契约。计划每次 1–1000 个
-操作，覆盖单表；任一冲突整批失败。跨表订单+库存事务、建表、SQL、任意 HTTP/RPC 不在插件 API 中。
+操作，覆盖单表；任一冲突整批失败。跨表业务使用下述 transaction 能力；SQL、任意 HTTP/RPC 不在插件 API 中。
 
 `planId` 绑定当前页面和精确计划且一次消费，插件不能传 `approved`。用户拒绝不写入；
 `plugin_commit_unknown` 表示未获得可确认结果，可能已经写入，必须核对记录与任务，不能自动重放。
+
+## 跨表事务与恢复
+
+manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经由 `model.configure` 完成绑定的
+logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
+完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
+规则包括 `unique`、`reference`、`conservation`、`balance` 和 `state`；不接收脚本、SQL 或可省略的
+调用方条件。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
+
+`decimals` 指定 `{entity,field,storage,scale,digits}`。`decimalText` 绑定 Text，值使用规范十进制
+字符串；`integerUnits` 绑定整数 Number，值为安全整数最小单位。scale 为 0–18，digits 为
+1–38，且 scale 不大于 digits；拒绝超精度、溢出、隐式舍入及 null 代零。普通小数 Number
+不能当作可无损恢复的精确金额。
+
+```ts
+const prepared = await api.transaction.preview({ plan: {
+  contract: "vibetable.transaction-plan.v1", modelId: "orders",
+  operations: [
+    { entity: "headers", kind: "create", tempId: "head", values: { number: "SYNTHETIC-001" } },
+    { entity: "lines", kind: "create", tempId: "line", values: {
+      header: { entity: "headers", tempId: "head" }, amount: "0.30",
+    } },
+  ],
+} });
+if (prepared.status !== "prepared") return;
+// 在提交前保存业务 requestId；重开后用原 ID 查询，不生成替代请求。
+await api.storage.set("pending-transaction", prepared.requestId);
+const result = await api.transaction.submit({ requestId: prepared.requestId }, signal);
+if (result?.status === "applied") consume(result.newIds, result.receipt);
+```
+
+完整类型从 SDK 导出的 `TransactionDeclaration`、`TransactionRule`、`TransactionPlan` 和
+`TransactionStatus` 读取。新建用 `(entity,tempId)` 引用同一计划里的新行，支持循环关系；已有
+关联用记录 ID。update/delete/archive/restore 必须提供 `recordId` 和查询得到的 `expectedDigest`。
+整份消息至多 1 MiB、计划至多 1000 操作；派生写、规则读取及结果另有权威总预算，超限整笔拒绝。
+不会静默拆成多个单表提交。prepared 返回权威 `effects`（含双向关联派生行）、提交前
+`dataRevisions` 和 `previewRevision`；effects 包含实际表/记录/操作、结构修订和已有行的
+`expectedDigest`。Host 原生确认显示各表操作数量及完整显式和派生操作明细，插件不能自行批准或
+调用 Host-only `transaction.commit`。
+
+`transaction.preview({plan,requestId})` 只核对原计划，规范化输入不同报 `transaction.input_conflict`；
+用户显式调用 `transaction.preview({plan,requestId,refresh:true})`，才在原请求仍有效且未成功时
+刷新同一计划的影响边界；保留原 ID 与新建 ID 映射，推进 `previewRevision`，之后必须重新原生确认。
+Host 将确认的版本传给 commit，Go 在同一业务事务内核对该版本、effects 和 dataRevisions；
+变化报 `transaction.plan_stale`，整笔拒绝。SDK 不自动刷新；影响预览不替代提交时的完整余额等规则检查。
+旧 ID 缺失或恢复围栏失效返回 `unknown`，不会重新签发。`transaction.status({requestId}, signal?)`
+在当前授权下返回 `prepared`、原 `applied`（包含稳定 `newIds` 和逐表逐行回执）或 `unknown`。
+关闭再开、丢失 acknowledgement 或收到 `plugin_commit_unknown` 后只查询原 ID；SDK 从不自动
+重试 submit，不以 `unknown` 换 key 补交。用户拒绝确认返回 null；迟到取消和后续通知失败不撤回
+已确认成功。每次 Host task 独立于持久业务 requestId，任务列表不会把并发操作合并成一个任务。
 
 ## 导出与任务
 

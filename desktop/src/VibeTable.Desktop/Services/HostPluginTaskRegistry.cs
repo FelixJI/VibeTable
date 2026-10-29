@@ -84,7 +84,8 @@ internal sealed class HostPluginTaskRegistry
         }
     }
 
-    internal (PluginEventEnvelope Envelope, Task<bool> Decision) NativeConfirmation(string taskId, JsonElement plan, int count)
+    internal (PluginEventEnvelope Envelope, Task<bool> Decision) NativeConfirmation(string taskId, JsonElement plan, int count,
+        string? title = null, IReadOnlyList<IReadOnlyDictionary<string, JsonElement>>? summary = null, bool exact = false)
     {
         lock (_gate)
         {
@@ -106,10 +107,10 @@ internal sealed class HostPluginTaskRegistry
             var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously), NativeOnlyApproval = record.NativeOnlyApproval || hasDelete };
             _interactions[record.Snapshot.RunId] = pending;
             var preview = new PluginRuntimeConfirmationPreview(
-                [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
-                plan.GetProperty("operations").EnumerateArray().Take(10)
+                summary ?? [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
+                plan.GetProperty("operations").EnumerateArray().Take(exact ? count : 10)
                     .Select(operation => (IReadOnlyDictionary<string, JsonElement>)operation.EnumerateObject().ToDictionary(property => property.Name, property => property.Value.Clone())).ToArray(), count, []);
-            var confirmation = new PluginRuntimePendingConfirmation(interactionId, confirmationRisk, "批准插件保存当前精确计划", preview, expires);
+            var confirmation = new PluginRuntimePendingConfirmation(interactionId, confirmationRisk, title ?? "批准插件保存当前精确计划", preview, expires);
             var interaction = new PluginRuntimeInteractionSnapshot(record.Snapshot.RunId, record.Snapshot.ProjectKey, record.Snapshot.PluginId, record.Snapshot.ActionId, "desktop-host", null, confirmation, false);
             record.Revision++;
             return (new(PluginContractVersions.Event, "plugin.interaction.requested", record.Snapshot.ProjectKey, record.Snapshot.RunId, record.Revision,

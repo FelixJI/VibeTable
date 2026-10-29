@@ -208,6 +208,13 @@ func (coordinator *WorkspaceWriteCoordinator) Current() (Token, Counters) {
 	return coordinator.token, coordinator.countersLocked()
 }
 
+// BusinessEpoch survives ordinary sessions and advances when business history is replaced.
+func (coordinator *WorkspaceWriteCoordinator) BusinessEpoch() uint64 {
+	coordinator.mu.RLock()
+	defer coordinator.mu.RUnlock()
+	return coordinator.auditEpoch
+}
+
 func (coordinator *WorkspaceWriteCoordinator) RecoveryState() RecoveryState {
 	coordinator.mu.RLock()
 	defer coordinator.mu.RUnlock()
