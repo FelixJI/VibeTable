@@ -27,3 +27,17 @@ func TestPlanOverlayDeletionCannotReloadTheOriginalRecord(t *testing.T) {
 		t.Fatalf("new overlay image not visible: %v", err)
 	}
 }
+
+func TestPlanOverlayRejectsSchemaWritesAndUnknownCollections(t *testing.T) {
+	overlay := &planOverlay{records: map[RowKey]*core.Record{}}
+	collection := core.NewBaseCollection("never-created")
+	if err := overlay.Save(collection); err == nil {
+		t.Fatal("inspection accepted a schema write")
+	}
+	if err := overlay.Delete(collection); err == nil {
+		t.Fatal("inspection accepted a schema delete")
+	}
+	if _, err := overlay.FindRecordById(42, "row"); err == nil {
+		t.Fatal("inspection accepted an unknown collection identity")
+	}
+}
