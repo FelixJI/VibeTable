@@ -55,14 +55,14 @@
       },
       "System.IO.Packaging": {
         "type": "Transitive",
-        "resolved": "10.0.13",
-        "contentHash": "FgYKAXorO7YEaWXaoK0toZ6qz73xtv4Zj+J0ykw/2iHaLJK0Fk4llKRa/YnyQGnOM6zc7PiOErzhPvgy5ehRZQ=="
+        "resolved": "10.0.14",
+        "contentHash": "wCHQ/0zZ3N+6mUFPhFwt5CAkBUXwx4gxqemlLGjMac/djyaC40YwaEEYoOJLHrJp/5Q3RsuJZ+WLOCT5PvoqwQ=="
       },
       "vibetable.documentdiff.openxml": {
         "type": "Project",
         "dependencies": {
-          "System.IO.Packaging": "[10.0.13, )",
-          "VibeTable.Workspace": "[0.5.3, )"
+          "System.IO.Packaging": "[10.0.14, )",
+          "VibeTable.Workspace": "[0.5.7, )"
         }
       },
       "vibetable.workspace": {

@@ -43,8 +43,8 @@ if TYPE_CHECKING:
     from scripts.qa.windows_process_scope import WindowsProcessScope
 
 PROTOCOL_VERSION = "2.0"
-WEBVIEW2_SDK = "1.0.4258.31"
-TABULATOR_VERSION = "6.7.0"
+WEBVIEW2_SDK = "1.0.4314.35"
+TABULATOR_VERSION = "6.7.1"
 HOST_EXE_NAME = "VibeTable.Next.exe"
 ARCHIVE_ROOT_NAME = "VibeTable"
 RELEASE_PLATFORM = "win-x64"

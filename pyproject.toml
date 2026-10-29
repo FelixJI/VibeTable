@@ -14,15 +14,15 @@ dependencies = [
 [dependency-groups]
 # 代码质量 + 测试（开发环境安装）
 dev = [
-    "ruff>=0.17.1",
-    "mypy>=2.4.0",
+    "ruff>=0.17.3",
+    "mypy>=2.4.1",
     "pyright>=1.1.414",
     "pre-commit>=4.7.0",
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.17.0",
-    "pytest-asyncio>=1.4.0",
-    "coverage[toml]>=7.16.2",
+    "pytest-asyncio>=1.4.1",
+    "coverage[toml]>=7.17.0",
 ]
 # 构建工具（打包时安装）
 build = [
@@ -117,6 +117,7 @@ addopts = [
     "--cov-report=html:htmlcov",
 ]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
 markers = [
     "unit: 单元测试",
