@@ -2,16 +2,16 @@
   "protocolVersion": "2.0",
   "components": {
     "host": {
-      "version": "0.5.7"
+      "version": "0.5.8"
     },
     "backend": {
-      "version": "0.5.7"
+      "version": "0.5.8"
     },
     "web": {
-      "version": "0.5.7"
+      "version": "0.5.8"
     },
     "sidecar": {
-      "version": "0.5.7",
+      "version": "0.5.8",
       "pocketBaseVersion": "0.40.6",
       "celVersion": "0.33.1",
       "contractVersion": "2.0",

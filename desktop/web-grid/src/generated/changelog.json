@@ -1,6 +1,36 @@
 {
-  "version": "0.5.7",
+  "version": "0.5.8",
   "entries": [
+    {
+      "subject": "feat(plugins): 提供一致数据集与精确汇总",
+      "commit": "ab406578",
+      "category": "changes"
+    },
+    {
+      "subject": "deps(project): 升级项目依赖并适配兼容契约",
+      "commit": "8f0ab81c",
+      "category": "dependencies"
+    },
+    {
+      "subject": "feat(plugins): 支持受保护多表事务与原结果恢复 (#546)",
+      "commit": "e3c3902b",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(plugins): 支持受控模型绑定与兼容恢复 (#537)",
+      "commit": "08c53a5a",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 修复验收故障并缩短全量门禁耗时 (#539)",
+      "commit": "21baa8c1",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(plugins): 支持有界模板产物保存归档与原样重印 (#536)",
+      "commit": "40bd4cbd",
+      "category": "changes"
+    },
     {
       "subject": "fix(workspace): 改善字段筛选复制与工作区保护体验 (#525)",
       "commit": "c8ab2ea1",
