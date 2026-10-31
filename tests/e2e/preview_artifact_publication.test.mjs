@@ -23,8 +23,8 @@ function loadObserver(observingFs, waitForCapturedBridgeMessage) {
 
 async function withPreviewFixture(check) {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vibetable-preview-publication-"));
-  const previewRoot = path.join(dataRoot, "attachment-preview");
-  await fs.mkdir(previewRoot);
+  const previewRoot = path.join(dataRoot, "shell", "attachment-preview");
+  await fs.mkdir(previewRoot, { recursive: true });
   try {
     await check({
       runtime: { dataRoot, evidenceDir: dataRoot },

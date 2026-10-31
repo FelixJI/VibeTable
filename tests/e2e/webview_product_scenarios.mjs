@@ -2883,7 +2883,7 @@ async function listFilesRecursively(root) {
 }
 
 async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeoutMs = 30_000) {
-  const previewRoot = path.join(runtime.dataRoot, "attachment-preview");
+  const previewRoot = path.join(runtime.dataRoot, "shell", "attachment-preview");
   const deadline = Date.now() + timeoutMs;
   let observed = [];
   while (Date.now() < deadline) {
@@ -8721,7 +8721,7 @@ async function qualifyDocumentDiff(page, recorder, runtime) {
   const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
     sessionId: closed.payload.sessionId, cursor: null, limit: 50,
   }, 30_000, ["document.diffPageCompleted"]);
-  const artifactRoot = path.join(runtime.dataRoot, "document-diff");
+  const artifactRoot = path.join(runtime.dataRoot, "shell", "document-diff");
   const remaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
   recorder.check("closed session expires and removes all known comparison artifacts",
     expired.payload?.failure === "sessionExpired" && remaining.length === 0, { expired, remaining });
@@ -9017,7 +9017,7 @@ async function qualifyDocumentDiff(page, recorder, runtime) {
     const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
       sessionId: closed.payload.sessionId, cursor: null, limit: 50,
     }, 30_000, ["document.diffPageCompleted"]);
-    const artifactRoot = path.join(runtime.dataRoot, "document-diff");
+    const artifactRoot = path.join(runtime.dataRoot, "shell", "document-diff");
     recorder.check(`XLSX ${caseName} expires and cleans known outputs`, expired.payload?.failure === "sessionExpired"
       && (!fsSync.existsSync(artifactRoot) || (await fs.readdir(artifactRoot)).length === 0));
     const historicalRevision = oldTree.result.revisions.find(item => item.revisionId === historical);
@@ -9058,7 +9058,7 @@ async function combinationDocumentEntry(page, name) {
 }
 
 async function combinationWorkspaceRoot(page, runtime, recorder, workspaceId) {
-  const root = path.join(runtime.dataRoot, "workspaces", workspaceId);
+  const root = path.join(runtime.dataRoot, "shell", "workspaces", workspaceId);
   const manifest = JSON.parse(await fs.readFile(path.join(root, ".vibetable", "workspace.json"), "utf8"));
   recorder.check("combination binds the managed workspace root through its manifest UUID",
     manifest.workspaceId === workspaceId, { manifest, root });
