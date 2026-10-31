@@ -130,7 +130,7 @@ def test_resume_state_rejects_unbound_workspace_roots(tmp_path: Path, mismatch: 
         other = (
             tmp_path / "unapproved"
             if mismatch == "unapproved-root"
-            else Path(payload["localData"]) / "workspaces" / payload["workspaceId"]
+            else Path(payload["localData"]) / "shell" / "workspaces" / payload["workspaceId"]
         )
         (other / ".vibetable").mkdir(parents=True)
         (other / ".vibetable" / "workspace.json").write_text(
@@ -514,7 +514,7 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
     workspace = tmp_path / "workspace"
     local_data = tmp_path / "host" / "local-data"
     created_workspace = (
-        local_data / "workspaces" / "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        local_data / "shell" / "workspaces" / "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         if managed_workspace
         else workspace
     )

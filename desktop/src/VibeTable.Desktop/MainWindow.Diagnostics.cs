@@ -51,7 +51,8 @@ public partial class MainWindow
                     sidecar?.GetSanitizedLog() ?? string.Empty,
                     backend?.GetStdErrorLog() ?? string.Empty,
                     workspaceSummary,
-                    workspaceDiagnosticsError));
+                    workspaceDiagnosticsError,
+                    ProductDataRoot.Resolve(Services.HostStartupOptions.Current())));
             _webBridge.PostResponse(request.Type, request.RequestId, bundle);
         }
         catch (OperationCanceledException) when (_session.IsCancellationRequested)

@@ -993,7 +993,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 string safe = Sanitize(line, sessionSecret);
                 lock (_log)
                 {
-                    _log.AppendLine(safe);
+                    BoundedLogBuffer.AppendLine(_log, safe);
                 }
                 if (writer is not null && DiagnosticLogLine.IsSafe(safe))
                 {

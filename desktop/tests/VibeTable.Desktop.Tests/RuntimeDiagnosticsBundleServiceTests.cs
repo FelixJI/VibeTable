@@ -149,4 +149,44 @@ public sealed class RuntimeDiagnosticsBundleServiceTests
             "available",
             RuntimeDiagnosticsBundleService.Build(available).WorkspaceDiagnostics.State);
     }
+
+    [TestMethod]
+    public void Build_KeepsErrorsAheadOfNewerRoutineLines()
+    {
+        string Line(int index, string level) =>
+            "{\"timestamp\":\"2026-08-12T00:00:"
+            + index.ToString("00")
+            + "Z\",\"level\":\""
+            + level
+            + "\",\"module\":\"desktop\",\"event\":\"event."
+            + index
+            + "\",\"errorCode\":null,\"requestId\":null,\"operationId\":null,\"workspaceId\":null,\"sessionEpoch\":null,\"jobId\":null,\"durationMs\":null}";
+        // 120 routine lines arrive after the only error so a pure newest-first
+        // window would push the failure evidence out of the bundle.
+        var lines = new List<string>();
+        for (int index = 0; index < 120; index++)
+        {
+            lines.Add(Line(index, "info"));
+        }
+        lines.Add(Line(200, "error"));
+
+        RuntimeDiagnosticsBundle bundle = RuntimeDiagnosticsBundleService.Build(
+            new RuntimeDiagnosticsInput(
+                "Windows", "1.0", "10.0", "0.31", 42,
+                "ready", "Ready", "Ready",
+                string.Join("\n", lines),
+                string.Empty,
+                string.Empty,
+                null,
+                DataRoot: @"C:\DataRoot"));
+
+        Assert.AreEqual(RuntimeDiagnosticsBundleService.MaximumLogEntries, bundle.Logs.Count);
+        Assert.AreEqual(
+            1,
+            bundle.Logs.Count(entry => entry.Level == "error"),
+            "The lone error must survive the bounded window.");
+        Assert.AreEqual("event.200", bundle.Logs.First(entry => entry.Level == "error").Event);
+        Assert.AreEqual(@"C:\DataRoot", bundle.DataDirectory);
+        Assert.AreEqual(@"C:\DataRoot\logs", bundle.LogsDirectory);
+    }
 }

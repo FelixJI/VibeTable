@@ -124,7 +124,6 @@ public partial class MainWindow : Window
         _readiness = startup.TestMode
             ? new TestModeReadinessWriter(startup.ReadinessDir)
             : null;
-        string? runtimeDataRoot = null;
         bool developmentDataRootRequested =
             !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot);
         if (startup.TestMode && developmentDataRootRequested)
@@ -132,26 +131,30 @@ public partial class MainWindow : Window
             throw new InvalidOperationException(
                 "--dev-data-root cannot be combined with --test-mode.");
         }
-        if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
-        {
-            runtimeDataRoot = Path.GetFullPath(
-                Path.Combine(startup.ReadinessDir, "local-data"));
-        }
-        else if (developmentDataRootRequested)
-        {
-            runtimeDataRoot = Path.GetFullPath(startup.DevelopmentDataRoot!);
-        }
-        string localAppData = Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData);
-        _productDataRoot = runtimeDataRoot
-            ?? Path.Combine(localAppData, "VibeTable", "shell");
+        // One data root drives every runtime path: the marker-selected
+        // portable/standard root, or the explicit test/dev override. App has
+        // already run any pending mode-switch migration and (for portable
+        // mode) the writability probe before this composition root opens
+        // files.
+        string dataRoot = ProductDataRoot.Resolve(startup);
+        _productDataRoot = Path.Combine(dataRoot, "shell");
         WindowsStartupRegistration? windowsStartupRegistration = null;
+        // Redirected launches never touch the real portable marker; a flipped
+        // switch would otherwise schedule a migration that those modes skip.
+        IPortableModeStore portableModeStore =
+            startup.TestMode || developmentDataRootRequested
+                ? new InMemoryPortableModeStore()
+                : new MarkerPortableModeStore(
+                    AppContext.BaseDirectory,
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData));
         _appPreferencesService = new AppPreferencesService(
             new JsonAppPreferencesStore(
                 Path.Combine(_productDataRoot, "app-preferences.json")),
             startup.TestMode
                 ? (IStartupRegistration)new InMemoryStartupRegistration()
-                : (windowsStartupRegistration = WindowsStartupRegistration.ForCurrentProcess()));
+                : (windowsStartupRegistration = WindowsStartupRegistration.ForCurrentProcess()),
+            portableModeStore);
         AppPreferences startupPreferences = _appPreferencesService.ReadForStartup();
         // Single Host appearance authority: the persisted AppPreferences theme
         // plus the observed Windows appearance drive the Vt* resource
@@ -182,9 +185,7 @@ public partial class MainWindow : Window
             AppContext.BaseDirectory,
             ApplicationVersion.FromAssembly(typeof(MainWindow).Assembly),
             installationEnabled: !developmentDataRootRequested && !startup.TestMode);
-        _activityRootBase = runtimeDataRoot is null
-            ? Path.Combine(localAppData, "VibeTable", "activity")
-            : Path.Combine(runtimeDataRoot, "activity");
+        _activityRootBase = Path.Combine(dataRoot, "activity");
         _attachmentPreviewRoot = Path.Combine(
             _productDataRoot,
             "attachment-preview",
@@ -204,12 +205,9 @@ public partial class MainWindow : Window
             _pluginResources,
             _readiness,
             OnRendererProcessFailed,
-            runtimeDataRoot is not null
-                ? Path.Combine(runtimeDataRoot, "webview2-user-data")
-                : null,
-            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
-        _workspaceRegistry = new WorkspaceRegistry(
-            startup.TestMode ? runtimeDataRoot : null);
+            Path.Combine(dataRoot, "webview2-user-data"),
+            stableIsolatedUserDataRoot: true);
+        _workspaceRegistry = new WorkspaceRegistry(dataRoot);
         IReadOnlyList<WorkspaceRegistryEntryV2> knownWorkspaces;
         try
         {
@@ -222,11 +220,17 @@ public partial class MainWindow : Window
         Func<PocketBaseLaunchOptions> sidecarOptionsFactory =
             () => PocketBaseHostOptions.Resolve(
                 AppContext.BaseDirectory,
-                Environment.GetFolderPath(
-                    Environment.SpecialFolder.LocalApplicationData));
+                dataRoot);
+        Func<BackendLaunchOptions> backendOptionsFactory = () =>
+        {
+            var backendTemplate = BackendLaunchOptions.ResolveForHost();
+            backendTemplate.LogPath = Path.Combine(
+                dataRoot, "logs", "backend.log");
+            return backendTemplate;
+        };
         _runtime = new ProductionWorkspaceRuntimeFactory(
             sidecarOptionsFactory,
-            () => BackendLaunchOptions.ResolveForHost(),
+            backendOptionsFactory,
             ProductionWorkspaceRuntimeDependencies.Create,
             knownWorkspaces: knownWorkspaces,
             beforePythonStart: _e2eControlsDir is null ? null : () =>
@@ -271,7 +275,7 @@ public partial class MainWindow : Window
         _workspaceSessions.SetRequestDrainHook(_workspaceSessionFilter);
         var snapshotPackages = new SnapshotPackageBroker(
             sidecarOptionsFactory,
-            () => BackendLaunchOptions.ResolveForHost(),
+            backendOptionsFactory,
             _providerPolicy,
             _workspaceRegistry,
             _workspaceSessions,

@@ -441,7 +441,7 @@ def _seed_workspace_registry(readiness_dir: Path, workspace_root: Path) -> None:
             }
         ],
     }
-    target = readiness_dir / "local-data" / "VibeTable" / "shell"
+    target = readiness_dir / "local-data" / "shell"
     target.mkdir(parents=True)
     (target / "workspace-registry-v2.json").write_text(
         json.dumps(registry, ensure_ascii=False, separators=(",", ":")),

@@ -11,7 +11,8 @@ internal sealed record AppPreferences(
     bool StartWithWindows,
     string UpdateProxy = AppSettingsUpdateProxyOption.Direct,
     string? CustomUpdateProxyUrl = null,
-    string? Theme = null)
+    string? Theme = null,
+    bool PortableMode = false)
 {
     public static AppPreferences Default { get; } = new(false, false);
 }
@@ -144,13 +145,16 @@ internal sealed class AppPreferencesService
 {
     private readonly IAppPreferencesStore _store;
     private readonly IStartupRegistration _startupRegistration;
+    private readonly IPortableModeStore _portableModeStore;
 
     public AppPreferencesService(
         IAppPreferencesStore store,
-        IStartupRegistration startupRegistration)
+        IStartupRegistration startupRegistration,
+        IPortableModeStore portableModeStore)
     {
         _store = store;
         _startupRegistration = startupRegistration;
+        _portableModeStore = portableModeStore;
     }
 
     public AppPreferences Read()
@@ -161,7 +165,8 @@ internal sealed class AppPreferencesService
             _startupRegistration.IsEnabled(),
             stored.UpdateProxy,
             stored.CustomUpdateProxyUrl,
-            stored.Theme);
+            stored.Theme,
+            _portableModeStore.IsEnabled());
     }
 
     public AppPreferences ReadForStartup()
@@ -198,12 +203,14 @@ internal sealed class AppPreferencesService
             startWithWindows,
             updateProxy,
             customUpdateProxyUrl,
-            theme);
+            theme,
+            _portableModeStore.IsEnabled());
     }
 
     public AppPreferences Update(AppSettingsPreferencesPatch patch)
     {
         AppPreferences current = Read();
+        bool portableMode = patch.PortableMode ?? current.PortableMode;
         AppPreferences updated = new(
             patch.MinimizeToTrayOnClose ?? current.MinimizeToTrayOnClose,
             patch.StartWithWindows ?? current.StartWithWindows,
@@ -213,7 +220,8 @@ internal sealed class AppPreferencesService
                 : current.CustomUpdateProxyUrl,
             patch.HasTheme && AppSettingsThemeOption.IsKnown(patch.Theme)
                 ? patch.Theme
-                : current.Theme);
+                : current.Theme,
+            portableMode);
         if (!AppSettingsUpdateProxyOption.IsKnown(updated.UpdateProxy))
         {
             throw new ArgumentException("Unknown update proxy.", nameof(patch));
@@ -223,11 +231,21 @@ internal sealed class AppPreferencesService
             throw new ArgumentException("Unknown theme.", nameof(patch));
         }
         bool startupChanged = updated.StartWithWindows != current.StartWithWindows;
+        bool portableModeChanged = portableMode != current.PortableMode;
         bool storedPreferencesChanged =
             updated.MinimizeToTrayOnClose != current.MinimizeToTrayOnClose
             || updated.UpdateProxy != current.UpdateProxy
             || updated.CustomUpdateProxyUrl != current.CustomUpdateProxyUrl
             || updated.Theme != current.Theme;
+
+        if (portableModeChanged)
+        {
+            // Arms the migration and flips the marker. The switch itself only
+            // takes effect after restart; a later failure in this update
+            // cannot un-arm it, which is safe (a pending switch that never
+            // applies is discarded on next launch).
+            _portableModeStore.SetEnabled(portableMode);
+        }
 
         if (startupChanged)
         {

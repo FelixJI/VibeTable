@@ -82,6 +82,7 @@ const appPreferencesService = useAppPreferencesService();
 const appPreferences = ref<AppPreferences>({
   minimizeToTrayOnClose: false,
   startWithWindows: false,
+  portableMode: false,
   updateProxy: "direct",
   customUpdateProxyUrl: "",
   theme: null,
@@ -90,6 +91,8 @@ const appPreferences = ref<AppPreferences>({
 });
 const appPreferencesPhase = ref<"loading" | "idle" | "saving">("loading");
 const appPreferencesError = ref<string | null>(null);
+// 便携模式切换已受理、等待重启迁移的提示；本次会话内数据根不变。
+const portableModeRestartPending = ref(false);
 const themeProjection = useThemeProjectionService();
 const themePhase = ref<"idle" | "saving">("idle");
 const themeError = ref<string | null>(null);
@@ -168,6 +171,57 @@ async function updateAppPreferences(patch: AppPreferencesUpdate): Promise<void> 
   } finally {
     appPreferencesPhase.value = "idle";
   }
+}
+
+async function switchPortableMode(enabled: boolean): Promise<void> {
+  const previous = appPreferences.value.portableMode;
+  await updateAppPreferences({ portableMode: enabled });
+  if (appPreferences.value.portableMode === previous) return;
+  portableModeRestartPending.value = true;
+}
+
+// —— 脱敏日志查看/复制（数据全部来自宿主已脱敏的封闭 schema 行）——
+const diagnosticsLogsExpanded = ref(false);
+const diagnosticsLogsFilter = ref<"errors" | "all">("errors");
+const diagnosticsLogsCopyState = ref<"idle" | "copied" | "failed">("idle");
+const diagnosticsLogs = computed(() => diagnostics.value?.logs ?? []);
+const filteredDiagnosticsLogs = computed(() => {
+  if (diagnosticsLogsFilter.value === "all") return diagnosticsLogs.value;
+  return diagnosticsLogs.value.filter(
+    (entry) => entry.level === "error" || entry.level === "critical",
+  );
+});
+const recentErrorCounts = computed(() => diagnostics.value?.recentErrorCounts ?? []);
+
+function formatLogTimestamp(timestamp: string): string {
+  return timestamp.replace("T", " ").replace(/(?:\.\d+)?Z$/, "");
+}
+
+function formatDiagnosticsLogLine(
+  entry: (typeof diagnosticsLogs.value)[number],
+): string {
+  const parts = [
+    `[${formatLogTimestamp(entry.timestamp)}]`,
+    entry.level.toUpperCase(),
+    entry.module,
+    entry.event,
+  ];
+  if (entry.errorCode) parts.push(`(${entry.errorCode})`);
+  if (entry.durationMs !== null) parts.push(`${entry.durationMs}ms`);
+  return parts.join(" ");
+}
+
+async function copyDiagnosticsLogs(): Promise<void> {
+  const text = filteredDiagnosticsLogs.value.map(formatDiagnosticsLogLine).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    diagnosticsLogsCopyState.value = "copied";
+  } catch {
+    diagnosticsLogsCopyState.value = "failed";
+  }
+  window.setTimeout(() => {
+    diagnosticsLogsCopyState.value = "idle";
+  }, 2000);
 }
 
 async function saveTheme(value: string | number | null): Promise<void> {
@@ -441,6 +495,29 @@ function setCalendarName(name: string): void {
                 @update:value="updateAppPreferences({ startWithWindows: $event })"
               />
             </div>
+            <div class="setting-group-title">{{ t("settings.group.data") }}</div>
+            <div class="setting-row">
+              <div>
+                <strong>{{ t("settings.portableMode") }}</strong>
+                <small>{{ t("settings.portableMode.hint") }}</small>
+              </div>
+              <NSwitch
+                :value="appPreferences.portableMode"
+                :disabled="appPreferencesPhase !== 'idle'"
+                :loading="appPreferencesPhase === 'saving'"
+                :aria-label="t('settings.portableMode')"
+                data-testid="portable-mode-switch"
+                @update:value="switchPortableMode"
+              />
+            </div>
+            <NAlert
+              v-if="portableModeRestartPending"
+              type="warning"
+              :title="t('settings.portableMode.restartTitle')"
+              data-testid="portable-mode-restart-pending"
+            >
+              {{ t("settings.portableMode.restartHint") }}
+            </NAlert>
             <NAlert
               v-if="appPreferencesError"
               type="error"
@@ -746,18 +823,18 @@ function setCalendarName(name: string): void {
               <NAlert
                 v-if="workspaceDiagnostics?.state === 'failed'"
                 type="error"
-                title="工作区诊断失败"
+                :title="t('settings.about.workspaceDiagnosticsFailed')"
                 data-testid="workspace-diagnostics-failed"
               >
-                {{ workspaceDiagnostics.errorCode ?? "未知错误" }}
+                {{ workspaceDiagnostics.errorCode ?? t("settings.about.unknownError") }}
               </NAlert>
               <NAlert
                 v-else-if="workspaceDiagnostics?.state === 'unavailable'"
                 type="warning"
-                title="工作区诊断不可用"
+                :title="t('settings.about.workspaceDiagnosticsUnavailable')"
                 data-testid="workspace-diagnostics-unavailable"
               >
-                {{ workspaceDiagnostics.errorCode ?? "暂无工作区诊断数据" }}
+                {{ workspaceDiagnostics.errorCode ?? t("settings.about.noWorkspaceDiagnostics") }}
               </NAlert>
               <dl class="diagnostics-grid">
               <div><dt>{{ t("settings.about.systemVersion") }}</dt><dd>{{ diagnostics.operatingSystem }}</dd></div>
@@ -765,11 +842,75 @@ function setCalendarName(name: string): void {
               <div><dt>{{ t("settings.about.runtimeVersion") }}</dt><dd>{{ diagnostics.dotnetVersion }}</dd></div>
               <div><dt>{{ t("settings.about.pocketBaseVersion") }}</dt><dd>{{ diagnostics.pocketBaseVersion }}</dd></div>
               <div><dt>{{ t("settings.about.memory") }}</dt><dd>{{ formatMemory(diagnostics.memoryBytes) }}</dd></div>
-              <div><dt>索引状态</dt><dd>{{ diagnostics.index.state }} · G{{ diagnostics.index.generation }}</dd></div>
-              <div><dt>后台任务</dt><dd>{{ diagnostics.jobs.running }} 运行 / {{ diagnostics.jobs.failed }} 失败</dd></div>
-              <div><dt>待恢复 mutation</dt><dd>{{ diagnostics.pendingMutationRevision || "—" }}</dd></div>
-              <div><dt>脱敏日志</dt><dd>{{ diagnostics.logs.length }} 条事件</dd></div>
+              <div><dt>{{ t("settings.about.indexState") }}</dt><dd>{{ diagnostics.index.state }} · G{{ diagnostics.index.generation }}</dd></div>
+              <div><dt>{{ t("settings.about.backgroundJobs") }}</dt><dd>{{ t("settings.about.jobsSummary", { running: diagnostics.jobs.running, failed: diagnostics.jobs.failed }) }}</dd></div>
+              <div><dt>{{ t("settings.about.pendingMutations") }}</dt><dd>{{ diagnostics.pendingMutationRevision || "—" }}</dd></div>
+              <div><dt>{{ t("settings.about.dataDirectory") }}</dt><dd><code>{{ diagnostics.dataDirectory || "—" }}</code></dd></div>
+              <div><dt>{{ t("settings.about.logsDirectory") }}</dt><dd><code>{{ diagnostics.logsDirectory || "—" }}</code></dd></div>
             </dl>
+            <div class="diagnostics-logs">
+              <div class="diagnostics-logs-toolbar">
+                <button
+                  type="button"
+                  class="diagnostics-logs-toggle"
+                  data-testid="diagnostics-logs-toggle"
+                  @click="diagnosticsLogsExpanded = !diagnosticsLogsExpanded"
+                >
+                  {{ t("settings.about.sanitizedLogs") }}（{{ diagnosticsLogs.length }}）
+                  {{ diagnosticsLogsExpanded ? "▲" : "▼" }}
+                </button>
+                <template v-if="diagnosticsLogsExpanded">
+                  <NRadioGroup
+                    :value="diagnosticsLogsFilter"
+                    size="small"
+                    name="diagnostics-logs-filter"
+                    data-testid="diagnostics-logs-filter"
+                    @update:value="diagnosticsLogsFilter = $event as 'errors' | 'all'"
+                  >
+                    <NRadioButton value="errors">{{ t("settings.about.logsErrorsOnly") }}</NRadioButton>
+                    <NRadioButton value="all">{{ t("settings.about.logsAll") }}</NRadioButton>
+                  </NRadioGroup>
+                  <NButton
+                    size="tiny"
+                    :disabled="filteredDiagnosticsLogs.length === 0"
+                    data-testid="diagnostics-logs-copy"
+                    @click="copyDiagnosticsLogs"
+                  >
+                    {{ diagnosticsLogsCopyState === "copied"
+                      ? t("settings.about.logsCopied")
+                      : diagnosticsLogsCopyState === "failed"
+                        ? t("settings.about.logsCopyFailed")
+                        : t("settings.about.logsCopy") }}
+                  </NButton>
+                </template>
+              </div>
+              <p
+                v-if="recentErrorCounts.length > 0"
+                class="diagnostics-logs-errors"
+                data-testid="diagnostics-error-counts"
+              >
+                {{ t("settings.about.recentErrorCounts") }}：
+                <code v-for="item in recentErrorCounts.slice(0, 5)" :key="item.errorCode">
+                  {{ item.errorCode }} ×{{ item.count }}
+                </code>
+              </p>
+              <ul v-if="diagnosticsLogsExpanded" class="diagnostics-logs-list">
+                <li v-if="filteredDiagnosticsLogs.length === 0" class="diagnostics-logs-empty">
+                  {{ t("settings.about.logsEmpty") }}
+                </li>
+                <li
+                  v-for="(entry, index) in filteredDiagnosticsLogs"
+                  :key="`${entry.timestamp}-${index}`"
+                  :class="`diagnostics-log-entry diagnostics-log-entry--${entry.level}`"
+                >
+                  <span class="diagnostics-log-time">{{ formatLogTimestamp(entry.timestamp) }}</span>
+                  <span class="diagnostics-log-level">{{ entry.level }}</span>
+                  <span class="diagnostics-log-module">{{ entry.module }}</span>
+                  <span class="diagnostics-log-event">{{ entry.event }}</span>
+                  <code v-if="entry.errorCode" class="diagnostics-log-code">{{ entry.errorCode }}</code>
+                </li>
+              </ul>
+            </div>
             </template>
             <p v-else class="diagnostics-loading">{{ t("settings.about.loading") }}</p>
           </section>
@@ -973,6 +1114,31 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .diagnostics-grid dt { margin-bottom: 4px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .diagnostics-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .diagnostics-grid code { font-size: var(--vt-font-caption); }
+.diagnostics-logs { border-top: 1px solid var(--vt-border); padding: 10px 14px 12px; }
+.diagnostics-logs-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diagnostics-logs-toggle {
+  padding: 2px 4px; border: 0; background: transparent; color: var(--vt-fg-muted);
+  font-size: var(--vt-font-caption); cursor: pointer; text-align: left;
+}
+.diagnostics-logs-toggle:hover { color: var(--vt-fg); }
+.diagnostics-logs-errors { margin: 8px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); display: flex; gap: 8px; flex-wrap: wrap; }
+.diagnostics-logs-list {
+  max-height: 260px; overflow-y: auto; margin: 8px 0 0; padding: 0; list-style: none;
+  border: 1px solid var(--vt-border); border-radius: var(--vt-radius-sm);
+}
+.diagnostics-log-entry {
+  display: flex; gap: 8px; align-items: baseline; padding: 4px 10px;
+  border-bottom: 1px solid var(--vt-border); font-size: var(--vt-font-caption);
+  font-family: Consolas, "Courier New", monospace;
+}
+.diagnostics-log-entry:last-child { border-bottom: 0; }
+.diagnostics-log-entry--error, .diagnostics-log-entry--critical { background: color-mix(in srgb, var(--vt-color-danger) 8%, transparent); }
+.diagnostics-log-time { flex: none; color: var(--vt-fg-muted); }
+.diagnostics-log-level { flex: none; min-width: 52px; text-transform: uppercase; }
+.diagnostics-log-module { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vt-fg-muted); }
+.diagnostics-log-event { min-width: 0; overflow-wrap: anywhere; }
+.diagnostics-log-code { flex: none; color: var(--vt-fg-muted); }
+.diagnostics-logs-empty { padding: 8px 10px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .diagnostics-loading { margin: 0; padding: 24px 16px; text-align: center; }
 @media (max-width: 760px) {
   .settings-nav { flex-basis: 52px; padding: 16px 7px; }

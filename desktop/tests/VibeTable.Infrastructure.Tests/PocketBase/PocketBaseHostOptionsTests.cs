@@ -34,8 +34,11 @@ public sealed class PocketBaseHostOptionsTests
             Path.Combine(sidecar, "vibetable-pb.exe"),
             options.ExecutablePath);
         Assert.AreEqual(
-            Path.Combine(local, "VibeTable", "data", "pocketbase"),
+            Path.Combine(local, "pocketbase"),
             options.DataDirectory);
+        Assert.AreEqual(
+            Path.Combine(local, "logs", "pocketbase.log"),
+            options.LogPath);
         Assert.IsFalse(options.DevelopmentMode);
         Assert.AreEqual(
             TimeSpan.FromSeconds(60),

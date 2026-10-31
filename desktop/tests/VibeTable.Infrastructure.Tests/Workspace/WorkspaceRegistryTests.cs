@@ -58,7 +58,6 @@ public sealed class WorkspaceRegistryTests
         fixture.Create("A", "A");
         var path = Path.Combine(
             fixture.Root,
-            "VibeTable",
             "shell",
             "workspace-registry-v2.json");
         File.WriteAllText(path, """{"formatVersion":99,"workspaces":[]}""");

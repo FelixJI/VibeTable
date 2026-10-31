@@ -385,9 +385,15 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["assets"]["migrations"] == "resources/sidecar/migrations/manifest.json"
     assert manifest["assets"]["sbom"] == "resources/sidecar/sbom.cdx.json"
     assert manifest["data"] == {
-        "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
-        "managedWorkspaceRoot": ("%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>"),
-        "mirroredActivityRoot": ("%LOCALAPPDATA%/VibeTable/activity/<workspaceId>"),
+        "modes": {
+            "standard": {"dataRoot": "%LOCALAPPDATA%/VibeTable"},
+            "portable": {"dataRoot": "<install>/data"},
+        },
+        "modeSwitch": "migrate-on-restart",
+        "shellRoot": "<dataRoot>/shell",
+        "managedWorkspaceRoot": "<dataRoot>/shell/workspaces/<workspaceId>",
+        "mirroredActivityRoot": "<dataRoot>/activity/<workspaceId>",
+        "logsRoot": "<dataRoot>/logs",
         "workspaceIdentity": "manifest-uuid",
         "preserveOnUninstall": True,
     }

@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
+using VibeTable.Infrastructure;
 using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.PreviewHost;
 
@@ -83,6 +84,14 @@ public partial class App : Application
             ApplicationUserModelId);
         base.OnStartup(e);
         var options = Services.HostStartupOptions.Current();
+        if (!previewHost && !ApplyPendingDataRootMigration(options))
+        {
+            return;
+        }
+        if (!previewHost && !EnsurePortableDataRootWritable(options))
+        {
+            return;
+        }
         if (!previewHost) InstallDesktopDiagnosticTrace(options);
         InstallCrashDiagnostics();
         if (previewHost)
@@ -157,12 +166,87 @@ public partial class App : Application
         window.ReportTestModeStartupVisibility();
     }
 
+    /// <summary>
+    /// Portable mode keeps every runtime file beside the executable, so the
+    /// data directory must be writable; a read-only location fails fast with
+    /// actionable guidance instead of scattering files elsewhere. Standard,
+    /// test, and development roots are skipped (their locations are writable
+    /// by construction or explicitly supplied).
+    /// </summary>
+    private static bool EnsurePortableDataRootWritable(
+        Services.HostStartupOptions startup)
+    {
+        if (startup.TestMode
+            || !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot)
+            || !LaunchPaths.IsPortableMode(AppContext.BaseDirectory))
+        {
+            return true;
+        }
+        string root = LaunchPaths.ResolvePortableDataRoot(AppContext.BaseDirectory);
+        try
+        {
+            Directory.CreateDirectory(root);
+            string probe = Path.Combine(
+                root,
+                ".write-probe-" + Guid.NewGuid().ToString("N"));
+            File.WriteAllText(probe, string.Empty);
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or System.Security.SecurityException)
+        {
+            MessageBox.Show(
+                "便携模式的数据目录不可写：\n"
+                    + root
+                    + "\n\n请将程序移动到可写位置后重试；或删除程序目录下 data\\"
+                    + "portable.marker 文件以回到标准模式（数据保存到用户目录）。",
+                "VibeTable 便携模式",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Current.Shutdown(4);
+            return false;
+        }
+    }
+
     private static void InstallCrashDiagnostics()
     {
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
             WriteCrashDiagnostic("desktop.appdomain_unhandled", args.ExceptionObject as Exception);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException += (_, args) =>
             WriteCrashDiagnostic("desktop.dispatcher_unhandled", args.Exception);
+    }
+
+    /// <summary>
+    /// Runs the pending standard⇄portable data-root switch before anything
+    /// opens a handle inside either root. Returns false (after shutting down)
+    /// when the migration fails; the source root is preserved for retry.
+    /// </summary>
+    private static bool ApplyPendingDataRootMigration(
+        Services.HostStartupOptions startup)
+    {
+        try
+        {
+            Services.DataRootMigrationService.ApplyForLaunch(
+                startup,
+                AppContext.BaseDirectory,
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData));
+            return true;
+        }
+        catch (Services.DataRootMigrationService.DataRootMigrationException exception)
+        {
+            MessageBox.Show(
+                "切换数据目录模式时迁移失败，已保留原有数据，下次启动将自动重试。\n"
+                    + $"{exception.Message}\n（错误码 {exception.ErrorCode}）",
+                "VibeTable 数据迁移",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Current.Shutdown(3);
+            return false;
+        }
     }
 
     private static void InstallDesktopDiagnosticTrace(
@@ -189,7 +273,10 @@ public partial class App : Application
     private static bool IsPreviewHostProcess()
         => Environment.GetCommandLineArgs() is [_, "--preview-host", ..];
 
-    /// <summary>Scenario-isolates desktop.log in test mode so QA failure evidence stays per-scenario.</summary>
+    /// <summary>
+    /// All runtime logs share the active data root's logs directory; only the
+    /// preview-host test process keeps its own scenario-isolated directory.
+    /// </summary>
     internal static string DesktopLogDirectory(
         Services.HostStartupOptions startup,
         bool previewHost = false)
@@ -200,24 +287,7 @@ public partial class App : Application
             return Path.Combine(
                 Path.GetFullPath(startup.E2eControlsDir), "preview-host", "desktop-logs");
         }
-        if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
-        {
-            try
-            {
-                // A dedicated subdirectory keeps rotation pruning scoped to desktop.log, away from readiness-root diagnostics.
-                return Path.Combine(
-                    Path.GetFullPath(startup.ReadinessDir!),
-                    "desktop-logs");
-            }
-            catch
-            {
-                // Invalid path falls back to the shared user directory.
-            }
-        }
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "VibeTable",
-            "logs");
+        return Services.ProductDataRoot.LogsDirectory(startup);
     }
 
     private static void WriteCrashDiagnostic(string eventName, Exception? exception)

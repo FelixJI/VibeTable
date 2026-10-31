@@ -494,9 +494,15 @@ def render_manifest(
             "contracts": "2.0",
         },
         "data": {
-            "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
-            "managedWorkspaceRoot": ("%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>"),
-            "mirroredActivityRoot": ("%LOCALAPPDATA%/VibeTable/activity/<workspaceId>"),
+            "modes": {
+                "standard": {"dataRoot": "%LOCALAPPDATA%/VibeTable"},
+                "portable": {"dataRoot": "<install>/data"},
+            },
+            "modeSwitch": "migrate-on-restart",
+            "shellRoot": "<dataRoot>/shell",
+            "managedWorkspaceRoot": "<dataRoot>/shell/workspaces/<workspaceId>",
+            "mirroredActivityRoot": "<dataRoot>/activity/<workspaceId>",
+            "logsRoot": "<dataRoot>/logs",
             "workspaceIdentity": "manifest-uuid",
             "preserveOnUninstall": True,
         },
@@ -2302,7 +2308,7 @@ def self_update_smoke_local_data_root(root: Path) -> Path:
 
 
 def _seed_self_update_health_failure_registry(root: Path) -> None:
-    registry_root = self_update_smoke_local_data_root(root) / "VibeTable" / "shell"
+    registry_root = self_update_smoke_local_data_root(root) / "shell"
     registry_root.mkdir(parents=True)
     missing_workspace = root / "missing-health-probe-workspace"
     registry = {
