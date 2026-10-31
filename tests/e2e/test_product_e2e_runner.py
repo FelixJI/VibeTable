@@ -43,9 +43,9 @@ def _restore_crash_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
         "operationId": "22222222-2222-4222-8222-222222222222",
     }
     local_data = tmp_path / "host" / "local-data"
-    root = local_data / "workspaces" / request["workspaceId"]
+    root = local_data / "shell" / "workspaces" / request["workspaceId"]
     metadata = root / ".vibetable"
-    registry = local_data / "VibeTable" / "shell"
+    registry = local_data / "shell"
     registry.mkdir(parents=True)
     (registry / "workspace-registry-v2.json").write_text(
         json.dumps(
@@ -183,7 +183,7 @@ def test_restore_crash_kill_requires_independent_publication_and_exact_job_pid(
     ]
     if case == "ambiguous":
         members.append(ProcessScopeMember(44, "vibetable-pb.exe", True))
-    metadata = local_data / "workspaces" / request["workspaceId"] / ".vibetable"
+    metadata = local_data / "shell" / "workspaces" / request["workspaceId"] / ".vibetable"
     if case == "unapplied":
         journal_path = metadata / "coordination" / "file-materializer" / "journal.json"
         journal = json.loads(journal_path.read_text(encoding="utf-8"))
@@ -285,7 +285,7 @@ def test_restore_observation_requires_the_exact_seed_intent_after_head_changes(
     case: str,
 ) -> None:
     request, local_data, controls = _restore_crash_fixture(tmp_path)
-    metadata = local_data / "workspaces" / request["workspaceId"] / ".vibetable"
+    metadata = local_data / "shell" / "workspaces" / request["workspaceId"] / ".vibetable"
     binding: dict[str, object] = {
         "mutationRevision": 3,
         "sessionEpoch": 7,
@@ -561,7 +561,7 @@ def _native_document_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path
         "action": "open-baseline",
     }
     data, controls = tmp_path / "local-data", tmp_path / "controls"
-    workspace = data / "workspaces" / request["workspaceId"]
+    workspace = data / "shell" / "workspaces" / request["workspaceId"]
     (workspace / ".vibetable").mkdir(parents=True)
     (workspace / "files").mkdir()
     controls.mkdir()
@@ -4745,7 +4745,7 @@ def test_storage_proof_resolves_the_workspace_v2_database_from_the_runtime_regis
         ledger.commit()
     finally:
         ledger.close()
-    registry_path = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
+    registry_path = local_data / "shell" / "workspace-registry-v2.json"
     registry_path.parent.mkdir(parents=True)
     registry_path.write_text(
         json.dumps(
@@ -5665,7 +5665,7 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
         calls.append(persistent)
         if persistent.phase == "seed":
             created_root = (
-                persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+                persistent.readiness_dir / "local-data" / "shell" / "workspaces" / workspace_id
                 if managed_default
                 else persistent.workspace_root
             )
@@ -5673,13 +5673,9 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
             registry = (
-                persistent.readiness_dir
-                / "local-data"
-                / "VibeTable"
-                / "shell"
-                / "workspace-registry-v2.json"
+                persistent.readiness_dir / "local-data" / "shell" / "workspace-registry-v2.json"
             )
-            registry.parent.mkdir(parents=True)
+            registry.parent.mkdir(parents=True, exist_ok=True)
             registry.write_text(
                 json.dumps(
                     {
@@ -5714,7 +5710,7 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
     assert [run.phase for run in calls] == ["seed", "resume"]
     assert calls[0].readiness_dir == calls[1].readiness_dir
     expected_root = (
-        calls[0].readiness_dir / "local-data" / "workspaces" / workspace_id
+        calls[0].readiness_dir / "local-data" / "shell" / "workspaces" / workspace_id
         if managed_default
         else calls[0].workspace_root
     )
@@ -5741,7 +5737,9 @@ def test_host_presentation_invalid_workspace_does_not_launch_resume(
         assert isinstance(persistent, runner._PersistentScenarioRun)
         calls.append(persistent.phase)
         assert persistent.phase == "seed"
-        created_root = persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+        created_root = (
+            persistent.readiness_dir / "local-data" / "shell" / "workspaces" / workspace_id
+        )
         if invalid == "outside":
             created_root = tmp_path / "unrelated" / workspace_id
         manifest = created_root / ".vibetable" / "workspace.json"
@@ -5753,14 +5751,8 @@ def test_host_presentation_invalid_workspace_does_not_launch_resume(
                 ),
                 encoding="utf-8",
             )
-        registry = (
-            persistent.readiness_dir
-            / "local-data"
-            / "VibeTable"
-            / "shell"
-            / "workspace-registry-v2.json"
-        )
-        registry.parent.mkdir(parents=True)
+        registry = persistent.readiness_dir / "local-data" / "shell" / "workspace-registry-v2.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "workspaceId": "other-id" if invalid == "registry-id" else workspace_id,
             "selectedRoot": str(created_root),
@@ -5794,21 +5786,16 @@ def test_natural_aging_seed_records_the_created_managed_workspace(
 ) -> None:
     workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     state_path = tmp_path / "persistent" / "seed-state.json"
-    created_root = state_path.parent / "host" / "local-data" / "workspaces" / workspace_id
+    created_root = state_path.parent / "host" / "local-data" / "shell" / "workspaces" / workspace_id
 
     def seed(*_args: object, **_kwargs: object) -> dict[str, object]:
         manifest = created_root / ".vibetable" / "workspace.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
         registry = (
-            state_path.parent
-            / "host"
-            / "local-data"
-            / "VibeTable"
-            / "shell"
-            / "workspace-registry-v2.json"
+            state_path.parent / "host" / "local-data" / "shell" / "workspace-registry-v2.json"
         )
-        registry.parent.mkdir(parents=True)
+        registry.parent.mkdir(parents=True, exist_ok=True)
         registry.write_text(
             json.dumps(
                 {"workspaces": [{"workspaceId": workspace_id, "selectedRoot": str(created_root)}]}
@@ -5874,13 +5861,7 @@ def _plugin_restart_workspace(persistent: runner._PersistentScenarioRun) -> None
     manifest = created_root / ".vibetable" / "workspace.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
-    registry = (
-        persistent.readiness_dir
-        / "local-data"
-        / "VibeTable"
-        / "shell"
-        / "workspace-registry-v2.json"
-    )
+    registry = persistent.readiness_dir / "local-data" / "shell" / "workspace-registry-v2.json"
     registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text(
         json.dumps(
@@ -6153,18 +6134,16 @@ def test_file_workflow_combination_seed_whitelist_gates_the_resume_launch(
         assert isinstance(persistent, runner._PersistentScenarioRun)
         calls.append(persistent)
         if persistent.phase == "seed":
-            created_root = persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+            created_root = (
+                persistent.readiness_dir / "local-data" / "shell" / "workspaces" / workspace_id
+            )
             manifest = created_root / ".vibetable" / "workspace.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
             registry = (
-                persistent.readiness_dir
-                / "local-data"
-                / "VibeTable"
-                / "shell"
-                / "workspace-registry-v2.json"
+                persistent.readiness_dir / "local-data" / "shell" / "workspace-registry-v2.json"
             )
-            registry.parent.mkdir(parents=True)
+            registry.parent.mkdir(parents=True, exist_ok=True)
             registry.write_text(
                 json.dumps(
                     {

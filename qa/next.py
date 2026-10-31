@@ -157,7 +157,6 @@ PRODUCT_E2E_EVIDENCE_FILES = (
     "runner-stderr.log",
     "runner-stdout.log",
 )
-PRODUCT_E2E_RUNTIME_LOGS = ("backend.log", "pocketbase.log")
 # Closed-set S35 audit-drain projection; anything else fails closed.
 AUDIT_DRAIN_EVENT = "snapshot.freeze.audit.drain.returned"
 AUDIT_DRAIN_SOURCES = frozenset({"business", "file"})
@@ -1405,12 +1404,14 @@ def _persist_s35_audit_drain_measurements(run_source: Path, destination: Path) -
     drains both completed without error in the full scan, unaffected by the
     entry cap.
     """
-    workspace_root = run_source / "_runtime" / "35" / "host" / "local-data" / "workspaces"
+    logs_directory = run_source / "_runtime" / "35" / "host" / "local-data" / "logs"
     entries: list[dict[str, object]] = []
     completed_sources: dict[str, set[str]] = {}
     matched = 0
     logs_read = 0
-    for log_path in sorted(workspace_root.glob("*/.vibetable/temp/logs/pocketbase*.log")):
+    # Sidecar logs share the unified data-root logs directory; workspace ids
+    # are carried by the closed-schema lines, not by per-workspace files.
+    for log_path in sorted(logs_directory.glob("pocketbase*.log")):
         if (
             log_path.is_symlink()
             or log_path.is_junction()
@@ -1522,33 +1523,33 @@ def persist_product_e2e_evidence(
                 runtime_source / "vibetable-trace.log",
                 runtime_destination / "vibetable-trace.log",
             )
-        # Optional isolated desktop logs: a missing or linked desktop-logs directory is simply skipped.
-        desktop_logs = runtime_source / "desktop-logs"
-        if desktop_logs.is_dir() and not (desktop_logs.is_symlink() or desktop_logs.is_junction()):
-            pattern = (
-                r"preview-[1-9]\d*(?:-\d{8}-\d{9})?\.log"
-                if preview_host
-                else r"desktop(?:-\d{8}-\d{9})?\.log"
+        # Preview hosts keep their scenario-isolated desktop-logs directory;
+        # the main host's desktop/sidecar/backend logs share the unified
+        # local-data/logs directory. Missing or linked entries are skipped.
+        if preview_host:
+            log_directory = runtime_source / "desktop-logs"
+            patterns: tuple[str, ...] = (r"preview-[1-9]\d*(?:-\d{8}-\d{9})?\.log",)
+        else:
+            log_directory = runtime_source / "local-data" / "logs"
+            patterns = (
+                r"desktop(?:-\d{8}-\d{9})?\.log",
+                r"pocketbase(?:-[0-9]{8}-[0-9]{9})?\.log",
+                r"backend(?:-\d{8}-\d{9})?\.log",
             )
-            for log_path in sorted(desktop_logs.iterdir()):
+        if log_directory.is_dir() and not (
+            log_directory.is_symlink() or log_directory.is_junction()
+        ):
+            for log_path in sorted(log_directory.iterdir()):
                 if (
                     log_path.is_symlink()
                     or log_path.is_junction()
-                    or re.fullmatch(pattern, log_path.name) is None
+                    or not any(re.fullmatch(pattern, log_path.name) for pattern in patterns)
                     or not log_path.is_file()
                 ):
                     continue
                 _copy_if_file(log_path, runtime_destination / log_path.name)
         if preview_logs_only:
             return
-        workspace_root = runtime_source / "local-data" / "workspaces"
-        for log_name in PRODUCT_E2E_RUNTIME_LOGS:
-            for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
-                workspace_id = log_path.parents[3].name
-                _copy_if_file(
-                    log_path,
-                    runtime_destination / "workspace-logs" / workspace_id / log_name,
-                )
 
     for item in scenarios:
         if item["scenario"] != "40-file-history-capacity":

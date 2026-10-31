@@ -98,6 +98,29 @@ public sealed class BackendLaunchOptions
     public string? LogPath { get; set; }
 
     /// <summary>
+    /// Copy of this policy with a different log path. Passing null keeps the
+    /// backend's stderr in memory only — used by transient runtimes that must
+    /// not contend with the resident runtime's exclusive log sink.
+    /// </summary>
+    public BackendLaunchOptions WithLogPath(string? logPath)
+    {
+        var clone = new BackendLaunchOptions
+        {
+            Command = Command,
+            Arguments = Arguments,
+            WorkingDirectory = WorkingDirectory,
+            StartupTimeout = StartupTimeout,
+            StopTimeout = StopTimeout,
+            LogPath = logPath,
+        };
+        foreach ((string key, string value) in Environment)
+        {
+            clone.Environment[key] = value;
+        }
+        return clone;
+    }
+
+    /// <summary>
     /// Resolves the backend command for the installed or development layout.
     /// Packaged builds use
     /// <c>resources/backend/vibetable-backend.exe</c> under the host directory;

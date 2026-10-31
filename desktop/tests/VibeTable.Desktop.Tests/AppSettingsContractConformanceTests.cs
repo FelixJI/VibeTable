@@ -88,7 +88,7 @@ public sealed class AppSettingsContractConformanceTests
             Appearance = new HostAppearanceService(new FakeAppearanceSource());
             Host.Appearance = Appearance;
             Preferences = new AppPreferencesUseCases(
-                new AppPreferencesService(Store, new InMemoryStartupRegistration()),
+                new AppPreferencesService(Store, new InMemoryStartupRegistration(), new InMemoryPortableModeStore()),
                 Host,
                 AppPreferences.Default);
             Adapter = new AppPreferencesRequestAdapter(Sink, Preferences, Host.Trace);

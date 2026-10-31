@@ -16,7 +16,7 @@ import type {
 function preferences(overrides: Partial<AppPreferences> = {}): AppPreferences {
   return {
     minimizeToTrayOnClose: false,
-    startWithWindows: false,
+    startWithWindows: false,    portableMode: false,
     updateProxy: "direct",
     customUpdateProxyUrl: "",
     theme: null,

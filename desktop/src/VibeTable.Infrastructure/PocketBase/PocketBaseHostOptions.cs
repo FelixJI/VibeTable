@@ -14,14 +14,14 @@ public static class PocketBaseHostOptions
 
     public static PocketBaseLaunchOptions Resolve(
         string baseDirectory,
-        string localAppData)
+        string dataRoot)
     {
         string root = Path.GetFullPath(baseDirectory);
         string executable = LaunchPaths.ResolveSidecarBinary(root)
             ?? throw new FileNotFoundException(
                 "The packaged PocketBase sidecar is missing.");
-        string dataRoot = LaunchPaths.ResolveDataRoot(localAppData);
-        string dataDirectory = Path.Combine(dataRoot, "pocketbase");
+        string resolvedDataRoot = Path.GetFullPath(dataRoot);
+        string dataDirectory = Path.Combine(resolvedDataRoot, "pocketbase");
         LaunchPaths.EnsureInstallAndDataAreSeparated(
             Path.GetDirectoryName(executable) ?? root,
             dataDirectory);
@@ -32,7 +32,7 @@ public static class PocketBaseHostOptions
             ExecutablePath = executable,
             WorkingDirectory = Path.GetDirectoryName(executable),
             DataDirectory = dataDirectory,
-            LogPath = Path.Combine(dataRoot, "logs", "pocketbase.log"),
+            LogPath = Path.Combine(resolvedDataRoot, "logs", "pocketbase.log"),
             DevelopmentMode = developmentMode,
             StartupTimeout = developmentMode
                 ? PocketBaseLaunchOptions.DefaultStartupTimeout

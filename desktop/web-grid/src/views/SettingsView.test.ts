@@ -9,7 +9,7 @@ import { formatDateKey } from "@/calendar/workCalendar";
 import { useUiStore } from "@/stores/uiStore";
 import WorkCalendarMonth from "@/components/calendar/WorkCalendarMonth.vue";
 import MonthNavigator from "@/components/calendar/MonthNavigator.vue";
-import { NSelect, NSwitch } from "naive-ui";
+import { NRadioGroup, NSelect, NSwitch } from "naive-ui";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import changelog from "@/generated/changelog.json";
@@ -27,7 +27,7 @@ describe("SettingsView", () => {
     backupRequest.mockReset();
     let appPreferences = {
       minimizeToTrayOnClose: false,
-      startWithWindows: false,
+      startWithWindows: false,      portableMode: false,
       updateProxy: "direct",
       customUpdateProxyUrl: "",
     };
@@ -48,6 +48,9 @@ describe("SettingsView", () => {
           dotnetVersion: "10.0.0",
           pocketBaseVersion: "0.40.1",
           memoryBytes: 64 * 1024 * 1024,
+          dataDirectory: "C:\DataRoot",
+          logsDirectory: "C:\DataRoot\logs",
+          workspaceDiagnostics: { state: "available", errorCode: null },
           components: [{ component: "sidecar", state: "ready" }],
           jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },
           index: { state: "ready", generation: 2, processed: 3, total: 3, errorCode: null },
@@ -205,6 +208,8 @@ describe("SettingsView", () => {
       dotnetVersion: "10.0.0",
       pocketBaseVersion: "0.40.1",
       memoryBytes: 64 * 1024 * 1024,
+      dataDirectory: "C:\DataRoot",
+      logsDirectory: "C:\DataRoot\logs",
       components: [{ component: "sidecar", state: "ready" }],
       jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },
       index: { state: "ready", generation: 2, processed: 3, total: 3, errorCode: null },
@@ -220,7 +225,7 @@ describe("SettingsView", () => {
       if (type === "appPreferences.get") {
         return {
           minimizeToTrayOnClose: false,
-          startWithWindows: false,
+          startWithWindows: false,          portableMode: false,
           updateProxy: "direct",
           customUpdateProxyUrl: "",
         };
@@ -290,6 +295,15 @@ describe("SettingsView", () => {
     // 同一版本内重复的条目只保留一次；跨版本历史内容不被吞并。
     expect(notesText.match(/改进工作区恢复/g)).toHaveLength(1);
     expect(notesText.match(/新增安全自我更新/g)).toHaveLength(1);
+    // 正文块保持左对齐：只有版本标题行挂 space-between 头部类，正文根
+    // 元素不能被同一选择器命中（曾把每段日志水平居中）。
+    const headers = notes.findAll(".release-note-header");
+    expect(headers.length).toBeGreaterThan(0);
+    const noteBodies = notes.findAll(".release-note-body");
+    expect(noteBodies.length).toBeGreaterThan(0);
+    for (const body of noteBodies) {
+      expect(body.classes()).not.toContain("release-note-header");
+    }
     expect(wrapper.get('[data-testid="release-update-card"]').text())
       .toContain("同一通道下载发布包和 SHA-256 文件");
     expect(wrapper.get('[data-testid="release-update-card"]').text())
@@ -394,5 +408,100 @@ describe("SettingsView", () => {
     await store.save();
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain("1 个特殊日期");
+  });
+
+  it("toggles portable mode and announces the restart-required migration", async () => {
+    const wrapper = mount(SettingsView);
+    await flushPromises();
+
+    const portableSwitch = wrapper.findAllComponents(NSwitch)
+      .find((item) => item.attributes("data-testid") === "portable-mode-switch");
+    expect(portableSwitch).toBeDefined();
+    expect(wrapper.find('[data-testid="portable-mode-restart-pending"]').exists())
+      .toBe(false);
+
+    portableSwitch!.vm.$emit("update:value", true);
+    await flushPromises();
+
+    expect(backupRequest).toHaveBeenCalledWith(
+      "appPreferences.update",
+      { portableMode: true },
+    );
+    expect(portableSwitch!.props("value")).toBe(true);
+    expect(wrapper.get('[data-testid="portable-mode-restart-pending"]').text())
+      .toContain("下次启动");
+  });
+
+  it("expands, filters, and copies sanitized diagnostics logs", async () => {
+    const logLine = (timestamp: string, level: string, event: string, errorCode: string | null) => ({
+      timestamp, level, module: "sidecar", event, errorCode,
+      requestId: null, operationId: null, workspaceId: null,
+      sessionEpoch: null, jobId: null, durationMs: null,
+    });
+    const diagnostics = {
+      bundleVersion: "1.0",
+      generatedAt: "2026-08-12T00:00:00Z",
+      operatingSystem: "Windows 11",
+      programVersion: "0.1.0",
+      dotnetVersion: "10.0.0",
+      pocketBaseVersion: "0.40.1",
+      memoryBytes: 64 * 1024 * 1024,
+      dataDirectory: "C:\DataRoot",
+      logsDirectory: "C:\DataRoot\logs",
+      workspaceDiagnostics: { state: "available", errorCode: null },
+      components: [{ component: "sidecar", state: "ready" }],
+      jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },
+      index: { state: "ready", generation: 2, processed: 3, total: 3, errorCode: null },
+      pendingMutationRevision: 0,
+      recentErrorCounts: [{ errorCode: "sidecar.start_failed", count: 3 }],
+      logs: [
+        logLine("2026-08-12T00:00:03Z", "info", "request.completed", null),
+        logLine("2026-08-12T00:00:02Z", "error", "sidecrash", "sidecar.start_failed"),
+        logLine("2026-08-12T00:00:01Z", "info", "request.started", null),
+      ],
+    };
+    backupRequest.mockImplementation(async (type: string) => {
+      if (type === "appPreferences.get") {
+        return {
+          minimizeToTrayOnClose: false,
+          startWithWindows: false,
+          portableMode: false,
+          updateProxy: "direct",
+          customUpdateProxyUrl: "",
+        };
+      }
+      if (type === "diagnostics.get") return diagnostics;
+      return { status: "restarting" };
+    });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+
+    const wrapper = mount(SettingsView);
+    await wrapper.get('[data-testid="settings-nav-about"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("C:\DataRoot\logs");
+    expect(wrapper.get('[data-testid="diagnostics-error-counts"]').text())
+      .toContain("sidecar.start_failed");
+
+    await wrapper.get('[data-testid="diagnostics-logs-toggle"]').trigger("click");
+    // Errors-only is the default filter.
+    const entries = wrapper.findAll(".diagnostics-log-entry");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text()).toContain("sidecrash");
+
+    const filter = wrapper.findComponent(NRadioGroup);
+    filter.vm.$emit("update:value", "all");
+    await flushPromises();
+    expect(wrapper.findAll(".diagnostics-log-entry")).toHaveLength(3);
+
+    await wrapper.get('[data-testid="diagnostics-logs-copy"]').trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain("ERROR sidecar sidecrash (sidecar.start_failed)");
+    expect(copied).toContain("INFO sidecar request.completed");
+    vi.unstubAllGlobals();
   });
 });

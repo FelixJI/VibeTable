@@ -21,8 +21,8 @@ def _write_state(root: Path, *, not_before: datetime, package_sha: str = "candid
         json.dumps({"workspaceId": "11111111-1111-4111-8111-111111111111"}), encoding="utf-8"
     )
     local_data = root / "host" / "local-data"
-    registry = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
-    registry.parent.mkdir(parents=True)
+    registry = local_data / "shell" / "workspace-registry-v2.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text(
         json.dumps(
             {
@@ -124,13 +124,13 @@ def test_resume_state_rejects_unbound_workspace_roots(tmp_path: Path, mismatch: 
     state = _write_state(tmp_path, not_before=now)
     payload = json.loads(state.read_text(encoding="utf-8"))
     workspace = Path(payload["workspaceRoot"])
-    registry = Path(payload["localData"]) / "VibeTable" / "shell" / "workspace-registry-v2.json"
+    registry = Path(payload["localData"]) / "shell" / "workspace-registry-v2.json"
     registration = json.loads(registry.read_text(encoding="utf-8"))
     if mismatch in {"unapproved-root", "registry-other-root"}:
         other = (
             tmp_path / "unapproved"
             if mismatch == "unapproved-root"
-            else Path(payload["localData"]) / "workspaces" / payload["workspaceId"]
+            else Path(payload["localData"]) / "shell" / "workspaces" / payload["workspaceId"]
         )
         (other / ".vibetable").mkdir(parents=True)
         (other / ".vibetable" / "workspace.json").write_text(
@@ -514,7 +514,7 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
     workspace = tmp_path / "workspace"
     local_data = tmp_path / "host" / "local-data"
     created_workspace = (
-        local_data / "workspaces" / "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        local_data / "shell" / "workspaces" / "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         if managed_workspace
         else workspace
     )
@@ -531,8 +531,8 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
         (created_workspace / ".vibetable" / "workspace.json").write_text(
             json.dumps({"workspaceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}), encoding="utf-8"
         )
-        registry = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
-        registry.parent.mkdir(parents=True)
+        registry = local_data / "shell" / "workspace-registry-v2.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
         registry.write_text(
             json.dumps(
                 {
@@ -643,8 +643,8 @@ def test_seed_report_write_failure_leaves_no_checkpoint(monkeypatch, tmp_path: P
             json.dumps({"workspaceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}),
             encoding="utf-8",
         )
-        registry = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
-        registry.parent.mkdir(parents=True)
+        registry = local_data / "shell" / "workspace-registry-v2.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
         registry.write_text(
             json.dumps(
                 {

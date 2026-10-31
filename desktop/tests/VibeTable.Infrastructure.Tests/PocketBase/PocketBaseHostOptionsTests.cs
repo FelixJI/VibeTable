@@ -34,8 +34,11 @@ public sealed class PocketBaseHostOptionsTests
             Path.Combine(sidecar, "vibetable-pb.exe"),
             options.ExecutablePath);
         Assert.AreEqual(
-            Path.Combine(local, "VibeTable", "data", "pocketbase"),
+            Path.Combine(local, "pocketbase"),
             options.DataDirectory);
+        Assert.AreEqual(
+            Path.Combine(local, "logs", "pocketbase.log"),
+            options.LogPath);
         Assert.IsFalse(options.DevelopmentMode);
         Assert.AreEqual(
             TimeSpan.FromSeconds(60),
@@ -192,5 +195,39 @@ public sealed class PocketBaseHostOptionsTests
             "vibetable-host-options-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    [TestMethod]
+    public void WithLogPathClearsFileLoggingAndKeepsPolicy()
+    {
+        string root = CreateDirectory();
+        string sidecar = Path.Combine(root, "resources", "sidecar");
+        Directory.CreateDirectory(sidecar);
+        File.WriteAllBytes(
+            Path.Combine(sidecar, "vibetable-pb.exe"),
+            [1, 2, 3]);
+        File.WriteAllText(
+            Path.Combine(sidecar, "build-info.json"),
+            """
+            {
+              "contractVersion": "v1",
+              "pocketBaseVersion": "0.40.1",
+              "schemaVersion": "3",
+              "migrationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+            """);
+        string local = CreateDirectory();
+        PocketBaseLaunchOptions options =
+            PocketBaseHostOptions.Resolve(root, local);
+
+        PocketBaseLaunchOptions memoryOnly = options.WithLogPath(null);
+
+        Assert.IsNull(memoryOnly.LogPath);
+        Assert.AreEqual(options.ExecutablePath, memoryOnly.ExecutablePath);
+        Assert.AreEqual(options.DataDirectory, memoryOnly.DataDirectory);
+        Assert.AreEqual(options.ExpectedIdentity, memoryOnly.ExpectedIdentity);
+        Assert.AreNotSame(options.Environment, memoryOnly.Environment);
+        memoryOnly.Environment["probe"] = "value";
+        Assert.IsFalse(options.Environment.ContainsKey("probe"));
     }
 }

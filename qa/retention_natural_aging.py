@@ -50,7 +50,7 @@ def load_resume_state(
     workspace_id = _uuid(state.get("workspaceId"), "workspace UUID")
     workspace = _fixed_path(
         state.get("workspaceRoot"),
-        (root / "workspace", local_data / "workspaces" / workspace_id),
+        (root / "workspace", local_data / "shell" / "workspaces" / workspace_id),
         "workspace root",
     )
     _uuid(state.get("olderSnapshotId"), "older snapshot ID")

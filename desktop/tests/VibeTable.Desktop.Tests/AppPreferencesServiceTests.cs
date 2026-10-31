@@ -53,7 +53,7 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore();
         var startup = new FakeStartupRegistration();
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(true, true));
 
@@ -68,9 +68,10 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore();
         var startup = new FakeStartupRegistration();
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(
+            null,
             null,
             null,
             AppSettingsUpdateProxyOption.Custom,
@@ -89,7 +90,7 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore { ThrowOnWrite = true };
         var startup = new FakeStartupRegistration();
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         Assert.ThrowsExactly<IOException>(() =>
             service.Update(new AppSettingsPreferencesPatch(true, true)));
@@ -103,7 +104,7 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore { InitialValue = true };
         var startup = new FakeStartupRegistration { ThrowOnRead = true };
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         AppPreferences preferences = service.ReadForStartup();
 
@@ -258,7 +259,7 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore();
         var startup = new FakeStartupRegistration();
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         AppPreferences updated = service.Update(new AppSettingsPreferencesPatch(
             null,
@@ -290,7 +291,7 @@ public sealed class AppPreferencesServiceTests
     {
         var store = new FakeStore();
         var startup = new FakeStartupRegistration();
-        var service = new AppPreferencesService(store, startup);
+        var service = new AppPreferencesService(store, startup, new InMemoryPortableModeStore());
 
         AppPreferences adopted = service.AdoptLegacyTheme(AppSettingsThemeOption.Dark);
         Assert.AreEqual(AppSettingsThemeOption.Dark, adopted.Theme);
