@@ -295,6 +295,15 @@ describe("SettingsView", () => {
     // 同一版本内重复的条目只保留一次；跨版本历史内容不被吞并。
     expect(notesText.match(/改进工作区恢复/g)).toHaveLength(1);
     expect(notesText.match(/新增安全自我更新/g)).toHaveLength(1);
+    // 正文块保持左对齐：只有版本标题行挂 space-between 头部类，正文根
+    // 元素不能被同一选择器命中（曾把每段日志水平居中）。
+    const headers = notes.findAll(".release-note-header");
+    expect(headers.length).toBeGreaterThan(0);
+    const noteBodies = notes.findAll(".release-note-body");
+    expect(noteBodies.length).toBeGreaterThan(0);
+    for (const body of noteBodies) {
+      expect(body.classes()).not.toContain("release-note-header");
+    }
     expect(wrapper.get('[data-testid="release-update-card"]').text())
       .toContain("同一通道下载发布包和 SHA-256 文件");
     expect(wrapper.get('[data-testid="release-update-card"]').text())

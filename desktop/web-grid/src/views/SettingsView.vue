@@ -762,7 +762,7 @@ function setCalendarName(name: string): void {
                 </div>
                 <ol class="release-notes-list" data-testid="between-version-release-notes">
                   <li v-for="release in releaseNoteSections" :key="release.version">
-                    <div>
+                    <div class="release-note-header">
                       <strong>v{{ release.version }} · {{ release.title }}</strong>
                       <time v-if="release.publishedAt">{{ formatReleaseDate(release.publishedAt) }}</time>
                     </div>
@@ -1074,7 +1074,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .version-badge { color: var(--vt-color-primary-700); font-family: Consolas, monospace; font-size: var(--vt-font-caption); }
 .changelog-card { margin-top: 16px; padding: 18px 20px 8px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: linear-gradient(145deg, var(--vt-bg) 0%, var(--vt-bg-subtle) 100%); }
 .update-card { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; padding: 18px 20px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.update-heading, .update-proxy-row, .update-version-line, .release-notes-list li > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.update-heading, .update-proxy-row, .update-version-line, .release-note-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .update-heading > div, .update-proxy-row > div:not(.n-select), .release-notes-heading { display: flex; flex-direction: column; gap: 3px; }
 .update-heading small, .update-proxy-row small, .release-notes-heading small, .release-notes-list time { color: var(--vt-fg-muted); }
 .update-proxy-select { width: min(260px, 46%); }
