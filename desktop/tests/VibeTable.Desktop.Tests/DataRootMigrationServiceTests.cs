@@ -147,6 +147,137 @@ public sealed class DataRootMigrationServiceTests
                 _root));
     }
 
+    [TestMethod]
+    public void MigrationRelocatesRegisteredWorkspacePathsAndKeepsExternalOnes()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        string workspaceId = "11111111-1111-4111-8111-111111111111";
+        string managedRoot = Path.Combine(
+            source, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(Path.Combine(managedRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(managedRoot, ".vibetable", "workspace.json"),
+            $$"""{"workspaceId":"{{workspaceId}}"}""");
+        Directory.CreateDirectory(Path.Combine(source, "shell"));
+        File.WriteAllText(
+            Path.Combine(source, "shell", "workspace-registry-v2.json"),
+            $$"""
+            {"formatVersion":2,"workspaces":[
+              {"workspaceId":"{{workspaceId}}",
+               "selectedRoot":"{{managedRoot.Replace("\\", "\\\\")}}",
+               "activityRoot":null},
+              {"workspaceId":"22222222-2222-4222-8222-222222222222",
+               "selectedRoot":"D:\\External\\ws","activityRoot":null}]}
+            """);
+        DataRootMigrationService.Arm(source, target, true);
+
+        var outcome = DataRootMigrationService.ApplyIfNeeded(target, source);
+
+        Assert.AreEqual(
+            DataRootMigrationService.MigrationOutcome.Migrated,
+            outcome);
+        string registry = File.ReadAllText(Path.Combine(
+            target, "shell", "workspace-registry-v2.json"));
+        StringAssert.Contains(
+            registry,
+            Path.Combine(target, "shell", "workspaces", workspaceId)
+                .Replace("\\", "\\\\"),
+            "The managed workspace root must follow the data.");
+        StringAssert.Contains(registry, "D:\\\\External\\\\ws",
+            "Externally rooted workspaces keep their registration.");
+    }
+
+    [TestMethod]
+    public void MigrationFailsWhenARelocatedWorkspaceIdentityMismatches()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        string workspaceId = "11111111-1111-4111-8111-111111111111";
+        string managedRoot = Path.Combine(
+            source, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(Path.Combine(managedRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(managedRoot, ".vibetable", "workspace.json"),
+            """{"workspaceId":"33333333-3333-4333-8333-333333333333"}""");
+        Directory.CreateDirectory(Path.Combine(source, "shell"));
+        File.WriteAllText(
+            Path.Combine(source, "shell", "workspace-registry-v2.json"),
+            $$"""{"formatVersion":2,"workspaces":[{"workspaceId":"{{workspaceId}}","selectedRoot":"{{managedRoot.Replace("\\", "\\\\")}}","activityRoot":null}]}""");
+        DataRootMigrationService.Arm(source, target, true);
+
+        DataRootMigrationService.DataRootMigrationException failure =
+            Assert.ThrowsExactly<DataRootMigrationService.DataRootMigrationException>(
+                () => DataRootMigrationService.ApplyIfNeeded(target, source));
+
+        Assert.AreEqual(
+            "data.migration_workspace_identity_mismatch",
+            failure.ErrorCode);
+        Assert.IsTrue(File.Exists(Path.Combine(
+                source,
+                "shell",
+                "workspace-registry-v2.json")),
+            "A failed relocation keeps the source untouched for retry.");
+    }
+
+    [TestMethod]
+    public void RetryFinishesCleanupOfAnAlreadyCopiedCrossVolumeEntry()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        Directory.CreateDirectory(Path.Combine(source, "activity", "ws"));
+        File.WriteAllText(
+            Path.Combine(source, "activity", "ws", "workspace.db"),
+            "db payload");
+        DataRootMigrationService.Arm(source, target, true);
+        // Emulate a cross-volume copy that committed the target tree but died
+        // before deleting the source directory.
+        Directory.CreateDirectory(Path.Combine(target, "activity", "ws"));
+        File.WriteAllText(
+            Path.Combine(target, "activity", "ws", "workspace.db"),
+            "db payload");
+
+        var outcome = DataRootMigrationService.ApplyIfNeeded(target, source);
+
+        Assert.AreEqual(
+            DataRootMigrationService.MigrationOutcome.Migrated,
+            outcome);
+        Assert.IsFalse(Directory.Exists(source),
+            "Recognizing the completed copy lets the retry clean the source.");
+    }
+
+    [TestMethod]
+    public void StagingCleanupOnlyTouchesTopLevelGuidSuffixedEntries()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        // The outgoing root only holds the pending marker, so the migration
+        // itself is a no-op; the target root carries staging leftovers plus a
+        // user file whose name merely looks like one.
+        DataRootMigrationService.Arm(source, target, true);
+        Directory.CreateDirectory(target);
+        string staleStaging = Path.Combine(
+            target,
+            "shell.migrating-" + new string('a', 32));
+        Directory.CreateDirectory(staleStaging);
+        File.WriteAllText(
+            Path.Combine(staleStaging, "partial.txt"),
+            "partial");
+        string userLookalike = Path.Combine(
+            target,
+            "report.migrating-backup.txt");
+        File.WriteAllText(userLookalike, "user data");
+        string nonHexLookalike = Path.Combine(
+            target,
+            "already-moved.migrating-not-a-guid");
+        Directory.CreateDirectory(nonHexLookalike);
+
+        DataRootMigrationService.ApplyIfNeeded(target, source);
+
+        Assert.IsFalse(Directory.Exists(staleStaging),
+            "A real staging leftover (top level, GUID suffix) is removed.");
+        Assert.IsTrue(File.Exists(userLookalike),
+            "User files with lookalike names are never touched.");
+        Assert.IsTrue(Directory.Exists(nonHexLookalike),
+            "Non-GUID-suffixed entries are never touched.");
+    }
+
     private (string Source, string Target) CreateRoots(
         string sourceName,
         string targetName)

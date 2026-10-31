@@ -62,6 +62,10 @@ public partial class MainWindow : Window
     private readonly ILocalDocumentPreview _attachmentPreview;
     private readonly string _attachmentPreviewRoot;
     private readonly string _productDataRoot;
+
+    /// <summary>Session-frozen data root; a runtime portable-mode switch only
+    /// takes effect after the next launch migrates the data.</summary>
+    private readonly string _dataRoot;
     private readonly string _activityRootBase;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
@@ -137,6 +141,7 @@ public partial class MainWindow : Window
         // mode) the writability probe before this composition root opens
         // files.
         string dataRoot = ProductDataRoot.Resolve(startup);
+        _dataRoot = dataRoot;
         _productDataRoot = Path.Combine(dataRoot, "shell");
         WindowsStartupRegistration? windowsStartupRegistration = null;
         // Redirected launches never touch the real portable marker; a flipped

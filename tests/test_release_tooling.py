@@ -1870,9 +1870,7 @@ def test_health_failure_user_data_sentinel_uses_packaged_host_local_data_root(
     local_data = build_next.self_update_smoke_local_data_root(tmp_path)
 
     assert local_data == (tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / "local-data")
-    assert local_data / "user-data.db" != (
-        local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
-    )
+    assert local_data / "user-data.db" != (local_data / "shell" / "workspace-registry-v2.json")
 
 
 def test_self_update_activation_rejects_cleanup_before_shell_readiness(

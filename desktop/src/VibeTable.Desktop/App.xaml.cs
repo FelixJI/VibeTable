@@ -92,7 +92,16 @@ public partial class App : Application
         {
             return;
         }
-        if (!previewHost) InstallDesktopDiagnosticTrace(options);
+        if (!previewHost)
+        {
+            // Freeze the session's log directory before anything opens files:
+            // flipping the portable-mode switch later changes the marker for
+            // the NEXT launch, but this session's trace listener, crash
+            // diagnostics, and settings-page reads must stay with the root
+            // the running session actually uses.
+            SessionLogDirectory = Services.ProductDataRoot.LogsDirectory(options);
+            InstallDesktopDiagnosticTrace(options);
+        }
         InstallCrashDiagnostics();
         if (previewHost)
         {
@@ -267,8 +276,18 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// The log directory frozen at startup for this session. Null before
+    /// OnStartup completes (or in unit tests); callers fall back to resolving
+    /// from the current startup options.
+    /// </summary>
+    internal static string? SessionLogDirectory { get; private set; }
+
     internal static string DesktopLogDirectory()
-        => DesktopLogDirectory(Services.HostStartupOptions.Current(), IsPreviewHostProcess());
+        => SessionLogDirectory
+            ?? DesktopLogDirectory(
+                Services.HostStartupOptions.Current(),
+                IsPreviewHostProcess());
 
     private static bool IsPreviewHostProcess()
         => Environment.GetCommandLineArgs() is [_, "--preview-host", ..];
