@@ -174,9 +174,19 @@ internal static partial class DataRootMigrationService
     /// profile is simply created when nothing can be moved.
     /// </summary>
     public static void MigrateLegacyWebView2Profile(
+        HostStartupOptions startup,
         string dataRoot,
         string standardRoot)
     {
+        ArgumentNullException.ThrowIfNull(startup);
+        // Redirected test/development launches must never consume (or move
+        // away) the real user's browser profile, even when their isolated
+        // root has no profile yet.
+        if (startup.TestMode
+            || !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot))
+        {
+            return;
+        }
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(standardRoot);
         string target = Path.Combine(

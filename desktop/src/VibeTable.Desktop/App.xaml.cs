@@ -103,6 +103,7 @@ public partial class App : Application
             // the first cold profile is created; the session lock already
             // guarantees no other instance holds profile files open.
             Services.DataRootMigrationService.MigrateLegacyWebView2Profile(
+                options,
                 Services.ProductDataRoot.Resolve(options),
                 LaunchPaths.ResolveStandardDataRoot(
                     Environment.GetFolderPath(

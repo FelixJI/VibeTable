@@ -561,6 +561,7 @@ public sealed class DataRootMigrationServiceTests
             "renderer settings");
 
         DataRootMigrationService.MigrateLegacyWebView2Profile(
+            new HostStartupOptions(),
             dataRoot,
             standardRoot: Path.Combine(_root, "standard"));
 
@@ -585,7 +586,10 @@ public sealed class DataRootMigrationServiceTests
             Path.Combine(legacy, "EBWebView", "Local State"),
             "profile");
 
-        DataRootMigrationService.MigrateLegacyWebView2Profile(dataRoot, standardRoot);
+        DataRootMigrationService.MigrateLegacyWebView2Profile(
+            new HostStartupOptions(),
+            dataRoot,
+            standardRoot);
 
         Assert.IsTrue(File.Exists(Path.Combine(
                 dataRoot,
@@ -605,13 +609,48 @@ public sealed class DataRootMigrationServiceTests
         string legacy = Path.Combine(dataRoot, "webview2-udd");
         Directory.CreateDirectory(legacy);
 
-        DataRootMigrationService.MigrateLegacyWebView2Profile(dataRoot, standardRoot);
+        DataRootMigrationService.MigrateLegacyWebView2Profile(
+            new HostStartupOptions(),
+            dataRoot,
+            standardRoot);
 
         Assert.AreEqual(
             "fresh profile",
             File.ReadAllText(Path.Combine(target, "fresh")));
         Assert.IsTrue(Directory.Exists(legacy),
             "A legacy leftover is never deleted when the new profile exists.");
+    }
+
+    [TestMethod]
+    public void RedirectedLaunchesNeverConsumeTheRealUserProfile()
+    {
+        (string dataRoot, string standardRoot) = CreateRoots("data", "standard");
+        string legacy = Path.Combine(standardRoot, "webview2-udd");
+        Directory.CreateDirectory(legacy);
+        File.WriteAllText(Path.Combine(legacy, "Local State"), "real profile");
+
+        DataRootMigrationService.MigrateLegacyWebView2Profile(
+            new HostStartupOptions
+            {
+                TestMode = true,
+                ReadinessDir = Path.Combine(_root, "readiness"),
+            },
+            dataRoot,
+            standardRoot);
+        DataRootMigrationService.MigrateLegacyWebView2Profile(
+            new HostStartupOptions
+            {
+                DevelopmentDataRoot = Path.Combine(_root, "dev"),
+            },
+            dataRoot,
+            standardRoot);
+
+        Assert.IsTrue(File.Exists(Path.Combine(legacy, "Local State")),
+            "Test/dev launches leave the real user profile untouched.");
+        Assert.IsFalse(Directory.Exists(Path.Combine(
+                dataRoot,
+                "webview2-user-data")),
+            "No profile is created inside the redirected root.");
     }
 
     private (string Source, string Target) CreateRoots(
