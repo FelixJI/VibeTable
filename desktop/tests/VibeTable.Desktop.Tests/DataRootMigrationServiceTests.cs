@@ -550,6 +550,70 @@ public sealed class DataRootMigrationServiceTests
         }
     }
 
+    [TestMethod]
+    public void LegacyWebView2ProfileIsCarriedToItsNewName()
+    {
+        (string dataRoot, string _) = CreateRoots("data", "unused");
+        string legacy = Path.Combine(dataRoot, "webview2-udd");
+        Directory.CreateDirectory(Path.Combine(legacy, "EBWebView", "Default"));
+        File.WriteAllText(
+            Path.Combine(legacy, "EBWebView", "Default", "Local Storage"),
+            "renderer settings");
+
+        DataRootMigrationService.MigrateLegacyWebView2Profile(
+            dataRoot,
+            standardRoot: Path.Combine(_root, "standard"));
+
+        Assert.IsTrue(File.Exists(Path.Combine(
+                dataRoot,
+                "webview2-user-data",
+                "EBWebView",
+                "Default",
+                "Local Storage")),
+            "The stored renderer profile moves to its new name.");
+        Assert.IsFalse(Directory.Exists(legacy));
+    }
+
+    [TestMethod]
+    public void LegacyWebView2ProfileInStandardRootMovesIntoPortableRoot()
+    {
+        (string dataRoot, _) = CreateRoots("portable-data", "unused");
+        string standardRoot = Path.Combine(_root, "standard", "VibeTable");
+        string legacy = Path.Combine(standardRoot, "webview2-udd");
+        Directory.CreateDirectory(Path.Combine(legacy, "EBWebView"));
+        File.WriteAllText(
+            Path.Combine(legacy, "EBWebView", "Local State"),
+            "profile");
+
+        DataRootMigrationService.MigrateLegacyWebView2Profile(dataRoot, standardRoot);
+
+        Assert.IsTrue(File.Exists(Path.Combine(
+                dataRoot,
+                "webview2-user-data",
+                "EBWebView",
+                "Local State")));
+        Assert.IsFalse(Directory.Exists(legacy));
+    }
+
+    [TestMethod]
+    public void ExistingWebView2ProfileWinsOverLegacyLeftovers()
+    {
+        (string dataRoot, string standardRoot) = CreateRoots("data", "standard");
+        string target = Path.Combine(dataRoot, "webview2-user-data");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "fresh"), "fresh profile");
+        string legacy = Path.Combine(dataRoot, "webview2-udd");
+        Directory.CreateDirectory(legacy);
+
+        DataRootMigrationService.MigrateLegacyWebView2Profile(dataRoot, standardRoot);
+
+        Assert.AreEqual(
+            "fresh profile",
+            File.ReadAllText(Path.Combine(target, "fresh")));
+        Assert.IsTrue(Directory.Exists(legacy),
+            "A legacy leftover is never deleted when the new profile exists.");
+    }
+
     private (string Source, string Target) CreateRoots(
         string sourceName,
         string targetName)

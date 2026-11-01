@@ -161,6 +161,76 @@ internal static partial class DataRootMigrationService
         }
     }
 
+    private const string WebView2ProfileDirectoryName = "webview2-user-data";
+    private const string LegacyWebView2ProfileDirectoryName = "webview2-udd";
+
+    /// <summary>
+    /// Upgrades from the previous release keep the renderer's stored settings
+    /// (language, startup policy, density, recents) by carrying the legacy
+    /// WebView2 profile directory over to its new name/location before the
+    /// first cold profile is created. Runs after the session lock, so no
+    /// other instance can hold profile files open. Best-effort: a locked or
+    /// partially copied tree is retried on the next launch, and a fresh
+    /// profile is simply created when nothing can be moved.
+    /// </summary>
+    public static void MigrateLegacyWebView2Profile(
+        string dataRoot,
+        string standardRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(standardRoot);
+        string target = Path.Combine(
+            Path.GetFullPath(dataRoot),
+            WebView2ProfileDirectoryName);
+        if (Directory.Exists(target))
+        {
+            return;
+        }
+        foreach (string legacy in new[]
+        {
+            Path.Combine(dataRoot, LegacyWebView2ProfileDirectoryName),
+            Path.Combine(standardRoot, LegacyWebView2ProfileDirectoryName),
+        })
+        {
+            if (string.Equals(
+                    Path.GetFullPath(legacy),
+                    Path.GetFullPath(target),
+                    StringComparison.OrdinalIgnoreCase)
+                || !Directory.Exists(legacy))
+            {
+                continue;
+            }
+            try
+            {
+                Directory.Move(legacy, target);
+                return;
+            }
+            catch (IOException)
+            {
+                // Cross-volume move; fall through to a full copy.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
+            string staging = target + ".migrating-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                CopyDirectory(legacy, staging);
+                Directory.Move(staging, target);
+                Directory.Delete(legacy, recursive: true);
+                return;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                TryDeleteDirectory(staging);
+                // Leave the legacy profile in place; the next launch retries.
+                return;
+            }
+        }
+    }
+
     /// <summary>Records the switch intent inside the currently active root.</summary>
     public static void Arm(
         string currentDataRoot,

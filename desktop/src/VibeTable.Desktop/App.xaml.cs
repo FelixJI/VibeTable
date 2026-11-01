@@ -96,6 +96,18 @@ public partial class App : Application
         {
             return;
         }
+        if (!previewHost)
+        {
+            // Upgrades carry the legacy WebView2 profile (renderer
+            // localStorage: language, startup policy, recents) over before
+            // the first cold profile is created; the session lock already
+            // guarantees no other instance holds profile files open.
+            Services.DataRootMigrationService.MigrateLegacyWebView2Profile(
+                Services.ProductDataRoot.Resolve(options),
+                LaunchPaths.ResolveStandardDataRoot(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData)));
+        }
         if (!previewHost && !RelocatePortableRegistry(options))
         {
             return;
