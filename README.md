@@ -210,13 +210,23 @@ uv run python qa/next.py --ci --json-report build/qa/report.json
 
 ## 数据目录与工作区身份
 
-正式运行时，设备级 Shell 状态和工作区注册表位于
-`%LOCALAPPDATA%\VibeTable\shell/`。这里保存的是本机设备状态，不是所有业务数据共用的单一工作区。
+正式运行时按「数据模式」选择唯一的数据根（data root）：
+
+- **标准模式**（默认）：`%LOCALAPPDATA%\VibeTable/`；
+- **便携模式**：程序目录下的 `data/`。在设置 → 常规 → 数据与存储中开关便携模式后，
+  下次启动会在任何组件打开文件前自动迁移全部数据并切换目录；迁移可安全中断并在下次启动
+  续传。便携模式下删除程序文件夹即删除全部数据，且程序目录必须可写（不可写时启动会明确
+  报错并退出，不会把文件散落到别处）。
+
+数据根内的固定布局：`shell/`（设备级 Shell 状态、工作区注册表与程序管理的默认工作区）、
+`activity/`（镜像活动副本）、`logs/`（desktop、sidecar、backend 三组件统一日志，按 5 MB/文件
+滚动、7 天/50 MB 目录上限自动清理）、`webview2-user-data/`（渲染缓存）。日志在设置 → 关于 →
+当前运行信息中可展开查看并一键复制脱敏的错误相关内容。
 
 每个工作区使用永久稳定的 UUID，并独立拥有数据库、可见文件、文件修订树、审计账本和
 Snapshot。创建时可以选择：
 
-- **程序管理的默认位置**：`%LOCALAPPDATA%\VibeTable\shell\workspaces\<workspaceId>/`，固定采用可靠本机磁盘的直接模式；
+- **程序管理的默认位置**：`<数据根>\shell\workspaces\<workspaceId>/`，固定采用可靠本机磁盘的直接模式；
 - **其他位置**：由系统目录选择器授权，可按 provider 能力使用直接或镜像模式。镜像模式会在本机保留活动副本，再把经过验证的恢复仓库同步到所选位置。
 
 路径不是工作区身份。位置离线时注册项仍会保留；重新定位必须核对
@@ -243,7 +253,7 @@ uv run python qa/package_check.py dist/VibeTable.Next
 push 的 CI 会执行质量门禁、真实发布构建和 smoke；手动运行 CD 只负责创建或刷新唯一的版本与
 changelog PR。不要直接编辑多个版本源、手打正式 tag 或手建 Release。
 
-应用内更新会读取 GitHub Releases，并支持 GitHub 直连、预置代理或自定义 HTTPS 通道；更新事务不会触碰 `%LOCALAPPDATA%\VibeTable` 用户数据。详细边界见[自我更新能力说明](docs/self-update-assessment.md)。
+应用内更新会读取 GitHub Releases，并支持 GitHub 直连、预置代理或自定义 HTTPS 通道；更新事务只替换程序目录内的三个包属主条目（`VibeTable.Next.exe`、`release.json`、`resources/`），不会触碰数据根（包括便携模式的 `data/`）。详细边界见[自我更新能力说明](docs/self-update-assessment.md)。
 
 ## 文档
 

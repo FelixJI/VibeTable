@@ -51,7 +51,8 @@ public partial class MainWindow
                     sidecar?.GetSanitizedLog() ?? string.Empty,
                     backend?.GetStdErrorLog() ?? string.Empty,
                     workspaceSummary,
-                    workspaceDiagnosticsError));
+                    workspaceDiagnosticsError,
+                    _dataRoot));
             _webBridge.PostResponse(request.Type, request.RequestId, bundle);
         }
         catch (OperationCanceledException) when (_session.IsCancellationRequested)
@@ -66,11 +67,11 @@ public partial class MainWindow
         }
     }
 
-    private static string ReadDesktopDiagnosticLog()
+    private string ReadDesktopDiagnosticLog()
     {
         try
         {
-            string path = Path.Combine(App.DesktopLogDirectory(), "desktop.log");
+            string path = Path.Combine(_dataRoot, "logs", "desktop.log");
             if (!File.Exists(path)) return string.Empty;
             const int maximumBytes = 512 * 1024;
             using var stream = new FileStream(

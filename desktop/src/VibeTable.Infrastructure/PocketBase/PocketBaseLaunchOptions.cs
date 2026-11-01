@@ -33,6 +33,30 @@ public sealed class PocketBaseLaunchOptions
     public IDictionary<string, string> Environment { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Copy of this policy with a different log path. Passing null keeps the
+    /// process log in memory only — used by transient runtimes that must not
+    /// contend with the resident runtime's exclusive log sink.
+    /// </summary>
+    public PocketBaseLaunchOptions WithLogPath(string? logPath) => new()
+    {
+        ExecutablePath = ExecutablePath,
+        DataDirectory = DataDirectory,
+        WorkingDirectory = WorkingDirectory,
+        LogPath = logPath,
+        DevelopmentMode = DevelopmentMode,
+        StartupTimeout = StartupTimeout,
+        StopTimeout = StopTimeout,
+        HealthPollInterval = HealthPollInterval,
+        CrashRestartLimit = CrashRestartLimit,
+        CrashRestartInitialDelay = CrashRestartInitialDelay,
+        CrashRestartMaximumDelay = CrashRestartMaximumDelay,
+        ExpectedIdentity = ExpectedIdentity,
+        Environment = new Dictionary<string, string>(
+            Environment,
+            StringComparer.Ordinal),
+    };
+
     internal void Validate()
     {
         if (string.IsNullOrWhiteSpace(ExecutablePath))

@@ -14,13 +14,20 @@ public sealed class WorkspaceRegistry
     private readonly object _gate = new();
     private readonly string _storePath;
 
-    public WorkspaceRegistry(string? localAppData = null)
+    /// <summary>
+    /// Constructs the registry inside a product data root (standard, portable,
+    /// or an explicit test/dev override); the store lives at
+    /// <c>&lt;dataRoot&gt;/shell/workspace-registry-v2.json</c>. A null root
+    /// falls back to the per-user standard data root.
+    /// </summary>
+    public WorkspaceRegistry(string? dataRoot = null)
     {
-        var root = localAppData
-            ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var root = dataRoot
+            ?? LaunchPaths.ResolveStandardDataRoot(
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData));
         _storePath = Path.Combine(
             root,
-            "VibeTable",
             "shell",
             "workspace-registry-v2.json");
     }

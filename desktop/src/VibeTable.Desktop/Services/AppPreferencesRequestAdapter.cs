@@ -62,6 +62,12 @@ internal sealed class AppPreferencesRequestAdapter
         else
         {
             try { result = _preferences.Update(patch); }
+            catch (PortableModeWriteException exception)
+            {
+                TraceFailure("Portable mode switch", exception);
+                code = AppSettingsErrorCodes.PortableModeWriteFailed;
+                message = "无法启用便携模式：程序目录不可写。请将程序移动到可写位置后重试。";
+            }
             catch (Exception exception)
             {
                 TraceFailure("Application preferences update", exception);

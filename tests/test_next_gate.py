@@ -1429,8 +1429,8 @@ def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
     runtime_root = run_root / "_runtime" / "17" / runtime_relative
     runtime_root.mkdir(parents=True)
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
-    desktop_logs = runtime_root / "desktop-logs"
-    desktop_logs.mkdir()
+    desktop_logs = runtime_root / "desktop-logs" if helper else runtime_root / "local-data" / "logs"
+    desktop_logs.mkdir(parents=True)
     (desktop_logs / f"{log_prefix}.log").write_text("current host diagnostics", encoding="utf-8")
     (desktop_logs / f"{log_prefix}-20260816-010203040.log").write_text(
         "rotated one", encoding="utf-8"
@@ -1521,6 +1521,7 @@ def test_product_e2e_failure_evidence_without_desktop_logs_still_archives_report
     runtime_root.mkdir(parents=True)
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
     assert not (runtime_root / "desktop-logs").exists()
+    assert not (runtime_root / "local-data" / "logs").exists()
 
     destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
 
@@ -1573,7 +1574,8 @@ def test_product_e2e_failure_evidence_rejects_a_junctioned_desktop_logs_director
     (outside / f"{log_prefix}-20260101-010101111.log").write_text(
         "outside rotated log", encoding="utf-8"
     )
-    junction = runtime_root / "desktop-logs"
+    junction = runtime_root / "desktop-logs" if helper else runtime_root / "local-data" / "logs"
+    junction.parent.mkdir(parents=True, exist_ok=True)
     _create_junction(junction, outside)
     try:
         destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
@@ -1611,8 +1613,8 @@ def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
     runtime_relative = Path("controls/preview-host") if helper else Path("host")
     runtime_root = run_root / "_runtime" / "17" / runtime_relative
     runtime_root.mkdir(parents=True)
-    desktop_logs = runtime_root / "desktop-logs"
-    desktop_logs.mkdir()
+    desktop_logs = runtime_root / "desktop-logs" if helper else runtime_root / "local-data" / "logs"
+    desktop_logs.mkdir(parents=True)
     (desktop_logs / f"{log_prefix}.log").write_text("current host diagnostics", encoding="utf-8")
     (desktop_logs / f"{log_prefix}-20260102-020202222.log").write_text(
         "good rotated log", encoding="utf-8"
@@ -1668,16 +1670,13 @@ def test_product_e2e_passing_s42_retains_only_bounded_preview_logs(
         (logs / filename).write_text(filename, encoding="utf-8")
     (logs / "preview-9999.log").mkdir()
     (runtime / "vibetable-trace.log").write_text("not passing preview evidence", encoding="utf-8")
-    workspace_logs = (
-        runtime / "local-data" / "workspaces" / "workspace" / ".vibetable" / "temp" / "logs"
-    )
-    workspace_logs.mkdir(parents=True)
-    for filename in next_gate.PRODUCT_E2E_RUNTIME_LOGS:
-        (workspace_logs / filename).write_text("not passing preview evidence", encoding="utf-8")
-    for relative in ("42/host", "16/controls/preview-host"):
-        other = run_root / "_runtime" / relative / "desktop-logs"
-        other.mkdir(parents=True)
-        (other / "preview-3456.log").write_text("not S42 preview evidence", encoding="utf-8")
+    host_logs = run_root / "_runtime" / "42" / "host" / "local-data" / "logs"
+    host_logs.mkdir(parents=True)
+    for filename in ("desktop.log", "backend.log", "pocketbase.log"):
+        (host_logs / filename).write_text("not passing preview evidence", encoding="utf-8")
+    other = run_root / "_runtime" / "16" / "controls" / "preview-host" / "desktop-logs"
+    other.mkdir(parents=True)
+    (other / "preview-3456.log").write_text("not S42 preview evidence", encoding="utf-8")
 
     destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
 
@@ -1794,12 +1793,10 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     runtime_root = run_root / "_runtime" / "17" / "host"
     runtime_root.mkdir(parents=True)
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
-    workspace_logs = (
-        runtime_root / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
-    )
-    workspace_logs.mkdir(parents=True)
-    (workspace_logs / "backend.log").write_text("backend", encoding="utf-8")
-    (workspace_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
+    host_logs = runtime_root / "local-data" / "logs"
+    host_logs.mkdir(parents=True)
+    (host_logs / "backend.log").write_text("backend", encoding="utf-8")
+    (host_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
 
     destination = next_gate.persist_product_e2e_evidence(
         source_root,
@@ -1817,8 +1814,8 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert not (destination / passed_id).exists()
     copied_runtime = destination / "_runtime" / "17" / "host"
     assert (copied_runtime / "vibetable-trace.log").is_file()
-    assert (copied_runtime / "workspace-logs" / "workspace-id" / "backend.log").is_file()
-    assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
+    assert (copied_runtime / "backend.log").is_file()
+    assert (copied_runtime / "pocketbase.log").is_file()
 
 
 @pytest.mark.parametrize(
@@ -1922,15 +1919,13 @@ def test_product_e2e_failure_evidence_retains_replica_host_phases(tmp_path: Path
         runtime = run_root / "_runtime" / "24" / host / "host"
         runtime.mkdir(parents=True)
         (runtime / "vibetable-trace.log").write_text("host trace", encoding="utf-8")
-        logs = (
-            runtime / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
-        )
+        logs = runtime / "local-data" / "logs"
         logs.mkdir(parents=True)
         (logs / "backend.log").write_text("backend", encoding="utf-8")
         (logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
-        (runtime / "local-data" / "workspaces" / "workspace-id" / "workspace.db").write_text(
-            "private", encoding="utf-8"
-        )
+        private_workspace = runtime / "local-data" / "shell" / "workspaces" / "workspace-id"
+        private_workspace.mkdir(parents=True)
+        (private_workspace / "workspace.db").write_text("private", encoding="utf-8")
     destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
     assert destination is not None
     for phase in ("seed", "fork", "resolve", "reopen"):
@@ -1942,8 +1937,8 @@ def test_product_e2e_failure_evidence_retains_replica_host_phases(tmp_path: Path
     for host in ("left", "right"):
         runtime = destination / "_runtime" / "24" / host / "host"
         assert (runtime / "vibetable-trace.log").is_file()
-        assert (runtime / "workspace-logs" / "workspace-id" / "backend.log").is_file()
-        assert (runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
+        assert (runtime / "backend.log").is_file()
+        assert (runtime / "pocketbase.log").is_file()
         assert not (runtime / "local-data").exists()
 
 
@@ -2039,12 +2034,10 @@ def test_product_e2e_evidence_copies_only_the_latest_passed_report(
     runtime_root = latest_run / "_runtime" / "19" / "host"
     runtime_root.mkdir(parents=True)
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
-    workspace_logs = (
-        runtime_root / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
-    )
-    workspace_logs.mkdir(parents=True)
-    (workspace_logs / "backend.log").write_text("backend", encoding="utf-8")
-    (workspace_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
+    host_logs = runtime_root / "local-data" / "logs"
+    host_logs.mkdir(parents=True)
+    (host_logs / "backend.log").write_text("backend", encoding="utf-8")
+    (host_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
 
     destination = next_gate.persist_product_e2e_evidence(
         source_root,
@@ -2287,18 +2280,7 @@ def _s35_drain_line(
 
 
 def _write_s35_drain_lines(run: Path, lines: list[str]) -> None:
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "pocketbase.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -2534,18 +2516,7 @@ def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
     status: str,
 ) -> None:
     run = _s35_audit_drain_run(tmp_path, status)
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "3eb51dfa-e249-44e1-bf06-2767f64ffd27"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
     (logs / "backend.log").write_text("backend secret body", encoding="utf-8")
     (logs / "pocketbase.log").write_text(
@@ -2591,15 +2562,7 @@ def test_product_e2e_evidence_archives_bounded_s35_audit_drain_measurements(
     else:
         # The existing failure diagnostics logic is unchanged and still
         # archives the fixed runtime log whitelist next to the projection.
-        assert (
-            destination
-            / "_runtime"
-            / "35"
-            / "host"
-            / "workspace-logs"
-            / "3eb51dfa-e249-44e1-bf06-2767f64ffd27"
-            / "pocketbase.log"
-        ).is_file()
+        assert (destination / "_runtime" / "35" / "host" / "pocketbase.log").is_file()
 
 
 def test_product_e2e_evidence_marks_missing_s35_audit_drain_logs_as_empty(
@@ -2644,18 +2607,7 @@ def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
     audit_drain: dict[str, object],
 ) -> None:
     run = _s35_audit_drain_run(tmp_path, "failed")
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
     (logs / "pocketbase.log").write_text(
         json.dumps(
@@ -2687,18 +2639,7 @@ def test_product_e2e_evidence_ignores_illegal_s35_audit_drain_values(
 
 def test_product_e2e_evidence_reads_rotated_s35_audit_drain_logs(tmp_path: Path) -> None:
     run = _s35_audit_drain_run(tmp_path, "passed")
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
     (logs / "pocketbase.log").write_text(
         json.dumps({"event": "sidecar.starting", "timestamp": "2026-10-21T13:12:31Z"}) + "\n",
@@ -2743,18 +2684,7 @@ def test_product_e2e_evidence_ignores_s35_logs_with_unrecognized_rotation_names(
     tmp_path: Path,
 ) -> None:
     run = _s35_audit_drain_run(tmp_path, "passed")
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
 
     def drain_line(source: str, operation_id: str) -> str:
@@ -2802,18 +2732,7 @@ def test_product_e2e_evidence_skips_symlinked_rotated_s35_audit_drain_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = _s35_audit_drain_run(tmp_path, "passed")
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
 
     def drain_line(source: str, operation_id: str) -> str:
@@ -2857,7 +2776,7 @@ def test_product_e2e_evidence_skips_symlinked_rotated_s35_audit_drain_log(
     assert "op-linked" not in serialized
 
 
-S35_AUDIT_DRAIN_CHAIN = ("workspaces", "ws", ".vibetable", "temp", "logs")
+S35_AUDIT_DRAIN_CHAIN = ("local-data", "logs")
 
 
 @pytest.mark.parametrize("junctioned", S35_AUDIT_DRAIN_CHAIN)
@@ -2915,18 +2834,7 @@ def test_product_e2e_evidence_caps_s35_audit_drain_entries_explicitly(
     tmp_path: Path,
 ) -> None:
     run = _s35_audit_drain_run(tmp_path, "passed")
-    logs = (
-        run
-        / "_runtime"
-        / "35"
-        / "host"
-        / "local-data"
-        / "workspaces"
-        / "ws"
-        / ".vibetable"
-        / "temp"
-        / "logs"
-    )
+    logs = run / "_runtime" / "35" / "host" / "local-data" / "logs"
     logs.mkdir(parents=True)
     lines = [
         json.dumps(

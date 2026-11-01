@@ -11,8 +11,11 @@
   <ItemGroup>
     <!-- Desktop startup keeps path helpers internal to the host boundary. -->
     <InternalsVisibleTo Include="VibeTable.Desktop" />
-    <!-- Infrastructure tests exercise internal launch and sidecar boundaries. -->
+    <!-- Infrastructure tests exercise internal launch and sidecar boundaries;
+         desktop tests exercise the portable-mode/data-root services built on
+         those same internal path helpers. -->
     <InternalsVisibleTo Include="VibeTable.Infrastructure.Tests" />
+    <InternalsVisibleTo Include="VibeTable.Desktop.Tests" />
   </ItemGroup>
 
 </Project>

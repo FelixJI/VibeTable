@@ -64,9 +64,19 @@
     "contracts": "2.0"
   },
   "data": {
-    "shellRoot": "%LOCALAPPDATA%/VibeTable/shell",
-    "managedWorkspaceRoot": "%LOCALAPPDATA%/VibeTable/shell/workspaces/<workspaceId>",
-    "mirroredActivityRoot": "%LOCALAPPDATA%/VibeTable/activity/<workspaceId>",
+    "modes": {
+      "standard": {
+        "dataRoot": "%LOCALAPPDATA%/VibeTable"
+      },
+      "portable": {
+        "dataRoot": "<install>/data"
+      }
+    },
+    "modeSwitch": "migrate-on-restart",
+    "shellRoot": "<dataRoot>/shell",
+    "managedWorkspaceRoot": "<dataRoot>/shell/workspaces/<workspaceId>",
+    "mirroredActivityRoot": "<dataRoot>/activity/<workspaceId>",
+    "logsRoot": "<dataRoot>/logs",
     "workspaceIdentity": "manifest-uuid",
     "preserveOnUninstall": true
   }

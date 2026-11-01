@@ -57,6 +57,7 @@ internal sealed class AppPreferencesUseCases
         return new AppSettingsPreferences(
             CurrentPreferences.MinimizeToTrayOnClose,
             CurrentPreferences.StartWithWindows,
+            CurrentPreferences.PortableMode,
             CurrentPreferences.UpdateProxy,
             CurrentPreferences.CustomUpdateProxyUrl ?? "",
             CurrentPreferences.Theme,

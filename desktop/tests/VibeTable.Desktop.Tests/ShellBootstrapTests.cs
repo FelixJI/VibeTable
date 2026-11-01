@@ -23,12 +23,10 @@ public sealed class ShellBootstrapTests
     public async Task CorruptRegistryDoesNotBlockGlobalShell()
     {
         using var fixture = new ShellFixture();
-        Directory.CreateDirectory(
-            Path.Combine(fixture.Root, "VibeTable", "shell"));
+        Directory.CreateDirectory(Path.Combine(fixture.Root, "shell"));
         File.WriteAllText(
             Path.Combine(
                 fixture.Root,
-                "VibeTable",
                 "shell",
                 "workspace-registry-v2.json"),
             "{not-json");

@@ -58,6 +58,7 @@ describe("generated app-settings wire contract", () => {
           "effectiveTheme",
           "highContrast",
           "minimizeToTrayOnClose",
+          "portableMode",
           "startWithWindows",
           "theme",
           "updateProxy",
@@ -108,6 +109,7 @@ describe("generated app-settings wire contract", () => {
     const decoded = decodeAppPreferencesResult({
       minimizeToTrayOnClose: true,
       startWithWindows: true,
+      portableMode: false,
       updateProxy: "ghProxyCom",
       customUpdateProxyUrl: "https://p.example/",
       theme: null,
@@ -117,6 +119,7 @@ describe("generated app-settings wire contract", () => {
     expect(decoded).toEqual({
       minimizeToTrayOnClose: true,
       startWithWindows: true,
+      portableMode: false,
       updateProxy: "ghProxyCom",
       customUpdateProxyUrl: "https://p.example/",
       theme: null,

@@ -281,7 +281,14 @@ class PluginPlatformService:
             raise ValueError("plugin rollback package is unavailable")
         rollback_path = rollback_revision.local_path
         if not self._package_lifecycle.is_available(rollback_path):
-            raise ValueError("plugin rollback package is missing")
+            # 数据根迁移（标准⇄便携或便携目录移动）后，历史修订持久化的绝对
+            # local_path 会指向旧缓存位置。缓存按内容寻址，改按当前缓存根与
+            # package_hash 重算保留包位置；仍不存在才视为缺失。
+            relocated = self._package_lifecycle.retained_location(rollback_revision.package_hash)
+            if self._package_lifecycle.is_available(relocated):
+                rollback_path = relocated
+            else:
+                raise ValueError("plugin rollback package is missing")
         inspected = self._package_lifecycle.inspect(rollback_path)
         if (
             inspected.package_hash != rollback_revision.package_hash

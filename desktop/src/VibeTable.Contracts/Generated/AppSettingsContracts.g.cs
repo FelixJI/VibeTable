@@ -50,6 +50,8 @@ public sealed record AppSettingsPreferences(
     bool MinimizeToTrayOnClose,
     [property: JsonPropertyName("startWithWindows")]
     bool StartWithWindows,
+    [property: JsonPropertyName("portableMode")]
+    bool PortableMode,
     [property: JsonPropertyName("updateProxy")]
     string UpdateProxy,
     [property: JsonPropertyName("customUpdateProxyUrl")]
@@ -87,6 +89,7 @@ public sealed record AppSettingsOperationFailed(
 public sealed record AppSettingsPreferencesPatch(
     bool? MinimizeToTrayOnClose = null,
     bool? StartWithWindows = null,
+    bool? PortableMode = null,
     string? UpdateProxy = null,
     string? CustomUpdateProxyUrl = null,
     bool HasCustomUpdateProxyUrl = false,
@@ -107,6 +110,8 @@ public static class AppSettingsPatchReader
         bool sawMinimizeToTrayOnClose = false;
         bool? startWithWindows = null;
         bool sawStartWithWindows = false;
+        bool? portableMode = null;
+        bool sawPortableMode = false;
         string? updateProxy = null;
         bool sawUpdateProxy = false;
         string? customUpdateProxyUrl = null;
@@ -133,6 +138,15 @@ public static class AppSettingsPatchReader
                     return false;
                 sawStartWithWindows = true;
                 startWithWindows = property.Value.GetBoolean();
+                continue;
+            }
+            if (property.NameEquals("portableMode"))
+            {
+                if (sawPortableMode || property.Value.ValueKind is not
+                        (JsonValueKind.True or JsonValueKind.False))
+                    return false;
+                sawPortableMode = true;
+                portableMode = property.Value.GetBoolean();
                 continue;
             }
             if (property.NameEquals("updateProxy"))
@@ -177,14 +191,14 @@ public static class AppSettingsPatchReader
             }
             return false;
         }
-        if (!sawMinimizeToTrayOnClose && !sawStartWithWindows && !sawUpdateProxy && !sawCustomUpdateProxyUrl && !sawTheme && !sawAdoptLegacyTheme)
+        if (!sawMinimizeToTrayOnClose && !sawStartWithWindows && !sawPortableMode && !sawUpdateProxy && !sawCustomUpdateProxyUrl && !sawTheme && !sawAdoptLegacyTheme)
             return false;
         if (sawTheme && sawAdoptLegacyTheme)
             return false;
-        if (sawAdoptLegacyTheme && (sawMinimizeToTrayOnClose || sawStartWithWindows || sawUpdateProxy || sawCustomUpdateProxyUrl || sawTheme))
+        if (sawAdoptLegacyTheme && (sawMinimizeToTrayOnClose || sawStartWithWindows || sawPortableMode || sawUpdateProxy || sawCustomUpdateProxyUrl || sawTheme))
             return false;
         patch = new AppSettingsPreferencesPatch(
-            minimizeToTrayOnClose, startWithWindows, updateProxy, customUpdateProxyUrl, sawCustomUpdateProxyUrl, theme, sawTheme, adoptLegacyTheme, sawAdoptLegacyTheme);
+            minimizeToTrayOnClose, startWithWindows, portableMode, updateProxy, customUpdateProxyUrl, sawCustomUpdateProxyUrl, theme, sawTheme, adoptLegacyTheme, sawAdoptLegacyTheme);
         return true;
     }
 }
@@ -195,4 +209,5 @@ public static class AppSettingsErrorCodes
     public const string BadPayload = "APP_PREFERENCES_BAD_PAYLOAD";
     public const string ReadFailed = "APP_PREFERENCES_READ_FAILED";
     public const string WriteFailed = "APP_PREFERENCES_WRITE_FAILED";
+    public const string PortableModeWriteFailed = "PORTABLE_MODE_WRITE_FAILED";
 }

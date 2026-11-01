@@ -16,6 +16,8 @@ export interface RuntimeDiagnostics {
   readonly dotnetVersion: string;
   readonly pocketBaseVersion: string;
   readonly memoryBytes: number;
+  readonly dataDirectory: string;
+  readonly logsDirectory: string;
   readonly components: readonly { readonly component: string; readonly state: string }[];
   readonly jobs: {
     readonly queued: number; readonly running: number; readonly succeeded: number;

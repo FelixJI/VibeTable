@@ -509,8 +509,8 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         try
         {
             await using var factory = new ProductionWorkspaceRuntimeFactory(
-                _sidecarOptions,
-                _backendOptions);
+                () => _sidecarOptions().WithLogPath(null),
+                () => _backendOptions().WithLogPath(null));
             var onboarding = new WorkspaceRepositoryOnboardingService(
                 _sidecarOptions,
                 factory.PrepareRepositoryOnboarding);
@@ -557,9 +557,13 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             Task<WorkspaceV2ForwardResult>> operation,
         CancellationToken cancellationToken)
     {
+        // Transient runtimes run alongside the resident workspace runtime
+        // and must not contend for its exclusive log sinks; they keep
+        // diagnostics in the supervisor's in-memory buffers instead of the
+        // shared unified log files.
         await using var factory = new ProductionWorkspaceRuntimeFactory(
-            _sidecarOptions,
-            _backendOptions,
+            () => _sidecarOptions().WithLogPath(null),
+            () => _backendOptions().WithLogPath(null),
             [target]);
         ulong epoch = checked(factory.InitialSessionEpoch + 1);
         await using IWorkspaceRuntime runtime = factory.Create(target, epoch);
@@ -706,9 +710,13 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         Guid importOperationId,
         CancellationToken cancellationToken)
     {
+        // Transient runtimes run alongside the resident workspace runtime
+        // and must not contend for its exclusive log sinks; they keep
+        // diagnostics in the supervisor's in-memory buffers instead of the
+        // shared unified log files.
         await using var factory = new ProductionWorkspaceRuntimeFactory(
-            _sidecarOptions,
-            _backendOptions,
+            () => _sidecarOptions().WithLogPath(null),
+            () => _backendOptions().WithLogPath(null),
             [target]);
         ulong importEpoch = checked(factory.InitialSessionEpoch + 1);
         Guid snapshotId;

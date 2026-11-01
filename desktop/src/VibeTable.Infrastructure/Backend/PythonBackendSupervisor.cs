@@ -966,7 +966,7 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
         {
             lock (_stderr)
             {
-                _stderr.AppendLine(line);
+                BoundedLogBuffer.AppendLine(_stderr, line);
             }
         }
 

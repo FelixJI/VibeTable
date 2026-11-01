@@ -908,7 +908,7 @@ def _handle_storage_proof(
         }
     data_db = local_data / "pocketbase" / "data.db"
     if not data_db.is_file():
-        registry_path = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
+        registry_path = local_data / "shell" / "workspace-registry-v2.json"
         try:
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
             workspaces = registry.get("workspaces")
@@ -1186,7 +1186,7 @@ def _file_restore_storage_proof(request: Mapping[str, Any], local_data: Path) ->
     for value in (workspace_id, operation_id):
         if not isinstance(value, str) or str(uuid.UUID(value)) != value:
             raise ValueError("Restore crash proof requires canonical UUIDs")
-    root = local_data / "workspaces" / workspace_id
+    root = local_data / "shell" / "workspaces" / workspace_id
     if _resolve_persistent_workspace_root(root, local_data.parent, workspace_id) != root.resolve():
         raise ValueError("Restore crash proof requires this Host's registered synthetic root")
     metadata = root / ".vibetable"
@@ -1482,7 +1482,7 @@ def _document_native_source(request: Mapping[str, Any], local_data: Path, contro
         expected = f"VibeTable Task 415 native FileDocument\n{relative}\n"
     if str(uuid.UUID(fixture_id)) != fixture_id:
         raise ValueError("native observation fixture UUID must be canonical")
-    workspace = local_data / "workspaces" / request["workspaceId"]
+    workspace = local_data / "shell" / "workspaces" / request["workspaceId"]
     source = workspace / "files" / relative
     for path in (source, workspace / ".vibetable/workspace.json", controls / "document-drop"):
         for entry in (path, *path.parents):
@@ -4451,9 +4451,7 @@ def _resolve_persistent_workspace_root(
     """Bind the created UUID to its registered picker or managed-default root."""
     if not isinstance(workspace_id, str) or not workspace_id:
         return None
-    registry = _read_json(
-        readiness_dir / "local-data" / "VibeTable" / "shell" / "workspace-registry-v2.json"
-    )
+    registry = _read_json(readiness_dir / "local-data" / "shell" / "workspace-registry-v2.json")
     if registry is None:
         return None
     workspaces = registry.get("workspaces")
@@ -4470,7 +4468,7 @@ def _resolve_persistent_workspace_root(
     if not selected_root.is_absolute():
         return None
     selected_root = selected_root.resolve()
-    managed_parent = (readiness_dir / "local-data" / "workspaces").resolve()
+    managed_parent = (readiness_dir / "local-data" / "shell" / "workspaces").resolve()
     is_managed_root = selected_root.parent == managed_parent and selected_root.name == workspace_id
     if selected_root != workspace_root.resolve() and not is_managed_root:
         return None

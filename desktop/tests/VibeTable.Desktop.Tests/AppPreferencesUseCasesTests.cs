@@ -36,7 +36,7 @@ public sealed class AppPreferencesUseCasesTests
 
         fixture.Events.Clear();
         var reopened = new AppPreferencesUseCases(
-            new AppPreferencesService(new JsonAppPreferencesStore(fixture.Path), fixture.Startup),
+            new AppPreferencesService(new JsonAppPreferencesStore(fixture.Path), fixture.Startup, new InMemoryPortableModeStore()),
             fixture.Effects, AppPreferences.Default);
         Assert.AreEqual(result, reopened.Get());
         CollectionAssert.AreEqual(new[] { "startup.read", "apply", "project" }, fixture.Events);
@@ -138,7 +138,7 @@ internal sealed class AppPreferencesFixture : IDisposable
         Store = new CountingStore(Path, Events);
         Startup = new CountingStartup(Events);
         Effects = new CountingEffects(Events);
-        UseCases = new AppPreferencesUseCases(new AppPreferencesService(Store, Startup), Effects, AppPreferences.Default);
+        UseCases = new AppPreferencesUseCases(new AppPreferencesService(Store, Startup, new InMemoryPortableModeStore()), Effects, AppPreferences.Default);
     }
 
     public string Path { get; }

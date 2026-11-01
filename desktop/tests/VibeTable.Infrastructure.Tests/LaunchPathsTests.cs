@@ -32,15 +32,46 @@ public sealed class LaunchPathsTests
     }
 
     [TestMethod]
-    public void ProductDataLivesOutsideInstall()
+    public void StandardDataRootLivesOutsideInstall()
     {
         string local = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         string install = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
 
-        string data = LaunchPaths.ResolveDataRoot(local);
+        string data = LaunchPaths.ResolveStandardDataRoot(local);
         LaunchPaths.EnsureInstallAndDataAreSeparated(install, data);
 
-        StringAssert.EndsWith(data, Path.Combine("VibeTable", "data"));
+        StringAssert.EndsWith(data, "VibeTable");
+    }
+
+    [TestMethod]
+    public void PortableMarkerSelectsTheInstallDataDirectory()
+    {
+        string baseDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-portable-" + Guid.NewGuid().ToString("N"));
+        string local = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        string dataRoot = LaunchPaths.ResolvePortableDataRoot(baseDirectory);
+        Directory.CreateDirectory(dataRoot);
+        try
+        {
+            Assert.IsFalse(LaunchPaths.IsPortableMode(baseDirectory));
+            Assert.AreEqual(
+                LaunchPaths.ResolveStandardDataRoot(local),
+                LaunchPaths.ResolveProductDataRoot(baseDirectory, local));
+
+            File.WriteAllText(
+                Path.Combine(dataRoot, LaunchPaths.PortableModeMarkerFileName),
+                string.Empty);
+
+            Assert.IsTrue(LaunchPaths.IsPortableMode(baseDirectory));
+            Assert.AreEqual(
+                dataRoot,
+                LaunchPaths.ResolveProductDataRoot(baseDirectory, local));
+        }
+        finally
+        {
+            Directory.Delete(baseDirectory, recursive: true);
+        }
     }
 
     [TestMethod]

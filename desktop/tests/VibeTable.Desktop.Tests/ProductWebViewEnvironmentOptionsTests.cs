@@ -78,23 +78,17 @@ public sealed class ProductWebViewEnvironmentOptionsTests
     }
 
     [TestMethod]
-    public void ResolveUserDataFolder_UsesOneStableProductionProfileAcrossProcesses()
+    public void ResolveUserDataFolder_FallsBackToTempOnlyWithoutARoot()
     {
-        string localAppData = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-production-profile-root");
-
         string first = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
             isolatedRoot: null,
             processId: 101);
         string second = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
             isolatedRoot: null,
             processId: 202);
 
         string expected = Path.Combine(
-            Path.GetFullPath(localAppData),
+            Path.GetTempPath(),
             "VibeTable",
             "webview2-udd");
         Assert.AreEqual(expected, first);
@@ -106,19 +100,14 @@ public sealed class ProductWebViewEnvironmentOptionsTests
     [TestMethod]
     public void ResolveUserDataFolder_IsolatesOnlyAnExplicitE2eRootByProcess()
     {
-        string localAppData = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-production-profile-root");
         string e2eRoot = Path.Combine(
             Path.GetTempPath(),
             "vibetable-e2e-profile-root");
 
         string first = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
             e2eRoot,
             processId: 101);
         string second = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
             e2eRoot,
             processId: 202);
 
@@ -132,27 +121,22 @@ public sealed class ProductWebViewEnvironmentOptionsTests
     }
 
     [TestMethod]
-    public void ResolveUserDataFolder_ReusesExplicitDevelopmentProfile()
+    public void ResolveUserDataFolder_ReusesExplicitDataRootProfile()
     {
-        string localAppData = Path.Combine(
+        string dataRootProfile = Path.Combine(
             Path.GetTempPath(),
-            "vibetable-production-profile-root");
-        string developmentRoot = Path.Combine(
-            Path.GetTempPath(),
-            "vibetable-development-profile-root");
+            "vibetable-data-root-profile");
 
         string first = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
-            developmentRoot,
+            dataRootProfile,
             processId: 101,
             stableIsolatedRoot: true);
         string second = ProductWebViewBridge.ResolveUserDataFolder(
-            localAppData,
-            developmentRoot,
+            dataRootProfile,
             processId: 202,
             stableIsolatedRoot: true);
 
-        Assert.AreEqual(Path.GetFullPath(developmentRoot), first);
+        Assert.AreEqual(Path.GetFullPath(dataRootProfile), first);
         Assert.AreEqual(first, second);
     }
 }

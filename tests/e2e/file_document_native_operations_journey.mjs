@@ -71,7 +71,7 @@ export async function runFileDocumentNativeOperationsJourney(page, recorder, run
   const fixture = fileDocumentNativeFixture();
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   const workspaceId = session.workspaceId;
-  const workspaceRoot = path.join(runtime.dataRoot, "workspaces", workspaceId);
+  const workspaceRoot = path.join(runtime.dataRoot, "shell", "workspaces", workspaceId);
   const manifest = await readJson(path.join(workspaceRoot, ".vibetable", "workspace.json"));
   recorder.check("native FileDocument fixture belongs to the current manifest UUID",
     manifest?.workspaceId === workspaceId && Number.isSafeInteger(session.sessionEpoch)

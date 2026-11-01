@@ -974,10 +974,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         string? isolatedRoot = _isolatedUserDataRoot
             ?? Environment.GetEnvironmentVariable(
                 "VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT");
-        string localAppData = Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData);
         string folder = ResolveUserDataFolder(
-            localAppData,
             isolatedRoot,
             Environment.ProcessId,
             _stableIsolatedUserDataRoot);
@@ -988,6 +985,9 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         }
         catch
         {
+            // The WebView2 profile is disposable cache; when the configured
+            // root cannot be created (read-only location), degrade to TEMP
+            // instead of failing the shell.
             string fallbackRoot = Path.Combine(
                 Path.GetTempPath(),
                 "VibeTable",
@@ -997,11 +997,10 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 && Path.IsPathFullyQualified(isolatedRoot)
                     ? Path.Combine(
                         fallbackRoot,
-                        _stableIsolatedUserDataRoot ? "dev" : "e2e")
+                        _stableIsolatedUserDataRoot ? "stable" : "e2e")
                     : null;
             folder = ResolveUserDataFolder(
-                fallbackRoot,
-                fallbackIsolatedRoot,
+                fallbackIsolatedRoot ?? fallbackRoot,
                 Environment.ProcessId,
                 _stableIsolatedUserDataRoot);
             Directory.CreateDirectory(folder);
@@ -1009,8 +1008,13 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         }
     }
 
+    /// <summary>
+    /// The composition root always supplies the data-root-scoped profile
+    /// folder; the E2E environment override and per-process isolation remain
+    /// for redirected scenarios. A missing root (defensive only) lands in
+    /// TEMP so a misconfigured host still renders.
+    /// </summary>
     internal static string ResolveUserDataFolder(
-        string localAppData,
         string? isolatedRoot,
         int processId,
         bool stableIsolatedRoot = false)
@@ -1027,7 +1031,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 $"p{processId}");
         }
         return Path.Combine(
-            Path.GetFullPath(localAppData),
+            Path.GetTempPath(),
             "VibeTable",
             "webview2-udd");
     }

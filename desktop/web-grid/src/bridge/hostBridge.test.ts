@@ -581,7 +581,7 @@ describe("HostBridge", () => {
       ? { updateAvailable: false }
       : {
           minimizeToTrayOnClose: false,
-          startWithWindows: false,
+          startWithWindows: false,          portableMode: false,
           updateProxy: "direct",
           customUpdateProxyUrl: "",
           theme: null,
@@ -711,7 +711,7 @@ describe("HostBridge", () => {
       requestId: "preferences-get",
       payload: {
         minimizeToTrayOnClose: false,
-        startWithWindows: false,
+        startWithWindows: false,        portableMode: false,
         updateProxy: "direct",
         customUpdateProxyUrl: "",
         theme: null,
@@ -721,7 +721,7 @@ describe("HostBridge", () => {
     });
     await expect(get).resolves.toEqual({
       minimizeToTrayOnClose: false,
-      startWithWindows: false,
+      startWithWindows: false,      portableMode: false,
       updateProxy: "direct",
       customUpdateProxyUrl: "",
       theme: null,
@@ -742,7 +742,7 @@ describe("HostBridge", () => {
       requestId: "preferences-update",
       payload: {
         minimizeToTrayOnClose: true,
-        startWithWindows: false,
+        startWithWindows: false,        portableMode: false,
         updateProxy: "direct",
         customUpdateProxyUrl: "",
         theme: null,
@@ -752,7 +752,7 @@ describe("HostBridge", () => {
     });
     await expect(update).resolves.toEqual({
       minimizeToTrayOnClose: true,
-      startWithWindows: false,
+      startWithWindows: false,      portableMode: false,
       updateProxy: "direct",
       customUpdateProxyUrl: "",
       theme: null,
@@ -781,7 +781,7 @@ describe("HostBridge", () => {
       requestId: "malformed-update",
       payload: {
         minimizeToTrayOnClose: false,
-        startWithWindows: false,
+        startWithWindows: false,        portableMode: false,
         updateProxy: "direct",
         customUpdateProxyUrl: "",
         effectiveTheme: "dark",

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VibeTable.Infrastructure.Diagnostics;
@@ -17,7 +18,8 @@ public sealed record RuntimeDiagnosticsInput(
     string SidecarLog,
     string BackendLog,
     JsonElement? WorkspaceSummary,
-    string? WorkspaceDiagnosticsError = null);
+    string? WorkspaceDiagnosticsError = null,
+    string DataRoot = "");
 
 public sealed record RuntimeComponentHealth(
     [property: JsonPropertyName("component")] string Component,
@@ -76,6 +78,8 @@ public sealed record RuntimeDiagnosticsBundle(
     [property: JsonPropertyName("dotnetVersion")] string DotnetVersion,
     [property: JsonPropertyName("pocketBaseVersion")] string PocketBaseVersion,
     [property: JsonPropertyName("memoryBytes")] long MemoryBytes,
+    [property: JsonPropertyName("dataDirectory")] string DataDirectory,
+    [property: JsonPropertyName("logsDirectory")] string LogsDirectory,
     [property: JsonPropertyName("components")] IReadOnlyList<RuntimeComponentHealth> Components,
     [property: JsonPropertyName("jobs")] RuntimeJobStatus Jobs,
     [property: JsonPropertyName("index")] RuntimeIndexStatus Index,
@@ -92,15 +96,16 @@ public sealed record RuntimeDiagnosticsBundle(
 /// </summary>
 public static class RuntimeDiagnosticsBundleService
 {
+    /// <summary>Upper bound of log entries carried by one bundle.</summary>
+    public const int MaximumLogEntries = 100;
+
     public static RuntimeDiagnosticsBundle Build(RuntimeDiagnosticsInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
-        RuntimeDiagnosticLogEntry[] logs = ParseLogs(input.DesktopLog)
-            .Concat(ParseLogs(input.SidecarLog))
-            .Concat(ParseLogs(input.BackendLog))
-            .OrderByDescending(item => item.Timestamp, StringComparer.Ordinal)
-            .Take(100)
-            .ToArray();
+        RuntimeDiagnosticLogEntry[] logs = SelectRecentLogs(
+            ParseLogs(input.DesktopLog)
+                .Concat(ParseLogs(input.SidecarLog))
+                .Concat(ParseLogs(input.BackendLog)));
         RuntimeErrorCount[] counts = logs
             .Where(item => item.ErrorCode is not null)
             .GroupBy(item => item.ErrorCode!, StringComparer.Ordinal)
@@ -121,6 +126,10 @@ public static class RuntimeDiagnosticsBundleService
             input.DotnetVersion,
             input.PocketBaseVersion,
             input.MemoryBytes,
+            input.DataRoot,
+            string.IsNullOrEmpty(input.DataRoot)
+                ? ""
+                : Path.Combine(input.DataRoot, "logs"),
             [
                 new RuntimeComponentHealth("desktop", input.DesktopState),
                 new RuntimeComponentHealth("sidecar", input.SidecarState),
@@ -133,6 +142,35 @@ public static class RuntimeDiagnosticsBundleService
             counts,
             logs);
     }
+
+    /// <summary>
+    /// Error and critical lines win the bounded budget first so a burst of
+    /// routine events cannot push the failure evidence out of the bundle;
+    /// the remaining slots keep the newest lines of any level.
+    /// </summary>
+    private static RuntimeDiagnosticLogEntry[] SelectRecentLogs(
+        IEnumerable<RuntimeDiagnosticLogEntry> parsed)
+    {
+        RuntimeDiagnosticLogEntry[] newestFirst = parsed
+            .OrderByDescending(item => item.Timestamp, StringComparer.Ordinal)
+            .ToArray();
+        RuntimeDiagnosticLogEntry[] errors = newestFirst
+            .Where(IsErrorLevel)
+            .Take(MaximumLogEntries)
+            .ToArray();
+        return errors.Length >= MaximumLogEntries
+            ? errors
+            : errors
+                .Concat(newestFirst
+                    .Where(item => !IsErrorLevel(item))
+                    .Take(MaximumLogEntries - errors.Length))
+                .OrderByDescending(item => item.Timestamp, StringComparer.Ordinal)
+                .ToArray();
+    }
+
+    private static bool IsErrorLevel(RuntimeDiagnosticLogEntry entry) =>
+        string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(entry.Level, "critical", StringComparison.OrdinalIgnoreCase);
 
     private static RuntimeWorkspaceDiagnosticsStatus WorkspaceDiagnosticsStatus(
         RuntimeDiagnosticsInput input)

@@ -560,7 +560,9 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             ExecutablePath = sidecarTemplate.ExecutablePath,
             WorkingDirectory = sidecarTemplate.WorkingDirectory,
             DataDirectory = paths.Data,
-            LogPath = Path.Combine(paths.Temp, "logs", "pocketbase.log"),
+            // All component logs share the data root's logs directory; the
+            // template already resolves it for the active data root.
+            LogPath = sidecarTemplate.LogPath,
             DevelopmentMode = sidecarTemplate.DevelopmentMode,
             StartupTimeout = sidecarTemplate.StartupTimeout,
             StopTimeout = sidecarTemplate.StopTimeout,
@@ -588,7 +590,9 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             WorkingDirectory = backendTemplate.WorkingDirectory,
             StartupTimeout = backendTemplate.StartupTimeout,
             StopTimeout = backendTemplate.StopTimeout,
-            LogPath = Path.Combine(paths.Temp, "logs", "backend.log"),
+            // All component logs share the data root's logs directory; the
+            // composition root already resolves it on the template.
+            LogPath = backendTemplate.LogPath,
         };
         foreach ((string key, string value) in backendTemplate.Environment)
             result.Environment[key] = value;

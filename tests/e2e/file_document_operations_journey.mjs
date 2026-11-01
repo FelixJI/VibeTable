@@ -116,11 +116,11 @@ async function workspace(page, recorder, runtime, helpers) {
   await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   assert.match(session.workspaceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  const root = path.resolve(runtime.dataRoot, "workspaces", session.workspaceId);
+  const root = path.resolve(runtime.dataRoot, "shell", "workspaces", session.workspaceId);
   const manifest = JSON.parse(await fs.readFile(path.join(root, ".vibetable", "workspace.json"), "utf8"));
   recorder.check("file operations bind the synthetic managed root to its manifest UUID",
     manifest.workspaceId === session.workspaceId
-      && path.dirname(root) === path.resolve(runtime.dataRoot, "workspaces"), { session, root });
+      && path.dirname(root) === path.resolve(runtime.dataRoot, "shell", "workspaces"), { session, root });
   return { workspaceId: session.workspaceId, root, files: path.join(root, "files") };
 }
 

@@ -29,6 +29,7 @@
     "fields": [
       { "name": "minimizeToTrayOnClose", "type": "boolean", "optional": false },
       { "name": "startWithWindows", "type": "boolean", "optional": false },
+      { "name": "portableMode", "type": "boolean", "optional": false, "notes": "host projects the portable-mode marker file beside the executable; never persisted in app-preferences.json" },
       { "name": "updateProxy", "type": "enum", "enum": "updateProxy", "optional": false },
       { "name": "customUpdateProxyUrl", "type": "string", "optional": false, "notes": "host projects the persisted nullable value as the empty string" },
       { "name": "theme", "type": "enum", "enum": "themePreference", "optional": false, "nullable": true, "notes": "null means not configured and is distinct from an explicit system choice; the key itself is required" },
@@ -41,6 +42,7 @@
     "fields": [
       { "name": "minimizeToTrayOnClose", "type": "boolean", "optional": true },
       { "name": "startWithWindows", "type": "boolean", "optional": true },
+      { "name": "portableMode", "type": "boolean", "optional": true, "notes": "arms the mode switch: writes/removes the marker and records a pending migration applied on next launch; rejected when the executable directory is not writable" },
       { "name": "updateProxy", "type": "enum", "enum": "updateProxy", "optional": true },
       { "name": "customUpdateProxyUrl", "type": "string", "optional": true, "maxLengthUtf16Units": 2048 },
       { "name": "theme", "type": "enum", "enum": "themePreference", "optional": true },
@@ -80,6 +82,10 @@
     {
       "code": "APP_PREFERENCES_WRITE_FAILED",
       "when": "persisting an accepted update fails; the write outcome is not inferable as not-committed because appearance/native effects may already have run"
+    },
+    {
+      "code": "PORTABLE_MODE_WRITE_FAILED",
+      "when": "enabling portable mode cannot create the marker beside the executable (read-only location); nothing was changed"
     }
   ]
 }

@@ -148,8 +148,8 @@ watchdog 监视精确 worker 身份。worker 在 terminal 状态前异常退出�
 - `release.json`
 - `resources/`
 
-worker 不枚举、不移动、不删除安装根中的其他条目，也不访问 `%LOCALAPPDATA%`、workspace、偏好或
-业务数据库。每个 owned entry 都使用写前 ledger：先持久化即将隔离新版入口，再执行
+worker 不枚举、不移动、不删除安装根中的其他条目（包括便携模式的 `data/` 数据根），
+也不访问 `%LOCALAPPDATA%`、workspace、偏好或业务数据库。每个 owned entry 都使用写前 ledger：先持久化即将隔离新版入口，再执行
 `target → failed-package`；先持久化即将恢复旧入口，再执行 `backup → target`。进程崩溃后只在
 ledger 与精确磁盘位置能够互相证明时继续；任何歧义都转为 `rollbackFailed`。
 

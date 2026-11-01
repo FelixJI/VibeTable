@@ -22,6 +22,7 @@ export type EffectiveBaseTheme = "light" | "dark";
 export interface AppPreferences {
   readonly minimizeToTrayOnClose: boolean;
   readonly startWithWindows: boolean;
+  readonly portableMode: boolean;
   readonly updateProxy: UpdateProxyId;
   readonly customUpdateProxyUrl: string;
   readonly theme: ThemePreference | null;
@@ -32,6 +33,7 @@ export interface AppPreferences {
 export interface AppPreferencesUpdate {
   readonly minimizeToTrayOnClose?: boolean;
   readonly startWithWindows?: boolean;
+  readonly portableMode?: boolean;
   readonly updateProxy?: UpdateProxyId;
   readonly customUpdateProxyUrl?: string;
   readonly theme?: ThemePreference;
@@ -101,6 +103,7 @@ export function decodeAppPreferencesResult(value: unknown): AppPreferences | nul
   const record = value;
   if (typeof record["minimizeToTrayOnClose"] !== "boolean") return null;
   if (typeof record["startWithWindows"] !== "boolean") return null;
+  if (typeof record["portableMode"] !== "boolean") return null;
   if (!isUpdateProxyId(record["updateProxy"])) return null;
   if (typeof record["customUpdateProxyUrl"] !== "string") return null;
   if (!("theme" in record)) return null;
@@ -111,6 +114,7 @@ export function decodeAppPreferencesResult(value: unknown): AppPreferences | nul
   return {
     minimizeToTrayOnClose: record["minimizeToTrayOnClose"],
     startWithWindows: record["startWithWindows"],
+    portableMode: record["portableMode"],
     updateProxy: record["updateProxy"],
     customUpdateProxyUrl: record["customUpdateProxyUrl"],
     theme,

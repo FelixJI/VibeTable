@@ -133,7 +133,7 @@ async function tree(page, helpers, documentId) {
 export async function seedFileRestoreCrash(page, recorder, runtime, helpers) {
   await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  const root = path.resolve(runtime.dataRoot, "workspaces", session.workspaceId);
+  const root = path.resolve(runtime.dataRoot, "shell", "workspaces", session.workspaceId);
   const manifest = JSON.parse(await fs.readFile(path.join(root, ".vibetable", "workspace.json"), "utf8"));
   assert.equal(manifest.workspaceId, session.workspaceId);
   const picker = path.join(runtime.controlsDir, "document-source.txt");

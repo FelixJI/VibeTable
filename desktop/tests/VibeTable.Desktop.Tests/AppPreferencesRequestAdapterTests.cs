@@ -149,7 +149,7 @@ public sealed class AppPreferencesRequestAdapterTests
             },
             () => fixture.Events.Add("tray"));
         var preferences = new AppPreferencesUseCases(
-            new AppPreferencesService(fixture.Store, fixture.Startup), effects, AppPreferences.Default);
+            new AppPreferencesService(fixture.Store, fixture.Startup, new InMemoryPortableModeStore()), effects, AppPreferences.Default);
         var sink = new RecordingSink(fixture.Events);
         var adapter = new AppPreferencesRequestAdapter(sink, preferences, _ => Assert.Fail());
         adapter.Dispatch(Request("appPreferences.update", "{\"theme\":\"dark\",\"minimizeToTrayOnClose\":true}"));
