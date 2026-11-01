@@ -420,6 +420,55 @@ async def test_upgrade_retains_previous_package_and_rollback_restores_it(
 
 
 @pytest.mark.asyncio
+async def test_rollback_resolves_relocated_cache_after_data_root_migration(
+    tmp_path: Path,
+) -> None:
+    source_v1 = tmp_path / "reader-v1"
+    source_v2 = tmp_path / "reader-v2"
+    _write_plugin(source_v1, version="1.0.0")
+    _write_plugin(source_v2, version="2.0.0")
+    store = InMemoryPluginStore()
+    old_cache = tmp_path / "old-root" / "state" / "plugin-packages"
+    new_cache = tmp_path / "new-root" / "state" / "plugin-packages"
+    service = _service(store, package_cache=old_cache)
+    first = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source_v1),
+        plan_id="plan-host-v1-relocated",
+    )
+    await service.commit_install(
+        project_key="local:default",
+        plan=first,
+        project_revision="project-r1",
+    )
+    second = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r2",
+        source_location=str(source_v2),
+        plan_id="plan-host-v2-relocated",
+    )
+    await service.upgrade(
+        project_key="local:default",
+        plugin_id="com.example.reader",
+        plan=second,
+        project_revision="project-r2",
+    )
+    # 数据根迁移：缓存目录整体搬到新位置，历史修订持久化的 local_path
+    # 仍指向旧根。基于新缓存根重建服务后回滚必须能按内容寻址重算。
+    new_cache.parent.mkdir(parents=True, exist_ok=True)
+    old_cache.rename(new_cache)
+    migrated = _service(store, package_cache=new_cache)
+
+    rolled_back = await migrated.rollback(
+        project_key="local:default",
+        plugin_id="com.example.reader",
+    )
+
+    assert rolled_back.version == "1.0.0"
+
+
+@pytest.mark.asyncio
 async def test_upgrade_records_one_authority_audit_per_transition(
     tmp_path: Path,
 ) -> None:

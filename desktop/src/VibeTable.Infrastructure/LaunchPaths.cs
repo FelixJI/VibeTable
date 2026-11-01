@@ -19,6 +19,12 @@ internal static class LaunchPaths
     /// removes it.</summary>
     public const string ModeSwitchPendingFileName = "mode-switch-pending.json";
 
+    /// <summary>Zero-byte file held open (exclusive share) by the running
+    /// host for the whole session; it is the data-root ownership lock that
+    /// keeps concurrent hosts apart and blocks migration while another
+    /// instance still uses the outgoing root.</summary>
+    public const string SessionLockFileName = ".session.lock";
+
     public static string? FindRepositoryRoot(string startDirectory)
     {
         var directory = new DirectoryInfo(startDirectory);

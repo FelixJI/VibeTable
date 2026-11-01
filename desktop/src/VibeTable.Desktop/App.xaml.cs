@@ -84,6 +84,10 @@ public partial class App : Application
             ApplicationUserModelId);
         base.OnStartup(e);
         var options = Services.HostStartupOptions.Current();
+        if (!previewHost && !AcquireSessionDataRootLock(options))
+        {
+            return;
+        }
         if (!previewHost && !ApplyPendingDataRootMigration(options))
         {
             return;
@@ -264,6 +268,43 @@ public partial class App : Application
             WriteCrashDiagnostic("desktop.appdomain_unhandled", args.ExceptionObject as Exception);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException += (_, args) =>
             WriteCrashDiagnostic("desktop.dispatcher_unhandled", args.Exception);
+    }
+
+    /// <summary>
+    /// Session ownership of the data root, taken before migration may touch
+    /// anything: two hosts on one data root would race PocketBase databases
+    /// and make mode-switch moves unsafe. The lock lives until process exit;
+    /// crashes release it via the OS.
+    /// </summary>
+    private static Services.DataRootSessionLock? _sessionLock;
+
+    private static bool AcquireSessionDataRootLock(
+        Services.HostStartupOptions startup)
+    {
+        _sessionLock ??= Services.DataRootSessionLock.Acquire(
+            Services.ProductDataRoot.Resolve(startup));
+        if (_sessionLock is not null)
+        {
+            return true;
+        }
+        if (startup.TestMode)
+        {
+            // No blocking dialog under E2E: the trace plus the missing
+            // readiness files are the failure evidence.
+            Services.TestModeReadinessWriter.Trace(
+                startup.ReadinessDir,
+                "data root session lock is held by another process");
+        }
+        else
+        {
+            MessageBox.Show(
+                "另一个 VibeTable 实例正在使用相同的数据目录，请先退出它后再启动。",
+                "VibeTable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        Current.Shutdown(6);
+        return false;
     }
 
     /// <summary>

@@ -63,9 +63,22 @@ internal static partial class DataRootMigrationService
         string portableRoot = LaunchPaths.ResolvePortableDataRoot(baseDirectory);
         string standardRoot = LaunchPaths.ResolveStandardDataRoot(localAppData);
         bool portable = LaunchPaths.IsPortableMode(baseDirectory);
-        return ApplyIfNeeded(
-            portable ? portableRoot : standardRoot,
-            portable ? standardRoot : portableRoot);
+        string current = portable ? portableRoot : standardRoot;
+        string other = portable ? standardRoot : portableRoot;
+        // Nothing may touch the outgoing root while an older instance (for
+        // example one parked in the tray) still runs on it: a live sidecar
+        // holds workspace databases open, and copying files under concurrent
+        // writes would both corrupt the copy and delete files the old
+        // instance needs. Keep the pending marker and fail with guidance.
+        if (File.Exists(PendingPath(other))
+            && DataRootSessionLock.IsHeldByAnotherProcess(other))
+        {
+            throw new DataRootMigrationException(
+                "data.migration_source_in_use",
+                "旧数据目录仍被另一个 VibeTable 实例使用，本次未做任何改动。"
+                    + "请先退出旧实例后重新启动完成切换。");
+        }
+        return ApplyIfNeeded(current, other);
     }
 
     private const string PortableLocationFileName =
@@ -635,6 +648,13 @@ internal static partial class DataRootMigrationService
             string name = Path.GetFileName(entry);
             if (name == LaunchPaths.ModeSwitchPendingFileName)
             {
+                continue;
+            }
+            if (name == LaunchPaths.SessionLockFileName)
+            {
+                // The previous owner has exited (its lock was verified free),
+                // so this zero-byte leftover is plain bookkeeping.
+                TryDeleteFile(entry);
                 continue;
             }
             string target = Path.Combine(targetRoot, name);

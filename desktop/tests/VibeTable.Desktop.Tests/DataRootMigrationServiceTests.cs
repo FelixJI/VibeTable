@@ -47,6 +47,9 @@ public sealed class DataRootMigrationServiceTests
         File.WriteAllText(
             Path.Combine(source, "activity", "ws-1", "workspace.db"),
             "db");
+        // A leftover session-lock file from the previous instance is
+        // migration bookkeeping, never user data.
+        File.WriteAllText(Path.Combine(source, ".session.lock"), string.Empty);
 
         DataRootMigrationService.Arm(source, target, true);
         Assert.IsTrue(File.Exists(Path.Combine(
