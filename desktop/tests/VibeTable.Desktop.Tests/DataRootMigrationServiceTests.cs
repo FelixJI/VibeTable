@@ -1,3 +1,6 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Text.Json;
 using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop.Tests;
@@ -18,10 +21,18 @@ public sealed class DataRootMigrationServiceTests
     [TestCleanup]
     public void Cleanup()
     {
-        if (Directory.Exists(_root))
+        if (!Directory.Exists(_root))
         {
-            Directory.Delete(_root, recursive: true);
+            return;
         }
+        foreach (string file in Directory.EnumerateFiles(
+                     _root,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+        Directory.Delete(_root, recursive: true);
     }
 
     [TestMethod]
@@ -219,7 +230,7 @@ public sealed class DataRootMigrationServiceTests
     }
 
     [TestMethod]
-    public void RetryFinishesCleanupOfAnAlreadyCopiedCrossVolumeEntry()
+    public void RetryFinishesLedgerBackedCleanupOfAnAlreadyCopiedEntry()
     {
         (string source, string target) = CreateRoots("source", "target");
         Directory.CreateDirectory(Path.Combine(source, "activity", "ws"));
@@ -227,12 +238,13 @@ public sealed class DataRootMigrationServiceTests
             Path.Combine(source, "activity", "ws", "workspace.db"),
             "db payload");
         DataRootMigrationService.Arm(source, target, true);
-        // Emulate a cross-volume copy that committed the target tree but died
-        // before deleting the source directory.
+        // Emulate a cross-volume copy that committed the target tree and its
+        // ledger entry, but died before deleting the source directory.
         Directory.CreateDirectory(Path.Combine(target, "activity", "ws"));
         File.WriteAllText(
             Path.Combine(target, "activity", "ws", "workspace.db"),
             "db payload");
+        WriteLedger(source, target, "activity");
 
         var outcome = DataRootMigrationService.ApplyIfNeeded(target, source);
 
@@ -240,7 +252,146 @@ public sealed class DataRootMigrationServiceTests
             DataRootMigrationService.MigrationOutcome.Migrated,
             outcome);
         Assert.IsFalse(Directory.Exists(source),
-            "Recognizing the completed copy lets the retry clean the source.");
+            "A ledger-owned copy lets the retry clean the source.");
+        Assert.IsFalse(File.Exists(Path.Combine(
+                target,
+                "data-migration-ledger.json")),
+            "A finished switch drops its ledger.");
+    }
+
+    [TestMethod]
+    public void UnownedTargetDuplicatesAreKeptAsConflictsNotDeleted()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        File.WriteAllText(Path.Combine(source, "app-preferences.json"), "new");
+        // The target holds a pre-existing same-sized copy with NO ledger
+        // entry: equal file size alone never proves this migration created
+        // it, so the source must be preserved and the conflict reported.
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "app-preferences.json"), "old");
+        DataRootMigrationService.Arm(source, target, true);
+
+        DataRootMigrationService.DataRootMigrationException failure =
+            Assert.ThrowsExactly<DataRootMigrationService.DataRootMigrationException>(
+                () => DataRootMigrationService.ApplyIfNeeded(target, source));
+
+        Assert.AreEqual("data.migration_residual_entries", failure.ErrorCode);
+        Assert.AreEqual(
+            "new",
+            File.ReadAllText(Path.Combine(source, "app-preferences.json")),
+            "An unowned target never licenses deleting the source.");
+        Assert.AreEqual(
+            "old",
+            File.ReadAllText(Path.Combine(target, "app-preferences.json")));
+    }
+
+    [TestMethod]
+    public void RetryWithPartiallyDeletedSourceVerifiesTheTargetIdentity()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        string workspaceId = "11111111-1111-4111-8111-111111111111";
+        string managedRoot = Path.Combine(
+            source, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(Path.Combine(managedRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(managedRoot, ".vibetable", "workspace.json"),
+            ManifestJson(workspaceId));
+        Directory.CreateDirectory(Path.Combine(source, "shell"));
+        File.WriteAllText(
+            Path.Combine(source, "shell", "workspace-registry-v2.json"),
+            RegistryJson(managedRoot, workspaceId));
+        DataRootMigrationService.Arm(source, target, true);
+        // Emulate a committed cross-volume copy whose source-side cleanup was
+        // interrupted midway: the source manifest is already gone, but the
+        // committed target tree (with its ledger entry) is intact.
+        string targetWorkspaceRoot = Path.Combine(
+            target, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(
+            Path.Combine(targetWorkspaceRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(targetWorkspaceRoot, ".vibetable", "workspace.json"),
+            ManifestJson(workspaceId));
+        Directory.CreateDirectory(Path.Combine(target, "shell"));
+        File.WriteAllText(
+            Path.Combine(target, "shell", "workspace-registry-v2.json"),
+            RegistryJson(targetWorkspaceRoot, workspaceId));
+        WriteLedger(source, target, "shell");
+        File.Delete(Path.Combine(managedRoot, ".vibetable", "workspace.json"));
+
+        var outcome = DataRootMigrationService.ApplyIfNeeded(target, source);
+
+        Assert.AreEqual(
+            DataRootMigrationService.MigrationOutcome.Migrated,
+            outcome,
+            "A ledger-backed committed copy verifies identity on the target "
+                + "and finishes the partially deleted source cleanup.");
+        Assert.IsFalse(Directory.Exists(source));
+    }
+
+    [TestMethod]
+    public void MigrationWrapsDeniedTargetWritesAsStructuredErrors()
+    {
+        (string source, string target) = CreateRoots("source", "target");
+        File.WriteAllText(Path.Combine(source, "entry.txt"), "payload");
+        DataRootMigrationService.Arm(source, target, true);
+        Directory.CreateDirectory(target);
+        var targetInfo = new DirectoryInfo(target);
+        var security = new DirectorySecurity();
+        FileSystemAccessRule deny = new(
+            WindowsIdentity.GetCurrent().User!,
+            FileSystemRights.Write
+                | FileSystemRights.CreateFiles
+                | FileSystemRights.CreateDirectories,
+            AccessControlType.Deny);
+        security.AddAccessRule(deny);
+        targetInfo.SetAccessControl(security);
+        try
+        {
+            DataRootMigrationService.DataRootMigrationException failure =
+                Assert.ThrowsExactly<
+                    DataRootMigrationService.DataRootMigrationException>(
+                    () => DataRootMigrationService.ApplyIfNeeded(target, source));
+            Assert.AreEqual("data.migration_unexpected_io", failure.ErrorCode);
+            Assert.IsTrue(File.Exists(Path.Combine(source, "entry.txt")),
+                "The denied write leaves the source untouched.");
+        }
+        finally
+        {
+            var restore = targetInfo.GetAccessControl();
+            restore.RemoveAccessRuleSpecific(deny);
+            targetInfo.SetAccessControl(restore);
+        }
+    }
+
+    private static string ManifestJson(string workspaceId) =>
+        "{\"workspaceId\":\"" + workspaceId + "\"}";
+
+    private static string RegistryJson(string root, string workspaceId) =>
+        "{\"formatVersion\":2,\"workspaces\":[{\"workspaceId\":\"" + workspaceId
+            + "\",\"selectedRoot\":\"" + root.Replace("\\", "\\\\")
+            + "\",\"activityRoot\":null}]}";
+
+    /// <summary>Writes a ledger matching the pending marker's migration id.</summary>
+    private static void WriteLedger(
+        string source,
+        string target,
+        params string[] committed)
+    {
+        string pending = File.ReadAllText(Path.Combine(
+            source,
+            "mode-switch-pending.json"));
+        using JsonDocument document = JsonDocument.Parse(pending);
+        string migrationId = document.RootElement
+            .GetProperty("migrationId")
+            .GetString()!;
+        File.WriteAllText(
+            Path.Combine(target, "data-migration-ledger.json"),
+            JsonSerializer.Serialize(new
+            {
+                migrationId,
+                sourceRoot = Path.GetFullPath(source),
+                committed,
+            }));
     }
 
     [TestMethod]

@@ -24,7 +24,8 @@ internal static partial class DataRootMigrationService
     public sealed record PendingModeSwitch(
         string TargetRoot,
         bool TargetPortable,
-        DateTimeOffset RequestedAtUtc);
+        DateTimeOffset RequestedAtUtc,
+        Guid MigrationId);
 
     public enum MigrationOutcome
     {
@@ -81,7 +82,8 @@ internal static partial class DataRootMigrationService
             new PendingModeSwitch(
                 Path.GetFullPath(targetDataRoot),
                 targetPortable,
-                DateTimeOffset.UtcNow),
+                DateTimeOffset.UtcNow,
+                Guid.NewGuid()),
             PendingJsonOptions);
         string pendingPath = PendingPath(root);
         string staging = pendingPath + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -103,6 +105,34 @@ internal static partial class DataRootMigrationService
     /// always wins.
     /// </summary>
     public static MigrationOutcome ApplyIfNeeded(
+        string currentDataRoot,
+        string otherDataRoot)
+    {
+        try
+        {
+            return ApplyIfNeededCore(currentDataRoot, otherDataRoot);
+        }
+        catch (DataRootMigrationException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or System.Security.SecurityException)
+        {
+            // The migration runs before the writability probe and the log
+            // listener, so raw filesystem failures (denied directory creates,
+            // locked enumerations, denied moves) must still surface as the
+            // structured migration failure with recovery guidance.
+            throw new DataRootMigrationException(
+                "data.migration_unexpected_io",
+                $"数据迁移失败（{exception.GetType().Name}）："
+                    + Path.GetFullPath(otherDataRoot));
+        }
+    }
+
+    private static MigrationOutcome ApplyIfNeededCore(
         string currentDataRoot,
         string otherDataRoot)
     {
@@ -128,10 +158,10 @@ internal static partial class DataRootMigrationService
                     current,
                     StringComparison.OrdinalIgnoreCase))
             {
-                VerifyRegistryRelocation(other);
-                MigrateEntries(other, current);
+                VerifyRegistryRelocation(other, current, pending.MigrationId);
+                MigrateEntries(other, current, pending.MigrationId);
                 RelocateRegistryPaths(current, other);
-                CompleteMigration(other);
+                CompleteMigration(other, current);
                 return MigrationOutcome.Migrated;
             }
             // The user flipped the switch again before restarting; the mode
@@ -187,10 +217,6 @@ internal static partial class DataRootMigrationService
                 "data.migration_registry_invalid",
                 $"迁移后的工作区注册表格式无效：{registryPath}");
         }
-        string sourcePrefix = sourceRoot.TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar)
-            + Path.DirectorySeparatorChar;
         foreach (JsonNode? node in workspaces)
         {
             if (node is not JsonObject entry
@@ -205,11 +231,9 @@ internal static partial class DataRootMigrationService
                 if (entry[key] is JsonValue value
                     && value.TryGetValue<string>(out string? path)
                     && !string.IsNullOrEmpty(path)
-                    && path.StartsWith(sourcePrefix, StringComparison.OrdinalIgnoreCase))
+                    && RelocatePath(dataRoot, path, sourceRoot) is { } relocated
+                    && !string.Equals(relocated, path, StringComparison.OrdinalIgnoreCase))
                 {
-                    string relocated = Path.Combine(
-                        dataRoot,
-                        path[sourcePrefix.Length..]);
                     entry[key] = relocated;
                     if (key == SelectedRootKey)
                     {
@@ -242,13 +266,34 @@ internal static partial class DataRootMigrationService
     private const string SelectedRootKey = "selectedRoot";
     private const string ActivityRootKey = "activityRoot";
 
+    /// <summary>Rebases a path under the outgoing root onto the new root.</summary>
+    private static string RelocatePath(
+        string dataRoot,
+        string path,
+        string sourceRoot)
+    {
+        string prefix = sourceRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(dataRoot, path[prefix.Length..])
+            : path;
+    }
+
     /// <summary>
     /// Pre-flight identity check while the data still sits in the outgoing
     /// root: every registered workspace that will move must have a readable
-    /// manifest whose UUID matches its registration. Failing here leaves both
-    /// roots untouched instead of stranding moved data behind a bad registry.
+    /// manifest whose UUID matches its registration. A retry whose source
+    /// tree was already partially deleted after the copy committed verifies
+    /// against the ledger-backed TARGET copy instead. Failing here leaves
+    /// both roots untouched instead of stranding moved data behind a bad
+    /// registry.
     /// </summary>
-    private static void VerifyRegistryRelocation(string sourceRoot)
+    private static void VerifyRegistryRelocation(
+        string sourceRoot,
+        string targetRoot,
+        Guid migrationId)
     {
         string registryPath = Path.Combine(
             sourceRoot,
@@ -294,10 +339,52 @@ internal static partial class DataRootMigrationService
                     "data.migration_registry_invalid",
                     $"待迁移的工作区注册表条目无效：{registryPath}");
             }
+            if (HasReadableIdentityManifest(selectedRoot, workspaceId))
+            {
+                continue;
+            }
+            // The source tree may already be partially deleted by an earlier
+            // attempt whose cross-volume copy committed; only a ledger-backed
+            // committed shell entry may fall back to verifying the target.
+            if (TryReadLedger(targetRoot, migrationId, sourceRoot)?
+                    .Committed.Contains("shell") == true
+                && HasReadableIdentityManifest(
+                    RelocatePath(targetRoot, selectedRoot, sourceRoot),
+                    workspaceId))
+            {
+                continue;
+            }
             VerifyRelocatedWorkspaceIdentity(
                 selectedRoot,
                 workspaceId,
                 registryPath);
+        }
+    }
+
+    private static bool HasReadableIdentityManifest(
+        string workspaceRoot,
+        string workspaceId)
+    {
+        string manifestPath = Path.Combine(
+            workspaceRoot,
+            ".vibetable",
+            "workspace.json");
+        try
+        {
+            var manifest = JsonSerializer.Deserialize<JsonElement>(
+                File.ReadAllText(manifestPath));
+            return manifest.ValueKind == JsonValueKind.Object
+                && manifest.TryGetProperty("workspaceId", out JsonElement id)
+                && id.ValueKind == JsonValueKind.String
+                && string.Equals(
+                    id.GetString(),
+                    workspaceId,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (
+            exception is IOException or JsonException)
+        {
+            return false;
         }
     }
 
@@ -356,7 +443,96 @@ internal static partial class DataRootMigrationService
         }
     }
 
-    private static void MigrateEntries(string sourceRoot, string targetRoot)
+    /// <summary>
+    /// Durable ownership record for entries this migration committed to the
+    /// target root. Only ledger-backed entries may have their source deleted
+    /// on retry — an equally sized pre-existing file is never proof that the
+    /// target copy came from this migration.
+    /// </summary>
+    private sealed record MigrationLedger(
+        Guid MigrationId,
+        string SourceRoot,
+        List<string> Committed);
+
+    private const string LedgerFileName = "data-migration-ledger.json";
+
+    private static string LedgerPath(string targetRoot) =>
+        Path.Combine(targetRoot, LedgerFileName);
+
+    private static MigrationLedger? TryReadLedger(
+        string targetRoot,
+        Guid migrationId,
+        string sourceRoot)
+    {
+        string path = LedgerPath(targetRoot);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+        try
+        {
+            MigrationLedger? ledger = JsonSerializer.Deserialize<MigrationLedger>(
+                File.ReadAllText(path),
+                PendingJsonOptions);
+            if (ledger is null
+                || ledger.MigrationId != migrationId
+                || !string.Equals(
+                    ledger.SourceRoot,
+                    sourceRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            return ledger;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or JsonException
+                or UnauthorizedAccessException)
+        {
+            // An unreadable ledger proves nothing; retries fall back to the
+            // loud conflict path instead of deleting sources.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Records a committed entry. Best-effort by design: a lost record can
+    /// only make a later retry report a conflict (sources preserved), never
+    /// delete data it does not own.
+    /// </summary>
+    private static void RecordCommit(
+        string targetRoot,
+        Guid migrationId,
+        string sourceRoot,
+        string name)
+    {
+        try
+        {
+            string path = LedgerPath(targetRoot);
+            MigrationLedger ledger =
+                TryReadLedger(targetRoot, migrationId, sourceRoot)
+                ?? new MigrationLedger(migrationId, sourceRoot, []);
+            if (!ledger.Committed.Contains(name))
+            {
+                ledger.Committed.Add(name);
+            }
+            string staging = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            File.WriteAllText(
+                staging,
+                JsonSerializer.Serialize(ledger, PendingJsonOptions));
+            File.Move(staging, path, overwrite: true);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void MigrateEntries(
+        string sourceRoot,
+        string targetRoot,
+        Guid migrationId)
     {
         CleanupIncompleteTransfers(targetRoot);
         if (!Directory.Exists(sourceRoot))
@@ -364,6 +540,10 @@ internal static partial class DataRootMigrationService
             return;
         }
         Directory.CreateDirectory(targetRoot);
+        MigrationLedger? ledger = TryReadLedger(
+            targetRoot,
+            migrationId,
+            sourceRoot);
         foreach (string entry in Directory.EnumerateFileSystemEntries(sourceRoot))
         {
             string name = Path.GetFileName(entry);
@@ -374,11 +554,13 @@ internal static partial class DataRootMigrationService
             string target = Path.Combine(targetRoot, name);
             if (File.Exists(target) || Directory.Exists(target))
             {
-                // A previous cross-volume attempt may have committed the copy
-                // but died before deleting the source; finish that cleanup so
-                // the switch can complete on retry. Anything else is a real
-                // conflict and stays loud through the drained-source check.
-                if (IsCompletedTransfer(entry, target))
+                // A previous attempt of THIS migration may have committed the
+                // copy but died before deleting the source; the ledger entry
+                // plus a content-equal check proves ownership, so finish that
+                // cleanup. Anything else is a pre-existing target and stays a
+                // loud conflict through the drained-source check.
+                if (ledger?.Committed.Contains(name) == true
+                    && IsCompletedTransfer(entry, target))
                 {
                     DeleteSourceEntry(entry, target);
                 }
@@ -386,11 +568,17 @@ internal static partial class DataRootMigrationService
             }
             if (Directory.Exists(entry))
             {
-                MoveDirectory(entry, target);
+                MoveDirectory(
+                    entry,
+                    target,
+                    () => RecordCommit(targetRoot, migrationId, sourceRoot, name));
             }
             else
             {
-                MoveFile(entry, target);
+                MoveFile(
+                    entry,
+                    target,
+                    () => RecordCommit(targetRoot, migrationId, sourceRoot, name));
             }
         }
     }
@@ -449,7 +637,7 @@ internal static partial class DataRootMigrationService
         }
     }
 
-    private static void CompleteMigration(string sourceRoot)
+    private static void CompleteMigration(string sourceRoot, string targetRoot)
     {
         if (!Directory.Exists(sourceRoot))
         {
@@ -465,6 +653,9 @@ internal static partial class DataRootMigrationService
                 $"源数据目录仍有未迁移的内容，已保留现场：{sourceRoot}");
         }
         TryDeleteFile(PendingPath(sourceRoot));
+        // The ledger proved ownership until the very end; a finished switch
+        // no longer needs it.
+        TryDeleteFile(LedgerPath(targetRoot));
         try
         {
             // Only the (now removed) pending marker is left, so a plain
@@ -481,11 +672,15 @@ internal static partial class DataRootMigrationService
         }
     }
 
-    private static void MoveFile(string source, string target)
+    private static void MoveFile(
+        string source,
+        string target,
+        Action onCommitted)
     {
         try
         {
             File.Move(source, target);
+            onCommitted();
             return;
         }
         catch (IOException)
@@ -498,10 +693,10 @@ internal static partial class DataRootMigrationService
             File.Copy(source, staging);
             ValidateSameLength(source, staging);
             File.Move(staging, target);
-            // The copy path must also remove the source; a failure here keeps
-            // the committed copy, and the next launch recognizes the finished
-            // transfer through IsCompletedTransfer instead of treating it as
-            // a conflict.
+            // Record ownership before removing the source: if the delete
+            // fails, the ledger-backed retry recognizes the committed copy
+            // and finishes the cleanup instead of reporting a conflict.
+            onCommitted();
             File.Delete(source);
         }
         catch (Exception exception) when (
@@ -514,11 +709,15 @@ internal static partial class DataRootMigrationService
         }
     }
 
-    private static void MoveDirectory(string source, string target)
+    private static void MoveDirectory(
+        string source,
+        string target,
+        Action onCommitted)
     {
         try
         {
             Directory.Move(source, target);
+            onCommitted();
             return;
         }
         catch (IOException)
@@ -531,6 +730,10 @@ internal static partial class DataRootMigrationService
             CopyDirectory(source, staging);
             ValidateTree(source, staging);
             Directory.Move(staging, target);
+            // Record ownership before removing the source: a partial source
+            // delete followed by a crash is recovered through the ledger on
+            // the next launch (see VerifyRegistryRelocation).
+            onCommitted();
             Directory.Delete(source, recursive: true);
         }
         catch (Exception exception) when (
