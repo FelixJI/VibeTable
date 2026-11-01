@@ -366,6 +366,16 @@ public sealed class DataRootMigrationServiceTests
     private static string ManifestJson(string workspaceId) =>
         "{\"workspaceId\":\"" + workspaceId + "\"}";
 
+    private static string RegistryWithExternalEntry(
+        string root,
+        string workspaceId) =>
+        "{\"formatVersion\":2,\"workspaces\":[{"
+            + "\"workspaceId\":\"" + workspaceId
+            + "\",\"selectedRoot\":\"" + root.Replace("\\", "\\\\")
+            + "\",\"activityRoot\":null},{"
+            + "\"workspaceId\":\"22222222-2222-4222-8222-222222222222\","
+            + "\"selectedRoot\":\"D:\\\\External\\\\ws\",\"activityRoot\":null}]}";
+
     private static string RegistryJson(string root, string workspaceId) =>
         "{\"formatVersion\":2,\"workspaces\":[{\"workspaceId\":\"" + workspaceId
             + "\",\"selectedRoot\":\"" + root.Replace("\\", "\\\\")
@@ -427,6 +437,114 @@ public sealed class DataRootMigrationServiceTests
             "User files with lookalike names are never touched.");
         Assert.IsTrue(Directory.Exists(nonHexLookalike),
             "Non-GUID-suffixed entries are never touched.");
+    }
+
+    [TestMethod]
+    public void PortableRelocationRewritesRegisteredPathsAfterAMove()
+    {
+        (string oldRoot, string newRoot) = CreateRoots("old-location", "new-location");
+        string workspaceId = "11111111-1111-4111-8111-111111111111";
+        string managedRoot = Path.Combine(
+            oldRoot, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(Path.Combine(managedRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(managedRoot, ".vibetable", "workspace.json"),
+            ManifestJson(workspaceId));
+        Directory.CreateDirectory(Path.Combine(oldRoot, "shell"));
+        File.WriteAllText(
+            Path.Combine(oldRoot, "shell", "workspace-registry-v2.json"),
+            RegistryJson(managedRoot, workspaceId));
+        // The whole tree physically moved to the new location.
+        Directory.CreateDirectory(newRoot);
+        CopyTree(oldRoot, newRoot);
+        File.WriteAllText(
+            Path.Combine(newRoot, "data-root-location.json"),
+            JsonSerializer.Serialize(new { dataRoot = Path.GetFullPath(oldRoot) }));
+
+        DataRootMigrationService.RelocatePortableRegistry(newRoot);
+
+        string registry = File.ReadAllText(Path.Combine(
+            newRoot, "shell", "workspace-registry-v2.json"));
+        StringAssert.Contains(
+            registry,
+            Path.Combine(newRoot, "shell", "workspaces", workspaceId)
+                .Replace("\\", "\\\\"),
+            "Registered roots follow the moved portable folder.");
+        using JsonDocument record = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(newRoot, "data-root-location.json")));
+        Assert.AreEqual(
+            Path.GetFullPath(newRoot),
+            record.RootElement.GetProperty("dataRoot").GetString(),
+            "The remembered location tracks the current root.");
+    }
+
+    [TestMethod]
+    public void PortableRelocationKeepsExternalPathsAndFailsOnIdentityMismatch()
+    {
+        (string oldRoot, string newRoot) = CreateRoots("old-location", "new-location");
+        string workspaceId = "11111111-1111-4111-8111-111111111111";
+        string managedRoot = Path.Combine(
+            oldRoot, "shell", "workspaces", workspaceId);
+        Directory.CreateDirectory(Path.Combine(managedRoot, ".vibetable"));
+        File.WriteAllText(
+            Path.Combine(managedRoot, ".vibetable", "workspace.json"),
+            ManifestJson("33333333-3333-4333-8333-333333333333"));
+        Directory.CreateDirectory(Path.Combine(oldRoot, "shell"));
+        File.WriteAllText(
+            Path.Combine(oldRoot, "shell", "workspace-registry-v2.json"),
+            RegistryWithExternalEntry(managedRoot, workspaceId));
+        Directory.CreateDirectory(newRoot);
+        CopyTree(oldRoot, newRoot);
+        File.WriteAllText(
+            Path.Combine(newRoot, "data-root-location.json"),
+            JsonSerializer.Serialize(new { dataRoot = Path.GetFullPath(oldRoot) }));
+        string registryBefore = File.ReadAllText(Path.Combine(
+            newRoot, "shell", "workspace-registry-v2.json"));
+
+        DataRootMigrationService.DataRootMigrationException failure =
+            Assert.ThrowsExactly<DataRootMigrationService.DataRootMigrationException>(
+                () => DataRootMigrationService.RelocatePortableRegistry(newRoot));
+
+        Assert.AreEqual(
+            "data.migration_workspace_identity_mismatch",
+            failure.ErrorCode);
+        Assert.AreEqual(
+            registryBefore,
+            File.ReadAllText(Path.Combine(
+                newRoot,
+                "shell",
+                "workspace-registry-v2.json")),
+            "A failed relocation leaves the registry untouched.");
+    }
+
+    [TestMethod]
+    public void PortableRelocationWithoutRecordOnlyRemembersTheRoot()
+    {
+        (string _, string newRoot) = CreateRoots("old-location", "new-location");
+        Directory.CreateDirectory(newRoot);
+
+        DataRootMigrationService.RelocatePortableRegistry(newRoot);
+
+        Assert.IsTrue(File.Exists(Path.Combine(
+            newRoot,
+            "data-root-location.json")),
+            "The current location is remembered for the next move.");
+    }
+
+    private static void CopyTree(string source, string target)
+    {
+        foreach (string file in Directory.GetFiles(
+                     source, "*", SearchOption.TopDirectoryOnly))
+        {
+            File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+        }
+        foreach (string directory in Directory.GetDirectories(
+                     source, "*", SearchOption.TopDirectoryOnly))
+        {
+            string child = Path.Combine(target, Path.GetFileName(directory));
+            Directory.CreateDirectory(child);
+            CopyTree(directory, child);
+        }
     }
 
     private (string Source, string Target) CreateRoots(

@@ -68,6 +68,86 @@ internal static partial class DataRootMigrationService
             portable ? standardRoot : portableRoot);
     }
 
+    private const string PortableLocationFileName =
+        "data-root-location.json";
+
+    /// <summary>
+    /// Keeps a portable install usable after its folder moves (USB drive
+    /// letter changes, relocation, or a copied tree): the registry inside the
+    /// data root still holds absolute paths from the previous location, so on
+    /// every portable launch the recorded location is compared against the
+    /// current root and registered workspace paths under the old root are
+    /// rewritten to the new one (with identity verification) before anything
+    /// consumes them. Externally rooted workspaces never move.
+    /// </summary>
+    public static void RelocatePortableRegistry(string portableRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(portableRoot);
+        string root = Path.GetFullPath(portableRoot);
+        string recordPath = Path.Combine(root, PortableLocationFileName);
+        string? recorded = TryReadRecordedPortableRoot(recordPath);
+        if (recorded is not null
+            && !string.Equals(recorded, root, StringComparison.OrdinalIgnoreCase))
+        {
+            // Fail closed: a registry that cannot be verified against the
+            // moved tree blocks the launch instead of rebinding paths.
+            RelocateRegistryPaths(root, recorded);
+        }
+        TryRememberPortableRoot(recordPath, root);
+    }
+
+    private static string? TryReadRecordedPortableRoot(string recordPath)
+    {
+        if (!File.Exists(recordPath))
+        {
+            return null;
+        }
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(
+                File.ReadAllText(recordPath));
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty(
+                    "dataRoot",
+                    out JsonElement value)
+                && value.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString())
+                ? value.GetString()
+                : null;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or JsonException
+                or UnauthorizedAccessException)
+        {
+            // An unreadable record means "location unknown"; relocation is
+            // skipped and the record is rewritten below.
+            return null;
+        }
+    }
+
+    private static void TryRememberPortableRoot(
+        string recordPath,
+        string portableRoot)
+    {
+        try
+        {
+            string staging = recordPath + ".tmp-" + Guid.NewGuid().ToString("N");
+            File.WriteAllText(
+                staging,
+                JsonSerializer.Serialize(
+                    new { dataRoot = portableRoot },
+                    PendingJsonOptions));
+            File.Move(staging, recordPath, overwrite: true);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // Remembering is best-effort; the writability probe already
+            // guarantees the root is usable this session.
+        }
+    }
+
     /// <summary>Records the switch intent inside the currently active root.</summary>
     public static void Arm(
         string currentDataRoot,
@@ -217,6 +297,7 @@ internal static partial class DataRootMigrationService
                 "data.migration_registry_invalid",
                 $"迁移后的工作区注册表格式无效：{registryPath}");
         }
+        bool changed = false;
         foreach (JsonNode? node in workspaces)
         {
             if (node is not JsonObject entry
@@ -235,6 +316,7 @@ internal static partial class DataRootMigrationService
                     && !string.Equals(relocated, path, StringComparison.OrdinalIgnoreCase))
                 {
                     entry[key] = relocated;
+                    changed = true;
                     if (key == SelectedRootKey)
                     {
                         VerifyRelocatedWorkspaceIdentity(
@@ -244,6 +326,10 @@ internal static partial class DataRootMigrationService
                     }
                 }
             }
+        }
+        if (!changed)
+        {
+            return;
         }
         string staging = registryPath + ".tmp-" + Guid.NewGuid().ToString("N");
         try

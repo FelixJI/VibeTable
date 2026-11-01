@@ -92,6 +92,10 @@ public partial class App : Application
         {
             return;
         }
+        if (!previewHost && !RelocatePortableRegistry(options))
+        {
+            return;
+        }
         if (!previewHost)
         {
             // Freeze the session's log directory before anything opens files:
@@ -216,6 +220,40 @@ public partial class App : Application
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             Current.Shutdown(4);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// A portable install that moved (drive letter change, relocated or
+    /// copied folder) still carries absolute workspace paths from its old
+    /// location in the registry; rewrite them to the current root — with
+    /// identity verification — before anything consumes the registry.
+    /// </summary>
+    private static bool RelocatePortableRegistry(
+        Services.HostStartupOptions startup)
+    {
+        if (startup.TestMode
+            || !string.IsNullOrWhiteSpace(startup.DevelopmentDataRoot)
+            || !LaunchPaths.IsPortableMode(AppContext.BaseDirectory))
+        {
+            return true;
+        }
+        try
+        {
+            Services.DataRootMigrationService.RelocatePortableRegistry(
+                LaunchPaths.ResolvePortableDataRoot(AppContext.BaseDirectory));
+            return true;
+        }
+        catch (Services.DataRootMigrationService.DataRootMigrationException exception)
+        {
+            MessageBox.Show(
+                "程序目录位置已变化，更新工作区注册路径失败，已保留原有数据。\n"
+                    + $"{exception.Message}\n（错误码 {exception.ErrorCode}）",
+                "VibeTable 便携模式",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Current.Shutdown(5);
             return false;
         }
     }
