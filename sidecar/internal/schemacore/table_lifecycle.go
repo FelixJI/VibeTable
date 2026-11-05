@@ -66,7 +66,8 @@ func (lifecycle *TableLifecycle) CreateWithCommit(
 	}
 	err = lifecycle.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
 		defer func() {
-			if transactionErr == nil {
+			// A lifecycle bound to an enclosing transaction shares its single coordinator receipt.
+			if transactionErr == nil && !lifecycle.app.IsTransactional() {
 				transactionErr = writecoordinator.PersistPocketBaseReceipt(
 					ctx, txApp, lifecycle.clock().UTC(),
 				)

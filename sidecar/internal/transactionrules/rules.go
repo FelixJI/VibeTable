@@ -515,6 +515,50 @@ func contains(values []string, wanted string) bool {
 	return false
 }
 
+// ValidateAdmission checks a normal write on each affected table against the same
+// effective registrations and combined before/after image budget used at commit.
+func (candidate Registration) ValidateAdmission(ctx context.Context, app core.App, history []Registration) error {
+	type cost struct{ rows, bytes int }
+	budgets := map[string]*cost{}
+	for entity := range candidate.dependencies() {
+		budgets[candidate.Bindings[entity].TableID] = &cost{}
+	}
+	for i, guard := range activeGuards(append(history, candidate)) {
+		affected := map[string]bool{}
+		for entity := range guard.dependencies() {
+			table := guard.Bindings[entity].TableID
+			if budgets[table] != nil {
+				affected[table] = true
+			}
+		}
+		if len(affected) == 0 {
+			continue
+		}
+		images, err := guard.Read(ctx, app)
+		if err != nil {
+			return err
+		}
+		if i == 0 { // activeGuards puts the newly appended registration first.
+			if err := candidate.Validate(nil, images); err != nil {
+				return err
+			}
+		}
+		var image cost
+		if err := countImages(images, &image.rows, &image.bytes); err != nil {
+			return err
+		}
+		for table := range affected {
+			b := budgets[table]
+			b.rows += 2 * image.rows
+			b.bytes += 2 * image.bytes
+			if b.rows > MaxRows || b.bytes > MaxBytes {
+				return failure("read_budget_exceeded")
+			}
+		}
+	}
+	return nil
+}
+
 // Load reads immutable platform events; disabling or removing an installation never removes protection.
 func Load(ctx context.Context, app core.App) ([]Registration, error) {
 	if _, err := app.FindCollectionByNameOrId("vibetable_plugin_records"); errors.Is(err, sql.ErrNoRows) {
@@ -579,6 +623,36 @@ func IntegerInputs(ctx context.Context, app core.App, table string) (map[string]
 	return formats, nil
 }
 
+// Retains allows an identical declaration or a strictly newer version that keeps
+// each previously approved rule and exact decimal mapping.
+func (d Declaration) Retains(old Declaration) bool {
+	if old.ModelID != d.ModelID || old.Contract != d.Contract || d.Version < old.Version {
+		return false
+	}
+	if d.Version == old.Version {
+		return reflect.DeepEqual(d, old)
+	}
+	rules := map[string]Rule{}
+	for _, rule := range d.Rules {
+		rules[rule.ID] = rule
+	}
+	for _, rule := range old.Rules {
+		if !reflect.DeepEqual(rule, rules[rule.ID]) {
+			return false
+		}
+	}
+	decimals := map[Decimal]bool{}
+	for _, decimal := range d.Decimals {
+		decimals[decimal] = true
+	}
+	for _, decimal := range old.Decimals {
+		if !decimals[decimal] {
+			return false
+		}
+	}
+	return true
+}
+
 // Cumulative upgrades keep their immutable registrations. Execute the superset once so
 // previously readable workspaces do not spend the bounded image budget twice on the same rows.
 func activeGuards(history []Registration) []Registration {
@@ -587,34 +661,8 @@ func activeGuards(history []Registration) []Registration {
 		old := history[i]
 		covered := false
 		for _, next := range active {
-			if old.WorkspaceID != next.WorkspaceID || old.PluginID != next.PluginID || old.InstallationID != next.InstallationID ||
-				old.Declaration.ModelID != next.Declaration.ModelID || old.Declaration.Version >= next.Declaration.Version {
-				continue
-			}
-			if !old.MatchesBindings(next.Bindings) {
-				continue
-			}
-			rules := map[string]Rule{}
-			for _, rule := range next.Declaration.Rules {
-				rules[rule.ID] = rule
-			}
-			decimals := map[Decimal]bool{}
-			for _, decimal := range next.Declaration.Decimals {
-				decimals[decimal] = true
-			}
-			covered = true
-			for _, rule := range old.Declaration.Rules {
-				if !reflect.DeepEqual(rule, rules[rule.ID]) {
-					covered = false
-					break
-				}
-			}
-			for _, decimal := range old.Declaration.Decimals {
-				if !decimals[decimal] {
-					covered = false
-					break
-				}
-			}
+			covered = old.WorkspaceID == next.WorkspaceID && old.PluginID == next.PluginID && old.InstallationID == next.InstallationID &&
+				next.Declaration.Version > old.Declaration.Version && next.Declaration.Retains(old.Declaration) && old.MatchesBindings(next.Bindings)
 			if covered {
 				break
 			}

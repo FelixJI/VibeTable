@@ -4,7 +4,9 @@ package pluginmodel
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -172,6 +174,42 @@ func (f Field) Compatibility(existing v2.FieldDefinition, tables map[string]stri
 		return "plugin_model_relation_mismatch"
 	}
 	return ""
+}
+
+// Retains accepts an identical model or a new version that keeps every previous
+// logical field, entity and operation. Physical identities are checked separately.
+func (d Declaration) Retains(old Declaration) bool {
+	if d.ModelID != old.ModelID || d.Contract != old.Contract || d.Version < old.Version {
+		return false
+	}
+	if d.Version == old.Version {
+		return Equal(d, old)
+	}
+	entities := map[string]Entity{}
+	for _, entity := range d.Entities {
+		entities[entity.Key] = entity
+	}
+	for _, prior := range old.Entities {
+		current, ok := entities[prior.Key]
+		if !ok || current.Label != prior.Label {
+			return false
+		}
+		for _, operation := range prior.Operations {
+			if !slices.Contains(current.Operations, operation) {
+				return false
+			}
+		}
+		fields := map[string]Field{}
+		for _, field := range current.Fields {
+			fields[field.Key] = field
+		}
+		for _, field := range prior.Fields {
+			if !reflect.DeepEqual(field, fields[field.Key]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func Equal(a, b Declaration) bool {

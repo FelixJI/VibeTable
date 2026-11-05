@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
@@ -16,11 +17,13 @@ import (
 // A new transport must not create its own planner, plan store or executor.
 type schemaFieldChangeDomain struct {
 	fieldSettingsDescribeDomain
-	core      *schemacore.Core
-	tables    *schemacore.TableLifecycle
-	catalog   *fieldchange.Catalog
-	migration *fieldchange.MigrationService
-	gates     []businessWriteGate
+	core            *schemacore.Core
+	tables          *schemacore.TableLifecycle
+	catalog         *fieldchange.Catalog
+	migration       *fieldchange.MigrationService
+	logger          *slog.Logger
+	executorOptions []fieldchange.ExecutorOption
+	gates           []businessWriteGate
 }
 
 func (d schemaFieldChangeDomain) CreateTable(ctx context.Context, intent v2.TableCreateIntent) (v2.TableCreateReceipt, error) {

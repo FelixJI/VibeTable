@@ -3,21 +3,27 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 	ctx := context.Background()
-	pb, workspace, input, domain := modelFixture(t)
+	runtime, _, _, _, _, pb := historyRestoreProductFixture(t)
+	_, workspace, input, domain := modelFixtureOn(t, pb)
 	store := pluginstore.New(pb, workspace)
 	raw, err := store.GetInstallation(ctx, input.ProjectKey, input.PluginID)
 	if err != nil {
@@ -59,7 +65,8 @@ func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 			}
 		}
 		if version == 2 {
-			model.Entities[0].Fields = append(model.Entities[0].Fields, pluginmodel.Field{Key: "note", Label: "新说明", Type: v2.LogicalText})
+			model.Entities[0].Fields = append(model.Entities[0].Fields, pluginmodel.Field{Key: "note", Label: "新说明", Type: v2.LogicalText}, pluginmodel.Field{Key: "owner", Label: "归属", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "entity_16", Field: "members", Cardinality: "one"}})
+			model.Entities[16].Fields = append(model.Entities[16].Fields, pluginmodel.Field{Key: "members", Label: "成员", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "entity_0", Field: "owner", Cardinality: "many"}})
 		}
 		manifest["version"] = fmt.Sprintf("%d.0.0", version)
 		manifest["permissions"] = map[string]any{"model": model, "transactions": declaration}
@@ -125,12 +132,52 @@ func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 		if len(planState.Diagnostics) != 0 {
 			t.Fatal(planState.Diagnostics)
 		}
-		if version == 2 && len(planState.Steps) != 33 {
-			t.Fatalf("upgrade steps %d want only 16 new tables + 17 fields", len(planState.Steps))
+		if version == 2 && len(planState.Steps) != 34 {
+			t.Fatalf("upgrade steps %d want only 16 new tables + 17 scalar fields + one reciprocal pair", len(planState.Steps))
+		}
+		if version == 2 {
+			domain.gates = []businessWriteGate{runtime.CoordinateBusinessWrite}
+			before, err := schemaapi.New(pb).List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress, err := pluginmodel.States(ctx, pb, input.ProjectKey, input.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			creates := 0
+			hook := pb.OnRecordCreate("vibetable_tables").BindFunc(func(event *core.RecordEvent) error {
+				creates++
+				if creates == 2 {
+					return errors.New("second table creation interrupted")
+				}
+				return event.Next()
+			})
+			_, err = modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": planState.RequestID})
+			pb.OnRecordCreate("vibetable_tables").Unbind(hook)
+			if proof, proofErr := writecoordinator.HasPocketBaseReceiptIdentity(ctx, pb, workspace, "plugin.model.upgrade", planState.RequestID); proof || proofErr != nil {
+				t.Fatalf("receipt survived failed upgrade: %v %v", proof, proofErr)
+			}
+			if err == nil || creates != 2 {
+				t.Fatalf("upgrade interruption did not reach the second physical table: %d %v", creates, err)
+			}
+			after, err := schemaapi.New(pb).List(ctx)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("failed upgrade changed public catalog: %d -> %d: %v", len(before), len(after), err)
+			}
+			afterProgress, err := pluginmodel.States(ctx, pb, input.ProjectKey, input.PluginID)
+			if err != nil || !reflect.DeepEqual(progress, afterProgress) {
+				t.Fatalf("failed upgrade changed durable bindings: %v", err)
+			}
 		}
 		done, err := modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": planState.RequestID})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if version == 2 {
+			if proof, proofErr := writecoordinator.HasPocketBaseReceiptIdentity(ctx, pb, workspace, "plugin.model.upgrade", planState.RequestID); !proof || proofErr != nil {
+				t.Fatalf("upgrade lacks durable receipt: %v %v", proof, proofErr)
+			}
 		}
 		if _, err := f.call("transaction.configure", map[string]any{"declaration": declaration}); err != nil {
 			t.Fatal(err)
@@ -162,7 +209,21 @@ func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 	if _, err := f.kernel.Apply(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	legacyPlan := transactionPlan{Contract: "vibetable.transaction-plan.v1", ModelID: "capacity", Operations: []transactionOperation{{Entity: "entity_0", Kind: "create", TempID: "lost", Values: map[string]any{"code": "lost-ack"}}}}
+	applied := f.submit(t, legacyPlan)
+	legacyPlan.Operations[0].Values["code"] = "pending"
+	pending, err := f.call("transaction.preview", map[string]any{"plan": legacyPlan})
+	if err != nil {
+		t.Fatal(err)
+	}
 	next := configure(2, 32)
+	recovered, err := f.call("transaction.status", map[string]string{"requestId": applied.RequestID})
+	if err != nil || !reflect.DeepEqual(applied, recovered) {
+		t.Fatalf("legacy applied receipt: %v %v", recovered, err)
+	}
+	if _, err := f.call("transaction.commit", map[string]any{"requestId": pending.(transactionPreview).RequestID}); err == nil || !strings.Contains(err.Error(), "transaction.plan_stale") {
+		t.Fatalf("legacy prepared request: %v", err)
+	}
 	for entity, binding := range old.Bindings {
 		newBinding := next.Bindings[entity]
 		if binding.TableID != newBinding.TableID {
@@ -180,11 +241,11 @@ func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 	}
 	code, _ = table.Field(b.Fields["code"])
 	rawField, _ := table.Field(b.Fields["raw"])
-	rows, err := pb.FindAllRecords(table.PhysicalName)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("old row lost: %d %v", len(rows), err)
+	row, err := pb.FindFirstRecordByData(table.PhysicalName, code.Identity.PhysicalName, "unique")
+	if err != nil {
+		t.Fatal(err)
 	}
-	values := mutation.ProductRow(pb, table, rows[0])
+	values := mutation.ProductRow(pb, table, row)
 	if code.DisplayName != "自定义代码" || values[rawField.Identity.PhysicalName] != nil || values[ext.Definition.Identity.PhysicalName] != "keep" {
 		t.Fatalf("upgrade corrupted legacy values: %v %s", values, code.DisplayName)
 	}
@@ -196,5 +257,12 @@ func TestNativePackageAdditiveCapacityUpgrade(t *testing.T) {
 	req.RequestID, req.IdempotencyKey = "duplicate", "duplicate"
 	if _, err := f.kernel.Apply(ctx, req); err == nil || !strings.Contains(err.Error(), "unique_violation") {
 		t.Fatalf("lost old rule: %v", err)
+	}
+	f.input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
+		m.Version++
+		m.Entities[0].Fields = m.Entities[0].Fields[1:] // The field used by the old business request is no longer granted.
+	})
+	if _, err := f.call("transaction.status", map[string]string{"requestId": applied.RequestID}); err == nil || !strings.Contains(err.Error(), "plugin_read_denied") {
+		t.Fatalf("revoked field exposed old receipt: %v", err)
 	}
 }

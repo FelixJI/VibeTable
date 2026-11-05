@@ -115,7 +115,7 @@
     },
     "authorization": "explicit logical-role grants only after complete configuration; current installation rechecked",
     "recovery": "read/status revalidate completed canonical targets; stale carries logical-path diagnostics and grants no model access; repairs compare the previous binding, history and registered dependencies again in the completion transaction",
-    "upgrade": "additive schema operations only; renames preserve identity, incompatible changes fail closed"
+    "upgrade": "additive upgrades of a completed model commit schema and bindings in one workspace transaction; first initialization retains step progress; renames preserve identity, incompatible changes fail closed"
   },
   "transactions": {
     "contract": "vibetable.plugin-transactions.v1",

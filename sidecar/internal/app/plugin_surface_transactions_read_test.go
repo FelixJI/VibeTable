@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,13 +11,144 @@ import (
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
+
+func TestRuleUpgradePreflightsBothImagesWithoutBlockingDisjointTables(t *testing.T) {
+	f := newTransactionFixture(t, "receipt-repair")
+	ctx := t.Context()
+	for entity, count := range map[string]int{"headers": 2999, "notes": 2001} {
+		b := f.model.Bindings[entity]
+		table, err := schemaexecution.Describe(ctx, f.pb, b.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.pb.RunInTransaction(func(tx core.App) error {
+			for i := 0; i < count; i++ {
+				values := dbx.Params{"id": fmt.Sprintf("%015d", i)}
+				for key, fieldID := range b.Fields {
+					field, _ := table.Field(fieldID)
+					switch key {
+					case "amount":
+						values[field.Identity.PhysicalName] = "0.00"
+					case "code", "name":
+						values[field.Identity.PhysicalName] = fmt.Sprint(i)
+					default:
+						continue
+					}
+					if name := field.Value.Presence.PhysicalName; name != "" {
+						values[name] = true
+					}
+				}
+				if _, err := tx.DB().Insert(table.PhysicalName, values).Execute(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configure := func(d transactionrules.Declaration) error {
+		t.Helper()
+		store := pluginstore.New(f.pb, f.workspace)
+		raw, err := store.GetInstallation(ctx, f.input.ProjectKey, f.input.PluginID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			t.Fatal(err)
+		}
+		obj["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = d
+		prev := f.input.InstallationRevision
+		f.input.InstallationRevision++
+		obj["revision"] = f.input.InstallationRevision
+		raw, err = json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SaveInstallation(ctx, raw, &prev); err != nil {
+			t.Fatal(err)
+		}
+		p, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]string{"requestId": p.(modelPreview).RequestID}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.call("transaction.configure", map[string]any{"declaration": d})
+		return err
+	}
+	noteRule := transactionrules.Rule{ID: "notes", Kind: "unique", Entity: "notes", Fields: []string{"name"}}
+	disjoint := transactionrules.Declaration{Contract: f.declaration.Contract, ModelID: f.declaration.ModelID, Version: 2, Rules: []transactionrules.Rule{noteRule}}
+	if err := configure(disjoint); err != nil {
+		t.Fatal("disjoint registrations rejected", err)
+	}
+	b := f.model.Bindings["headers"]
+	write := func(id, code string) error {
+		_, err := f.kernel.Apply(ctx, mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: id, IdempotencyKey: id, TableID: b.TableID, SchemaRevision: f.model.Revisions[b.TableID], Actor: mutation.Actor{Type: "user", ID: "local-user"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, Values: map[string]any{b.Fields["code"]: code, b.Fields["amount"]: "0.00"}}}})
+		return err
+	}
+	if err := write("before", "before"); err != nil {
+		t.Fatal(err)
+	}
+	overlap := disjoint
+	overlap.Version = 3
+	overlap.Rules = []transactionrules.Rule{{ID: "new_pair", Kind: "unique", Entity: "headers", Fields: []string{"code", "amount"}}}
+	if err := configure(overlap); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+		t.Fatalf("overlapping registrations exceeded the jointly triggered budget: %v", err)
+	}
+	all := f.declaration
+	all.Version = 4
+	all.Rules = append(all.Rules, noteRule)
+	if err := configure(all); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+		t.Fatalf("oversize configuration: %v", err)
+	}
+	registered, err := transactionrules.Load(ctx, f.pb)
+	if err != nil || len(registered) != 2 {
+		t.Fatalf("persisted rejected guard: %d %v", len(registered), err)
+	}
+	if err := write("after", "after"); err != nil {
+		t.Fatal("old table no longer writable", err)
+	}
+	if err := write("duplicate", "after"); err == nil || !strings.Contains(err.Error(), "transaction.unique_violation") {
+		t.Fatalf("lost old unique rule: %v", err)
+	}
+}
+
+func TestRegistrationRejectsOversizedCombinedImageBytes(t *testing.T) {
+	f := newTransactionFixture(t, "receipt-repair")
+	b := f.model.Bindings["notes"]
+	table, err := schemaexecution.Describe(t.Context(), f.pb, b.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field, _ := table.Field(b.Fields["name"])
+	data := dbx.Params{field.Identity.PhysicalName: strings.Repeat("x", transactionrules.MaxBytes/2), "id": "synthetic000001"}
+	if name := field.Value.Presence.PhysicalName; name != "" {
+		data[name] = true
+	}
+	if _, err := f.pb.DB().Insert(table.PhysicalName, data).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	d := transactionrules.Declaration{Contract: transactionrules.Contract, Version: 2, ModelID: f.declaration.ModelID, Rules: []transactionrules.Rule{{ID: "name", Kind: "unique", Entity: "notes", Fields: []string{"name"}}}}
+	candidate := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Bindings: f.model.Bindings, Declaration: d}
+	if _, err := candidate.Read(t.Context(), f.pb); err != nil {
+		t.Fatal("single image should fit", err)
+	}
+	if err := candidate.ValidateAdmission(t.Context(), f.pb, nil); err == nil || err.Error() != "transaction.read_budget_exceeded" {
+		t.Fatalf("combined byte budget: %v", err)
+	}
+}
 
 type transactionReadContextKey struct{}
 

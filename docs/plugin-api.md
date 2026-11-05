@@ -188,6 +188,7 @@ Host 将确认的版本传给 commit，Go 在同一业务事务内核对该版�
 变化报 `transaction.plan_stale`，整笔拒绝。SDK 不自动刷新；影响预览不替代提交时的完整余额等规则检查。
 旧 ID 缺失或恢复围栏失效返回 `unknown`，不会重新签发。`transaction.status({requestId}, signal?)`
 在当前授权下返回 `prepared`、原 `applied`（包含稳定 `newIds` 和逐表逐行回执）或 `unknown`。
+同一安装的模型与规则仅追加定义，并保留原先涉及的物理绑定和读取权限时，可按原 ID 查询已应用回执。升级前的待提交计划须重新预览并确认。
 关闭再开、丢失 acknowledgement 或收到 `plugin_commit_unknown` 后只查询原 ID；SDK 从不自动
 重试 submit，不以 `unknown` 换 key 补交。用户拒绝确认返回 null；迟到取消和后续通知失败不撤回
 已确认成功。每次 Host task 独立于持久业务 requestId，任务列表不会把并发操作合并成一个任务。
