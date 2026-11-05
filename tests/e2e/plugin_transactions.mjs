@@ -52,7 +52,10 @@ export async function runPluginTransactions(page, recorder, runtime, helpers) {
   await frame.locator("#model").click();
   await nativeModel(runtime, "click", "plugin-model-confirm", "create");
   const model = await finish();
-  recorder.check("transaction model has exactly three canonical entities", model.status === "completed" && Object.keys(model.bindings).length === 3, { model });
+  recorder.check("transaction model has three business entities plus fourteen independent capacity entities", model.status === "completed"
+    && Object.keys(model.bindings).length === 17
+    && ["heads", "lines", "allocations", ...Array.from({ length: 14 }, (_, i) => `capacity_${String(i).padStart(2, "0")}`)].every(key => model.bindings[key])
+    && new Set(Object.values(model.bindings).map(binding => binding.tableId)).size === 17, { model });
   const configured = await confirm("configure", true, "rules");
   recorder.check("native rule registration is acknowledged", configured?.status === "configured", { configured });
   const preview = await action("preview");
@@ -65,13 +68,16 @@ export async function runPluginTransactions(page, recorder, runtime, helpers) {
     }
     return result;
   };
+  recorder.check("preview uses all sixty-five declared rules without widening the independent decimal budget", preview.declaration?.rules?.length === 65
+    && preview.declaration.decimals?.length === 3
+    && ["unique-code", "head-limit", "line-total"].every(id => preview.declaration.rules.some(rule => rule.id === id)), { declaration: preview.declaration });
   recorder.check("persistent preview writes no business rows", preview.status === "prepared" && Object.values(await rows()).every(value => value.length === 0), { preview });
   const cancelled = await confirm("submit", false, "cancel");
   recorder.check("native rejection leaves all three tables empty", cancelled === null && Object.values(await rows()).every(value => value.length === 0), { cancelled });
   const applied = await confirm("submit", true, "commit");
   assertAppliedTransaction(applied, preview);
   const committed = await rows();
-  recorder.check("one native confirmation atomically creates all three rows", Object.values(committed).every(value => value.length === 1), { applied, committed });
+  recorder.check("one native confirmation atomically creates all three rows", Object.entries(committed).every(([entity, value]) => value.length === (["heads", "lines", "allocations"].includes(entity) ? 1 : 0)), { applied, committed });
   const replay = await action("submit");
   assertAppliedTransaction(replay, preview);
   recorder.check("same business request returns the original receipt without another write", replay.receipt.changeSetId === applied.receipt.changeSetId && JSON.stringify(await rows()) === JSON.stringify(committed), { replay });

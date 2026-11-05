@@ -1174,6 +1174,34 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    [DataRow(128, 1, true)]
+    [DataRow(129, 0, false)]
+    [DataRow(1, 65, false)]
+    public async Task TransactionConfigurationBoundsRulesAndDecimalsIndependently(int rules, int decimals, bool permitted)
+    {
+        using var fixture = new Fixture { Decision = "rejected" };
+        var path = new[] { new { field = "header", target = "headers" } };
+        var declaration = new {
+            contract = "vibetable.plugin-transactions.v1", modelId = "orders", version = 1,
+            rules = Enumerable.Range(0, rules).Select(i => new { id = $"rule{i}", kind = "sameTarget", entity = "lines", left = path, right = path }),
+            decimals = Enumerable.Range(0, decimals).Select(_ => new { entity = "headers", field = "name", storage = "decimalText", scale = 2, digits = 8 }),
+        };
+        var response = await fixture.Call("transaction.configure", JsonSerializer.Serialize(new { declaration }));
+        if (!permitted)
+        {
+            Assert.AreEqual("transaction.rules_invalid", Code(response));
+            Assert.AreEqual(0, fixture.Confirmations);
+            return;
+        }
+        var preview = fixture.LastInteraction!.PendingConfirmation!.Preview;
+        Assert.AreEqual(rules + decimals, preview.SampleRows.Count);
+        var hop = preview.SampleRows[0]["left"][0];
+        Assert.AreEqual("field-header", hop.GetProperty("fieldId").GetString());
+        Assert.AreEqual("table-head", hop.GetProperty("targetTableId").GetString());
+        Assert.AreEqual(JsonValueKind.Null, response.GetProperty("result").ValueKind);
+    }
+
+    [TestMethod]
     [DataRow(false, 1L)]
     [DataRow(true, 1L)]
     [DataRow(false, 2147483648L)]

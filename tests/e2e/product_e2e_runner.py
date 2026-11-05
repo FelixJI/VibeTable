@@ -3168,8 +3168,11 @@ def run_scenario(
         from tests.e2e.plugin_surface_outputs import prepare_output_package
 
         prepare_output_package(controls_dir)
+    if scenario.id == "56-plugin-transactions":
+        from tests.e2e.plugin_model_packages import prepare_transaction_capacity_package
+
+        prepare_transaction_capacity_package(controls_dir)
     if scenario.id in {
-        "56-plugin-transactions",
         "57-plugin-datasets",
         "58-plugin-integration-evidence",
     }:

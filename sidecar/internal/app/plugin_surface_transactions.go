@@ -283,7 +283,7 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 				if err != nil {
 					return err
 				}
-				if len(registered) >= transactionrules.MaxRules {
+				if len(registered) >= transactionrules.MaxRegistrations {
 					return pluginDataError("transaction.rule_budget_exceeded")
 				}
 				images, err := registration.Read(ctx, tx)

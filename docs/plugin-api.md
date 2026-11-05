@@ -147,8 +147,8 @@ if (outcome.status === "rejected") return; // 保留表单，不显示“保存�
 manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经由 `model.configure` 完成绑定的
 logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
 完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
-规则包括 `unique`、`reference`、`conservation`、`balance` 和 `state`；不接收脚本、SQL 或可省略的
-调用方条件。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
+每个声明最多 128 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state` 和 `sameTarget`。
+`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
 
 `decimals` 指定 `{entity,field,storage,scale,digits}`。`decimalText` 绑定 Text，值使用规范十进制
 字符串；`integerUnits` 绑定整数 Number，值为安全整数最小单位。scale 为 0–18，digits 为

@@ -218,7 +218,7 @@ func surfaceTransactionRejection(code string) bool {
 		"transaction.input_conflict", "transaction.relation_conflict", "transaction.reference_invalid", "transaction.binding_stale",
 		"transaction.decimal_invalid", "transaction.decimal_noncanonical", "transaction.decimal_scale_mismatch",
 		"transaction.unique_null", "transaction.unique_violation", "transaction.reference_violation",
-		"transaction.conservation_violation", "transaction.balance_violation", "transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied",
+		"transaction.conservation_violation", "transaction.balance_violation", "transaction.same_target_violation", "transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied",
 		"mutation.relation.cardinality", "mutation.relation.reciprocal_cardinality", "mutation.relation.target_not_found":
 		return true
 	default:

@@ -37,18 +37,36 @@ internal sealed partial class PluginSurfaceApi
             // Go matches this exact declaration to the installed manifest before registering anything.
             var model = await CallAsync(surface, "model.read", JsonSerializer.SerializeToElement(new { }), token);
             if (model.GetProperty("status").GetString() != "completed") throw Error("transaction.model_required");
+            var rules = declaration.GetProperty("rules");
             var decimals = declaration.TryGetProperty("decimals", out var decimalFields)
-                ? decimalFields.EnumerateArray().Select(value => value.Clone()) : [];
-            var operations = declaration.GetProperty("rules").EnumerateArray()
+                ? decimalFields.EnumerateArray().ToArray() : [];
+            if (rules.GetArrayLength() is < 1 or > 128 || decimals.Length > 64) throw Error("transaction.rules_invalid");
+            var bindings = model.GetProperty("bindings");
+            var operations = rules.EnumerateArray()
                 .Concat(decimals).Select(value =>
                 {
                     var display = JsonNode.Parse(value.GetRawText())!.AsObject();
-                    display["binding"] = JsonNode.Parse(model.GetProperty("bindings").GetProperty(value.GetProperty("entity").GetString()!).GetRawText());
+                    string entity = value.GetProperty("entity").GetString()!;
+                    display["binding"] = JsonNode.Parse(bindings.GetProperty(entity).GetRawText());
+                    var match = display["currentWhen"] ?? display;
+                    foreach (string key in new[] { "left", "right" })
+                    {
+                        if (match[key] is not JsonArray path) continue;
+                        string source = entity;
+                        foreach (var step in path)
+                        {
+                            var hop = step!.AsObject();
+                            var binding = bindings.GetProperty(source);
+                            hop["tableId"] = binding.GetProperty("tableId").GetString();
+                            hop["fieldId"] = binding.GetProperty("fields").GetProperty(hop["field"]!.GetValue<string>()).GetString();
+                            source = hop["target"]!.GetValue<string>();
+                            hop["targetTableId"] = bindings.GetProperty(source).GetProperty("tableId").GetString();
+                        }
+                    }
                     if (value.TryGetProperty("target", out var target) && target.GetString() is { Length: > 0 } targetEntity)
-                        display["targetBinding"] = JsonNode.Parse(model.GetProperty("bindings").GetProperty(targetEntity).GetRawText());
+                        display["targetBinding"] = JsonNode.Parse(bindings.GetProperty(targetEntity).GetRawText());
                     return display;
                 }).ToArray();
-            if (operations.Length is < 1 or > 128) throw Error("transaction.rules_invalid");
             confirmationPlan = JsonSerializer.SerializeToElement(new { collection = declaration.GetProperty("modelId"), operations });
             count = operations.Length;
             title = "登记以下精确业务规则；插件停用或卸载后，普通编辑、导入和撤销仍受这些规则保护";

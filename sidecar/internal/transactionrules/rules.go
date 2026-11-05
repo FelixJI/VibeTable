@@ -27,7 +27,9 @@ import (
 const Contract = "vibetable.plugin-transactions.v1"
 const MaxRows = 10000
 const MaxBytes = 1 << 20
-const MaxRules = 64
+const MaxRules = 128
+const MaxRegistrations = 64
+const MaxDecimals = 64
 
 type Decimal struct {
 	Entity string `json:"entity"`
@@ -37,6 +39,9 @@ type Decimal struct {
 
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
 type Rule struct {
+	PathMatch
+	WhenPresent  string              `json:"whenPresent,omitempty"`
+	CurrentWhen  *PathMatch          `json:"currentWhen,omitempty"`
 	ID           string              `json:"id"`
 	Kind         string              `json:"kind"`
 	Entity       string              `json:"entity"`
@@ -82,7 +87,7 @@ func Decode(raw []byte) (Declaration, error) {
 }
 
 func (d Declaration) Validate() error {
-	if d.Contract != Contract || d.ModelID == "" || d.Version < 1 || len(d.Rules) == 0 || len(d.Rules) > MaxRules || len(d.Decimals) > MaxRules {
+	if d.Contract != Contract || d.ModelID == "" || d.Version < 1 || len(d.Rules) == 0 || len(d.Rules) > MaxRules || len(d.Decimals) > MaxDecimals {
 		return failure("rules_invalid")
 	}
 	decimals := map[string]bool{}
@@ -99,8 +104,13 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "") && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
+			return failure("rules_invalid")
+		}
 		valid := false
 		switch r.Kind {
+		case "sameTarget":
+			valid = r.PathMatch.valid(r.Entity) && (r.WhenPresent == "" || r.WhenPresent == r.Left[0].Field) && len(r.Fields) == 0 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "unique":
 			valid = len(r.Fields) > 0 && len(r.Fields) <= 8 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "reference":
@@ -157,7 +167,10 @@ func (r Registration) dependencies() map[string]map[string]bool {
 		if rule.Target != "" {
 			add(rule.Target, rule.Limit)
 		}
-		add(rule.Entity, rule.Relation)
+		rule.relationSteps(func(entity string, step RelationStep) {
+			add(entity, step.Field)
+			add(step.Target, "")
+		})
 		add(rule.Entity, rule.Amount)
 	}
 	return result
@@ -232,19 +245,18 @@ func (r Registration) Read(ctx context.Context, app core.App) (Images, error) {
 			}
 		}
 		for _, rule := range r.Declaration.Rules {
-			if rule.Entity != entity {
-				continue
-			}
-			name := rule.Relation
-			if rule.Kind == "reference" {
-				name = rule.Field
-			}
-			if name != "" {
-				field, _ := table.Field(binding.Fields[name])
-				target := r.Bindings[rule.Target]
-				if field.Relation == nil || field.Relation.TargetTableID != target.TableID || field.Relation.Cardinality != "one" {
-					return nil, failure("reference_mapping_invalid")
+			valid := true
+			rule.relationSteps(func(source string, step RelationStep) {
+				if source != entity {
+					return
 				}
+				field, _ := table.Field(binding.Fields[step.Field])
+				if field.Relation == nil || field.Relation.TargetTableID != r.Bindings[step.Target].TableID || field.Relation.Cardinality != "one" {
+					valid = false
+				}
+			})
+			if !valid {
+				return nil, failure("reference_mapping_invalid")
 			}
 		}
 		collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
@@ -359,6 +371,21 @@ func (r Registration) Validate(before, after Images) error {
 	for _, rule := range r.Declaration.Rules {
 		rows := after[rule.Entity]
 		switch rule.Kind {
+		case "sameTarget":
+			for id, row := range rows {
+				if rule.WhenPresent != "" {
+					if value, present := row[rule.WhenPresent]; present && (value == nil || value == "") {
+						continue
+					}
+				}
+				match, err := rule.matches(after, row, id, false)
+				if err != nil {
+					return err
+				}
+				if !match {
+					return failure("same_target_violation")
+				}
+			}
 		case "unique":
 			seen := map[string]bool{}
 			for _, row := range rows {
@@ -402,6 +429,15 @@ func (r Registration) Validate(before, after Images) error {
 				target, ok := row[rule.Relation].(string)
 				if !ok || after[rule.Target][target] == nil {
 					return failure("reference_violation")
+				}
+				if rule.CurrentWhen != nil {
+					current, err := rule.CurrentWhen.matches(after, row, id, true)
+					if err != nil {
+						return err
+					}
+					if !current {
+						continue
+					}
 				}
 				amount, err := format.Parse(row[rule.Amount])
 				if err != nil {
@@ -486,11 +522,11 @@ func Load(ctx context.Context, app core.App) ([]Registration, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	rows, err := app.FindRecordsByFilter("vibetable_plugin_records", "kind='audit' && payload_json.eventType='transaction.rules'", "seq", MaxRules+1, 0)
+	rows, err := app.FindRecordsByFilter("vibetable_plugin_records", "kind='audit' && payload_json.eventType='transaction.rules'", "seq", MaxRegistrations+1, 0)
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) > MaxRules {
+	if len(rows) > MaxRegistrations {
 		return nil, failure("rule_budget_exceeded")
 	}
 	result := []Registration{}
@@ -543,6 +579,53 @@ func IntegerInputs(ctx context.Context, app core.App, table string) (map[string]
 	return formats, nil
 }
 
+// Cumulative upgrades keep their immutable registrations. Execute the superset once so
+// previously readable workspaces do not spend the bounded image budget twice on the same rows.
+func activeGuards(history []Registration) []Registration {
+	active := make([]Registration, 0, len(history))
+	for i := len(history) - 1; i >= 0; i-- {
+		old := history[i]
+		covered := false
+		for _, next := range active {
+			if old.WorkspaceID != next.WorkspaceID || old.PluginID != next.PluginID || old.InstallationID != next.InstallationID ||
+				old.Declaration.ModelID != next.Declaration.ModelID || old.Declaration.Version >= next.Declaration.Version {
+				continue
+			}
+			if !old.MatchesBindings(next.Bindings) {
+				continue
+			}
+			rules := map[string]Rule{}
+			for _, rule := range next.Declaration.Rules {
+				rules[rule.ID] = rule
+			}
+			decimals := map[Decimal]bool{}
+			for _, decimal := range next.Declaration.Decimals {
+				decimals[decimal] = true
+			}
+			covered = true
+			for _, rule := range old.Declaration.Rules {
+				if !reflect.DeepEqual(rule, rules[rule.ID]) {
+					covered = false
+					break
+				}
+			}
+			for _, decimal := range old.Declaration.Decimals {
+				if !decimals[decimal] {
+					covered = false
+					break
+				}
+			}
+			if covered {
+				break
+			}
+		}
+		if !covered {
+			active = append(active, old)
+		}
+	}
+	return active
+}
+
 // Capture selects by actual canonical writes, including reciprocal targets, never a caller's rule list.
 func Capture(ctx context.Context, app core.App, touched map[string]map[string]bool) ([]Guard, error) {
 	registrations, err := Load(ctx, app)
@@ -551,7 +634,7 @@ func Capture(ctx context.Context, app core.App, touched map[string]map[string]bo
 	}
 	guards := []Guard{}
 	rowsRead, bytesRead := 0, 0
-	for _, r := range registrations {
+	for _, r := range activeGuards(registrations) {
 		selected := false
 		for entity, fields := range r.dependencies() {
 			b := r.Bindings[entity]

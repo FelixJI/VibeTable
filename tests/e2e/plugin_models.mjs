@@ -296,9 +296,16 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     await waitForModelCatalog(page, upgraded.bindings, beforeCatalog);
     const expected = structuredClone(repaired.result.bindings);
     expected.assets.fields.checked = upgraded.bindings.assets.fields.checked;
-    recorder.check("confirmed upgrade adds exactly one field to the repaired canonical bindings", Boolean(expected.assets.fields.checked)
+    const retained = Object.fromEntries(Object.entries(upgraded.bindings).filter(([key]) => key in expected));
+    recorder.check("confirmed upgrade adds exactly one field to the repaired original bindings", Boolean(expected.assets.fields.checked)
       && !Object.values(repaired.result.bindings.assets.fields).includes(expected.assets.fields.checked)
-      && isDeepStrictEqual(upgraded.bindings, expected) && (await catalog()).length === 3, { upgraded, repaired });
+      && isDeepStrictEqual(retained, expected), { upgraded, repaired });
+    const added = Array.from({ length: 14 }, (_, index) => `capacity_${String(index).padStart(2, "0")}`);
+    recorder.check("confirmed upgrade crosses the old sixteen-entity limit with fourteen independent tables",
+      Object.keys(upgraded.bindings).length === 17 && (await catalog()).length === 17
+      && new Set(Object.values(upgraded.bindings).map(binding => binding.tableId)).size === 17
+      && added.every(key => upgraded.bindings[key]
+        && Object.keys(upgraded.bindings[key].fields).length === 5), { upgraded });
     const preserved = await verifyUserData(page, frame, recorder, helpers, userData, "confirmed upgrade");
     await page.getByTestId("plugin-app-return").click();
     frame = await openApplication(page, PLUGIN, "open-model");

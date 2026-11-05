@@ -9,11 +9,14 @@ export interface TransactionDecimal {
   readonly scale: number;
   readonly digits: number;
 }
+interface RelationStep { readonly field: string; readonly target: string }
+interface PathMatch { readonly left: readonly RelationStep[]; readonly right: readonly RelationStep[] }
 interface RuleIdentity { readonly id: string; readonly entity: string }
 export type TransactionRule = RuleIdentity & (
   { readonly kind: "unique"; readonly fields: readonly string[] }
   | { readonly kind: "reference"; readonly field: string; readonly target: string }
-  | { readonly kind: "conservation" | "balance"; readonly target: string; readonly relation: string; readonly amount: string; readonly limit: string }
+  | ({ readonly kind: "sameTarget"; readonly whenPresent?: string } & PathMatch)
+  | (({ readonly kind: "conservation" } | { readonly kind: "balance"; readonly currentWhen?: PathMatch }) & { readonly target: string; readonly relation: string; readonly amount: string; readonly limit: string })
   | { readonly kind: "state"; readonly field: string; readonly transitions: Readonly<Record<string, readonly string[]>>;
       readonly fields?: readonly string[]; readonly frozenStates?: readonly string[] }
 );
