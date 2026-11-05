@@ -26,6 +26,11 @@ internal sealed partial class PluginSurfaceApi
         {
             Task<JsonElement> ReadCatalog(JsonElement page, CancellationToken ct) => CallAsync(surface, "model.catalog", page, ct);
             var catalog = await ReadModelCatalogAsync(ReadCatalog, token);
+            if (catalog.TryGetProperty("status", out var status) && status.GetString() == "blocked")
+            {
+                await _confirmModel(catalog, token);
+                return null;
+            }
             mappings = await NativePluginModelWindow.ChooseMappingAsync(catalog,
                 (table, revision, ct) => ReadModelCatalogAsync(ReadCatalog, ct, table, revision), token);
             if (mappings is null) return null;

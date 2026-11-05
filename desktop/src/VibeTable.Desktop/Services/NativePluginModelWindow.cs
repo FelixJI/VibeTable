@@ -180,9 +180,15 @@ internal sealed class NativePluginModelWindow : Window
                     window.Line($"{change.GetProperty("path").GetString()}：{change.GetProperty("oldTableId").GetString()}/{change.GetProperty("oldFieldId").GetString()} → {change.GetProperty("newTableId").GetString()}/{change.GetProperty("newFieldId").GetString()} · {(change.GetProperty("relation").GetBoolean() ? "双向关系" : "标量字段")}");
                 if (!blocked) window.Line("受影响的表均无记录和写入历史，未触及已登记规则依赖。");
             }
-            foreach (var diagnostic in preview.GetProperty("diagnostics").EnumerateArray())
-                window.Line($"拒绝：{diagnostic.GetProperty("path").GetString()} — {DiagnosticLabel(diagnostic.GetProperty("code").GetString()!)}");
             var bindings = preview.GetProperty("bindings");
+            foreach (var diagnostic in preview.GetProperty("diagnostics").EnumerateArray())
+            {
+                string path = diagnostic.GetProperty("path").GetString()!;
+                string code = diagnostic.GetProperty("code").GetString()!;
+                if (code == "plugin_model_history_unknown" && bindings.TryGetProperty(path, out var previous))
+                    path += " → " + previous.GetProperty("tableId").GetString();
+                window.Line($"拒绝：{path} — {DiagnosticLabel(code)}");
+            }
             foreach (var entity in preview.GetProperty("model").GetProperty("entities").EnumerateArray())
             {
                 string key = entity.GetProperty("key").GetString()!;

@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"github.com/pocketbase/dbx"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -150,6 +153,14 @@ func TestPluginModelPhysicalBindingDrift(t *testing.T) {
 			if got.Status != "stale" || !slices.ContainsFunc(got.Diagnostics, func(d v2.Diagnostic) bool { return d.Path == path && d.Code == code }) {
 				t.Fatalf("stale %s %+v", path, got.Diagnostics)
 			}
+			if kind == "collection" {
+				catalog := called("model.catalog", map[string]string{}).(map[string]any)
+				blocked := catalog["diagnostics"].([]v2.Diagnostic)
+				if catalog["status"] != "blocked" || len(blocked) != 1 || blocked[0].Path != entity || blocked[0].Code != "plugin_model_history_unknown" ||
+					catalog["bindings"].(map[string]pluginmodel.Binding)[entity].TableID != b.TableID {
+					t.Fatalf("native blocked catalog: %+v", catalog)
+				}
+			}
 			if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
 				t.Fatal("drifted provider conferred grants")
 			}
@@ -157,6 +168,130 @@ func TestPluginModelPhysicalBindingDrift(t *testing.T) {
 				t.Fatal("stale completion replayed")
 			}
 		})
+	}
+}
+
+func TestPluginModelRelationMetadataDrift(t *testing.T) {
+	for _, drift := range []string{"pair", "delete-policy", "mirror"} {
+		t.Run(drift, func(t *testing.T) {
+			pb, workspace, input, domain := modelFixture(t)
+			call := func(method string, req any) any {
+				t.Helper()
+				res, err := modelCall(t, pb, workspace, input, domain, method, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return res
+			}
+			p := call("model.preview", modelPreviewRequest{Mode: "create"}).(modelPreview)
+			s := call("model.commit", map[string]string{"requestId": p.RequestID}).(pluginmodel.State)
+			b := s.Bindings["people"]
+			params := dbx.Params{"table": b.TableID, "field": b.Fields["tickets"]}
+			sql := "DELETE FROM vibetable_relations WHERE source_table_id={:table} AND source_field_id={:field}"
+			if drift != "mirror" {
+				column, path, value := "pair_id", "$.relation.pairId", "relp_different"
+				if drift == "delete-policy" {
+					column, path, value = "delete_policy", "$.relation.deletePolicy", "setNull"
+				}
+				params["path"], params["value"] = path, value
+				_, err := pb.DB().NewQuery("UPDATE vibetable_fields SET definition_v2_json=json_set(definition_v2_json,{:path},{:value}) WHERE table_id={:table} AND field_id={:field}").Bind(params).Execute()
+				if err != nil {
+					t.Fatal(err)
+				}
+				sql = "UPDATE vibetable_relations SET " + column + "={:value} WHERE source_table_id={:table} AND source_field_id={:field}"
+			}
+			if _, err := pb.DB().NewQuery(sql).Bind(params).Execute(); err != nil {
+				t.Fatal(err)
+			}
+			read := call("model.read", map[string]string{}).(pluginmodel.State)
+			for _, path := range []string{"people.tickets", "tickets.person"} {
+				if read.Status != "stale" || !slices.ContainsFunc(read.Diagnostics, func(d v2.Diagnostic) bool { return d.Path == path && d.Code == "plugin_model_relation_mismatch" }) {
+					t.Fatalf("drift %s: %+v", drift, read)
+				}
+			}
+			if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
+				t.Fatal("invalid pair granted data access")
+			}
+		})
+	}
+}
+
+func TestPluginModelRepairCommittedHookErrorRecoversNextWrite(t *testing.T) {
+	runtime, ledger, _, _, _, pb := historyRestoreProductFixture(t)
+	_, workspace, input, domain := modelFixtureOn(t, pb)
+	call := func(method string, params any) any {
+		t.Helper()
+		r, err := modelCall(t, pb, workspace, input, domain, method, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	request := func(id string) map[string]string { return map[string]string{"requestId": id} }
+	seed := call("model.preview", modelPreviewRequest{Mode: "create"}).(modelPreview)
+	current := call("model.commit", request(seed.RequestID)).(pluginmodel.State)
+	b := current.Bindings["assets"]
+	alternate := createSchemaProductField(t, pb, b.TableID, v2.LogicalText, "替代名称", "repair-hook-target")
+	propose := func(field string) modelPreview {
+		next := cloneModelState(current)
+		next.Bindings["assets"].Fields["name"] = field
+		return call("model.preview", modelPreviewRequest{Mode: "repair", Mappings: next.Bindings}).(modelPreview)
+	}
+	plan := propose(alternate.FieldID)
+	if plan.Status != "pending" {
+		t.Fatal(plan.Diagnostics)
+	}
+	domain.gates = []businessWriteGate{runtime.CoordinateBusinessWrite}
+	path := filepath.Join(filepath.Dir(pb.DataDir()), "coordination", "write-coordinator.db")
+	revision := func() uint64 {
+		t.Helper()
+		r, err := writecoordinator.ReadPersistentMutationRevision(t.Context(), path, workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	before := revision()
+	injected := errors.New("injected after successful PB commit")
+	hook := pb.OnRecordAfterCreateSuccess("vibetable_plugin_records")
+	hookID := hook.BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetString("kind") == "audit" {
+			return injected
+		}
+		return e.Next()
+	})
+	_, err := modelCall(t, pb, workspace, input, domain, "model.commit", request(plan.RequestID))
+	hook.Unbind(hookID)
+	if !errors.Is(err, writecoordinator.ErrExternalCommitted) || !errors.Is(err, injected) {
+		t.Fatalf("commit classification: %v", err)
+	}
+	if got := call("model.read", map[string]string{}).(pluginmodel.State); got.RequestID != plan.RequestID || got.Bindings["assets"].Fields["name"] != alternate.FieldID {
+		t.Fatal("PB commit was lost")
+	}
+	if err := runtime.CoordinateBusinessWrite(t.Context(), "after.repair", "probe", func(context.Context) error { t.Fatal("prepared revision was reused"); return nil }); !errors.Is(err, writecoordinator.ErrRecoveryRequired) {
+		t.Fatalf("expected prepared recovery: %v", err)
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := workspacev2.Open(t.Context(), workspacev2.Options{App: pb, DataDir: pb.DataDir(), WorkspaceID: workspace, SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Ledger: ledger, DeferBackgroundWorkers: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if revision() != before+1 {
+		t.Fatal("reopening did not settle the committed repair revision")
+	}
+	domain.gates = []businessWriteGate{reopened.CoordinateBusinessWrite}
+	revert := propose(b.Fields["name"])
+	before = revision()
+	finished := call("model.commit", request(revert.RequestID)).(pluginmodel.State)
+	if finished.Bindings["assets"].Fields["name"] != b.Fields["name"] || revision() != before+1 {
+		t.Fatal("next repair failed to advance a fresh revision")
 	}
 }
 

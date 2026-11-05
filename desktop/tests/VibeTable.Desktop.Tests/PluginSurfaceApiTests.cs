@@ -986,6 +986,20 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task MissingPriorCollectionShowsNativeBlockedPlanWithoutAdmission()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.ModelCatalogBody = """{"tables":[],"nextAfterTableId":null,"status":"blocked","model":{"entities":[]},"bindings":{"assets":{"tableId":"original","fields":{}}},"diagnostics":[{"code":"plugin_model_history_unknown","path":"assets"}]}""";
+        JsonElement? shown = null;
+        fixture.ObserveModel = prompt => shown = prompt.Clone();
+        var reply = await fixture.Call("model.configure", """{"mode":"repair"}""");
+        Assert.AreEqual(JsonValueKind.Null, reply.GetProperty("result").ValueKind);
+        Assert.AreEqual("original", shown!.Value.GetProperty("bindings").GetProperty("assets").GetProperty("tableId").GetString());
+        Assert.AreEqual("assets", shown.Value.GetProperty("diagnostics")[0].GetProperty("path").GetString());
+        CollectionAssert.AreEqual(new[] { "model.catalog" }, fixture.Http.Calls.Select(r => r.GetProperty("method").GetString()).ToArray());
+    }
+
+    [TestMethod]
     [DataRow("model.catalog")]
     [DataRow("model.preview")]
     [DataRow("model.commit")]
@@ -1265,6 +1279,7 @@ public sealed class PluginSurfaceApiTests
         internal int Confirmations { get; private set; }
         internal int Prints { get; private set; }
         internal Action? OnPrint { get; set; }
+        internal Action<JsonElement>? ObserveModel { get; set; }
         internal int PrintReleases { get; private set; }
         internal Func<PluginSurfaceSession, CancellationToken, Task<bool>> PreparePrint { get; set; } = (_, _) => Task.FromResult(true);
         internal Func<ProductSidecarGenerationSnapshot, CancellationToken, Task> RefreshModelCatalog { get; set; } = (_, _) => Task.CompletedTask;
@@ -1310,7 +1325,7 @@ public sealed class PluginSurfaceApiTests
                 showPrint: () => { Prints++; OnPrint?.Invoke(); },
                 releasePrint: _ => { PrintReleases++; return Task.CompletedTask; },
                 refreshModelCatalog: (generation, token) => RefreshModelCatalog(generation, token),
-                confirmModel: (_, _) => Task.FromResult(true));
+                confirmModel: (plan, _) => { ObserveModel?.Invoke(plan); return Task.FromResult(true); });
         }
         internal string Wire(string method, string parameters, string? token = null, string? version = null) => JsonSerializer.Serialize(new
         { contract = version ?? PluginSurfaceApi.Contract, surfaceToken = token ?? Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement });
@@ -1378,6 +1393,7 @@ public sealed class PluginSurfaceApiTests
         internal string? CommitErrorBody { get; set; }
         internal string? CommitResultBody { get; set; }
         internal string? ModelPreviewBody { get; set; }
+        internal string? ModelCatalogBody { get; set; }
         internal string? ModelCommitBody { get; set; }
         internal string TransactionStatusBody { get; set; } = TransactionPreviewBody;
         internal string TransactionCommitBody { get; set; } = TransactionAppliedBody;
@@ -1424,6 +1440,7 @@ public sealed class PluginSurfaceApiTests
                 "dataset.validate" => """{"valid":true}""",
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
+                "model.catalog" when ModelCatalogBody is not null => ModelCatalogBody,
                 "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",
                 "model.commit" => ModelCommitBody ?? "{}",
                 "model.read" => """{"status":"completed","bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header"}}}}""",

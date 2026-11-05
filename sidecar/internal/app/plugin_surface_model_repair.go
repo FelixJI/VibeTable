@@ -9,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+	"github.com/vibetable/vibetable/sidecar/internal/relationpair"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -73,6 +74,7 @@ func modelPhysicalFieldCode(app core.App, collection *core.Collection, f v2.Fiel
 func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([]v2.Diagnostic, error) {
 	var diagnostics []v2.Diagnostic
 	tables := modelTableIDs(s)
+	checkedPairs := map[[2]string]bool{}
 	for _, entity := range s.Model.Entities {
 		binding := s.Bindings[entity.Key]
 		table, err := schemaexecution.Describe(ctx, app, binding.TableID)
@@ -98,6 +100,21 @@ func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([
 				code = f.Compatibility(actual, tables)
 				if code == "" && f.Relation != nil && actual.Relation.ReciprocalFieldID != s.Bindings[f.Relation.Entity].Fields[f.Relation.Field] {
 					code = "plugin_model_relation_mismatch"
+				}
+				if code == "" && f.Relation != nil {
+					key := [2]string{binding.TableID, actual.Identity.FieldID}
+					ok, seen := checkedPairs[key]
+					if !seen {
+						ok, err = relationpair.MetadataCompatible(ctx, app, key[0], key[1])
+						if err != nil {
+							return nil, err
+						}
+						checkedPairs[key] = ok
+						checkedPairs[[2]string{actual.Relation.TargetTableID, actual.Relation.ReciprocalFieldID}] = ok
+					}
+					if !ok {
+						code = "plugin_model_relation_mismatch"
+					}
 				}
 				if code == "" {
 					code, err = modelPhysicalFieldCode(app, collection, actual)

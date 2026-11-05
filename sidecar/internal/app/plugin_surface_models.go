@@ -276,6 +276,38 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 		if request.Offset != 0 || request.SchemaRevision != "" {
 			return pluginDataError("plugin_capability_invalid")
 		}
+		result = map[string]any{"model": installed.Manifest.Permissions.Model, "tables": []any{}, "nextAfterTableId": nil}
+		if request.AfterTableID == "" {
+			states, err := pluginmodel.States(ctx, tx, input.ProjectKey, input.PluginID)
+			if err != nil {
+				return err
+			}
+			prior := latestModelState(states, installed.Manifest.Permissions.Model.ModelID)
+			if prior.RequestID != "" {
+				result["bindings"] = modelPublicState(prior).Bindings
+			}
+			if prior.Status == "completed" {
+				var diagnostics []v2.Diagnostic
+				if stale != nil {
+					diagnostics = stale.diagnostics
+				} else if prior.InstallationID != input.InstallationID || prior.InstallationRevision != input.InstallationRevision {
+					diagnostics, err = modelDiagnostics(ctx, tx, prior)
+					if err != nil {
+						return err
+					}
+				}
+				blocked := []v2.Diagnostic{}
+				for _, d := range diagnostics {
+					if d.Code == "plugin_model_table_missing" {
+						blocked = append(blocked, modelDiagnostic("plugin_model_history_unknown", d.Path))
+					}
+				}
+				if len(blocked) > 0 {
+					result["model"], result["status"], result["diagnostics"] = prior.Model, "blocked", blocked
+					return nil
+				}
+			}
+		}
 		tables, err := catalog.List(ctx)
 		if err != nil {
 			return err
@@ -289,17 +321,6 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 		}
 		tables = base
 		afterFound := request.AfterTableID == ""
-		result = map[string]any{"model": installed.Manifest.Permissions.Model, "tables": []any{}, "nextAfterTableId": nil}
-		if request.AfterTableID == "" {
-			states, err := pluginmodel.States(ctx, tx, input.ProjectKey, input.PluginID)
-			if err != nil {
-				return err
-			}
-			prior := latestModelState(states, installed.Manifest.Permissions.Model.ModelID)
-			if prior.RequestID != "" {
-				result["bindings"] = modelPublicState(prior).Bindings
-			}
-		}
 		for index, table := range tables {
 			s := table.Snapshot
 			if !afterFound {
@@ -705,7 +726,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 			return plan.State, pluginDataError("plugin_plan_stale")
 		}
 		err = runBusinessWrite(ctx, domain.gates, "plugin.model.repair", id, func(ctx context.Context) error {
-			return app.RunInTransaction(func(tx core.App) error {
+			txErr := app.RunInTransaction(func(tx core.App) error {
 				old, err := checkPredecessor(ctx, tx)
 				if err != nil {
 					return err
@@ -741,6 +762,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 				plan.State = next
 				return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
 			})
+			return writecoordinator.ClassifyPocketBaseTransactionError(ctx, app, txErr)
 		})
 		return plan.State, err
 	}
