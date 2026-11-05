@@ -19,13 +19,18 @@ internal sealed partial class PluginSurfaceApi
     private async Task<object?> ConfigureModelAsync(PluginSurfaceSession surface, JsonElement parameters, CancellationToken token)
     {
         var request = parameters.Deserialize<ConfigureModel>(Json) ?? throw Error("plugin_capability_invalid");
-        if (request.Mode is not ("create" or "map")) throw Error("plugin_capability_invalid");
+        if (request.Mode is not ("create" or "map" or "repair")) throw Error("plugin_capability_invalid");
         var generation = _generation() ?? throw Error("plugin_session_stale");
         JsonElement? mappings = null;
-        if (request.Mode == "map")
+        if (request.Mode is "map" or "repair")
         {
             Task<JsonElement> ReadCatalog(JsonElement page, CancellationToken ct) => CallAsync(surface, "model.catalog", page, ct);
             var catalog = await ReadModelCatalogAsync(ReadCatalog, token);
+            if (catalog.TryGetProperty("status", out var status) && status.GetString() == "blocked")
+            {
+                await _confirmModel(catalog, token);
+                return null;
+            }
             mappings = await NativePluginModelWindow.ChooseMappingAsync(catalog,
                 (table, revision, ct) => ReadModelCatalogAsync(ReadCatalog, ct, table, revision), token);
             if (mappings is null) return null;
@@ -38,7 +43,7 @@ internal sealed partial class PluginSurfaceApi
             await RefreshModelCatalogAsync(generation, token);
             return preview;
         }
-        if (!await _confirmModel(preview, token)) return null;
+        if (!await _confirmModel(preview, token) || preview.GetProperty("status").GetString() == "blocked") return null;
         CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         string requestId = preview.GetProperty("requestId").GetString()!;
         string taskId = $"plugin-task-{Guid.NewGuid():N}";
@@ -49,6 +54,7 @@ internal sealed partial class PluginSurfaceApi
             null, preview.GetProperty("total").GetInt32(), "write", "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
         var task = _tasks.NativeTask(binding, snapshot, nativeOnlyApproval: true);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(token, task.Token);
+        operation.CancelAfter(TimeSpan.FromMinutes(2));
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _writes[taskId] = new(binding.Context, completion);
         try
@@ -108,6 +114,9 @@ internal sealed partial class PluginSurfaceApi
             || !receipt.TryGetProperty("status", out var status) || status.GetString() != "completed"
             || !receipt.TryGetProperty("total", out var total) || !total.TryGetInt32(out int count) || count < 0 || count != expected.GetProperty("total").GetInt32()
             || !receipt.TryGetProperty("completed", out var completed) || !completed.TryGetInt32(out int done) || done != count
+            || expected.TryGetProperty("mode", out var mode) && mode.GetString() is ("map" or "repair")
+                && (!expected.TryGetProperty("bindings", out var approved) || !receipt.TryGetProperty("bindings", out var saved)
+                    || !JsonNode.DeepEquals(JsonNode.Parse(approved.GetRawText()), JsonNode.Parse(saved.GetRawText())))
             || !receipt.TryGetProperty("model", out var model) || !JsonNode.DeepEquals(JsonNode.Parse(model.GetRawText()), JsonNode.Parse(expected.GetProperty("model").GetRawText())))
             throw Error("plugin_model_status_required");
     }
@@ -115,7 +124,9 @@ internal sealed partial class PluginSurfaceApi
     private async Task RefreshModelCatalogAsync(ProductSidecarGenerationSnapshot generation, CancellationToken token)
     {
         if (_refreshModelCatalog is null) return;
-        try { await _refreshModelCatalog(generation, token); }
+        using var io = CancellationTokenSource.CreateLinkedTokenSource(token);
+        io.CancelAfter(TimeSpan.FromSeconds(15));
+        try { await _refreshModelCatalog(generation, io.Token); }
         catch (Exception error)
         {
             // Catalog projection cannot downgrade a committed model; its owner reports scoped failures.

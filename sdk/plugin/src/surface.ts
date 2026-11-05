@@ -156,7 +156,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method, params }); }
     catch { /* Host closes all owned subscriptions when the frame retires. */ }
   }
-  const pending = new Map<string, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; cleanup: () => void }>();
+  const pending = new Map<string, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> | undefined; cleanup: () => void }>();
   const receive = (event: { readonly data: unknown }): void => {
     if (!event.data || typeof event.data !== "object") return;
     const reply = event.data as Notice & { surfaceToken?: string; contract?: string; requestId?: string; result?: unknown; error?: { code?: string; message?: string } };
@@ -183,16 +183,26 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     const requestId = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
       const cancel = (): void => {
-        try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } }); }
+        try {
+          channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } });
+          const active = pending.get(requestId);
+          if (method === "model.configure" && active && active.timer === undefined) {
+            active.timer = setTimeout(() => {
+              pending.delete(requestId);
+              cleanup();
+              reject(new PluginCapabilityError("plugin_commit_unknown", "Cancellation reply deadline exceeded; inspect model status before retry."));
+            }, 20_000);
+          }
+        }
         catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
       };
       const cleanup = (): void => signal?.removeEventListener("abort", cancel);
-      const timer = setTimeout(() => {
+      const timer = method === "model.configure" ? undefined : setTimeout(() => {
         pending.delete(requestId);
         cleanup();
         cancel();
-        reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
-      }, method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "model.configure" || method === "output.save" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "dataset.export" || method === "attachments.previewChange" ? 125_000 : 20_000);
+        reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
+      }, method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "output.save" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "dataset.export" || method === "attachments.previewChange" ? 125_000 : 20_000);
       pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
       try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); onSent?.(); }

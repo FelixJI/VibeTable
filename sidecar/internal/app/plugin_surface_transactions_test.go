@@ -34,6 +34,7 @@ type transactionFixture struct {
 	workspace   string
 	input       pluginSurfaceAPIRequest
 	model       pluginmodel.State
+	domain      *schemaFieldChangeDomain
 	kernel      *mutation.Kernel
 	epoch       uint64
 	declaration transactionrules.Declaration
@@ -95,6 +96,9 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 			{Key: "headers", Label: "合成单头", Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "code", Label: "单号", Type: v2.LogicalText}, {Key: "amount", Label: "金额", Type: v2.LogicalText}, {Key: "lines", Label: "明细", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "header", Cardinality: "many"}}}},
 			{Key: "lines", Label: "合成明细", Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "amount", Label: "金额", Type: v2.LogicalText}, {Key: "header", Label: "单头", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "headers", Field: "lines", Cardinality: "one"}}, {Key: "allocations", Label: "分配", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "allocations", Field: "line", Cardinality: "many"}}}},
 			{Key: "allocations", Label: "合成分配", Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "amount", Label: "金额", Type: v2.LogicalText}, {Key: "line", Label: "明细", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "allocations", Cardinality: "one"}}}},
+		}
+		if len(storage) > 0 && storage[0] == "receipt-repair" {
+			m.Entities = append(m.Entities, pluginmodel.Entity{Key: "notes", Label: "合成独立备注", Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "名称", Type: v2.LogicalText}}})
 		}
 		if integerUnits {
 			for i := range m.Entities {
@@ -159,7 +163,7 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &transactionFixture{pb: pb, workspace: workspace, input: input, model: completed.(pluginmodel.State), kernel: mutation.New(pb, mutation.MetadataSchemaSource{}), epoch: 1, declaration: d}
+	f := &transactionFixture{pb: pb, workspace: workspace, input: input, model: completed.(pluginmodel.State), domain: domain, kernel: mutation.New(pb, mutation.MetadataSchemaSource{}), epoch: 1, declaration: d}
 	if _, err := f.call("transaction.configure", map[string]any{"declaration": d}); err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +364,102 @@ func (f *transactionFixture) submit(t *testing.T, plan transactionPlan) transact
 		t.Fatal(err)
 	}
 	return raw.(transactionResult)
+}
+
+func TestTransactionAppliedRecoveryAfterUnrelatedModelRepair(t *testing.T) {
+	f := newTransactionFixture(t, "receipt-repair")
+	plan := func(code string) transactionPlan {
+		return transactionPlan{Contract: "vibetable.transaction-plan.v1", ModelID: "synthetic", Operations: []transactionOperation{
+			{Entity: "headers", Kind: "create", TempID: "h", Values: map[string]any{"code": code, "amount": "0.00"}},
+		}}
+	}
+	applied := f.submit(t, plan("applied"))
+	pending, err := f.call("transaction.preview", map[string]any{"plan": plan("prepared")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := f.model.Bindings["notes"]
+	replacement := createSchemaProductField(t, f.pb, notes.TableID, v2.LogicalText, "合成新名称", "receipt-repair-notes")
+	preview, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "repair", Mappings: map[string]pluginmodel.Binding{"notes": {TableID: notes.TableID, Fields: map[string]string{"name": replacement.FieldID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposed := preview.(modelPreview)
+	if proposed.Status != "pending" || len(proposed.Changes) != 1 || proposed.Changes[0].OldField != notes.Fields["name"] || proposed.Changes[0].NewField != replacement.FieldID {
+		t.Fatalf("repair: %+v", proposed)
+	}
+	saved, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]string{"requestId": proposed.RequestID})
+	if err != nil || saved.(pluginmodel.State).Bindings["notes"].Fields["name"] != replacement.FieldID {
+		t.Fatalf("repair commit: %+v %v", saved, err)
+	}
+
+	before := transactionBusinessSnapshot(t, f)
+	auditCount := func() int64 {
+		n, err := f.pb.CountRecords("vibetable_plugin_records")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	events := auditCount()
+	for _, method := range []string{"transaction.status", "transaction.commit", "transaction.preview"} {
+		request := map[string]any{"requestId": applied.RequestID}
+		if method == "transaction.preview" {
+			request["plan"] = plan("applied")
+		}
+		got, err := f.call(method, request)
+		if err != nil || !reflect.DeepEqual(got, applied) {
+			t.Fatalf("%s lost original receipt: %v %v", method, got, err)
+		}
+	}
+	if _, err := f.call("transaction.commit", map[string]any{"requestId": pending.(transactionPreview).RequestID}); err == nil || !strings.Contains(err.Error(), "transaction.plan_stale") {
+		t.Fatalf("obsolete prepared write: %v", err)
+	}
+	if before != transactionBusinessSnapshot(t, f) || events != auditCount() {
+		t.Fatal("receipt recovery or obsolete approval wrote facts or audit events")
+	}
+}
+
+func TestTransactionReceiptTableReadScope(t *testing.T) {
+	original := pluginmodel.State{Model: pluginmodel.Declaration{Entities: []pluginmodel.Entity{
+		{Key: "header", Operations: []string{"read", "query"}}, {Key: "note", Operations: []string{"read", "query"}},
+	}}, Bindings: map[string]pluginmodel.Binding{
+		"header": {TableID: "a", Fields: map[string]string{"name": "field-a"}},
+		"note":   {TableID: "b", Fields: map[string]string{"name": "field-b"}},
+	}}
+	for _, tc := range []struct {
+		name, entity, table, field, derived string
+		staticFields                        []string
+		allowed                             bool
+	}{
+		{"unrelated entity rebound", "note", "c", "field-c", "", nil, true},
+		{"touched entity rebound despite explicit read", "header", "c", "field-c", "", []string{"*"}, false},
+		{"touched field rebound despite explicit read", "header", "a", "replacement", "", []string{"*"}, false},
+		{"derived entity rebound", "note", "c", "field-c", "b", []string{"*"}, false},
+		{"external derived table with new model grant", "note", "c", "field-c", "c", nil, false},
+		{"external derived table with current explicit read", "note", "c", "field-c", "c", []string{"id"}, true},
+		{"external derived table lost id grant", "note", "c", "field-c", "c", []string{"other"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := cloneModelState(original)
+			current.Bindings[tc.entity] = pluginmodel.Binding{TableID: tc.table, Fields: map[string]string{"name": tc.field}}
+			receipt := mutation.PlanReceipt{Revisions: map[string]string{"a": "r1"}}
+			staticTable := "a"
+			if tc.derived != "" {
+				receipt.Revisions[tc.derived] = "r2"
+				staticTable = tc.derived
+			}
+			installed := pluginSurfaceInstallation{}
+			installed.ModelGrants = []pluginReadGrant{{Collection: tc.table, Fields: []string{"id"}, Operations: []string{"read", "query"}}}
+			if tc.staticFields != nil {
+				installed.Manifest.Permissions.Data = []pluginReadGrant{{Collection: staticTable, Fields: tc.staticFields, Operations: []string{"read", "query"}}}
+			}
+			err := authorizeReceiptTables(installed, "", original, current, receipt)
+			if tc.allowed && err != nil || !tc.allowed && (err == nil || !strings.Contains(err.Error(), "plugin_read_denied")) {
+				t.Fatalf("allowed=%v error=%v", tc.allowed, err)
+			}
+		})
+	}
 }
 
 func TestTransactionConcurrentPhantomAndSameRequest(t *testing.T) {

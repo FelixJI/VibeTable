@@ -29,6 +29,24 @@ test("model calls have no catalog, mappings, approval or implicit replay channel
   client.dispose();
 });
 
+test("native review can outlast the I/O deadline while abort and surface retirement still work", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const messages = [];
+  const channel = { postMessage: m => messages.push(m), addEventListener() {}, removeEventListener() {} };
+  const client = sdk.createSurfaceClient("owned-model", channel);
+  const abort = new AbortController();
+  const request = client.model.configure({ mode: "repair" }, abort.signal);
+  t.mock.timers.tick(180_000);
+  assert.deepEqual(messages.map(m => m.method), ["model.configure"]);
+  abort.abort();
+  assert.equal(messages.at(-1).method, "request.cancel");
+  assert.equal(messages.at(-1).params.requestId, messages[0].requestId);
+  t.mock.timers.tick(20_000);
+  await assert.rejects(request, error => error.code === "plugin_commit_unknown");
+  assert.equal(messages.length, 2);
+  client.dispose();
+});
+
 test("offline host does not invent native model support", async () => {
   const host = testing.createOfflineSurfaceHost({ pluginId: "synthetic", workspaceId: "workspace-a", surfaceToken: "surface-a" });
   const client = sdk.createSurfaceClient("surface-a", host.transport);

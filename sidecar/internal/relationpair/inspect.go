@@ -23,6 +23,7 @@ const (
 
 var ErrRevisionChanged = errors.New("relation.inspect.revision_changed")
 var ErrInvalidRequest = errors.New("relation.inspect.invalid_request")
+var errInvalidTableBinding = errors.New("relation.inspect.invalid_table_binding")
 var physicalField = regexp.MustCompile(`^f_[a-z0-9_]{8,}$`)
 
 type endpointState struct {
@@ -84,11 +85,7 @@ func Inspect(ctx context.Context, app core.App, request Request) (Report, error)
 		return Report{}, ErrRevisionChanged
 	}
 	states := [2]endpointState{source, target}
-	if spec.PairID == "" || target.definition.Relation == nil ||
-		target.definition.Relation.PairID != spec.PairID ||
-		target.definition.Relation.ReciprocalFieldID != request.FieldID ||
-		target.definition.Relation.TargetTableID != request.TableID ||
-		(request.TableID == spec.TargetTableID && request.FieldID == spec.ReciprocalFieldID) {
+	if !reciprocalEndpoints(source, target) {
 		report.add(Finding{Code: "metadata_asymmetric", Detail: "pair IDs or reciprocal pointers disagree"})
 		report.PageComplete, report.Finished = false, true
 		return finishIncomplete(ctx, app, report)
@@ -144,6 +141,38 @@ func Inspect(ctx context.Context, app core.App, request Request) (Report, error)
 	return report, nil
 }
 
+func reciprocalEndpoints(source, target endpointState) bool {
+	a, b := source.definition.Relation, target.definition.Relation
+	return a != nil && b != nil && a.PairID != "" && a.PairID == b.PairID &&
+		a.TargetTableID == target.TableID && a.ReciprocalFieldID == target.FieldID &&
+		b.TargetTableID == source.TableID && b.ReciprocalFieldID == source.FieldID &&
+		(source.TableID != target.TableID || source.FieldID != target.FieldID)
+}
+
+// MetadataCompatible checks both canonical endpoints and their deletion-protection mirrors without reading business rows.
+func MetadataCompatible(ctx context.Context, app core.App, tableID, fieldID string) (bool, error) {
+	report := Report{Counts: map[string]int{}}
+	source, err := loadEndpoint(ctx, app, tableID, fieldID, 0, &report)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errInvalidTableBinding) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	spec := source.definition.Relation
+	if len(report.Counts) != 0 || spec == nil || spec.TargetTableID == "" || spec.ReciprocalFieldID == "" {
+		return false, nil
+	}
+	target, err := loadEndpoint(ctx, app, spec.TargetTableID, spec.ReciprocalFieldID, 1, &report)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errInvalidTableBinding) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(report.Counts) == 0 && reciprocalEndpoints(source, target) && spec.DeletePolicy == target.definition.Relation.DeletePolicy, nil
+}
+
 func (report *Report) add(f Finding) {
 	report.Counts[f.Code]++
 	if len(report.Samples) < maxSamples {
@@ -167,7 +196,7 @@ func tableBinding(ctx context.Context, app core.App, tableID string) (Endpoint, 
 		return Endpoint{}, "", fmt.Errorf("read inspection table binding: %w", err)
 	}
 	if row.Schema < 0 || row.Data < 0 || row.Physical == "" || (row.Kind != "base" && row.Kind != "") {
-		return Endpoint{}, "", errors.New("relation.inspect.invalid_table_binding")
+		return Endpoint{}, "", errInvalidTableBinding
 	}
 	collection := &core.Collection{}
 	err = app.CollectionQuery().WithContext(ctx).AndWhere(dbx.HashExp{"id": row.Collection}).One(collection)
@@ -175,7 +204,7 @@ func tableBinding(ctx context.Context, app core.App, tableID string) (Endpoint, 
 		return Endpoint{}, "", fmt.Errorf("read inspection collection: %w", err)
 	}
 	if collection.Name != row.Physical {
-		return Endpoint{}, "", errors.New("relation.inspect.invalid_table_binding")
+		return Endpoint{}, "", errInvalidTableBinding
 	}
 	return Endpoint{TableID: tableID, SchemaRevision: v2.FormatSchemaRevision(row.Schema), DataRevision: row.Data}, row.Physical, nil
 }

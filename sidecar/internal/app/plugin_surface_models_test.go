@@ -20,7 +20,10 @@ import (
 
 func modelFixture(t *testing.T) (*pocketbase.PocketBase, string, pluginSurfaceAPIRequest, *schemaFieldChangeDomain) {
 	t.Helper()
-	pb := schemaProductStore(t)
+	return modelFixtureOn(t, schemaProductStore(t))
+}
+func modelFixtureOn(t *testing.T, pb *pocketbase.PocketBase) (*pocketbase.PocketBase, string, pluginSurfaceAPIRequest, *schemaFieldChangeDomain) {
+	t.Helper()
 	workspace := "11111111-1111-4111-8111-111111111111"
 	model := pluginmodel.Declaration{Contract: pluginmodel.Contract, ModelID: "synthetic", Version: 1, Entities: []pluginmodel.Entity{
 		{Key: "people", Label: "合成人员", Operations: []string{"read", "query", "create", "update"}, Fields: []pluginmodel.Field{{Key: "name", Label: "姓名", Type: v2.LogicalText}, {Key: "tickets", Label: "工单", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "tickets", Field: "person", Cardinality: "many"}}}},
@@ -52,7 +55,7 @@ func modelCall(t *testing.T, pb core.App, workspace string, input pluginSurfaceA
 	t.Helper()
 	input.Method = method
 	input.Request, _ = json.Marshal(request)
-	return executeSurfaceModel(context.Background(), pb, workspace, input, domain)
+	return executePluginSurfaceAPI(context.Background(), pb, nil, nil, workspace, input, nil, &pluginSurfaceIO{models: domain})
 }
 
 func TestPluginModelCreateIdentityGrantsAndNativeProtection(t *testing.T) {

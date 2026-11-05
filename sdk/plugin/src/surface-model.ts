@@ -5,16 +5,17 @@ export interface SurfaceModelBinding {
 }
 export interface SurfaceModelStatus {
   readonly contract: "vibetable.plugin-model.v1";
-  readonly status: "unconfigured" | "pending" | "partial" | "failed" | "completed";
+  readonly status: "unconfigured" | "pending" | "partial" | "failed" | "completed" | "stale";
   readonly requestId?: string;
   readonly completed?: number;
   readonly total?: number;
   readonly bindings: Readonly<Record<string, SurfaceModelBinding>>;
   readonly errorCode?: string;
+  readonly diagnostics?: readonly { readonly code: string; readonly path: string }[];
 }
 export interface SurfaceModel {
   /** Cancellation or a lost reply may leave committed steps. Inspect read/status before retrying. */
-  configure(request: { readonly mode: "create" | "map" }, signal?: AbortSignal): Promise<SurfaceModelStatus | null>;
+  configure(request: { readonly mode: "create" | "map" | "repair" }, signal?: AbortSignal): Promise<SurfaceModelStatus | null>;
   read(): Promise<SurfaceModelStatus>;
   status(request: { readonly requestId: string }): Promise<SurfaceModelStatus>;
 }

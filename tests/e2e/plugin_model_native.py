@@ -108,7 +108,7 @@ def _map_model_choices(
                 diagnostic["wait"] = "control-ready"
                 poll()
                 continue
-            if target["focused"]:
+            if target["selected"] == label or target["focused"]:
                 break
             if tabs >= 16:
                 raise ValueError("model combo could not receive keyboard focus")
@@ -119,6 +119,8 @@ def _map_model_choices(
             diagnostic["wait"] = "focus-change"
             while focused_controls(observe()) == previous_focus:
                 poll()
+        if target["selected"] == label:
+            continue
         input_owned()
         _send_input(native, vkeys=[0x73])  # F4 opens the actual focused ComboBox.
         diagnostic["wait"] = "expanded"
@@ -210,7 +212,7 @@ def handle_plugin_model_request(
             "plugin-model-confirm",
             "plugin-model-preview",
             "plugin-model-cancel",
-        } or request["stage"] not in {"create", "map", "upgrade", "blocked", "cancel"}:
+        } or request["stage"] not in {"create", "map", "upgrade", "blocked", "cancel", "repair"}:
             raise ValueError("model native request is outside the closed scenario")
         if not isinstance(request["requestId"], str) or not 1 <= len(request["requestId"]) <= 128:
             raise ValueError("model native request identity is invalid")

@@ -163,6 +163,41 @@ func (r Registration) dependencies() map[string]map[string]bool {
 	return result
 }
 
+// ProtectsBinding reports whether a physical identity participates in this registration.
+func (r Registration) ProtectsBinding(table, field string) bool {
+	for entity, fields := range r.dependencies() {
+		binding := r.Bindings[entity]
+		if binding.TableID != table {
+			continue
+		}
+		if field == "" {
+			return true
+		}
+		for key := range fields {
+			if binding.Fields[key] == field {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MatchesBindings compares only the canonical objects consulted during enforcement.
+func (r Registration) MatchesBindings(bindings map[string]pluginmodel.Binding) bool {
+	for entity, fields := range r.dependencies() {
+		old, current := r.Bindings[entity], bindings[entity]
+		if old.TableID == "" || old.TableID != current.TableID {
+			return false
+		}
+		for field := range fields {
+			if old.Fields[field] == "" || old.Fields[field] != current.Fields[field] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Read projects only rule dependencies; absent and null values remain distinct from zero.
 func (r Registration) Read(ctx context.Context, app core.App) (Images, error) {
 	if r.WorkspaceID == "" || r.PluginID == "" || r.InstallationID == "" || r.Declaration.Validate() != nil {

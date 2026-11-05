@@ -1,6 +1,9 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.PocketBase;
@@ -921,6 +924,93 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("plugin_source_denied", Code(await fixture.Call(method, "{}")));
     }
 
+    [STATestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void NativeRepairShowsOldFieldAndExplainsMissingSelectionBeforePreview(bool hasReplacement)
+    {
+        var catalog = JsonSerializer.SerializeToElement(new
+        {
+            model = new { entities = new[] { new { key = "items", label = "项目", fields = new[] { new { key = "name", label = "名称", type = "text" } } } } },
+            tables = new[] { new { tableId = "old-table", displayName = "项目", schemaRevision = "rev1" } },
+            bindings = new { items = new { tableId = "old-table", fields = new { name = "old-field" } } },
+            diagnostics = new[] { new { code = "plugin_model_field_access_denied", path = "items.name" } }
+        });
+        var fields = new List<object> { new { fieldId = "wrong-type", displayName = "数量", logicalType = "number" } };
+        if (hasReplacement) fields.Add(new { fieldId = "new-field", displayName = "替代名称", logicalType = "text" });
+        var schema = JsonSerializer.SerializeToElement(new { tableId = "old-table", fields });
+        using var lifetime = new CancellationTokenSource();
+        var window = NativePluginModelWindow.CreateMappingWindow(catalog, (_, _, _) => Task.FromResult(schema), lifetime);
+        window.ShowActivated = false;
+        window.ShowInTaskbar = false;
+        window.Opacity = 0;
+        Exception? failure = null;
+        window.ContentRendered += (_, _) =>
+        {
+            try
+            {
+                var layout = (DockPanel)window.Content;
+                var actions = ((StackPanel)layout.Children[0]).Children;
+                var body = ((StackPanel)((ScrollViewer)layout.Children[1]).Content).Children;
+                void Click(string id) => actions.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id)
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.IsTrue(body.OfType<TextBlock>().Any(t => t.Text.Contains("items.name → old-table/old-field — 字段不可访问")));
+                var field = body.OfType<ComboBox>().Single(c => AutomationProperties.GetAutomationId(c) == "PluginModelField_items_name");
+                Assert.AreEqual(hasReplacement ? 1 : 0, field.Items.Count);
+                Assert.IsNull(field.SelectedItem);
+                Click("plugin-model-preview");
+                Assert.IsTrue(window.IsVisible);
+                Assert.IsNull(window.Mappings);
+                string feedback = actions.OfType<TextBlock>().Single().Text;
+                StringAssert.Contains(feedback, "items.name");
+                StringAssert.Contains(feedback, hasReplacement ? "选择字段" : "没有兼容字段");
+                if (hasReplacement) field.SelectedIndex = 0;
+                Click(hasReplacement ? "plugin-model-preview" : "plugin-model-cancel");
+            }
+            catch (Exception error) { failure = error; }
+            finally { if (window.IsVisible) window.Close(); }
+        };
+        bool? accepted = window.ShowDialog();
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        Assert.AreEqual(hasReplacement, accepted);
+        if (hasReplacement)
+            Assert.AreEqual("new-field", window.Mappings!.Value.GetProperty("items").GetProperty("fields").GetProperty("name").GetString());
+        else
+            Assert.IsNull(window.Mappings);
+    }
+
+    [TestMethod]
+    public void NativeModelSuggestionsPreferKnownIdentitiesAndLeaveAmbiguousNamesForReview()
+    {
+        var logical = JsonSerializer.SerializeToElement(new { key = "title", label = "名称" });
+        JsonElement Choice(string id, string label) => JsonSerializer.SerializeToElement(new { fieldId = id, displayName = label });
+        JsonElement[] choices = [Choice("a", "其它"), Choice("b", "名称")];
+        Assert.AreEqual("a", NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", "a"));
+        Assert.AreEqual("b", NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", null));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", "missing"));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, [.. choices, Choice("c", "title")], "fieldId", null));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, [choices[0]], "fieldId", null));
+        Assert.AreEqual("a", NativePluginModelWindow.SuggestedId(logical, [choices[0]], "fieldId", null, true));
+    }
+
+    [TestMethod]
+    public void NativeRelationSuggestionsRequireOneCompatiblePhysicalPair()
+    {
+        JsonElement Logical(string key, string cardinality) => JsonSerializer.SerializeToElement(new { key, label = key, relation = new { cardinality } });
+        object Field(string id, string label, string target, string reciprocal, string cardinality) => new
+            { fieldId = id, displayName = label, logicalType = "relation", targetTableId = target, reciprocalFieldId = reciprocal, cardinality };
+        JsonElement Schema(string id, params object[] fields) => JsonSerializer.SerializeToElement(new { tableId = id, fields });
+        var left = Logical("links", "many");
+        var right = Logical("owner", "one");
+        var a = Schema("a", Field("x1", "links", "b", "y1", "many"), Field("x2", "second", "b", "y2", "many"));
+        var b = Schema("b", Field("y1", "first", "a", "x1", "one"), Field("y2", "owner", "a", "x2", "one"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, null, right, b, null, null));
+        Assert.AreEqual(("x2", "y2"), NativePluginModelWindow.SuggestRelationPair(left, a, null, null, right, b, null, "y2"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, "x1", right, b, null, "y2"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, "x1", right,
+            Schema("b", Field("y1", "owner", "a", "x1", "many")), null, null));
+    }
+
     [TestMethod]
     public async Task NativeModelCatalogLoadsEverySummaryThenOnlySelectedFieldsWithRevision()
     {
@@ -951,6 +1041,20 @@ public sealed class PluginSurfaceApiTests
         using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => PluginSurfaceApi.ReadModelCatalogAsync(Read, cancelled.Token));
         Assert.AreEqual(4, calls.Count);
+    }
+
+    [TestMethod]
+    public async Task MissingPriorCollectionShowsNativeBlockedPlanWithoutAdmission()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.ModelCatalogBody = """{"tables":[],"nextAfterTableId":null,"status":"blocked","model":{"entities":[]},"bindings":{"assets":{"tableId":"original","fields":{}}},"diagnostics":[{"code":"plugin_model_history_unknown","path":"assets"}]}""";
+        JsonElement? shown = null;
+        fixture.ObserveModel = prompt => shown = prompt.Clone();
+        var reply = await fixture.Call("model.configure", """{"mode":"repair"}""");
+        Assert.AreEqual(JsonValueKind.Null, reply.GetProperty("result").ValueKind);
+        Assert.AreEqual("original", shown!.Value.GetProperty("bindings").GetProperty("assets").GetProperty("tableId").GetString());
+        Assert.AreEqual("assets", shown.Value.GetProperty("diagnostics")[0].GetProperty("path").GetString());
+        CollectionAssert.AreEqual(new[] { "model.catalog" }, fixture.Http.Calls.Select(r => r.GetProperty("method").GetString()).ToArray());
     }
 
     [TestMethod]
@@ -1233,6 +1337,7 @@ public sealed class PluginSurfaceApiTests
         internal int Confirmations { get; private set; }
         internal int Prints { get; private set; }
         internal Action? OnPrint { get; set; }
+        internal Action<JsonElement>? ObserveModel { get; set; }
         internal int PrintReleases { get; private set; }
         internal Func<PluginSurfaceSession, CancellationToken, Task<bool>> PreparePrint { get; set; } = (_, _) => Task.FromResult(true);
         internal Func<ProductSidecarGenerationSnapshot, CancellationToken, Task> RefreshModelCatalog { get; set; } = (_, _) => Task.CompletedTask;
@@ -1278,7 +1383,7 @@ public sealed class PluginSurfaceApiTests
                 showPrint: () => { Prints++; OnPrint?.Invoke(); },
                 releasePrint: _ => { PrintReleases++; return Task.CompletedTask; },
                 refreshModelCatalog: (generation, token) => RefreshModelCatalog(generation, token),
-                confirmModel: (_, _) => Task.FromResult(true));
+                confirmModel: (plan, _) => { ObserveModel?.Invoke(plan); return Task.FromResult(true); });
         }
         internal string Wire(string method, string parameters, string? token = null, string? version = null) => JsonSerializer.Serialize(new
         { contract = version ?? PluginSurfaceApi.Contract, surfaceToken = token ?? Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement });
@@ -1346,6 +1451,7 @@ public sealed class PluginSurfaceApiTests
         internal string? CommitErrorBody { get; set; }
         internal string? CommitResultBody { get; set; }
         internal string? ModelPreviewBody { get; set; }
+        internal string? ModelCatalogBody { get; set; }
         internal string? ModelCommitBody { get; set; }
         internal string TransactionStatusBody { get; set; } = TransactionPreviewBody;
         internal string TransactionCommitBody { get; set; } = TransactionAppliedBody;
@@ -1392,6 +1498,7 @@ public sealed class PluginSurfaceApiTests
                 "dataset.validate" => """{"valid":true}""",
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
+                "model.catalog" when ModelCatalogBody is not null => ModelCatalogBody,
                 "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",
                 "model.commit" => ModelCommitBody ?? "{}",
                 "model.read" => """{"status":"completed","bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header"}}}}""",

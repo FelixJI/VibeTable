@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { installApplication, openApplication, selectPlugin, commitInspectedApplicationUpgrade } from "./plugin_applications.mjs";
 import { isAppliedMutationResponse } from "./bridge_raw_request.mjs";
 
@@ -147,14 +148,16 @@ async function verifyUserData(page, frame, recorder, helpers, userData, stage) {
   })).payload.rows;
   const row = rows.find(item => item.id === userData.recordId);
   const core = schema.fields.find(field => field.identity.fieldId === userData.renamedFieldId);
-  const extra = schema.fields.find(field => field.identity.fieldId === userData.fieldId);
-  recorder.check(`${stage} preserves native rename and user extension values`, Boolean(core && extra && row)
-    && core.displayName === userData.renamedLabel && row[userData.physicalName] === userData.value
-    && row[userData.corePhysicalName] === userData.coreValue, { schema, rows, userData });
+  const mapped = schema.fields.find(field => field.identity.fieldId === userData.mappedFieldId);
+  const extra = schema.fields.find(field => field.identity.fieldId === userData.privateFieldId);
+  recorder.check(`${stage} preserves the native rename and all three independent values`, Boolean(core && mapped && extra && row)
+    && core.displayName === userData.renamedLabel && row[core.identity.physicalName] === userData.coreValue
+    && row[mapped.identity.physicalName] === userData.mappedValue
+    && row[extra.identity.physicalName] === userData.privateValue, { schema, rows, userData });
   const description = await frameCall(frame, "data.describe", { accepts: ["vibetable.plugin-data.v2"], collection: userData.tableId });
   recorder.check(`${stage} excludes the user extension from resolved model grants`, Array.isArray(description.result?.fields)
-    && description.result.fields.some(field => field.fieldId === userData.renamedFieldId)
-    && !description.result.fields.some(field => field.fieldId === userData.fieldId), { description });
+    && description.result.fields.some(field => field.fieldId === userData.mappedFieldId)
+    && !description.result.fields.some(field => field.fieldId === userData.renamedFieldId || field.fieldId === userData.privateFieldId), { description });
   return { schema, rows, description };
 }
 
@@ -206,19 +209,14 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     const hidden = await frameCall(frame, "model.catalog");
     recorder.check("plugin frame cannot request the ungranted workspace catalog", Boolean(hidden.error), { hidden });
     const assets = first.bindings.assets;
+    const replacement = await helpers.createV2Field(page, assets.tableId, "合成替代资产名称", "text");
     const extra = await helpers.createV2Field(page, assets.tableId, "合成用户私有备注", "text");
     const assetSchema = (await helpers.rawBridgeRequest(page, "schema.getTable", { tableId: assets.tableId })).payload;
     const coreName = assetSchema.fields.find(field => field.identity.fieldId === assets.fields.name);
-    const userData = { tableId: assets.tableId, fieldId: extra.fieldId, physicalName: extra.physicalName, value: "合成备注必须原样保留",
+    const userData = { tableId: assets.tableId, privateFieldId: extra.fieldId, privateValue: "合成备注必须原样保留",
+      mappedFieldId: replacement.fieldId, mappedValue: "合成修复后的资产名称",
       renamedFieldId: assets.fields.name, renamedLabel: "用户改过的合成资产名称", corePhysicalName: coreName.identity.physicalName, coreValue: "合成资产原值" };
     await renameNativeModelField(page, helpers, assets.tableId, assets.fields.name, userData.renamedLabel);
-    const inserted = await helpers.applyProductMutation(page, assets.tableId, [{ kind: "insert", recordId: null,
-      values: { [userData.physicalName]: userData.value, [userData.corePhysicalName]: userData.coreValue } }], "model-user-data");
-    if (!isAppliedMutationResponse(inserted)) throw new Error(`model user data insert failed: ${JSON.stringify(inserted)}`);
-    const originalRows = (await helpers.rawBridgeRequest(page, "query.page", { tableId: assets.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
-    userData.recordId = originalRows.find(row => row[userData.physicalName] === userData.value)?.id;
-    if (!userData.recordId) throw new Error("synthetic user record identity missing");
-    await verifyUserData(page, frame, recorder, helpers, userData, "before upgrade");
     const tables = await catalog(); const schemas = {};
     for (const [key, binding] of Object.entries(first.bindings)) schemas[key] = (await helpers.rawBridgeRequest(page, "schema.getTable", { tableId: binding.tableId })).payload;
     await page.getByTestId("plugin-app-return").click();
@@ -236,6 +234,52 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     recorder.check("native manual mapping binds differently named logical objects without creating tables", JSON.stringify(mapped.bindings) === JSON.stringify(first.bindings) && (await catalog()).length === 3, { mapped });
     await page.getByTestId("plugin-app-return").click();
     await selectPlugin(page, PLUGIN);
+    frame = await openApplication(page, PLUGIN, "open-model");
+    const originalModel = await state(frame);
+    recorder.check("repair targets the original installation that will be upgraded", originalModel.requestId === first.requestId
+      && isDeepStrictEqual(originalModel.bindings, first.bindings), { originalModel });
+    const alternate = structuredClone(originalModel.bindings);
+    alternate.assets.fields.name = replacement.fieldId;
+    const repairSelections = modelMappingSelections(tables, schemas, alternate);
+    const reviewRepair = async (choices, stage) => {
+      await frame.locator("#map").click();
+      await nativeModel(runtime, "map", "plugin-model-preview", stage, choices);
+    };
+    await reviewRepair(repairSelections, "repair");
+    const exact = await nativeModel(runtime, "observe", "plugin-model-confirm", "repair");
+    const lines = exact.observation.texts.map(t => t.name + " " + t.value);
+    recorder.check("native repair identifies the old and new canonical targets together", lines.some(line =>
+      line.includes("assets.name") && line.includes(assets.fields.name) && line.includes(replacement.fieldId)), { lines });
+    await nativeModel(runtime, "click", "plugin-model-cancel", "repair");
+    await frame.locator("#result").filter({ hasText: /^null$/ }).waitFor({ timeout: 30000 });
+    const afterCancel = await frameCall(frame, "model.read");
+    recorder.check("cancel preserves the original authoritative binding", afterCancel.result?.requestId === originalModel.requestId
+      && afterCancel.result.bindings.assets.fields.name === assets.fields.name, { afterCancel });
+    await reviewRepair(repairSelections, "repair");
+    await nativeModel(runtime, "click", "plugin-model-confirm", "repair");
+    await frame.waitForFunction(field => {
+      try { return JSON.parse(document.querySelector("#result").textContent).bindings.assets.fields.name === field; } catch { return false; }
+    }, replacement.fieldId);
+    const repaired = await frameCall(frame, "model.read");
+    recorder.check("approved safe repair reads back the selected canonical field", repaired.result?.status === "completed"
+      && isDeepStrictEqual(repaired.result.bindings, alternate), { repaired });
+    const inserted = await helpers.applyProductMutation(page, assets.tableId, [{ kind: "insert", recordId: null,
+      values: { [extra.physicalName]: userData.privateValue, [replacement.physicalName]: userData.mappedValue,
+        [userData.corePhysicalName]: userData.coreValue } }], "model-user-data");
+    if (!isAppliedMutationResponse(inserted)) throw new Error(`model user data insert failed: ${JSON.stringify(inserted)}`);
+    const originalRows = (await helpers.rawBridgeRequest(page, "query.page", { tableId: assets.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
+    userData.recordId = originalRows.find(row => row[extra.physicalName] === userData.privateValue)?.id;
+    if (!userData.recordId) throw new Error("synthetic user record identity missing");
+    await reviewRepair(selections, "blocked");
+    const unsafe = await nativeModel(runtime, "observe", "plugin-model-cancel", "blocked");
+    recorder.check("native repair with history explains the block and offers no approval", !unsafe.observation.buttons.some(b => b.id === "plugin-model-confirm")
+      && unsafe.observation.texts.some(t => (t.name + t.value).includes("写入历史")), { unsafe });
+    await nativeModel(runtime, "click", "plugin-model-cancel", "blocked");
+    await frame.locator("#result").filter({ hasText: /^null$/ }).waitFor({ timeout: 30000 });
+    const afterBlock = await frameCall(frame, "model.read");
+    recorder.check("blocked repair keeps the approved binding", afterBlock.result?.requestId === repaired.result.requestId, { afterBlock });
+    await page.getByTestId("plugin-app-return").click();
+    await selectPlugin(page, PLUGIN);
     await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, "model-upgrade.vtplugin")}\n`);
     await helpers.beginBridgeMessageCapture(page, ["plugin.install.inspect", "operation.failed"]);
     await page.getByTestId("plugin-upgrade").click();
@@ -250,7 +294,11 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     await nativeModel(runtime, "click", "plugin-model-confirm", "upgrade");
     const upgraded = await completed(frame);
     await waitForModelCatalog(page, upgraded.bindings, beforeCatalog);
-    recorder.check("confirmed upgrade adds exactly one field and preserves previous canonical bindings", upgraded.bindings.assets.fields.checked && upgraded.bindings.assets.fields.name === first.bindings.assets.fields.name && (await catalog()).length === 3, { upgraded });
+    const expected = structuredClone(repaired.result.bindings);
+    expected.assets.fields.checked = upgraded.bindings.assets.fields.checked;
+    recorder.check("confirmed upgrade adds exactly one field to the repaired canonical bindings", Boolean(expected.assets.fields.checked)
+      && !Object.values(repaired.result.bindings.assets.fields).includes(expected.assets.fields.checked)
+      && isDeepStrictEqual(upgraded.bindings, expected) && (await catalog()).length === 3, { upgraded, repaired });
     const preserved = await verifyUserData(page, frame, recorder, helpers, userData, "confirmed upgrade");
     await page.getByTestId("plugin-app-return").click();
     frame = await openApplication(page, PLUGIN, "open-model");
@@ -260,7 +308,7 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     recorder.check("model seed records the authoritative workspace session", typeof session?.workspaceId === "string"
       && Number.isSafeInteger(session.sessionEpoch) && session.sessionEpoch > 0
       && opened.payload.projectKey === `local:${session.workspaceId.replaceAll("-", "").toLowerCase()}`, { session });
-    await fs.writeFile(path.join(runtime.evidenceDir, "54-models.json"), JSON.stringify({ first, repeated, mapped, beforeUpgrade, upgraded,
+    await fs.writeFile(path.join(runtime.evidenceDir, "54-models.json"), JSON.stringify({ first, repeated, mapped, exact, afterCancel, repaired, unsafe, beforeUpgrade, upgraded,
       reopened, cancelled, userData, preserved, nativePreview: observed, session }, null, 2));
     return { workspaceId: session.workspaceId, sessionEpoch: session.sessionEpoch, projectKey: opened.payload.projectKey,
       bindings: reopened.bindings, userData };

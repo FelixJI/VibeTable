@@ -97,7 +97,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "transaction.configure" or "transaction.submit" or "model.configure" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "dataset.export" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            if (request.Method != "model.configure")
+                deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "transaction.configure" or "transaction.submit" or "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "dataset.export" or "attachments.previewChange" or "output.save") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
@@ -508,6 +509,12 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         CancellationToken token, string? cursor = null, JsonElement? dependencies = null, string? commitId = null,
         ProductSidecarGenerationSnapshot? auditGeneration = null, JsonElement? modelPlan = null, JsonElement? transactionPlan = null)
     {
+        using var modelIo = method is "model.catalog" or "model.preview" or "model.commit" ? CancellationTokenSource.CreateLinkedTokenSource(token) : null;
+        if (modelIo is not null)
+        {
+            modelIo.CancelAfter(method == "model.commit" ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            token = modelIo.Token;
+        }
         bool terminalAudit = (method is "audit.finish" or "attachment.drop" or "import.drop" or "import.settle") && auditGeneration is not null;
         if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         var generation = auditGeneration ?? _generation() ?? throw Error("plugin_session_stale");

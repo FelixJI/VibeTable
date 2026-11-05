@@ -103,18 +103,18 @@
   "model": {
     "contract": "vibetable.plugin-model.v1",
     "declaration": "closed permissions.model logical entities and fields; no arbitrary scripts or SQL",
-    "configuration": "native Host selection and exact plan confirmation; canonical table/field identities",
+    "configuration": "create/map/repair through native selection and exact confirmation; manual review follows surface lifetime, with bounded authority I/O and commit",
     "hostOnly": ["model.catalog", "model.preview", "model.commit"],
     "catalog": {
       "pageItems": 32,
       "messageBytes": 1048576,
       "pageBudget": "both 32 items and the complete PocketBase HTTP JSON response bytes, including model and continuation; an unrepresentable single item is rejected",
       "tables": "Host-only tableId/displayName/schemaRevision summaries; nextAfterTableId continuation",
-      "fields": "selected tableId plus required schemaRevision, optional offset; fieldId/displayName/logicalType summaries and nextOffset",
+      "fields": "selected tableId plus required schemaRevision, optional offset; identity, label, type, precision and relation endpoints for reviewable suggestions",
       "validation": "current workspace and installation on every page; selected schema revision on every field page"
     },
     "authorization": "explicit logical-role grants only after complete configuration; current installation rechecked",
-    "recovery": "durable per-step progress; read/status after cancellation or unknown reply; never imply rollback or automatically replay",
+    "recovery": "read/status revalidate completed canonical targets; stale carries logical-path diagnostics and grants no model access; repairs compare the previous binding, history and registered dependencies again in the completion transaction",
     "upgrade": "additive schema operations only; renames preserve identity, incompatible changes fail closed"
   },
   "transactions": {
