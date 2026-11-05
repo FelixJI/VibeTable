@@ -31,7 +31,6 @@ func TestPluginModelRepairCanonicalCompareAndHistory(t *testing.T) {
 	}
 	receipt := func(id string) map[string]string { return map[string]string{"requestId": id} }
 	run("model.commit", receipt(first.RequestID))
-	alternative := createSchemaProductField(t, pb, field.TableID, v2.LogicalText, "替代名称", "model-repair-alternative")
 	propose := func(id string) modelPreview {
 		return run("model.preview", modelPreviewRequest{Mode: "repair", Mappings: map[string]pluginmodel.Binding{"items": {TableID: field.TableID, Fields: map[string]string{"name": id}}}}).(modelPreview)
 	}
@@ -56,7 +55,40 @@ func TestPluginModelRepairCanonicalCompareAndHistory(t *testing.T) {
 	if _, err := surfaceInstallation(context.Background(), pb, workspace, input); err == nil {
 		t.Fatal("stale model conferred data grants")
 	}
+	available := func() []string {
+		catalog := run("model.catalog", map[string]string{}).(map[string]any)
+		if catalog["status"] == "blocked" || !reflect.DeepEqual(catalog["diagnostics"], observation.Diagnostics) || !reflect.DeepEqual(catalog["bindings"], observation.Bindings) {
+			t.Fatalf("native repair lost field diagnosis or prior identity: %+v", catalog)
+		}
+		for _, entry := range catalog["tables"].([]any) {
+			table := entry.(map[string]any)
+			if table["tableId"] != field.TableID {
+				continue
+			}
+			page := run("model.catalog", map[string]string{"tableId": field.TableID, "schemaRevision": table["schemaRevision"].(string)}).(map[string]any)
+			var ids []string
+			for _, item := range page["fields"].([]any) {
+				f := item.(map[string]any)
+				if f["logicalType"] == v2.LogicalText {
+					ids = append(ids, f["fieldId"].(string))
+				}
+			}
+			return ids
+		}
+		t.Fatal("prior table missing from repair catalog")
+		return nil
+	}
+	if ids := available(); len(ids) != 0 {
+		t.Fatalf("unexpected text candidates: %v", ids)
+	}
+	alternative := createSchemaProductField(t, pb, field.TableID, v2.LogicalText, "替代名称", "model-repair-alternative")
+	if ids := available(); !slices.Equal(ids, []string{alternative.FieldID}) {
+		t.Fatalf("replacement candidates: %v", ids)
+	}
 	a, b := propose(alternative.FieldID), propose(alternative.FieldID)
+	if principal, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil || len(principal.ModelGrants) != 0 {
+		t.Fatal("reading catalog or previewing a replacement conferred data grants")
+	}
 	if len(a.Changes) != 1 || a.Changes[0].OldField != field.FieldID || a.Changes[0].NewField != alternative.FieldID || a.Status != "pending" {
 		t.Fatalf("repair preview: %+v", a)
 	}
@@ -66,6 +98,10 @@ func TestPluginModelRepairCanonicalCompareAndHistory(t *testing.T) {
 	done := run("model.commit", receipt(a.RequestID)).(pluginmodel.State)
 	if done.Bindings["items"].Fields["name"] != alternative.FieldID || done.Status != "completed" {
 		t.Fatalf("repair: %+v", done)
+	}
+	principal, err := surfaceInstallation(t.Context(), pb, workspace, input)
+	if err != nil || len(principal.ModelGrants) != 1 || principal.ModelGrants[0].Collection != field.TableID || !slices.Equal(principal.ModelGrants[0].Fields, []string{"id", alternative.FieldID}) {
+		t.Fatalf("approved data grants: %+v %v", principal.ModelGrants, err)
 	}
 	if replay := run("model.commit", receipt(a.RequestID)).(pluginmodel.State); replay.RequestID != a.RequestID {
 		t.Fatal("retry changed repair")
@@ -272,6 +308,11 @@ func TestPluginModelRelationTargetTableBindingDrift(t *testing.T) {
 	page := call("model.catalog", map[string]string{}).(map[string]any)
 	if page["status"] != "blocked" || !reflect.DeepEqual(page["bindings"], s.Bindings) || !slices.ContainsFunc(page["diagnostics"].([]v2.Diagnostic), func(d v2.Diagnostic) bool { return d.Path == "tickets" && d.Code == "plugin_model_history_unknown" }) {
 		t.Fatalf("repair admission: %+v", page)
+	}
+	if !slices.ContainsFunc(page["diagnostics"].([]v2.Diagnostic), func(d v2.Diagnostic) bool {
+		return d.Path == "people.tickets" && d.Code == "plugin_model_relation_mismatch"
+	}) {
+		t.Fatalf("blocked catalog discarded related field diagnosis: %+v", page)
 	}
 	if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
 		t.Fatal("stale table granted data access")

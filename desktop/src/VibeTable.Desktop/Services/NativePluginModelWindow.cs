@@ -28,142 +28,189 @@ internal sealed class NativePluginModelWindow : Window
         Func<string, string, CancellationToken, Task<JsonElement>> readFields, CancellationToken token)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
-        return await ShowAsync(() =>
+        return await ShowAsync(() => CreateMappingWindow(catalog, readFields, lifetime), token);
+    }
+
+    internal static NativePluginModelWindow CreateMappingWindow(JsonElement catalog,
+        Func<string, string, CancellationToken, Task<JsonElement>> readFields, CancellationTokenSource lifetime)
+    {
+        var window = new NativePluginModelWindow("映射插件数据模型");
+        window.Closed += (_, _) => lifetime.Cancel();
+        window.Line("请审查已选目标。优先保留原绑定，其余按唯一名称和兼容类型建议；留空项需手动选择。可在预览前改选。");
+        var loaded = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var suggestedRelations = new Dictionary<ComboBox, Choice>();
+        JsonElement entities = catalog.GetProperty("model").GetProperty("entities");
+        JsonElement prior = catalog.TryGetProperty("bindings", out var bound) ? bound : default;
+        if (catalog.TryGetProperty("diagnostics", out var diagnostics))
+            foreach (var diagnostic in diagnostics.EnumerateArray())
+                window.Line("原绑定失效：" + DiagnosticText(diagnostic, prior));
+        var feedback = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        AutomationProperties.SetAutomationId(feedback, "PluginModelMappingFeedback");
+        AutomationProperties.SetLiveSetting(feedback, AutomationLiveSetting.Polite);
+        window._buttons.Children.Add(feedback);
+        void Missing(ComboBox selector, string message)
         {
-            var window = new NativePluginModelWindow("映射插件数据模型");
-            window.Closed += (_, _) => lifetime.Cancel();
-            window.Line("请审查已选目标。优先保留原绑定，其余按唯一名称和兼容类型建议；留空项需手动选择。可在预览前改选。");
-            var loaded = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-            var suggestedRelations = new Dictionary<ComboBox, Choice>();
-            JsonElement entities = catalog.GetProperty("model").GetProperty("entities");
-            JsonElement prior = catalog.TryGetProperty("bindings", out var bound) ? bound : default;
-            bool updatingSuggestions = false;
-            string? Known(string entityKey, string fieldKey, JsonElement schema)
+            feedback.Text = message;
+            selector.BringIntoView();
+            selector.Focus();
+        }
+        bool updatingSuggestions = false;
+        string? Known(string entityKey, string fieldKey, JsonElement schema)
+        {
+            if (prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(entityKey, out var binding)
+                && binding.GetProperty("tableId").GetString() == schema.GetProperty("tableId").GetString()
+                && binding.GetProperty("fields").TryGetProperty(fieldKey, out var field)) return field.GetString();
+            return null;
+        }
+        static Choice? Option(ComboBox combo, string? id) => combo.Items.Cast<Choice>().FirstOrDefault(item => item.Id == id);
+        void SuggestFields()
+        {
+            if (updatingSuggestions) return;
+            updatingSuggestions = true;
+            try
             {
-                if (prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(entityKey, out var binding)
-                    && binding.GetProperty("tableId").GetString() == schema.GetProperty("tableId").GetString()
-                    && binding.GetProperty("fields").TryGetProperty(fieldKey, out var field)) return field.GetString();
-                return null;
+                foreach (var (combo, previousSuggestion) in suggestedRelations)
+                    if (Equals(combo.SelectedItem, previousSuggestion)) combo.SelectedItem = null;
+                suggestedRelations.Clear();
+                foreach (var entity in entities.EnumerateArray())
+                {
+                    string key = entity.GetProperty("key").GetString()!;
+                    if (!loaded.TryGetValue(key, out var schema)) continue;
+                    var declarations = entity.GetProperty("fields").EnumerateArray().ToArray();
+                    foreach (var declaration in declarations)
+                    {
+                        string fieldKey = declaration.GetProperty("key").GetString()!;
+                        var combo = window._fields[key][fieldKey];
+                        string? known = Known(key, fieldKey, schema);
+                        if (!declaration.TryGetProperty("relation", out var relation))
+                        {
+                            if (combo.SelectedItem is not null) continue;
+                            string? type = declaration.GetProperty("type").GetString();
+                            var candidates = schema.GetProperty("fields").EnumerateArray().Where(actual =>
+                                Compatible(declaration, actual)).ToArray();
+                            combo.SelectedItem = Option(combo, SuggestedId(declaration, candidates, "fieldId", known,
+                                declarations.Count(d => d.GetProperty("type").GetString() == type) == 1));
+                            continue;
+                        }
+                        string target = relation.GetProperty("entity").GetString()!;
+                        string reciprocal = relation.GetProperty("field").GetString()!;
+                        if (string.CompareOrdinal(key + "." + fieldKey, target + "." + reciprocal) > 0 || !loaded.TryGetValue(target, out var other)) continue;
+                        var reverse = entities.EnumerateArray().First(e => e.GetProperty("key").GetString() == target)
+                            .GetProperty("fields").EnumerateArray().First(d => d.GetProperty("key").GetString() == reciprocal);
+                        var reverseCombo = window._fields[target][reciprocal];
+                        var pair = SuggestRelationPair(declaration, schema, known, (combo.SelectedItem as Choice)?.Id,
+                            reverse, other, Known(target, reciprocal, other), (reverseCombo.SelectedItem as Choice)?.Id);
+                        if (pair is not { } match) continue;
+                        foreach (var (box, id) in new[] { (combo, match.Left), (reverseCombo, match.Right) })
+                            if (box.SelectedItem is null && Option(box, id) is { } selected)
+                            {
+                                box.SelectedItem = selected;
+                                suggestedRelations[box] = selected;
+                            }
+                    }
+                }
             }
-            static Choice? Option(ComboBox combo, string? id) => combo.Items.Cast<Choice>().FirstOrDefault(item => item.Id == id);
-            void SuggestFields()
+            finally { updatingSuggestions = false; }
+        }
+        JsonElement[] tables = catalog.GetProperty("tables").EnumerateArray().Select(t => t.Clone()).ToArray();
+        if (tables.Length == 0) feedback.Text = "当前工作区没有可映射的表，请取消配置。";
+        foreach (var entity in entities.EnumerateArray())
+        {
+            string key = entity.GetProperty("key").GetString()!;
+            window.Line(entity.GetProperty("label").GetString()!);
+            var table = new ComboBox { Margin = new Thickness(0, 4, 0, 8), MinHeight = 30 };
+            AutomationProperties.SetAutomationId(table, $"PluginModelTable_{key}");
+            foreach (var candidate in tables) table.Items.Add(new Choice(candidate.GetProperty("tableId").GetString()!, candidate.GetProperty("displayName").GetString()!));
+            window._tables[key] = table; window._body.Children.Add(table);
+            var fields = new Dictionary<string, ComboBox>(StringComparer.Ordinal);
+            foreach (var field in entity.GetProperty("fields").EnumerateArray())
             {
-                if (updatingSuggestions) return;
-                updatingSuggestions = true;
+                string fieldKey = field.GetProperty("key").GetString()!;
+                window.Line($"{field.GetProperty("label").GetString()} · {TypeLabel(field)}");
+                var choice = new ComboBox { Margin = new Thickness(12, 2, 0, 8), MinHeight = 28 };
+                AutomationProperties.SetAutomationId(choice, $"PluginModelField_{key}_{fieldKey}");
+                fields[fieldKey] = choice; window._body.Children.Add(choice);
+                choice.SelectionChanged += (_, _) =>
+                {
+                    feedback.Text = "";
+                    if (field.TryGetProperty("relation", out _)) SuggestFields();
+                };
+            }
+            window._fields[key] = fields;
+            var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            window._body.Children.Add(error);
+            int selectionVersion = 0;
+            table.SelectionChanged += async (_, _) =>
+            {
+                feedback.Text = "";
+                int version = ++selectionVersion;
+                loaded.Remove(key);
+                foreach (var field in fields.Values) { suggestedRelations.Remove(field); field.Items.Clear(); }
+                SuggestFields();
+                error.Text = "";
+                if (table.SelectedItem is not Choice selected) return;
+                table.IsEnabled = false;
                 try
                 {
-                    foreach (var (combo, previousSuggestion) in suggestedRelations)
-                        if (Equals(combo.SelectedItem, previousSuggestion)) combo.SelectedItem = null;
-                    suggestedRelations.Clear();
-                    foreach (var entity in entities.EnumerateArray())
+                    var summary = tables.First(t => t.GetProperty("tableId").GetString() == selected.Id);
+                    var schema = await readFields(selected.Id, summary.GetProperty("schemaRevision").GetString()!, lifetime.Token);
+                    if (lifetime.IsCancellationRequested || version != selectionVersion) return;
+                    var missing = new List<string>();
+                    foreach (var declaration in entity.GetProperty("fields").EnumerateArray())
                     {
-                        string key = entity.GetProperty("key").GetString()!;
-                        if (!loaded.TryGetValue(key, out var schema)) continue;
-                        var declarations = entity.GetProperty("fields").EnumerateArray().ToArray();
-                        foreach (var declaration in declarations)
-                        {
-                            string fieldKey = declaration.GetProperty("key").GetString()!;
-                            var combo = window._fields[key][fieldKey];
-                            string? known = Known(key, fieldKey, schema);
-                            if (!declaration.TryGetProperty("relation", out var relation))
-                            {
-                                if (combo.SelectedItem is not null) continue;
-                                string? type = declaration.GetProperty("type").GetString();
-                                var candidates = schema.GetProperty("fields").EnumerateArray().Where(actual =>
-                                    actual.GetProperty("logicalType").GetString() == type && (!declaration.TryGetProperty("precision", out var precision)
-                                    || actual.GetProperty("precision").GetString() == precision.GetString())).ToArray();
-                                combo.SelectedItem = Option(combo, SuggestedId(declaration, candidates, "fieldId", known,
-                                    declarations.Count(d => d.GetProperty("type").GetString() == type) == 1));
-                                continue;
-                            }
-                            string target = relation.GetProperty("entity").GetString()!;
-                            string reciprocal = relation.GetProperty("field").GetString()!;
-                            if (string.CompareOrdinal(key + "." + fieldKey, target + "." + reciprocal) > 0 || !loaded.TryGetValue(target, out var other)) continue;
-                            var reverse = entities.EnumerateArray().First(e => e.GetProperty("key").GetString() == target)
-                                .GetProperty("fields").EnumerateArray().First(d => d.GetProperty("key").GetString() == reciprocal);
-                            var reverseCombo = window._fields[target][reciprocal];
-                            var pair = SuggestRelationPair(declaration, schema, known, (combo.SelectedItem as Choice)?.Id,
-                                reverse, other, Known(target, reciprocal, other), (reverseCombo.SelectedItem as Choice)?.Id);
-                            if (pair is not { } match) continue;
-                            foreach (var (box, id) in new[] { (combo, match.Left), (reverseCombo, match.Right) })
-                                if (box.SelectedItem is null && Option(box, id) is { } selected)
-                                {
-                                    box.SelectedItem = selected;
-                                    suggestedRelations[box] = selected;
-                                }
-                        }
+                        string fieldKey = declaration.GetProperty("key").GetString()!;
+                        var selector = fields[fieldKey];
+                        foreach (var actual in schema.GetProperty("fields").EnumerateArray().Where(f => Compatible(declaration, f)))
+                            selector.Items.Add(new Choice(actual.GetProperty("fieldId").GetString()!, $"{actual.GetProperty("displayName").GetString()} · {actual.GetProperty("logicalType").GetString()}"));
+                        if (selector.Items.Count == 0) missing.Add(key + "." + fieldKey);
                     }
-                }
-                finally { updatingSuggestions = false; }
-            }
-            JsonElement[] tables = catalog.GetProperty("tables").EnumerateArray().Select(t => t.Clone()).ToArray();
-            foreach (var entity in catalog.GetProperty("model").GetProperty("entities").EnumerateArray())
-            {
-                string key = entity.GetProperty("key").GetString()!;
-                window.Line(entity.GetProperty("label").GetString()!);
-                var table = new ComboBox { Margin = new Thickness(0, 4, 0, 8), MinHeight = 30 };
-                AutomationProperties.SetAutomationId(table, $"PluginModelTable_{key}");
-                foreach (var candidate in tables) table.Items.Add(new Choice(candidate.GetProperty("tableId").GetString()!, candidate.GetProperty("displayName").GetString()!));
-                window._tables[key] = table; window._body.Children.Add(table);
-                var fields = new Dictionary<string, ComboBox>(StringComparer.Ordinal);
-                foreach (var field in entity.GetProperty("fields").EnumerateArray())
-                {
-                    string fieldKey = field.GetProperty("key").GetString()!;
-                    window.Line($"{field.GetProperty("label").GetString()} · {TypeLabel(field)}");
-                    var choice = new ComboBox { Margin = new Thickness(12, 2, 0, 8), MinHeight = 28 };
-                    AutomationProperties.SetAutomationId(choice, $"PluginModelField_{key}_{fieldKey}");
-                    fields[fieldKey] = choice; window._body.Children.Add(choice);
-                    if (field.TryGetProperty("relation", out _)) choice.SelectionChanged += (_, _) => SuggestFields();
-                }
-                window._fields[key] = fields;
-                var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
-                window._body.Children.Add(error);
-                int selectionVersion = 0;
-                table.SelectionChanged += async (_, _) =>
-                {
-                    int version = ++selectionVersion;
-                    loaded.Remove(key);
-                    foreach (var field in fields.Values) { suggestedRelations.Remove(field); field.Items.Clear(); }
+                    loaded[key] = schema;
+                    if (missing.Count != 0) error.Text = $"当前表没有兼容字段：{string.Join("、", missing)}。可改选表或取消。";
                     SuggestFields();
-                    error.Text = "";
-                    if (table.SelectedItem is not Choice selected) return;
-                    table.IsEnabled = false;
-                    try
-                    {
-                        var summary = tables.First(t => t.GetProperty("tableId").GetString() == selected.Id);
-                        var schema = await readFields(selected.Id, summary.GetProperty("schemaRevision").GetString()!, lifetime.Token);
-                        if (lifetime.IsCancellationRequested || version != selectionVersion) return;
-                        loaded[key] = schema;
-                        foreach (var actual in schema.GetProperty("fields").EnumerateArray())
-                        {
-                            var item = new Choice(actual.GetProperty("fieldId").GetString()!, $"{actual.GetProperty("displayName").GetString()} · {actual.GetProperty("logicalType").GetString()}");
-                            foreach (var field in fields.Values) field.Items.Add(item);
-                        }
-                        SuggestFields();
-                    }
-                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-                    catch (Exception) { if (version == selectionVersion) error.Text = "字段目录读取失败或结构已变化，请关闭后重新配置。"; }
-                    finally { if (version == selectionVersion) table.IsEnabled = true; }
-                };
-                string? previousTable = prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(key, out var previousBinding)
-                    ? previousBinding.GetProperty("tableId").GetString() : null;
-                string? suggested = SuggestedId(entity, tables, "tableId", previousTable);
-                table.SelectedItem = table.Items.Cast<Choice>().FirstOrDefault(item => item.Id == suggested);
-            }
-            window.Button("取消", "plugin-model-cancel", () => window.DialogResult = false);
-            window.Loaded += (_, _) => window._tables.Values.FirstOrDefault()?.Focus();
-            window.Button("检查映射并预览", "plugin-model-preview", () =>
-            {
-                var mappings = new Dictionary<string, object>(StringComparer.Ordinal);
-                foreach (var (entity, table) in window._tables)
-                {
-                    if (table.SelectedItem is not Choice selected || window._fields[entity].Values.Any(field => field.SelectedItem is not Choice)) return;
-                    mappings[entity] = new { tableId = selected.Id, fields = window._fields[entity].ToDictionary(pair => pair.Key, pair => ((Choice)pair.Value.SelectedItem).Id) };
                 }
-                window.Mappings = JsonSerializer.SerializeToElement(mappings); window.DialogResult = true;
-            });
-            return window;
-        }, token);
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+                catch (Exception)
+                {
+                    if (version != selectionVersion) return;
+                    loaded.Remove(key);
+                    foreach (var field in fields.Values) field.Items.Clear();
+                    error.Text = $"{key} → {selected.Id} 的字段目录读取失败或结构已变化，请关闭后重新配置。";
+                }
+                finally { if (version == selectionVersion) table.IsEnabled = true; }
+            };
+            string? previousTable = prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(key, out var previousBinding)
+                ? previousBinding.GetProperty("tableId").GetString() : null;
+            string? suggested = SuggestedId(entity, tables, "tableId", previousTable);
+            table.SelectedItem = table.Items.Cast<Choice>().FirstOrDefault(item => item.Id == suggested);
+        }
+        window.Button("取消", "plugin-model-cancel", () => window.DialogResult = false);
+        window.Loaded += (_, _) => window._tables.Values.FirstOrDefault()?.Focus();
+        window.Button("检查映射并预览", "plugin-model-preview", () =>
+        {
+            var mappings = new Dictionary<string, object>(StringComparer.Ordinal);
+            foreach (var (entity, table) in window._tables)
+            {
+                if (table.SelectedItem is not Choice selected)
+                {
+                    Missing(table, table.Items.Count == 0 ? $"{entity} 没有可映射的表，请取消配置。" : $"请为 {entity} 选择表。");
+                    return;
+                }
+                foreach (var (key, field) in window._fields[entity])
+                {
+                    if (field.SelectedItem is Choice) continue;
+                    string path = entity + "." + key;
+                    string message = !table.IsEnabled ? $"{path} 的字段目录正在读取，请稍后预览。"
+                        : !loaded.ContainsKey(entity) ? $"{path} 的字段目录读取失败，请重新选择表或取消。"
+                        : field.Items.Count == 0 ? $"{path} 在当前表中没有兼容字段，请改选表或取消。"
+                        : $"请为 {path} 选择字段。";
+                    Missing(field, message);
+                    return;
+                }
+                mappings[entity] = new { tableId = selected.Id, fields = window._fields[entity].ToDictionary(pair => pair.Key, pair => ((Choice)pair.Value.SelectedItem).Id) };
+            }
+            window.Mappings = JsonSerializer.SerializeToElement(mappings); window.DialogResult = true;
+        });
+        return window;
     }
 
     internal static async Task<bool> ConfirmAsync(JsonElement preview, CancellationToken token)
@@ -183,11 +230,7 @@ internal sealed class NativePluginModelWindow : Window
             var bindings = preview.GetProperty("bindings");
             foreach (var diagnostic in preview.GetProperty("diagnostics").EnumerateArray())
             {
-                string path = diagnostic.GetProperty("path").GetString()!;
-                string code = diagnostic.GetProperty("code").GetString()!;
-                if (code == "plugin_model_history_unknown" && bindings.TryGetProperty(path, out var previous))
-                    path += " → " + previous.GetProperty("tableId").GetString();
-                window.Line($"拒绝：{path} — {DiagnosticLabel(code)}");
+                window.Line("拒绝：" + DiagnosticText(diagnostic, bindings));
             }
             foreach (var entity in preview.GetProperty("model").GetProperty("entities").EnumerateArray())
             {
@@ -254,6 +297,25 @@ internal sealed class NativePluginModelWindow : Window
         var button = new Button { Content = text, MinHeight = 34, Margin = new Thickness(0, 12, 0, 0) };
         AutomationProperties.SetAutomationId(button, id); button.Click += (_, _) => action(); _buttons.Children.Add(button);
     }
+    private static string DiagnosticText(JsonElement diagnostic, JsonElement bindings)
+    {
+        string path = diagnostic.GetProperty("path").GetString()!;
+        var keys = path.Split('.', 2);
+        string target = "";
+        if (bindings.ValueKind == JsonValueKind.Object && bindings.TryGetProperty(keys[0], out var binding))
+        {
+            target = " → " + binding.GetProperty("tableId").GetString();
+            if (keys.Length == 2 && binding.GetProperty("fields").TryGetProperty(keys[1], out var field))
+                target += "/" + field.GetString();
+        }
+        return $"{path}{target} — {DiagnosticLabel(diagnostic.GetProperty("code").GetString()!)}";
+    }
+
+    private static bool Compatible(JsonElement declaration, JsonElement candidate) =>
+        declaration.GetProperty("type").GetString() == candidate.GetProperty("logicalType").GetString()
+        && (!declaration.TryGetProperty("precision", out var precision) || candidate.GetProperty("precision").GetString() == precision.GetString())
+        && (!declaration.TryGetProperty("relation", out var relation) || candidate.GetProperty("cardinality").GetString() == relation.GetProperty("cardinality").GetString());
+
     private static string TypeLabel(JsonElement field)
     {
         string type = field.GetProperty("type").GetString()!;
@@ -268,10 +330,12 @@ internal sealed class NativePluginModelWindow : Window
         "plugin_model_history_unknown" => "无法核实原表历史",
         "plugin_model_relation_protected" => "原目标或新目标已用于现有关系",
         "plugin_model_rule_protected" => "原目标或新目标受已登记事务规则保护",
+        "plugin_model_field_missing" => "原字段不存在或物理标识已变化",
+        "plugin_model_table_missing" => "原表不存在或物理标识已变化",
         "plugin_model_field_access_denied" => "字段不可访问",
         "plugin_model_precision_loss" => "数字精度不兼容，禁止自动转换或舍入",
         "plugin_model_type_mismatch" => "字段类型不兼容",
-        "plugin_model_relation_mismatch" => "关联目标、方向或基数不兼容",
+        "plugin_model_relation_mismatch" => "关联两端、基数或登记信息不一致",
         "plugin_model_name_conflict" => "名称与现有对象冲突，请手动映射",
         "plugin_model_mapping_required" => "必须选择已有对象",
         "plugin_model_duplicate_mapping" => "多个逻辑对象不能映射到同一对象",

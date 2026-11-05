@@ -1,6 +1,9 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.PocketBase;
@@ -919,6 +922,61 @@ public sealed class PluginSurfaceApiTests
         fixture.Http.AfterReadMethod = method;
         fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
         Assert.AreEqual("plugin_source_denied", Code(await fixture.Call(method, "{}")));
+    }
+
+    [STATestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void NativeRepairShowsOldFieldAndExplainsMissingSelectionBeforePreview(bool hasReplacement)
+    {
+        var catalog = JsonSerializer.SerializeToElement(new
+        {
+            model = new { entities = new[] { new { key = "items", label = "项目", fields = new[] { new { key = "name", label = "名称", type = "text" } } } } },
+            tables = new[] { new { tableId = "old-table", displayName = "项目", schemaRevision = "rev1" } },
+            bindings = new { items = new { tableId = "old-table", fields = new { name = "old-field" } } },
+            diagnostics = new[] { new { code = "plugin_model_field_access_denied", path = "items.name" } }
+        });
+        var fields = new List<object> { new { fieldId = "wrong-type", displayName = "数量", logicalType = "number" } };
+        if (hasReplacement) fields.Add(new { fieldId = "new-field", displayName = "替代名称", logicalType = "text" });
+        var schema = JsonSerializer.SerializeToElement(new { tableId = "old-table", fields });
+        using var lifetime = new CancellationTokenSource();
+        var window = NativePluginModelWindow.CreateMappingWindow(catalog, (_, _, _) => Task.FromResult(schema), lifetime);
+        window.ShowActivated = false;
+        window.ShowInTaskbar = false;
+        window.Opacity = 0;
+        Exception? failure = null;
+        window.ContentRendered += (_, _) =>
+        {
+            try
+            {
+                var layout = (DockPanel)window.Content;
+                var actions = ((StackPanel)layout.Children[0]).Children;
+                var body = ((StackPanel)((ScrollViewer)layout.Children[1]).Content).Children;
+                void Click(string id) => actions.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id)
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.IsTrue(body.OfType<TextBlock>().Any(t => t.Text.Contains("items.name → old-table/old-field — 字段不可访问")));
+                var field = body.OfType<ComboBox>().Single(c => AutomationProperties.GetAutomationId(c) == "PluginModelField_items_name");
+                Assert.AreEqual(hasReplacement ? 1 : 0, field.Items.Count);
+                Assert.IsNull(field.SelectedItem);
+                Click("plugin-model-preview");
+                Assert.IsTrue(window.IsVisible);
+                Assert.IsNull(window.Mappings);
+                string feedback = actions.OfType<TextBlock>().Single().Text;
+                StringAssert.Contains(feedback, "items.name");
+                StringAssert.Contains(feedback, hasReplacement ? "选择字段" : "没有兼容字段");
+                if (hasReplacement) field.SelectedIndex = 0;
+                Click(hasReplacement ? "plugin-model-preview" : "plugin-model-cancel");
+            }
+            catch (Exception error) { failure = error; }
+            finally { if (window.IsVisible) window.Close(); }
+        };
+        bool? accepted = window.ShowDialog();
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        Assert.AreEqual(hasReplacement, accepted);
+        if (hasReplacement)
+            Assert.AreEqual("new-field", window.Mappings!.Value.GetProperty("items").GetProperty("fields").GetProperty("name").GetString());
+        else
+            Assert.IsNull(window.Mappings);
     }
 
     [TestMethod]

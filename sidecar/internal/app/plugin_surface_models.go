@@ -296,15 +296,17 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 						return err
 					}
 				}
-				blocked := []v2.Diagnostic{}
-				for _, d := range diagnostics {
-					if d.Code == "plugin_model_table_missing" {
-						blocked = append(blocked, modelDiagnostic("plugin_model_history_unknown", d.Path))
+				if len(diagnostics) != 0 {
+					result["diagnostics"] = diagnostics
+					for i, d := range diagnostics {
+						if d.Code == "plugin_model_table_missing" {
+							diagnostics[i] = modelDiagnostic("plugin_model_history_unknown", d.Path)
+							result["model"], result["status"] = prior.Model, "blocked"
+						}
 					}
-				}
-				if len(blocked) > 0 {
-					result["model"], result["status"], result["diagnostics"] = prior.Model, "blocked", blocked
-					return nil
+					if result["status"] == "blocked" {
+						return nil
+					}
 				}
 			}
 		}
