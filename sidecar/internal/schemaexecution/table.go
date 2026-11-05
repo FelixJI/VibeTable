@@ -23,6 +23,9 @@ const (
 // resolved for the requested stable table identity.
 var ErrTableNotFound = errors.New("schema execution table not found")
 
+// ErrProviderCollectionMissing means the canonical table metadata points to an absent PocketBase collection.
+var ErrProviderCollectionMissing = errors.New("schema execution provider collection not found")
+
 // ErrRetiredFieldNotFound is returned when attachment/history recovery asks
 // for a field that is not an authoritative retired Schema V2 definition for
 // the requested table.
@@ -40,6 +43,7 @@ type FormulaRuntime struct {
 // schema contract instead of reconstructing the retired legacy schema model.
 type Table struct {
 	Snapshot              v2.SchemaSnapshot
+	CollectionID          string `json:"-"`
 	PhysicalName          string
 	Kind                  string
 	ViewSourceTableID     string
@@ -160,6 +164,9 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 	collection := &core.Collection{}
 	err = db.Select("*").From(collection.TableName()).Where(dbx.HashExp{"id": collectionID}).
 		WithContext(ctx).One(collection)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Table{}, fmt.Errorf("%w: %s", ErrProviderCollectionMissing, tableID)
+	}
 	if err != nil {
 		return Table{}, fmt.Errorf("read table collection: %w", err)
 	}
@@ -255,6 +262,7 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 
 	return Table{
 		Snapshot:              snapshot,
+		CollectionID:          collectionID,
 		PhysicalName:          physicalName,
 		Kind:                  kind,
 		ViewSourceTableID:     viewSourceTableID,

@@ -41,8 +41,10 @@ test("native review can outlast the I/O deadline while abort and surface retirem
   abort.abort();
   assert.equal(messages.at(-1).method, "request.cancel");
   assert.equal(messages.at(-1).params.requestId, messages[0].requestId);
-  client.dispose();
+  t.mock.timers.tick(20_000);
   await assert.rejects(request, error => error.code === "plugin_commit_unknown");
+  assert.equal(messages.length, 2);
+  client.dispose();
 });
 
 test("offline host does not invent native model support", async () => {

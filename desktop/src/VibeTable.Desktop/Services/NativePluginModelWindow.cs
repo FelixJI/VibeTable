@@ -37,42 +37,64 @@ internal sealed class NativePluginModelWindow : Window
             var suggestedRelations = new Dictionary<ComboBox, Choice>();
             JsonElement entities = catalog.GetProperty("model").GetProperty("entities");
             JsonElement prior = catalog.TryGetProperty("bindings", out var bound) ? bound : default;
+            bool updatingSuggestions = false;
+            string? Known(string entityKey, string fieldKey, JsonElement schema)
+            {
+                if (prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(entityKey, out var binding)
+                    && binding.GetProperty("tableId").GetString() == schema.GetProperty("tableId").GetString()
+                    && binding.GetProperty("fields").TryGetProperty(fieldKey, out var field)) return field.GetString();
+                return null;
+            }
+            static Choice? Option(ComboBox combo, string? id) => combo.Items.Cast<Choice>().FirstOrDefault(item => item.Id == id);
             void SuggestFields()
             {
-                foreach (var entity in entities.EnumerateArray())
+                if (updatingSuggestions) return;
+                updatingSuggestions = true;
+                try
                 {
-                    string key = entity.GetProperty("key").GetString()!;
-                    if (!loaded.TryGetValue(key, out var schema)) continue;
-                    string tableId = schema.GetProperty("tableId").GetString()!;
-                    JsonElement previous = prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(key, out var old)
-                        && old.GetProperty("tableId").GetString() == tableId ? old.GetProperty("fields") : default;
-                    foreach (var declaration in entity.GetProperty("fields").EnumerateArray())
+                    foreach (var (combo, previousSuggestion) in suggestedRelations)
+                        if (Equals(combo.SelectedItem, previousSuggestion)) combo.SelectedItem = null;
+                    suggestedRelations.Clear();
+                    foreach (var entity in entities.EnumerateArray())
                     {
-                        string fieldKey = declaration.GetProperty("key").GetString()!;
-                        var combo = window._fields[key][fieldKey];
-                        if (combo.SelectedItem != null && (!suggestedRelations.TryGetValue(combo, out var automatic) || !Equals(combo.SelectedItem, automatic))) continue;
-                        var candidates = schema.GetProperty("fields").EnumerateArray().Where(actual =>
+                        string key = entity.GetProperty("key").GetString()!;
+                        if (!loaded.TryGetValue(key, out var schema)) continue;
+                        var declarations = entity.GetProperty("fields").EnumerateArray().ToArray();
+                        foreach (var declaration in declarations)
                         {
-                            if (actual.GetProperty("logicalType").GetString() != declaration.GetProperty("type").GetString()) return false;
-                            if (declaration.TryGetProperty("precision", out var precision) && actual.GetProperty("precision").GetString() != precision.GetString()) return false;
-                            if (!declaration.TryGetProperty("relation", out var relation)) return true;
-                            var target = relation.GetProperty("entity").GetString()!;
-                            if (!loaded.TryGetValue(target, out var other) || !actual.TryGetProperty("targetTableId", out var targetId)
-                                || targetId.GetString() != other.GetProperty("tableId").GetString()
-                                || actual.GetProperty("cardinality").GetString() != relation.GetProperty("cardinality").GetString()) return false;
-                            var reciprocal = actual.GetProperty("reciprocalFieldId").GetString();
-                            return other.GetProperty("fields").EnumerateArray().Any(f => f.GetProperty("fieldId").GetString() == reciprocal
-                                && f.TryGetProperty("reciprocalFieldId", out var reverse) && reverse.GetString() == actual.GetProperty("fieldId").GetString());
-                        }).ToArray();
-                        var known = previous.ValueKind == JsonValueKind.Object && previous.TryGetProperty(fieldKey, out var id) ? id.GetString() : null;
-                        bool uniqueType = entity.GetProperty("fields").EnumerateArray().Count(f =>
-                            f.GetProperty("type").GetString() == declaration.GetProperty("type").GetString()) == 1;
-                        string? match = SuggestedId(declaration, candidates, "fieldId", known, uniqueType);
-                        var selected = combo.Items.Cast<Choice>().FirstOrDefault(item => item.Id == match);
-                        combo.SelectedItem = selected;
-                        if (selected is not null && declaration.TryGetProperty("relation", out _)) suggestedRelations[combo] = selected;
+                            string fieldKey = declaration.GetProperty("key").GetString()!;
+                            var combo = window._fields[key][fieldKey];
+                            string? known = Known(key, fieldKey, schema);
+                            if (!declaration.TryGetProperty("relation", out var relation))
+                            {
+                                if (combo.SelectedItem is not null) continue;
+                                string? type = declaration.GetProperty("type").GetString();
+                                var candidates = schema.GetProperty("fields").EnumerateArray().Where(actual =>
+                                    actual.GetProperty("logicalType").GetString() == type && (!declaration.TryGetProperty("precision", out var precision)
+                                    || actual.GetProperty("precision").GetString() == precision.GetString())).ToArray();
+                                combo.SelectedItem = Option(combo, SuggestedId(declaration, candidates, "fieldId", known,
+                                    declarations.Count(d => d.GetProperty("type").GetString() == type) == 1));
+                                continue;
+                            }
+                            string target = relation.GetProperty("entity").GetString()!;
+                            string reciprocal = relation.GetProperty("field").GetString()!;
+                            if (string.CompareOrdinal(key + "." + fieldKey, target + "." + reciprocal) > 0 || !loaded.TryGetValue(target, out var other)) continue;
+                            var reverse = entities.EnumerateArray().First(e => e.GetProperty("key").GetString() == target)
+                                .GetProperty("fields").EnumerateArray().First(d => d.GetProperty("key").GetString() == reciprocal);
+                            var reverseCombo = window._fields[target][reciprocal];
+                            var pair = SuggestRelationPair(declaration, schema, known, (combo.SelectedItem as Choice)?.Id,
+                                reverse, other, Known(target, reciprocal, other), (reverseCombo.SelectedItem as Choice)?.Id);
+                            if (pair is not { } match) continue;
+                            foreach (var (box, id) in new[] { (combo, match.Left), (reverseCombo, match.Right) })
+                                if (box.SelectedItem is null && Option(box, id) is { } selected)
+                                {
+                                    box.SelectedItem = selected;
+                                    suggestedRelations[box] = selected;
+                                }
+                        }
                     }
                 }
+                finally { updatingSuggestions = false; }
             }
             JsonElement[] tables = catalog.GetProperty("tables").EnumerateArray().Select(t => t.Clone()).ToArray();
             foreach (var entity in catalog.GetProperty("model").GetProperty("entities").EnumerateArray())
@@ -91,6 +113,7 @@ internal sealed class NativePluginModelWindow : Window
                     var choice = new ComboBox { Margin = new Thickness(12, 2, 0, 8), MinHeight = 28 };
                     AutomationProperties.SetAutomationId(choice, $"PluginModelField_{key}_{fieldKey}");
                     fields[fieldKey] = choice; window._body.Children.Add(choice);
+                    if (field.TryGetProperty("relation", out _)) choice.SelectionChanged += (_, _) => SuggestFields();
                 }
                 window._fields[key] = fields;
                 var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
@@ -178,6 +201,34 @@ internal sealed class NativePluginModelWindow : Window
             return window;
         }, token);
         return confirmed is not null;
+    }
+
+    internal static (string Left, string Right)? SuggestRelationPair(
+        JsonElement left, JsonElement leftSchema, string? knownLeft, string? manualLeft,
+        JsonElement right, JsonElement rightSchema, string? knownRight, string? manualRight)
+    {
+        static JsonElement[] Candidates(JsonElement field, JsonElement schema, JsonElement other) =>
+            schema.GetProperty("fields").EnumerateArray().Where(f => f.GetProperty("logicalType").GetString() == "relation"
+                && f.GetProperty("targetTableId").GetString() == other.GetProperty("tableId").GetString()
+                && f.GetProperty("cardinality").GetString() == field.GetProperty("relation").GetProperty("cardinality").GetString()).ToArray();
+        var a = Candidates(left, leftSchema, rightSchema);
+        var b = Candidates(right, rightSchema, leftSchema);
+        var pairs = (from x in a
+                     join y in b on x.GetProperty("reciprocalFieldId").GetString() equals y.GetProperty("fieldId").GetString()
+                     let l = x.GetProperty("fieldId").GetString()!
+                     let r = y.GetProperty("fieldId").GetString()!
+                     where y.GetProperty("reciprocalFieldId").GetString() == l
+                     select (Left: l, Right: r)).ToArray();
+        string? lChoice = manualLeft, rChoice = manualRight;
+        if (lChoice is null && rChoice is null)
+        {
+            lChoice = SuggestedId(left, a, "fieldId", knownLeft);
+            rChoice = SuggestedId(right, b, "fieldId", knownRight);
+            if (knownLeft is not null && lChoice is null || knownRight is not null && rChoice is null) return null;
+        }
+        if (lChoice is null && rChoice is null) return null;
+        var matches = pairs.Where(p => (lChoice is null || p.Left == lChoice) && (rChoice is null || p.Right == rChoice)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
     }
 
     internal static string? SuggestedId(JsonElement logical, JsonElement[] candidates, string idKey, string? previous, bool uniqueType = false)

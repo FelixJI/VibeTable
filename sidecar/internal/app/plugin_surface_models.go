@@ -231,7 +231,7 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 			if err != nil || table.Snapshot.Kind != "base" || table.Snapshot.SchemaRevision != request.SchemaRevision || request.Offset > len(table.Snapshot.Fields) {
 				return pluginDataError("plugin_plan_stale")
 			}
-			collection, err := tx.FindCollectionByNameOrId(table.PhysicalName)
+			collection, err := tx.FindCollectionByNameOrId(table.CollectionID)
 			if err != nil {
 				return err
 			}
@@ -242,8 +242,11 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 					break
 				}
 				field := table.Snapshot.Fields[index]
-				physical := collection.Fields.GetByName(field.Identity.PhysicalName)
-				if field.Lifecycle.State == "active" && physical != nil && !physical.GetHidden() {
+				code, err := modelPhysicalFieldCode(tx, collection, field)
+				if err != nil {
+					return err
+				}
+				if field.Lifecycle.State == "active" && collection.Name == table.PhysicalName && code == "" {
 					var next any
 					if index+1 < len(table.Snapshot.Fields) {
 						next = index + 1
@@ -708,8 +711,11 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 					return err
 				}
 				if old.RequestID == id && old.Status == "completed" {
+					if err := modelValidateBindings(ctx, tx, old); err != nil {
+						return err
+					}
 					plan.State = old
-					return modelValidateBindings(ctx, tx, old)
+					return writecoordinator.ReplayedBusinessWrite(ctx, "plugin.model.repair", id)
 				}
 				if old.Status != "completed" || time.Now().After(plan.ExpiresAt) {
 					return pluginDataError("plugin_plan_stale")

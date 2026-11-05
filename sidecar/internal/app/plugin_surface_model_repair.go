@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 
@@ -24,20 +25,69 @@ func modelDiagnostic(code, path string) v2.Diagnostic {
 	return v2.Diagnostic{Code: code, Path: path, Message: code, Details: map[string]any{}}
 }
 
+// Compare the same provider contract used by the schema compiler, including the nullable-value companion.
+func modelPhysicalFieldCode(app core.App, collection *core.Collection, f v2.FieldDefinition) (string, error) {
+	physical := collection.Fields.GetById(f.Identity.ProviderFieldID)
+	if physical == nil || physical.GetName() != f.Identity.PhysicalName {
+		return "plugin_model_field_missing", nil
+	}
+	if physical.GetHidden() {
+		return "plugin_model_field_access_denied", nil
+	}
+	expected, err := v2.CompileField(f, func(table string) (string, error) {
+		row, err := app.FindFirstRecordByData("vibetable_tables", "table_id", table)
+		if err != nil {
+			return "", err
+		}
+		return row.GetString("collection_id"), nil
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "plugin_model_relation_mismatch", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if expected.Value.Type() != physical.Type() {
+		return "plugin_model_type_mismatch", nil
+	}
+	if expected.Presence != nil {
+		companion := collection.Fields.GetById(expected.Presence.GetId())
+		if companion == nil || companion.Type() != expected.Presence.Type() || companion.GetName() != expected.Presence.GetName() || !companion.GetHidden() {
+			return "plugin_model_field_missing", nil
+		}
+	}
+	switch wanted := expected.Value.(type) {
+	case *core.NumberField:
+		if physical.(*core.NumberField).OnlyInt != wanted.OnlyInt {
+			return "plugin_model_precision_loss", nil
+		}
+	case *core.RelationField:
+		actual := physical.(*core.RelationField)
+		if actual.CollectionId != wanted.CollectionId || actual.MaxSelect != wanted.MaxSelect || actual.CascadeDelete != wanted.CascadeDelete {
+			return "plugin_model_relation_mismatch", nil
+		}
+	}
+	return "", nil
+}
+
 func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([]v2.Diagnostic, error) {
 	var diagnostics []v2.Diagnostic
 	tables := modelTableIDs(s)
 	for _, entity := range s.Model.Entities {
 		binding := s.Bindings[entity.Key]
 		table, err := schemaexecution.Describe(ctx, app, binding.TableID)
-		if errors.Is(err, schemaexecution.ErrTableNotFound) || err == nil && table.Kind != "base" {
+		if errors.Is(err, schemaexecution.ErrTableNotFound) || errors.Is(err, schemaexecution.ErrProviderCollectionMissing) || err == nil && table.Kind != "base" {
 			diagnostics = append(diagnostics, modelDiagnostic("plugin_model_table_missing", entity.Key))
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
+		collection, err := app.FindCollectionByNameOrId(table.CollectionID)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && collection.Name != table.PhysicalName {
+			diagnostics = append(diagnostics, modelDiagnostic("plugin_model_table_missing", entity.Key))
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -49,9 +99,11 @@ func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([
 				if code == "" && f.Relation != nil && actual.Relation.ReciprocalFieldID != s.Bindings[f.Relation.Entity].Fields[f.Relation.Field] {
 					code = "plugin_model_relation_mismatch"
 				}
-				physical := collection.Fields.GetByName(actual.Identity.PhysicalName)
-				if physical == nil || physical.GetHidden() {
-					code = "plugin_model_field_access_denied"
+				if code == "" {
+					code, err = modelPhysicalFieldCode(app, collection, actual)
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 			if code != "" {
@@ -122,7 +174,7 @@ func checkModelRepair(ctx context.Context, app core.App, old, next pluginmodel.S
 			return "", err
 		}
 		table, err := schemaexecution.Describe(ctx, app, id)
-		if errors.Is(err, schemaexecution.ErrTableNotFound) {
+		if errors.Is(err, schemaexecution.ErrTableNotFound) || errors.Is(err, schemaexecution.ErrProviderCollectionMissing) {
 			return "plugin_model_history_unknown", nil
 		}
 		if err != nil {

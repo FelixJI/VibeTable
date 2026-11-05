@@ -936,6 +936,24 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public void NativeRelationSuggestionsRequireOneCompatiblePhysicalPair()
+    {
+        JsonElement Logical(string key, string cardinality) => JsonSerializer.SerializeToElement(new { key, label = key, relation = new { cardinality } });
+        object Field(string id, string label, string target, string reciprocal, string cardinality) => new
+            { fieldId = id, displayName = label, logicalType = "relation", targetTableId = target, reciprocalFieldId = reciprocal, cardinality };
+        JsonElement Schema(string id, params object[] fields) => JsonSerializer.SerializeToElement(new { tableId = id, fields });
+        var left = Logical("links", "many");
+        var right = Logical("owner", "one");
+        var a = Schema("a", Field("x1", "links", "b", "y1", "many"), Field("x2", "second", "b", "y2", "many"));
+        var b = Schema("b", Field("y1", "first", "a", "x1", "one"), Field("y2", "owner", "a", "x2", "one"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, null, right, b, null, null));
+        Assert.AreEqual(("x2", "y2"), NativePluginModelWindow.SuggestRelationPair(left, a, null, null, right, b, null, "y2"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, "x1", right, b, null, "y2"));
+        Assert.IsNull(NativePluginModelWindow.SuggestRelationPair(left, a, null, "x1", right,
+            Schema("b", Field("y1", "owner", "a", "x1", "many")), null, null));
+    }
+
+    [TestMethod]
     public async Task NativeModelCatalogLoadsEverySummaryThenOnlySelectedFieldsWithRevision()
     {
         var calls = new List<JsonElement>();

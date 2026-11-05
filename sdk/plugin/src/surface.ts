@@ -183,7 +183,17 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     const requestId = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
       const cancel = (): void => {
-        try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } }); }
+        try {
+          channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } });
+          const active = pending.get(requestId);
+          if (method === "model.configure" && active && active.timer === undefined) {
+            active.timer = setTimeout(() => {
+              pending.delete(requestId);
+              cleanup();
+              reject(new PluginCapabilityError("plugin_commit_unknown", "Cancellation reply deadline exceeded; inspect model status before retry."));
+            }, 20_000);
+          }
+        }
         catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "transaction.submit" || method === "transaction.configure" || method === "file.write" || method === "model.configure" || method === "output.save" || method === "dataset.export" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
       };
       const cleanup = (): void => signal?.removeEventListener("abort", cancel);

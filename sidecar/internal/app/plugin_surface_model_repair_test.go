@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"github.com/pocketbase/dbx"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 	"reflect"
 	"slices"
 	"testing"
@@ -82,6 +84,133 @@ func TestPluginModelRepairCanonicalCompareAndHistory(t *testing.T) {
 	}
 	if blocked := propose(third.FieldID); blocked.Status != "blocked" || blocked.Diagnostics[0].Code != "plugin_model_history_present" {
 		t.Fatalf("history: %+v", blocked)
+	}
+}
+
+func TestPluginModelPhysicalBindingDrift(t *testing.T) {
+	for _, kind := range []string{"provider", "type", "precision", "relation-target", "relation-cardinality", "collection"} {
+		t.Run(kind, func(t *testing.T) {
+			pb, workspace, input, domain := modelFixture(t)
+			called := func(method string, params any) any {
+				t.Helper()
+				r, err := modelCall(t, pb, workspace, input, domain, method, params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r
+			}
+			p := called("model.preview", modelPreviewRequest{Mode: "create"}).(modelPreview)
+			state := called("model.commit", map[string]string{"requestId": p.RequestID}).(pluginmodel.State)
+			entity, key, code := "assets", "quantity", "plugin_model_precision_loss"
+			if kind == "relation-target" || kind == "relation-cardinality" {
+				entity, key, code = "people", "tickets", "plugin_model_relation_mismatch"
+			}
+			b := state.Bindings[entity]
+			table, err := schemaexecution.Describe(t.Context(), pb, b.TableID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			col, err := pb.FindCollectionByNameOrId(table.CollectionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			def, _ := table.Field(b.Fields[key])
+			provider := col.Fields.GetById(def.Identity.ProviderFieldID)
+			// Simulate an independently edited legacy provider schema while the v2 declaration stays intact.
+			switch kind {
+			case "provider":
+				provider.SetId("replaced-provider")
+				code = "plugin_model_field_missing"
+			case "type":
+				col.Fields.RemoveById(provider.GetId())
+				col.Fields.Add(&core.TextField{Id: provider.GetId(), Name: provider.GetName()})
+				code = "plugin_model_type_mismatch"
+			case "precision":
+				provider.(*core.NumberField).OnlyInt = false
+			case "relation-target":
+				provider.(*core.RelationField).CollectionId = col.Id
+			case "relation-cardinality":
+				provider.(*core.RelationField).MaxSelect = 1
+			}
+			path := entity + "." + key
+			if kind == "collection" {
+				_, err = pb.DB().NewQuery("DELETE FROM _collections WHERE id={:id}").Bind(dbx.Params{"id": col.Id}).Execute()
+				path, code = entity, "plugin_model_table_missing"
+			} else {
+				fields, encodeErr := col.Fields.Value()
+				if encodeErr != nil {
+					t.Fatal(encodeErr)
+				}
+				_, err = pb.DB().NewQuery("UPDATE _collections SET fields={:fields} WHERE id={:id}").Bind(dbx.Params{"id": col.Id, "fields": fields}).Execute()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := called("model.read", map[string]string{}).(pluginmodel.State)
+			if got.Status != "stale" || !slices.ContainsFunc(got.Diagnostics, func(d v2.Diagnostic) bool { return d.Path == path && d.Code == code }) {
+				t.Fatalf("stale %s %+v", path, got.Diagnostics)
+			}
+			if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
+				t.Fatal("drifted provider conferred grants")
+			}
+			if _, err := modelCall(t, pb, workspace, input, domain, "model.commit", map[string]string{"requestId": p.RequestID}); err == nil {
+				t.Fatal("stale completion replayed")
+			}
+		})
+	}
+}
+
+func TestPluginModelRepairWaiterSignalsVerifiedReceiptReplay(t *testing.T) {
+	pb, workspace, input, domain, first, field := existingModelMapping(t)
+	commit := func(owner *schemaFieldChangeDomain, id string) (any, error) {
+		return modelCall(t, pb, workspace, input, owner, "model.commit", map[string]string{"requestId": id})
+	}
+	if _, err := commit(domain, first.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	alt := createSchemaProductField(t, pb, field.TableID, v2.LogicalText, "替代", "repair-replay-alt")
+	raw, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "repair", Mappings: map[string]pluginmodel.Binding{"items": {TableID: field.TableID, Fields: map[string]string{"name": alt.FieldID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := raw.(modelPreview).RequestID
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(t.Context(), pb); err != nil {
+		t.Fatal(err)
+	}
+	intent := writecoordinator.WriteIntent{Token: writecoordinator.Token{WorkspaceID: workspace, SessionEpoch: 1, FenceEpoch: 1, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, MutationRevision: 1, AuditSourceEpoch: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+	winner := &schemaFieldChangeDomain{gates: []businessWriteGate{func(ctx context.Context, kind, id string, write func(context.Context) error) error {
+		bound, err := writecoordinator.WithBusinessIntent(ctx, intent, kind, id)
+		if err != nil {
+			return err
+		}
+		return write(bound)
+	}}}
+	replayed := false
+	domain.gates = []businessWriteGate{func(ctx context.Context, kind, id string, write func(context.Context) error) error {
+		// The original caller loaded its pending preview before admission. Complete the winner first.
+		if _, err := commit(winner, id); err != nil {
+			return err
+		}
+		next := intent
+		next.MutationRevision++
+		bound, err := writecoordinator.WithBusinessIntent(ctx, next, kind, id)
+		if err != nil {
+			return err
+		}
+		err = write(bound)
+		if err == writecoordinator.ErrBusinessReplay {
+			replayed = true
+			return nil
+		}
+		return err
+	}}
+	result, err := commit(domain, id)
+	if err != nil || !replayed || result.(pluginmodel.State).RequestID != id {
+		t.Fatalf("replay=%v result=%+v err=%v", replayed, result, err)
+	}
+	var count int
+	if err := pb.DB().NewQuery("SELECT count(*) FROM workspace_v2_mutation_receipts").Row(&count); err != nil || count != 1 {
+		t.Fatalf("receipts=%d err=%v", count, err)
 	}
 }
 
