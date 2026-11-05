@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -153,6 +155,82 @@ func TestPluginModelMappingFencesCopyingMigrationAndSwitchRechecksBinding(t *tes
 			}
 			if !atComplete && actual.LogicalType != v2.LogicalNumber {
 				t.Fatal("unbound ordinary migration was blocked")
+			}
+		})
+	}
+}
+
+func TestLegacyAcceptedUpgradeResumesAtomically(t *testing.T) {
+	for _, completed := range []int{0, 1} {
+		t.Run(fmt.Sprint(completed), func(t *testing.T) {
+			ctx := t.Context()
+			pb, workspace, input, domain := modelFixture(t)
+			preview := func() modelPreview {
+				t.Helper()
+				raw, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "create"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw.(modelPreview)
+			}
+			commit := func(plan modelPreview) (any, error) {
+				return modelCall(t, pb, workspace, input, domain, "model.commit", map[string]string{"requestId": plan.RequestID})
+			}
+			if _, err := commit(preview()); err != nil {
+				t.Fatal(err)
+			}
+			input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
+				m.Version++
+				for _, name := range []string{"alpha", "beta", "gamma"} {
+					m.Entities = append(m.Entities, pluginmodel.Entity{Key: name, Label: name, Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "Name", Type: v2.LogicalText}}})
+				}
+			})
+			plan := preview()
+			installed, err := surfaceInstallation(ctx, pb, workspace, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			save := func(tx core.App, state pluginmodel.State, suffix string) error {
+				_, err := pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, installed, plan.RequestID+":"+suffix, "model.progress", state))
+				return err
+			}
+			// Persist precisely the accepted and step events produced by the pre-atomic host.
+			if err := pb.RunInTransaction(func(tx core.App) error { return save(tx, plan.State, "accepted") }); err != nil {
+				t.Fatal(err)
+			}
+			if completed == 1 {
+				err = applyModelStep(ctx, domain, &plan, plan.Steps[0], func(tx core.App, next pluginmodel.State) error {
+					next.Completed, next.Status = 1, "partial"
+					return save(tx, next, "step:1")
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := schemaapi.New(pb).List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			creates := 0
+			hook := pb.OnRecordCreate("vibetable_tables").BindFunc(func(e *core.RecordEvent) error {
+				creates++
+				if creates == 2 {
+					return errors.New("interrupted remaining upgrade")
+				}
+				return e.Next()
+			})
+			_, err = commit(plan)
+			pb.OnRecordCreate("vibetable_tables").Unbind(hook)
+			if err == nil || creates != 2 {
+				t.Fatalf("interrupt: %d %v", creates, err)
+			}
+			after, err := schemaapi.New(pb).List(ctx)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("legacy progress %d leaked another table: %d -> %d", completed, len(before), len(after))
+			}
+			result, err := commit(plan)
+			if err != nil || result.(pluginmodel.State).Completed != len(plan.Steps) || result.(pluginmodel.State).Status != "completed" {
+				t.Fatalf("legacy resume: %v %v", result, err)
 			}
 		})
 	}

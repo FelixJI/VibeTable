@@ -56,41 +56,10 @@ func TestRuleUpgradePreflightsBothImagesWithoutBlockingDisjointTables(t *testing
 			t.Fatal(err)
 		}
 	}
-	configure := func(d transactionrules.Declaration) error {
-		t.Helper()
-		store := pluginstore.New(f.pb, f.workspace)
-		raw, err := store.GetInstallation(ctx, f.input.ProjectKey, f.input.PluginID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var obj map[string]any
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			t.Fatal(err)
-		}
-		obj["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = d
-		prev := f.input.InstallationRevision
-		f.input.InstallationRevision++
-		obj["revision"] = f.input.InstallationRevision
-		raw, err = json.Marshal(obj)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.SaveInstallation(ctx, raw, &prev); err != nil {
-			t.Fatal(err)
-		}
-		p, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]string{"requestId": p.(modelPreview).RequestID}); err != nil {
-			t.Fatal(err)
-		}
-		_, err = f.call("transaction.configure", map[string]any{"declaration": d})
-		return err
-	}
+
 	noteRule := transactionrules.Rule{ID: "notes", Kind: "unique", Entity: "notes", Fields: []string{"name"}}
 	disjoint := transactionrules.Declaration{Contract: f.declaration.Contract, ModelID: f.declaration.ModelID, Version: 2, Rules: []transactionrules.Rule{noteRule}}
-	if err := configure(disjoint); err != nil {
+	if err := f.configureUpgradedRules(t, disjoint); err != nil {
 		t.Fatal("disjoint registrations rejected", err)
 	}
 	b := f.model.Bindings["headers"]
@@ -104,13 +73,13 @@ func TestRuleUpgradePreflightsBothImagesWithoutBlockingDisjointTables(t *testing
 	overlap := disjoint
 	overlap.Version = 3
 	overlap.Rules = []transactionrules.Rule{{ID: "new_pair", Kind: "unique", Entity: "headers", Fields: []string{"code", "amount"}}}
-	if err := configure(overlap); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+	if err := f.configureUpgradedRules(t, overlap); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
 		t.Fatalf("overlapping registrations exceeded the jointly triggered budget: %v", err)
 	}
 	all := f.declaration
 	all.Version = 4
 	all.Rules = append(all.Rules, noteRule)
-	if err := configure(all); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+	if err := f.configureUpgradedRules(t, all); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
 		t.Fatalf("oversize configuration: %v", err)
 	}
 	registered, err := transactionrules.Load(ctx, f.pb)
@@ -122,6 +91,134 @@ func TestRuleUpgradePreflightsBothImagesWithoutBlockingDisjointTables(t *testing
 	}
 	if err := write("duplicate", "after"); err == nil || !strings.Contains(err.Error(), "transaction.unique_violation") {
 		t.Fatalf("lost old unique rule: %v", err)
+	}
+}
+
+func (f *transactionFixture) configureUpgradedRules(t *testing.T, d transactionrules.Declaration) error {
+	ctx := t.Context()
+	t.Helper()
+	store := pluginstore.New(f.pb, f.workspace)
+	raw, err := store.GetInstallation(ctx, f.input.ProjectKey, f.input.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatal(err)
+	}
+	obj["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = d
+	prev := f.input.InstallationRevision
+	f.input.InstallationRevision++
+	obj["revision"] = f.input.InstallationRevision
+	raw, err = json.Marshal(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveInstallation(ctx, raw, &prev); err != nil {
+		t.Fatal(err)
+	}
+	p, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]string{"requestId": p.(modelPreview).RequestID}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.call("transaction.configure", map[string]any{"declaration": d})
+	return err
+}
+
+func TestReciprocalRegistrationBudgetPreservesNativeInsertAndDelete(t *testing.T) {
+	f := newTransactionFixture(t, "one-to-one")
+	ctx := t.Context()
+	for entity, count := range map[string]int{"headers": 3000, "lines": 2001} {
+		binding := f.model.Bindings[entity]
+		table, err := schemaexecution.Describe(ctx, f.pb, binding.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		field, _ := table.Field(binding.Fields["code"])
+		if err := f.pb.RunInTransaction(func(tx core.App) error {
+			for i := 0; i < count; i++ {
+				id := fmt.Sprintf("%015d", i)
+				code := id
+				if entity == "lines" {
+					code = "ready"
+				}
+				values := dbx.Params{"id": id, field.Identity.PhysicalName: code}
+				if presence := field.Value.Presence.PhysicalName; presence != "" {
+					values[presence] = true
+				}
+				if _, err := tx.DB().Insert(table.PhysicalName, values).Execute(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := transactionrules.Rule{ID: "status", Kind: "state", Entity: "lines", Field: "code", Transitions: map[string][]string{"ready": {}}}
+	other := transactionrules.Declaration{Contract: f.declaration.Contract, ModelID: f.declaration.ModelID, Version: 2, Rules: []transactionrules.Rule{state}}
+	if err := f.configureUpgradedRules(t, other); err != nil {
+		t.Fatalf("unrelated field on the reciprocal table was counted: %v", err)
+	}
+	other.Version++
+	state.ID = "protected_peer"
+	state.Fields = []string{"peer"}
+	other.Rules = append(other.Rules, state)
+	if err := f.configureUpgradedRules(t, other); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+		t.Fatalf("reverse-field dependency was admitted: %v", err)
+	}
+	b := f.model.Bindings["headers"]
+	req := mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: "native-insert", IdempotencyKey: "native-insert", TableID: b.TableID, SchemaRevision: f.model.Revisions[b.TableID], Actor: mutation.Actor{Type: "user", ID: "local-user"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, Values: map[string]any{b.Fields["code"]: "free"}}}}
+	receipt, err := f.kernel.Apply(ctx, req)
+	if err != nil {
+		t.Fatal("unrelated native insert blocked", err)
+	}
+	row := receipt.AffectedRows[0]
+	req.RequestID, req.IdempotencyKey = "native-delete", "native-delete"
+	req.Operations = []mutation.Operation{{Kind: mutation.OperationDelete, RecordID: &row.RecordID, ExpectedDigest: &row.Digest}}
+	if _, err := f.kernel.Apply(ctx, req); err != nil {
+		t.Fatal("unrelated native delete blocked", err)
+	}
+
+	// An older host could persist this declaration. Exercise both real entry points
+	// against that historical state to pin the trigger set used by admission.
+	installed, err := surfaceInstallation(ctx, f.pb, f.workspace, f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Bindings: f.model.Bindings, Declaration: other}
+	key := fmt.Sprintf("transaction:rules:%s:%s:%d", f.input.InstallationID, other.ModelID, other.Version)
+	if err = f.pb.RunInTransaction(func(tx core.App) error {
+		_, err := pluginstore.New(tx, f.workspace).RecordAuditInTransaction(ctx, modelAudit(f.input, installed, key, "transaction.rules", reg))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	table, err := schemaexecution.Describe(ctx, f.pb, b.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := f.pb.FindRecordById(table.PhysicalName, "000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := productrow.Digest(mutation.ProductRow(f.pb, table, existing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []mutation.Operation{
+		{Kind: mutation.OperationInsert, Values: map[string]any{b.Fields["code"]: "blocked"}},
+		{Kind: mutation.OperationDelete, RecordID: &existing.Id, ExpectedDigest: &digest},
+	} {
+		req.RequestID = "legacy-" + string(op.Kind)
+		req.IdempotencyKey = req.RequestID
+		req.Operations = []mutation.Operation{op}
+		if _, err = f.kernel.Apply(ctx, req); err == nil || !strings.Contains(err.Error(), "transaction.read_budget_exceeded") {
+			t.Fatalf("legacy %s failed to select reciprocal guard: %v", op.Kind, err)
+		}
 	}
 }
 

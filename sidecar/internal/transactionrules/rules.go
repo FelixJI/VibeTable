@@ -518,17 +518,53 @@ func contains(values []string, wanted string) bool {
 // ValidateAdmission checks a normal write on each affected table against the same
 // effective registrations and combined before/after image budget used at commit.
 func (candidate Registration) ValidateAdmission(ctx context.Context, app core.App, history []Registration) error {
-	type cost struct{ rows, bytes int }
-	budgets := map[string]*cost{}
-	for entity := range candidate.dependencies() {
-		budgets[candidate.Bindings[entity].TableID] = &cost{}
+	type trigger struct {
+		writes WriteSet
+		budget imageBudget
+	}
+	// Inserting or deleting a row also touches its reciprocal fields. A candidate
+	// can therefore be selected by writes originating outside its dependency tables.
+	sources := map[string]bool{}
+	tables := map[string]schemaexecution.Table{}
+	for entity, fields := range candidate.dependencies() {
+		binding := candidate.Bindings[entity]
+		table, err := schemaexecution.Describe(ctx, app, binding.TableID)
+		if err != nil {
+			return err
+		}
+		tables[binding.TableID] = table
+		sources[binding.TableID] = true
+		for key := range fields {
+			field, ok := table.Field(binding.Fields[key])
+			if !ok {
+				return failure("binding_stale")
+			}
+			if rel := field.Relation; rel != nil && rel.ReciprocalFieldID != "" {
+				sources[rel.TargetTableID] = true
+			}
+		}
+	}
+	var triggers []trigger
+	for source := range sources {
+		table, ok := tables[source]
+		if !ok {
+			var err error
+			table, err = schemaexecution.Describe(ctx, app, source)
+			if err != nil {
+				return err
+			}
+		}
+		writes := WriteSet{}
+		writes.AddNative(table.Snapshot, true, nil, "")
+		if candidate.selectedBy(writes) {
+			triggers = append(triggers, trigger{writes: writes})
+		}
 	}
 	for i, guard := range activeGuards(append(history, candidate)) {
-		affected := map[string]bool{}
-		for entity := range guard.dependencies() {
-			table := guard.Bindings[entity].TableID
-			if budgets[table] != nil {
-				affected[table] = true
+		var affected []*imageBudget
+		for j := range triggers {
+			if guard.selectedBy(triggers[j].writes) {
+				affected = append(affected, &triggers[j].budget)
 			}
 		}
 		if len(affected) == 0 {
@@ -543,16 +579,13 @@ func (candidate Registration) ValidateAdmission(ctx context.Context, app core.Ap
 				return err
 			}
 		}
-		var image cost
-		if err := countImages(images, &image.rows, &image.bytes); err != nil {
+		var image imageBudget
+		if err := image.count(images); err != nil {
 			return err
 		}
-		for table := range affected {
-			b := budgets[table]
-			b.rows += 2 * image.rows
-			b.bytes += 2 * image.bytes
-			if b.rows > MaxRows || b.bytes > MaxBytes {
-				return failure("read_budget_exceeded")
+		for _, budget := range affected {
+			if err := budget.add(2*image.rows, 2*image.bytes); err != nil {
+				return err
 			}
 		}
 	}
@@ -674,6 +707,50 @@ func activeGuards(history []Registration) []Registration {
 	return active
 }
 
+type WriteSet map[string]map[string]bool
+
+// AddNative includes the same single-table and reciprocal writes for native mutation
+// and for admission's largest single-row operation (insert/delete).
+func (w WriteSet) AddNative(table v2.SchemaSnapshot, whole bool, values map[string]any, attachment string) {
+	mark := func(table, field string) {
+		if w[table] == nil {
+			w[table] = map[string]bool{}
+		}
+		w[table][field] = true
+	}
+	if whole {
+		mark(table.TableID, "*")
+	}
+	if attachment != "" {
+		mark(table.TableID, attachment)
+	}
+	for _, f := range table.Fields {
+		_, set := values[f.Identity.PhysicalName]
+		if set {
+			mark(table.TableID, f.Identity.FieldID)
+		}
+		if r := f.Relation; r != nil && r.ReciprocalFieldID != "" && (whole || set) {
+			mark(r.TargetTableID, r.ReciprocalFieldID)
+		}
+	}
+}
+
+func (r Registration) selectedBy(writes WriteSet) bool {
+	for entity, fields := range r.dependencies() {
+		binding := r.Bindings[entity]
+		touched := writes[binding.TableID]
+		if touched["*"] {
+			return true
+		}
+		for field := range fields {
+			if touched[binding.Fields[field]] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Capture selects by actual canonical writes, including reciprocal targets, never a caller's rule list.
 func Capture(ctx context.Context, app core.App, touched map[string]map[string]bool) ([]Guard, error) {
 	registrations, err := Load(ctx, app)
@@ -681,29 +758,16 @@ func Capture(ctx context.Context, app core.App, touched map[string]map[string]bo
 		return nil, err
 	}
 	guards := []Guard{}
-	rowsRead, bytesRead := 0, 0
+	var budget imageBudget
 	for _, r := range activeGuards(registrations) {
-		selected := false
-		for entity, fields := range r.dependencies() {
-			b := r.Bindings[entity]
-			writes := touched[b.TableID]
-			if writes["*"] {
-				selected = true
-			}
-			for field := range fields {
-				if writes[b.Fields[field]] {
-					selected = true
-				}
-			}
-		}
-		if !selected {
+		if !r.selectedBy(touched) {
 			continue
 		}
 		before, err := r.Read(ctx, app)
 		if err != nil {
 			return nil, err
 		}
-		if err := countImages(before, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(before); err != nil {
 			return nil, err
 		}
 		guards = append(guards, Guard{r, before})
@@ -712,9 +776,9 @@ func Capture(ctx context.Context, app core.App, touched map[string]map[string]bo
 }
 
 func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
-	rowsRead, bytesRead := 0, 0
+	var budget imageBudget
 	for _, guard := range guards {
-		if err := countImages(guard.Before, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(guard.Before); err != nil {
 			return err
 		}
 	}
@@ -723,7 +787,7 @@ func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
 		if err != nil {
 			return err
 		}
-		if err := countImages(after, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(after); err != nil {
 			return err
 		}
 		if err := guard.Registration.Validate(guard.Before, after); err != nil {
@@ -733,16 +797,24 @@ func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
 	return nil
 }
 
-func countImages(images Images, rows, size *int) error {
+type imageBudget struct{ rows, bytes int }
+
+func (b *imageBudget) count(images Images) error {
+	rows := 0
 	for _, records := range images {
-		*rows += len(records)
+		rows += len(records)
 	}
 	raw, err := json.Marshal(images)
 	if err != nil {
 		return err
 	}
-	*size += len(raw)
-	if *rows > MaxRows || *size > MaxBytes {
+	return b.add(rows, len(raw))
+}
+
+func (b *imageBudget) add(rows, bytes int) error {
+	b.rows += rows
+	b.bytes += bytes
+	if b.rows > MaxRows || b.bytes > MaxBytes {
 		return failure("read_budget_exceeded")
 	}
 	return nil

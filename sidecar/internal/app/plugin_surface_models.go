@@ -723,8 +723,15 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 		}
 		return latest, nil
 	}
-	prior := latestModelState(states, plan.Model.ModelID)
-	if !started && plan.Mode == "create" && prior.Status == "completed" && prior.Model.Version < plan.Model.Version {
+	hasCompletedBase := false
+	for i := len(states) - 1; i >= 0; i-- {
+		state := states[i]
+		if state.RequestID != id && state.Status == "completed" && state.Model.ModelID == plan.Model.ModelID {
+			hasCompletedBase = state.Model.Version < plan.Model.Version
+			break
+		}
+	}
+	if plan.Mode == "create" && hasCompletedBase {
 		// A completed model already has live tables. Publish its entire extension and binding together.
 		var committed pluginmodel.State
 		err = runBusinessWrite(ctx, domain.gates, "plugin.model.upgrade", id, func(ctx context.Context) error {
@@ -743,16 +750,23 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 					committed = old
 					return writecoordinator.ReplayedBusinessWrite(ctx, "plugin.model.upgrade", id)
 				}
-				if old.Status != "completed" || !time.Now().Before(plan.ExpiresAt) {
+				next := plan
+				if old.RequestID == id {
+					// An earlier host may already have accepted this request and committed some steps.
+					validStatus := old.Status == "pending" || old.Status == "partial" || old.Status == "failed"
+					if !validStatus || old.InstallationID != input.InstallationID || old.InstallationRevision != input.InstallationRevision || !pluginmodel.Equal(old.Model, *installed.Manifest.Permissions.Model) || old.Completed < 0 || old.Completed > len(plan.Steps) || old.Total != len(plan.Steps) {
+						return pluginDataError("plugin_plan_stale")
+					}
+					next.State = old
+				} else if !time.Now().Before(plan.ExpiresAt) {
 					return pluginDataError("plugin_plan_stale")
 				}
-				if err := modelValidateRevisions(ctx, tx, plan.State); err != nil {
+				if err := modelValidateRevisions(ctx, tx, next.State); err != nil {
 					return err
 				}
 				scoped := newSchemaFieldDomain(tx, domain.migration, domain.logger, domain.executorOptions)
-				next := plan
-				next.State = cloneModelState(plan.State)
-				for _, step := range next.Steps {
+				next.State = cloneModelState(next.State)
+				for _, step := range next.Steps[next.Completed:] {
 					if err := ctx.Err(); err != nil {
 						return err
 					}
