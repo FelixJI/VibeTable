@@ -182,8 +182,9 @@ async function coldScene(t, fault = "") {
   });
   const seed = {
     workspaceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 2, projectKey: "local:synthetic",
-    bindings: { assets: { tableId: "tbl_assets", fields: { name: "fld_name", checked: "fld_checked" } } },
-    userData: { tableId: "tbl_assets", fieldId: "fld_private", physicalName: "private_value", value: "synthetic preserved value",
+    bindings: { assets: { tableId: "tbl_assets", fields: { name: "fld_replacement", checked: "fld_checked" } } },
+    userData: { tableId: "tbl_assets", privateFieldId: "fld_private", privateValue: "synthetic preserved value",
+      mappedFieldId: "fld_replacement", mappedValue: "synthetic repaired asset",
       recordId: "row_synthetic", renamedFieldId: "fld_name", renamedLabel: "User renamed",
       corePhysicalName: "core_name", coreValue: "synthetic asset" },
   };
@@ -196,7 +197,9 @@ async function coldScene(t, fault = "") {
     url: () => "https://example.plugins.vibetable.local/ui/index.html",
     locator: () => ({ innerText: async () => JSON.stringify(reopened) }),
     evaluate: async () => ({ result: { fields: [
-      { fieldId: "id" }, { fieldId: "fld_name" }, { fieldId: "fld_checked" },
+      { fieldId: "id" }, { fieldId: "fld_checked" },
+      ...(fault === "missing replacement grant" ? [] : [{ fieldId: "fld_replacement" }]),
+      ...(fault === "old grant" ? [{ fieldId: "fld_name" }] : []),
       ...(fault === "grant" ? [{ fieldId: "fld_private" }] : []),
     ] } }),
   };
@@ -210,12 +213,14 @@ async function coldScene(t, fault = "") {
     } } }),
     rawBridgeRequest: async (_page, method) => {
       if (method === "schema.getTable") return { payload: { fields: [
-        { identity: { fieldId: "fld_name" }, displayName: fault === "rename" ? "lost rename" : seed.userData.renamedLabel },
-        { identity: { fieldId: "fld_private" }, displayName: "User private" },
+        { identity: { fieldId: "fld_name", physicalName: "core_name" }, displayName: fault === "rename" ? "lost rename" : seed.userData.renamedLabel },
+        { identity: { fieldId: "fld_replacement", physicalName: "mapped_name" }, displayName: "Replacement" },
+        { identity: { fieldId: "fld_private", physicalName: "private_value" }, displayName: "User private" },
       ] } };
       assert.equal(method, "query.page");
-      return { payload: { rows: [{ id: seed.userData.recordId, core_name: seed.userData.coreValue,
-        private_value: fault === "value" ? "overwritten" : seed.userData.value }] } };
+      return { payload: { rows: [{ id: seed.userData.recordId, core_name: fault === "old value" ? "lost" : seed.userData.coreValue,
+        mapped_name: fault === "replacement value" ? "lost" : seed.userData.mappedValue,
+        private_value: fault === "value" ? "overwritten" : seed.userData.privateValue }] } };
     },
   };
   const run = () => runPluginModels(page, recorder, { evidenceDir: dir }, helpers, statePath);
@@ -231,10 +236,10 @@ test("model cold-reopen scene requires both persisted bindings and ungranted use
   assert.equal(fixture.checks.length, 4);
   const evidence = JSON.parse(await fs.readFile(path.join(fixture.dir, "54-models-reopened.json"), "utf8"));
   assert.equal(evidence.previousEpoch, 2);
-  assert.equal(evidence.preserved.rows[0].private_value, fixture.seed.userData.value);
+  assert.equal(evidence.preserved.rows[0].private_value, fixture.seed.userData.privateValue);
 });
 
-for (const fault of ["workspace", "epoch", "binding", "value", "rename", "grant"]) {
+for (const fault of ["workspace", "epoch", "binding", "value", "old value", "replacement value", "rename", "grant", "old grant", "missing replacement grant"]) {
   test(`model cold-reopen scene rejects ${fault} regression`, async t => {
     const fixture = await coldScene(t, fault);
     await assert.rejects(fixture.run, assert.AssertionError);

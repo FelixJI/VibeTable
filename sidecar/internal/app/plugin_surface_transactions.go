@@ -136,8 +136,7 @@ func loadTransactionEvent(ctx context.Context, app core.App, workspace string, i
 }
 
 // A completed receipt survives enable/disable revisions. Recovery uses the
-// current manifest's read grants for the original, still valid model bindings;
-// this does not make that old model ready for any new transaction.
+// current manifest's read grants and the original identities of affected tables.
 func authorizeTransactionRecovery(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, result transactionResult) error {
 	var preview transactionPreview
 	found, err := loadTransactionEvent(ctx, app, workspace, input, result.RequestID, "preview", &preview)
@@ -151,30 +150,38 @@ func authorizeTransactionRecovery(ctx context.Context, app core.App, workspace s
 	if err != nil {
 		return err
 	}
-	compatible := false
 	for i := len(states) - 1; i >= 0; i-- {
 		state := states[i]
 		if state.Status != "completed" || state.InstallationID != input.InstallationID || !pluginmodel.Equal(state.Model, *installed.Manifest.Permissions.Model) {
 			continue
 		}
-		if !reflect.DeepEqual(state.Bindings, preview.Model.Bindings) {
-			return pluginDataError("plugin_read_denied")
-		}
 		if err := modelValidateBindings(ctx, app, state); err != nil {
 			return err
 		}
-		for _, entity := range state.Model.Entities {
-			binding := state.Bindings[entity.Key]
-			installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: binding.TableID, Fields: []string{"id"}, Operations: entity.Operations})
+		return authorizeReceiptTables(installed, input.ActiveCollection, preview.Model, state, result.Receipt)
+	}
+	return pluginDataError("plugin_read_denied")
+}
+
+func authorizeReceiptTables(installed pluginSurfaceInstallation, active string, original, current pluginmodel.State, receipt mutation.PlanReceipt) error {
+	// Limit this local read check to grants for unchanged original entities. A
+	// derived table outside the old model still needs an explicit manifest grant.
+	installed.ModelGrants = nil
+	for _, entity := range current.Model.Entities {
+		prior, ok := original.Bindings[entity.Key]
+		if !ok {
+			return pluginDataError("plugin_read_denied")
 		}
-		compatible = true
-		break
+		if _, affected := receipt.Revisions[prior.TableID]; !affected {
+			continue
+		}
+		if !reflect.DeepEqual(prior, current.Bindings[entity.Key]) {
+			return pluginDataError("plugin_read_denied")
+		}
+		installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: prior.TableID, Fields: []string{"id"}, Operations: entity.Operations})
 	}
-	if !compatible {
-		return pluginDataError("plugin_read_denied")
-	}
-	for _, row := range result.Receipt.Rows {
-		if grant := installed.grant(row.TableID, input.ActiveCollection); grant == nil || !pluginHas(grant.Fields, "id") && !pluginHas(grant.Fields, "*") {
+	for table := range receipt.Revisions {
+		if grant := installed.grant(table, active); grant == nil || !pluginHas(grant.Fields, "id") && !pluginHas(grant.Fields, "*") {
 			return pluginDataError("plugin_read_denied")
 		}
 	}
