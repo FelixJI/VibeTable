@@ -205,6 +205,46 @@ func transactionHTTP(t *testing.T, f *transactionFixture, gate businessWriteGate
 	}
 }
 
+func requireHTTPNotCommitted(t *testing.T, response *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	var wire struct {
+		Code    string `json:"code"`
+		Outcome string `json:"commitOutcome"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil || response.Code != http.StatusConflict || wire.Code != code || wire.Outcome != "not-committed" {
+		t.Fatalf("commit returned HTTP %d %s, want %s/not-committed", response.Code, response.Body.String(), code)
+	}
+}
+
+// Exercise the public single-table preview/audit/commit flow against the same
+// durable registration as the model transaction. The outer request ID is the write identity.
+func requireSingleTableRuleRejection(t *testing.T, f *transactionFixture, req mutation.Request, want string) {
+	t.Helper()
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(t.Context(), f.pb); err != nil {
+		t.Fatal(err)
+	}
+	session := *f
+	session.input.RequestID = req.RequestID
+	call := transactionHTTP(t, &session, nil)
+	plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": req.TableID, "schemaRevision": req.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": req.Operations[0].Values}}}
+	if preview := call("mutation.preview", plan); preview.Code != http.StatusOK {
+		t.Fatalf("single-table preview: %s", preview.Body.String())
+	}
+	if start := call("audit.start", map[string]any{"taskId": "single-table-task", "plan": plan}); start.Code != http.StatusOK {
+		t.Fatalf("audit start: %s", start.Body.String())
+	}
+	before := transactionBusinessSnapshot(t, f)
+	for range 2 {
+		requireHTTPNotCommitted(t, call("mutation.commit", plan), want)
+	}
+	if committed, err := writecoordinator.HasPocketBaseReceiptIdentity(t.Context(), f.pb, f.workspace, "plugin.surface.mutation", req.RequestID); err != nil || committed {
+		t.Fatalf("unexpected write proof: %v %v", committed, err)
+	}
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("rejected single-table mutation changed rows, revisions, history or outbox")
+	}
+}
+
 func requireRuleRejectionOverHTTP(t *testing.T, f *transactionFixture, p transactionPreview, code string) {
 	t.Helper()
 	if err := writecoordinator.EnsurePocketBaseReceiptTable(t.Context(), f.pb); err != nil {
@@ -214,13 +254,7 @@ func requireRuleRejectionOverHTTP(t *testing.T, f *transactionFixture, p transac
 	before := transactionBusinessSnapshot(t, f)
 	for range 2 {
 		response := call("transaction.commit", map[string]any{"requestId": p.RequestID, "previewRevision": p.PreviewRevision})
-		var wire struct {
-			Code    string `json:"code"`
-			Outcome string `json:"commitOutcome"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil || response.Code != http.StatusConflict || wire.Code != code || wire.Outcome != "not-committed" {
-			t.Fatalf("rejected commit returned HTTP %d %s", response.Code, response.Body.String())
-		}
+		requireHTTPNotCommitted(t, response, code)
 	}
 	status := call("transaction.status", map[string]any{"requestId": p.RequestID})
 	var stored struct {

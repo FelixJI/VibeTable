@@ -164,9 +164,16 @@ func surfaceCommitRejection(code string) bool {
 	switch code {
 	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
 		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict",
-		"mutation.record.not_found",
-		// Registered business guards also reject ordinary single-table mutations.
-		"transaction.decimal_sign_violation", "transaction.at_most_one_violation":
+		"mutation.record.not_found", "mutation.relation.cardinality", "mutation.relation.reciprocal_cardinality", "mutation.relation.target_not_found":
+		return true
+	// Both mutation kernels capture and validate the same durable business guards.
+	// Only explicit guard refusals are candidates for proof of non-commit.
+	case "transaction.binding_stale", "transaction.decimal_mapping_invalid", "transaction.reference_mapping_invalid",
+		"transaction.rule_budget_exceeded", "transaction.read_budget_exceeded",
+		"transaction.decimal_invalid", "transaction.decimal_overflow", "transaction.decimal_noncanonical", "transaction.decimal_scale_mismatch", "transaction.decimal_sign_violation",
+		"transaction.unique_null", "transaction.unique_violation", "transaction.reference_violation", "transaction.at_most_one_violation",
+		"transaction.conservation_violation", "transaction.balance_violation", "transaction.same_target_violation",
+		"transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied":
 		return true
 	default:
 		return false
@@ -216,12 +223,7 @@ func surfaceTransactionRejection(code string) bool {
 	case "transaction.plan_stale", "transaction.request_invalid", "transaction.declaration_invalid", "transaction.model_required",
 		"transaction.configuration_denied", "transaction.configuration_conflict", "transaction.configuration_required",
 		"transaction.plan_invalid", "transaction.operation_invalid", "transaction.duplicate_row", "transaction.id_required",
-		"transaction.budget_exceeded", "transaction.result_budget_exceeded", "transaction.rule_budget_exceeded", "transaction.read_budget_exceeded",
-		"transaction.input_conflict", "transaction.relation_conflict", "transaction.reference_invalid", "transaction.binding_stale",
-		"transaction.decimal_invalid", "transaction.decimal_noncanonical", "transaction.decimal_scale_mismatch",
-		"transaction.unique_null", "transaction.unique_violation", "transaction.reference_violation",
-		"transaction.conservation_violation", "transaction.balance_violation", "transaction.same_target_violation", "transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied",
-		"mutation.relation.cardinality", "mutation.relation.reciprocal_cardinality", "mutation.relation.target_not_found":
+		"transaction.budget_exceeded", "transaction.result_budget_exceeded", "transaction.input_conflict", "transaction.relation_conflict", "transaction.reference_invalid":
 		return true
 	default:
 		return false

@@ -100,6 +100,7 @@ func TestNullableTransactionSourcesCompareOptionalOwnerAndExcludeDoubleUse(t *te
 				physical[binding.Fields[key]] = value
 			}
 			request := mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: tc.name, IdempotencyKey: tc.name, TableID: binding.TableID, SchemaRevision: model.Revisions[binding.TableID], Actor: mutation.Actor{Type: "user", ID: "local-user"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, Values: physical}}}
+			requireSingleTableRuleRejection(t, f, request, tc.want)
 			_, err = f.kernel.Apply(t.Context(), request)
 			if !errors.As(err, &denied) || denied.Code != tc.want || before != transactionBusinessSnapshot(t, f) {
 				t.Fatalf("native edit: %v", err)
@@ -173,6 +174,11 @@ func TestScopedBalanceConcurrentCurrentWritesAndForeignVersionRollback(t *testin
 		}
 	}
 	verifyRejected(errs[2], "transaction.decimal_sign_violation")
+	binding := f.model.Bindings["allocations"]
+	for _, tc := range []struct{ amount, code string }{{"11.00", "transaction.balance_violation"}, {"-1.00", "transaction.decimal_sign_violation"}} {
+		req := mutation.Request{RequestID: tc.code, TableID: binding.TableID, SchemaRevision: f.model.Revisions[binding.TableID], Operations: []mutation.Operation{{Kind: mutation.OperationInsert, Values: map[string]any{binding.Fields["line"]: line, binding.Fields["version"]: current, binding.Fields["amount"]: tc.amount}}}}
+		requireSingleTableRuleRejection(t, f, req, tc.code)
+	}
 	requireRuleRejectionOverHTTP(t, f, preview(planFor("0.00")), "transaction.decimal_sign_violation")
 	for _, err := range errs[:2] {
 		if err != nil {
