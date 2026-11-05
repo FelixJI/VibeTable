@@ -48,6 +48,16 @@ internal sealed partial class PluginSurfaceApi
                     var display = JsonNode.Parse(value.GetRawText())!.AsObject();
                     string entity = value.GetProperty("entity").GetString()!;
                     display["binding"] = JsonNode.Parse(bindings.GetProperty(entity).GetRawText());
+                    if (display["kind"]?.GetValue<string>() == "atMostOne")
+                    {
+                        var fieldIds = new JsonObject();
+                        foreach (var field in value.GetProperty("fields").EnumerateArray())
+                        {
+                            string key = field.GetString()!;
+                            fieldIds[key] = bindings.GetProperty(entity).GetProperty("fields").GetProperty(key).GetString();
+                        }
+                        display["fieldIds"] = fieldIds;
+                    }
                     var match = display["currentWhen"] ?? display;
                     foreach (string key in new[] { "left", "right" })
                     {

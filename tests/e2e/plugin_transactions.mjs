@@ -5,6 +5,17 @@ import { nativeModel } from "./plugin_models.mjs";
 
 const PLUGIN = "com.vibetable.examples.transaction-conformance";
 
+export const businessFixture = {
+  entities: ["heads", "lines", "allocations"],
+  ruleIds: ["unique-code", "head-limit", "line-total"],
+};
+const capacityEntities = Array.from({ length: 14 }, (_, i) => `capacity_${String(i).padStart(2, "0")}`);
+export const capacityFixture = {
+  entities: [...businessFixture.entities, ...capacityEntities],
+  ruleIds: [...businessFixture.ruleIds, ...capacityEntities.flatMap(entity =>
+    Array.from({ length: 5 }, (_, field) => `capacity-${entity}-code_${field}`)).slice(0, 62)],
+};
+
 export async function requestTransactionNativeInput(page, button, input) {
   await button.click();
   await page.locator(".host-confirmation").waitFor({ timeout: 30000 });
@@ -28,7 +39,7 @@ export function assertAppliedTransaction(value, preview) {
 }
 
 /** Runs against the real WPF/WebView2 Host with synthetic, newly constructed data. */
-export async function runPluginTransactions(page, recorder, runtime, helpers) {
+export async function runPluginTransactions(page, recorder, runtime, helpers, expectedFixture) {
   await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
   await installApplication(page, runtime, "transaction-conformance", PLUGIN, "open-transactions");
   let frame = await openApplication(page, PLUGIN, "open-transactions");
@@ -52,10 +63,10 @@ export async function runPluginTransactions(page, recorder, runtime, helpers) {
   await frame.locator("#model").click();
   await nativeModel(runtime, "click", "plugin-model-confirm", "create");
   const model = await finish();
-  recorder.check("transaction model has three business entities plus fourteen independent capacity entities", model.status === "completed"
-    && Object.keys(model.bindings).length === 17
-    && ["heads", "lines", "allocations", ...Array.from({ length: 14 }, (_, i) => `capacity_${String(i).padStart(2, "0")}`)].every(key => model.bindings[key])
-    && new Set(Object.values(model.bindings).map(binding => binding.tableId)).size === 17, { model });
+  const { entities, ruleIds } = expectedFixture;
+  recorder.check(`transaction model binds all ${entities.length} fixture entities to distinct tables`, model.status === "completed"
+    && Object.keys(model.bindings).length === entities.length && entities.every(key => model.bindings[key]?.tableId)
+    && new Set(Object.values(model.bindings).map(binding => binding.tableId)).size === entities.length, { model });
   const configured = await confirm("configure", true, "rules");
   recorder.check("native rule registration is acknowledged", configured?.status === "configured", { configured });
   const preview = await action("preview");
@@ -68,9 +79,9 @@ export async function runPluginTransactions(page, recorder, runtime, helpers) {
     }
     return result;
   };
-  recorder.check("preview uses all sixty-five declared rules without widening the independent decimal budget", preview.declaration?.rules?.length === 65
-    && preview.declaration.decimals?.length === 3
-    && ["unique-code", "head-limit", "line-total"].every(id => preview.declaration.rules.some(rule => rule.id === id)), { declaration: preview.declaration });
+  const actualRules = new Set(preview.declaration?.rules?.map(rule => rule.id));
+  recorder.check(`preview includes all ${ruleIds.length} fixture rules and three decimal mappings`, preview.declaration?.rules?.length === ruleIds.length
+    && ruleIds.every(id => actualRules.has(id)) && preview.declaration.decimals?.length === 3, { declaration: preview.declaration });
   recorder.check("persistent preview writes no business rows", preview.status === "prepared" && Object.values(await rows()).every(value => value.length === 0), { preview });
   const cancelled = await confirm("submit", false, "cancel");
   recorder.check("native rejection leaves all three tables empty", cancelled === null && Object.values(await rows()).every(value => value.length === 0), { cancelled });

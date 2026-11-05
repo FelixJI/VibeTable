@@ -22,6 +22,10 @@
 
 `sameTarget` 比较一行业务记录的两条关系路径，例如 `left:[{field:"version",target:"versions"},{field:"series",target:"series"}]` 与 `right:[{field:"item",target:"items"},{field:"series",target:"series"}]`。每条路径包含 1–4 个单值关系，两端必须抵达同一实体的同一条实际记录。`sameTarget` 的 `right:[]` 表示本行身份，左路径必须抵达本行所属实体。可选 `whenPresent` 只能等于左路径首字段：该单值指针尚为空时跳过；一旦赋值，后续每一跳均须存在。这样可在系列行上验证 `current → version.series` 恰好回到本系列，即使版本还没有明细。多值跳转、悬空引用、跨系列记录都被拒绝。每条来源分配可使用独立规则核对多个来源。
 
+例如，批次例外可选指定义务。逻辑行使用 `whenPresent:"exception"` 和 `skipEmptyLeftEnd:true` 比较 `exception → obligation` 与本行义务。省略例外可照常建行。已有例外的末端指针为空时，右路径仍须有效，双方不作相等比较。末端非空时必须指向同一义务。字段缺失、中间断链或非空悬空引用均阻断写入。`atMostOne` 的 `fields` 必须是本行两个不同的已绑定单值关系。两者都空和仅填其一均可提交。两者都有值时整个写入被拒绝。
+
+已登记的十进制字段可选 `sign:"nonnegative"`（允许零）或 `sign:"positive"`（严格大于零）。按精确系数校验，历史版本的已映射数值也遵循本字段的符号规则。省略 `sign` 时继续接受有符号值，适用于已有红冲记录。
+
 `balance` 可选 `currentWhen:{left:[...],right:[...]}`，两端相同才将该行金额计入目标余额。左路径通常指向行所属版本，右路径指向系列当前版本；仅允许右路径的最后一个指针为空，表示尚无当前版本。悬空引用仍拒绝。切换当前指针与多行分配均在原生事务的最终图上检查。历史行仍受十进制和关系校验。
 
 `examples/plugins/model-conformance` 使用真实生产 SDK；离线测试宿主明确返回 `plugin_api_unsupported`。真实 WPF/WebView2 场景 `54-plugin-models` 通过正常打包、安装、原生 SendInput 确认覆盖空工作区取消后重新初始化、三表创建、异名手动映射、修复取消、空表字段重绑、历史数据阻断、原生重命名与合成用户字段值保留、版本升级。随后正常退出首个 Host，以第二个真实进程打开同一 workspace，核对新 session epoch、持久绑定与原值。逐步提交中断、安装 revision 变化和并发恢复另有真实 PocketBase 回归。原生输入仅允许受控 GitHub CI 的当前 Job-owned Host，执行前再次核对身份与前景窗口。

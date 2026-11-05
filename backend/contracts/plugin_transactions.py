@@ -43,8 +43,12 @@ class DecimalDeclaration(TransactionContract):
     scale: int = Field(ge=0, le=MAX_SCALE)
     digits: int = Field(ge=1, le=MAX_DIGITS)
 
+    sign: Literal["nonnegative", "positive"] | None = None
+
     @model_validator(mode="after")
     def validate_format(self) -> DecimalDeclaration:
+        if "sign" in self.model_fields_set and self.sign is None:
+            raise ValueError("sign must specify a policy when supplied")
         if self.scale > self.digits:
             raise ValueError("decimal scale must not exceed declared significant digits")
         return self
@@ -73,7 +77,9 @@ class TransactionRule(TransactionContract):
     """Closed rule union; fields of another kind never validate."""
 
     id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
-    kind: Literal["unique", "reference", "conservation", "balance", "state", "sameTarget"]
+    kind: Literal[
+        "unique", "reference", "conservation", "balance", "state", "sameTarget", "atMostOne"
+    ]
     entity: str = Field(min_length=1)
     fields: list[str] = Field(default_factory=list)
     field: str = ""
@@ -87,6 +93,7 @@ class TransactionRule(TransactionContract):
     left: RelationPath | None = None
     right: Annotated[list[RelationStep], Field(max_length=4)] | None = None
     when_present: str = Field(default="", alias="whenPresent")
+    skip_empty_left_end: bool = Field(default=False, alias="skipEmptyLeftEnd")
     current_when: PathMatch | None = Field(default=None, alias="currentWhen")
 
     @model_validator(mode="after")
@@ -99,10 +106,15 @@ class TransactionRule(TransactionContract):
             and self.limit == ""
         )
         lists_clear = not self.transitions and not self.frozen_states
+        if "skip_empty_left_end" in self.model_fields_set and not self.skip_empty_left_end:
+            raise ValueError("skipEmptyLeftEnd must be true when supplied")
         if self.current_when is not None and self.kind != "balance":
             raise ValueError("currentWhen is only valid on a balance rule")
         if self.kind != "sameTarget" and (
-            self.left is not None or self.right is not None or self.when_present
+            self.left is not None
+            or self.right is not None
+            or self.when_present
+            or self.skip_empty_left_end
         ):
             raise ValueError("left/right paths require a sameTarget rule")
         if self.kind == "sameTarget":
@@ -116,7 +128,9 @@ class TransactionRule(TransactionContract):
                 or not lists_clear
             ):
                 raise ValueError("sameTarget requires two paths ending in the same entity")
-        elif self.kind == "unique":
+        elif self.kind in ("unique", "atMostOne"):
+            if self.kind == "atMostOne" and len(self.fields) != 2:
+                raise ValueError("atMostOne needs two distinct single relations")
             if not 0 < len(self.fields) <= MAX_UNIQUE_FIELDS or not scalar_clear or not lists_clear:
                 raise ValueError("unique rules allow only a bounded non-empty field list")
         elif self.kind == "reference":
@@ -179,6 +193,11 @@ class PluginTransactionsDeclaration(TransactionContract):
             raise ValueError("transactions rules must reference the declared model")
         relations = {(e.key, f.key): f.relation for e in model.entities for f in e.fields}
         for rule in self.rules:
+            if rule.kind == "atMostOne":
+                for field in rule.fields:
+                    relation = relations.get((rule.entity, field))
+                    if relation is None or relation.cardinality != "one":
+                        raise ValueError("atMostOne requires two declared single relations")
             paths = (rule.left, rule.right)
             if rule.current_when:
                 paths = (rule.current_when.left, rule.current_when.right)

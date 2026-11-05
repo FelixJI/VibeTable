@@ -395,6 +395,64 @@ def test_optional_single_pointer_cannot_skip_an_unrelated_path() -> None:
         validate_plugin_manifest(package_entries(manifest))
 
 
+def test_transaction_source_choice_and_decimal_sign_match_package_admission() -> None:
+    manifest = transactions_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    entities[1]["fields"].append(
+        {
+            "key": "other",
+            "label": "Other",
+            "type": "relation",
+            "relation": {"entity": "headers", "field": "others", "cardinality": "one"},
+        }
+    )
+    entities[0]["fields"].append(
+        {
+            "key": "others",
+            "label": "Others",
+            "type": "relation",
+            "relation": {"entity": "lines", "field": "other", "cardinality": "many"},
+        }
+    )
+    d = declaration(manifest)
+    d["decimals"][0]["sign"] = "nonnegative"
+    d["decimals"][1]["sign"] = "positive"
+    path = [{"field": "header", "target": "headers"}]
+    d["rules"].extend(
+        [
+            {
+                "id": "sources",
+                "kind": "atMostOne",
+                "entity": "lines",
+                "fields": ["header", "other"],
+            },
+            {
+                "id": "owner",
+                "kind": "sameTarget",
+                "entity": "lines",
+                "skipEmptyLeftEnd": True,
+                "left": path,
+                "right": path,
+            },
+        ]
+    )
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for section, index, patch in [
+        ("decimals", 0, {"sign": "signed"}),
+        ("decimals", 0, {"sign": None}),
+        ("rules", -2, {"fields": ["header", "header"]}),
+        ("rules", -2, {"fields": ["header", "amount"]}),
+        ("rules", -2, {"entity": "headers", "fields": ["lines", "others"]}),
+        ("rules", -2, {"fields": ["header"]}),
+        ("rules", -2, {"skipEmptyLeftEnd": True}),
+        ("rules", -1, {"skipEmptyLeftEnd": False}),
+    ]:
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)[section][index].update(patch)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
 def test_transactions_enforce_declared_budgets() -> None:
     manifest = transactions_manifest()
     rule = {"id": "bulk", "kind": "unique", "entity": "lines", "fields": ["amount"]}

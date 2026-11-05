@@ -31,28 +31,52 @@ const MaxRules = 128
 const MaxRegistrations = 64
 const MaxDecimals = 64
 
+// These options distinguish an omitted policy from an invalid explicit value.
+type decimalSign string
+
+func (s *decimalSign) UnmarshalJSON(raw []byte) error {
+	var value string
+	if json.Unmarshal(raw, &value) != nil || (value != "nonnegative" && value != "positive") {
+		return failure("decimal_invalid")
+	}
+	*s = decimalSign(value)
+	return nil
+}
+
+type enabledOption bool
+
+func (flag *enabledOption) UnmarshalJSON(raw []byte) error {
+	if string(raw) != "true" {
+		return failure("rules_invalid")
+	}
+	*flag = true
+	return nil
+}
+
 type Decimal struct {
 	Entity string `json:"entity"`
 	Field  string `json:"field"`
 	exactdecimal.Format
+	Sign decimalSign `json:"sign,omitempty"`
 }
 
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
 type Rule struct {
 	PathMatch
-	WhenPresent  string              `json:"whenPresent,omitempty"`
-	CurrentWhen  *PathMatch          `json:"currentWhen,omitempty"`
-	ID           string              `json:"id"`
-	Kind         string              `json:"kind"`
-	Entity       string              `json:"entity"`
-	Fields       []string            `json:"fields,omitempty"`
-	Field        string              `json:"field,omitempty"`
-	Target       string              `json:"target,omitempty"`
-	Relation     string              `json:"relation,omitempty"`
-	Amount       string              `json:"amount,omitempty"`
-	Limit        string              `json:"limit,omitempty"`
-	Transitions  map[string][]string `json:"transitions,omitempty"`
-	FrozenStates []string            `json:"frozenStates,omitempty"`
+	SkipEmptyLeftEnd enabledOption       `json:"skipEmptyLeftEnd,omitempty"`
+	WhenPresent      string              `json:"whenPresent,omitempty"`
+	CurrentWhen      *PathMatch          `json:"currentWhen,omitempty"`
+	ID               string              `json:"id"`
+	Kind             string              `json:"kind"`
+	Entity           string              `json:"entity"`
+	Fields           []string            `json:"fields,omitempty"`
+	Field            string              `json:"field,omitempty"`
+	Target           string              `json:"target,omitempty"`
+	Relation         string              `json:"relation,omitempty"`
+	Amount           string              `json:"amount,omitempty"`
+	Limit            string              `json:"limit,omitempty"`
+	Transitions      map[string][]string `json:"transitions,omitempty"`
+	FrozenStates     []string            `json:"frozenStates,omitempty"`
 }
 
 type Declaration struct {
@@ -93,7 +117,7 @@ func (d Declaration) Validate() error {
 	decimals := map[string]bool{}
 	for _, f := range d.Decimals {
 		key := f.Entity + "\x00" + f.Field
-		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || decimals[key] {
+		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || (f.Sign != "" && f.Sign != "nonnegative" && f.Sign != "positive") || decimals[key] {
 			return failure("decimal_invalid")
 		}
 		decimals[key] = true
@@ -104,15 +128,15 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
-		if (r.Left != nil || r.Right != nil || r.WhenPresent != "") && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
 			return failure("rules_invalid")
 		}
 		valid := false
 		switch r.Kind {
 		case "sameTarget":
 			valid = r.PathMatch.valid(r.Entity) && (r.WhenPresent == "" || r.WhenPresent == r.Left[0].Field) && len(r.Fields) == 0 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
-		case "unique":
-			valid = len(r.Fields) > 0 && len(r.Fields) <= 8 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
+		case "unique", "atMostOne":
+			valid = (r.Kind != "atMostOne" || len(r.Fields) == 2) && len(r.Fields) > 0 && len(r.Fields) <= 8 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "reference":
 			valid = r.Field != "" && r.Target != "" && len(r.Fields) == 0 && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "conservation", "balance":
@@ -245,6 +269,14 @@ func (r Registration) Read(ctx context.Context, app core.App) (Images, error) {
 			}
 		}
 		for _, rule := range r.Declaration.Rules {
+			if rule.Kind == "atMostOne" && rule.Entity == entity {
+				for _, key := range rule.Fields {
+					field, _ := table.Field(binding.Fields[key])
+					if field.Relation == nil || field.Relation.Cardinality != "one" {
+						return nil, failure("reference_mapping_invalid")
+					}
+				}
+			}
 			valid := true
 			rule.relationSteps(func(source string, step RelationStep) {
 				if source != entity {
@@ -360,6 +392,9 @@ func (r Registration) Validate(before, after Images) error {
 			if err != nil {
 				return err
 			}
+			if d.Sign == "nonnegative" && n.Sign() < 0 || d.Sign == "positive" && n.Sign() <= 0 {
+				return failure("decimal_sign_violation")
+			}
 			if d.Storage == "decimalText" {
 				text, _ := d.Text(n)
 				if row[d.Field] != text {
@@ -378,12 +413,32 @@ func (r Registration) Validate(before, after Images) error {
 						continue
 					}
 				}
-				match, err := rule.matches(after, row, id, false)
+				match, err := rule.matches(after, row, id, pathEndPolicy{skipEmptyLeft: bool(rule.SkipEmptyLeftEnd)})
 				if err != nil {
 					return err
 				}
 				if !match {
 					return failure("same_target_violation")
+				}
+			}
+		case "atMostOne":
+			for _, row := range rows {
+				occupied := false
+				for _, field := range rule.Fields {
+					value, found := row[field]
+					if !found {
+						return failure("reference_violation")
+					}
+					if value == nil || value == "" {
+						continue
+					}
+					if _, ok := value.(string); !ok {
+						return failure("reference_violation")
+					}
+					if occupied {
+						return failure("at_most_one_violation")
+					}
+					occupied = true
 				}
 			}
 		case "unique":
@@ -431,7 +486,7 @@ func (r Registration) Validate(before, after Images) error {
 					return failure("reference_violation")
 				}
 				if rule.CurrentWhen != nil {
-					current, err := rule.CurrentWhen.matches(after, row, id, true)
+					current, err := rule.CurrentWhen.matches(after, row, id, pathEndPolicy{allowEmptyRight: true})
 					if err != nil {
 						return err
 					}

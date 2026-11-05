@@ -74,6 +74,58 @@ func TestOptionalPointerOnlySkipsAnEmptyFirstHop(t *testing.T) {
 	}
 }
 
+func TestOptionalLeftEndRequiresIntactPaths(t *testing.T) {
+	rule := Rule{ID: "owner", Kind: "sameTarget", Entity: "rows", WhenPresent: "exception", SkipEmptyLeftEnd: true, PathMatch: PathMatch{
+		Left: []RelationStep{{"exception", "exceptions"}, {"source", "sources"}, {"owner", "owners"}}, Right: []RelationStep{{"owner", "owners"}},
+	}}
+	for _, tc := range []struct {
+		name                   string
+		row, exception, source map[string]any
+		want                   string
+	}{
+		{"no exception", map[string]any{"exception": nil, "owner": "o"}, nil, nil, ""},
+		{"null terminal", map[string]any{"exception": "e", "owner": "o"}, map[string]any{"source": "s"}, map[string]any{"owner": nil}, ""},
+		{"empty terminal", map[string]any{"exception": "e", "owner": "o"}, map[string]any{"source": "s"}, map[string]any{"owner": ""}, ""},
+		{"missing terminal", map[string]any{"exception": "e", "owner": "o"}, map[string]any{"source": "s"}, map[string]any{}, "transaction.reference_violation"},
+		{"dangling terminal", map[string]any{"exception": "e", "owner": "o"}, map[string]any{"source": "s"}, map[string]any{"owner": "gone"}, "transaction.reference_violation"},
+		{"null middle", map[string]any{"exception": "e", "owner": "o"}, map[string]any{"source": nil}, nil, "transaction.reference_violation"},
+		{"missing first key", map[string]any{"owner": "o"}, nil, nil, "transaction.reference_violation"},
+		{"broken right", map[string]any{"exception": "e", "owner": "gone"}, map[string]any{"source": "s"}, map[string]any{"owner": nil}, "transaction.reference_violation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Registration{Declaration: Declaration{Rules: []Rule{rule}}}
+			graph := Images{"rows": {"r": tc.row}, "exceptions": {"e": tc.exception}, "sources": {"s": tc.source}, "owners": {"o": {}}}
+			err := r.Validate(nil, graph)
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {
+				t.Fatalf("wanted %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestTransactionDecimalSignIsOptInAndExact(t *testing.T) {
+	for _, tc := range []struct {
+		sign  decimalSign
+		value string
+		ok    bool
+	}{
+		{"", "-0.001", true}, {"nonnegative", "-0.001", false}, {"nonnegative", "0.000", true}, {"nonnegative", "0.001", true}, {"positive", "0.000", false}, {"positive", "-0.001", false}, {"positive", "0.001", true},
+	} {
+		d := Decimal{Entity: "rows", Field: "q", Format: exactdecimal.Format{Storage: "decimalText", Scale: 3, Digits: 12}, Sign: tc.sign}
+		r := Registration{Declaration: Declaration{Decimals: []Decimal{d}}}
+		err := r.Validate(nil, Images{"rows": {"row": {"q": tc.value}}})
+		if (err == nil) != tc.ok {
+			t.Fatalf("sign %q quantity %q: %v", tc.sign, tc.value, err)
+		}
+	}
+	valid := `{"contract":"vibetable.plugin-transactions.v1","modelId":"m","version":1,"rules":[{"id":"r","kind":"atMostOne","entity":"e","fields":["a","b"]}],"decimals":[{"entity":"e","field":"q","storage":"decimalText","scale":3,"digits":6,"sign":%s}]}`
+	for _, bad := range []string{`""`, `"signed"`, `null`, `0`} {
+		if _, err := Decode([]byte(fmt.Sprintf(valid, bad))); err == nil {
+			t.Fatalf("invalid sign %s", bad)
+		}
+	}
+}
+
 func TestDecimalBudgetIndependentOfRuleCapacity(t *testing.T) {
 	d := Declaration{Contract: Contract, Version: 1, ModelID: "m", Rules: []Rule{{ID: "unique", Kind: "unique", Entity: "e", Fields: []string{"a"}}}}
 	for i := 0; i < 65; i++ {

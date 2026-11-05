@@ -56,23 +56,30 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 // ValidatePaths binds new path declarations at installation. Existing rule kinds retain their
 // original physical validation at native configuration.
 func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
+	singles := map[[2]string]string{}
+	for _, entity := range model.Entities {
+		for _, field := range entity.Fields {
+			if field.Relation != nil && field.Relation.Cardinality == "one" {
+				singles[[2]string{entity.Key, field.Key}] = field.Relation.Entity
+			}
+		}
+	}
 	for _, rule := range d.Rules {
+		if rule.Kind == "atMostOne" {
+			for _, key := range rule.Fields {
+				if singles[[2]string{rule.Entity, key}] == "" {
+					return failure("reference_mapping_invalid")
+				}
+			}
+		}
 		if rule.Kind != "sameTarget" && rule.CurrentWhen == nil {
 			continue
 		}
 		valid := true
 		rule.relationSteps(func(entity string, step RelationStep) {
-			for _, e := range model.Entities {
-				if e.Key != entity {
-					continue
-				}
-				for _, f := range e.Fields {
-					if f.Key == step.Field && f.Relation != nil && f.Relation.Cardinality == "one" && f.Relation.Entity == step.Target {
-						return
-					}
-				}
+			if singles[[2]string{entity, step.Field}] != step.Target {
+				valid = false
 			}
-			valid = false
 		})
 		if !valid {
 			return failure("reference_mapping_invalid")
@@ -102,14 +109,19 @@ func resolvePath(images Images, row map[string]any, path []RelationStep, allowEm
 	return "", failure("rules_invalid")
 }
 
-func (m PathMatch) matches(images Images, row map[string]any, rowID string, allowEmptyRight bool) (bool, error) {
-	left, err := resolvePath(images, row, m.Left, false)
+type pathEndPolicy struct {
+	skipEmptyLeft   bool
+	allowEmptyRight bool
+}
+
+func (m PathMatch) matches(images Images, row map[string]any, rowID string, policy pathEndPolicy) (bool, error) {
+	left, err := resolvePath(images, row, m.Left, policy.skipEmptyLeft)
 	if err != nil {
 		return false, err
 	}
 	if len(m.Right) == 0 {
-		return left == rowID, nil
+		return left == "" || left == rowID, nil
 	}
-	right, err := resolvePath(images, row, m.Right, allowEmptyRight)
-	return left == right, err
+	right, err := resolvePath(images, row, m.Right, policy.allowEmptyRight)
+	return left == "" || left == right, err
 }

@@ -1174,6 +1174,24 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task TransactionConfigurationShowsNullableSourceFieldsAndQuantitySign()
+    {
+        using var fixture = new Fixture { Decision = "rejected" };
+        var declaration = """
+            {"contract":"vibetable.plugin-transactions.v1","modelId":"orders","version":2,
+             "rules":[{"id":"sources","kind":"atMostOne","entity":"lines","fields":["header","other"]},
+                      {"id":"owner","kind":"sameTarget","entity":"lines","left":[{"field":"header","target":"headers"}],"right":[{"field":"other","target":"headers"}],"skipEmptyLeftEnd":true}],
+             "decimals":[{"entity":"headers","field":"name","storage":"decimalText","scale":3,"digits":12,"sign":"positive"}]}
+            """;
+        await fixture.Call("transaction.configure", "{\"declaration\":" + declaration + "}");
+        var rows = fixture.LastInteraction!.PendingConfirmation!.Preview.SampleRows;
+        Assert.AreEqual("field-header", rows[0]["fieldIds"].GetProperty("header").GetString());
+        Assert.AreEqual("field-other", rows[0]["fieldIds"].GetProperty("other").GetString());
+        Assert.IsTrue(rows[1]["skipEmptyLeftEnd"].GetBoolean());
+        Assert.AreEqual("positive", rows[2]["sign"].GetString());
+    }
+
+    [TestMethod]
     [DataRow(128, 1, true)]
     [DataRow(129, 0, false)]
     [DataRow(1, 65, false)]
@@ -1529,7 +1547,7 @@ public sealed class PluginSurfaceApiTests
                 "model.catalog" when ModelCatalogBody is not null => ModelCatalogBody,
                 "model.preview" => ModelPreviewBody ?? """{"status":"completed"}""",
                 "model.commit" => ModelCommitBody ?? "{}",
-                "model.read" => """{"status":"completed","bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header"}}}}""",
+                "model.read" => """{"status":"completed","bindings":{"headers":{"tableId":"table-head","fields":{"name":"field-name"}},"lines":{"tableId":"table-line","fields":{"header":"field-header","other":"field-other"}}}}""",
                 "transaction.configure" => JsonSerializer.Serialize(new { contract = "vibetable.plugin-transactions.v1", status = "configured", modelId = "orders", version = TransactionConfigureVersion }),
                 "transaction.preview" or "transaction.status" => TransactionStatusBody,
                 "transaction.commit" => TransactionCommitBody,
