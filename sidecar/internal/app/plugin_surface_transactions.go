@@ -267,7 +267,7 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 					return err
 				}
 				if found {
-					if !reflect.DeepEqual(previous, registration) {
+					if previous.WorkspaceID != registration.WorkspaceID || previous.PluginID != registration.PluginID || previous.InstallationID != registration.InstallationID || !reflect.DeepEqual(previous.Declaration, declaration) || !previous.MatchesBindings(registration.Bindings) {
 						return pluginDataError("transaction.configuration_conflict")
 					}
 					return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
@@ -574,7 +574,7 @@ func transactionRequests(ctx context.Context, app core.App, input pluginSurfaceA
 	}
 	configured := false
 	for _, r := range registrations {
-		if r.WorkspaceID == p.WorkspaceID && r.InstallationID == p.InstallationID && reflect.DeepEqual(r.Declaration, p.Declaration) && reflect.DeepEqual(r.Bindings, p.Model.Bindings) {
+		if r.WorkspaceID == p.WorkspaceID && r.InstallationID == p.InstallationID && reflect.DeepEqual(r.Declaration, p.Declaration) && r.PluginID == input.PluginID && r.MatchesBindings(p.Model.Bindings) {
 			configured = true
 		}
 	}

@@ -254,6 +254,14 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		})
 	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
+	switch input.Method {
+	case "model.catalog", "model.preview", "model.commit", "model.read", "model.status":
+		var domain *schemaFieldChangeDomain
+		if len(ioPorts) > 0 && ioPorts[0] != nil {
+			domain = ioPorts[0].models
+		}
+		return executeSurfaceModel(ctx, app, workspace, input, domain, installed, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -264,12 +272,6 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			ports = ioPorts[0]
 		}
 		return executeSurfaceTransaction(ctx, app, kernel, workspace, input, gate, ports)
-	case "model.catalog", "model.preview", "model.commit", "model.read", "model.status":
-		var domain *schemaFieldChangeDomain
-		if len(ioPorts) > 0 && ioPorts[0] != nil {
-			domain = ioPorts[0].models
-		}
-		return executeSurfaceModel(ctx, app, workspace, input, domain)
 
 	case "output.stage.begin", "output.stage.write", "output.stage.finish", "output.open", "output.read":
 		var ports *pluginSurfaceIO

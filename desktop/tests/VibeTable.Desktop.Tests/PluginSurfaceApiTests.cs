@@ -922,6 +922,20 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public void NativeModelSuggestionsPreferKnownIdentitiesAndLeaveAmbiguousNamesForReview()
+    {
+        var logical = JsonSerializer.SerializeToElement(new { key = "title", label = "名称" });
+        JsonElement Choice(string id, string label) => JsonSerializer.SerializeToElement(new { fieldId = id, displayName = label });
+        JsonElement[] choices = [Choice("a", "其它"), Choice("b", "名称")];
+        Assert.AreEqual("a", NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", "a"));
+        Assert.AreEqual("b", NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", null));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, choices, "fieldId", "missing"));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, [.. choices, Choice("c", "title")], "fieldId", null));
+        Assert.IsNull(NativePluginModelWindow.SuggestedId(logical, [choices[0]], "fieldId", null));
+        Assert.AreEqual("a", NativePluginModelWindow.SuggestedId(logical, [choices[0]], "fieldId", null, true));
+    }
+
+    [TestMethod]
     public async Task NativeModelCatalogLoadsEverySummaryThenOnlySelectedFieldsWithRevision()
     {
         var calls = new List<JsonElement>();

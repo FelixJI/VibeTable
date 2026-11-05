@@ -28,6 +28,7 @@ type State struct {
 	Total                int                `json:"total"`
 	Bindings             map[string]Binding `json:"bindings"`
 	Revisions            map[string]string  `json:"revisions"`
+	Diagnostics          []v2.Diagnostic    `json:"diagnostics,omitempty"`
 	ErrorCode            string             `json:"errorCode,omitempty"`
 }
 

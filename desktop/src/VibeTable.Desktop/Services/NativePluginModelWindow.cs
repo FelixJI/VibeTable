@@ -32,7 +32,48 @@ internal sealed class NativePluginModelWindow : Window
         {
             var window = new NativePluginModelWindow("映射插件数据模型");
             window.Closed += (_, _) => lifetime.Cancel();
-            window.Line("请选择现有表和字段。只接受类型、精度及关系兼容的精确映射；不会改写现有值。");
+            window.Line("请审查已选目标。优先保留原绑定，其余按唯一名称和兼容类型建议；留空项需手动选择。可在预览前改选。");
+            var loaded = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            var suggestedRelations = new Dictionary<ComboBox, Choice>();
+            JsonElement entities = catalog.GetProperty("model").GetProperty("entities");
+            JsonElement prior = catalog.TryGetProperty("bindings", out var bound) ? bound : default;
+            void SuggestFields()
+            {
+                foreach (var entity in entities.EnumerateArray())
+                {
+                    string key = entity.GetProperty("key").GetString()!;
+                    if (!loaded.TryGetValue(key, out var schema)) continue;
+                    string tableId = schema.GetProperty("tableId").GetString()!;
+                    JsonElement previous = prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(key, out var old)
+                        && old.GetProperty("tableId").GetString() == tableId ? old.GetProperty("fields") : default;
+                    foreach (var declaration in entity.GetProperty("fields").EnumerateArray())
+                    {
+                        string fieldKey = declaration.GetProperty("key").GetString()!;
+                        var combo = window._fields[key][fieldKey];
+                        if (combo.SelectedItem != null && (!suggestedRelations.TryGetValue(combo, out var automatic) || !Equals(combo.SelectedItem, automatic))) continue;
+                        var candidates = schema.GetProperty("fields").EnumerateArray().Where(actual =>
+                        {
+                            if (actual.GetProperty("logicalType").GetString() != declaration.GetProperty("type").GetString()) return false;
+                            if (declaration.TryGetProperty("precision", out var precision) && actual.GetProperty("precision").GetString() != precision.GetString()) return false;
+                            if (!declaration.TryGetProperty("relation", out var relation)) return true;
+                            var target = relation.GetProperty("entity").GetString()!;
+                            if (!loaded.TryGetValue(target, out var other) || !actual.TryGetProperty("targetTableId", out var targetId)
+                                || targetId.GetString() != other.GetProperty("tableId").GetString()
+                                || actual.GetProperty("cardinality").GetString() != relation.GetProperty("cardinality").GetString()) return false;
+                            var reciprocal = actual.GetProperty("reciprocalFieldId").GetString();
+                            return other.GetProperty("fields").EnumerateArray().Any(f => f.GetProperty("fieldId").GetString() == reciprocal
+                                && f.TryGetProperty("reciprocalFieldId", out var reverse) && reverse.GetString() == actual.GetProperty("fieldId").GetString());
+                        }).ToArray();
+                        var known = previous.ValueKind == JsonValueKind.Object && previous.TryGetProperty(fieldKey, out var id) ? id.GetString() : null;
+                        bool uniqueType = entity.GetProperty("fields").EnumerateArray().Count(f =>
+                            f.GetProperty("type").GetString() == declaration.GetProperty("type").GetString()) == 1;
+                        string? match = SuggestedId(declaration, candidates, "fieldId", known, uniqueType);
+                        var selected = combo.Items.Cast<Choice>().FirstOrDefault(item => item.Id == match);
+                        combo.SelectedItem = selected;
+                        if (selected is not null && declaration.TryGetProperty("relation", out _)) suggestedRelations[combo] = selected;
+                    }
+                }
+            }
             JsonElement[] tables = catalog.GetProperty("tables").EnumerateArray().Select(t => t.Clone()).ToArray();
             foreach (var entity in catalog.GetProperty("model").GetProperty("entities").EnumerateArray())
             {
@@ -58,7 +99,9 @@ internal sealed class NativePluginModelWindow : Window
                 table.SelectionChanged += async (_, _) =>
                 {
                     int version = ++selectionVersion;
-                    foreach (var field in fields.Values) field.Items.Clear();
+                    loaded.Remove(key);
+                    foreach (var field in fields.Values) { suggestedRelations.Remove(field); field.Items.Clear(); }
+                    SuggestFields();
                     error.Text = "";
                     if (table.SelectedItem is not Choice selected) return;
                     table.IsEnabled = false;
@@ -67,17 +110,24 @@ internal sealed class NativePluginModelWindow : Window
                         var summary = tables.First(t => t.GetProperty("tableId").GetString() == selected.Id);
                         var schema = await readFields(selected.Id, summary.GetProperty("schemaRevision").GetString()!, lifetime.Token);
                         if (lifetime.IsCancellationRequested || version != selectionVersion) return;
+                        loaded[key] = schema;
                         foreach (var actual in schema.GetProperty("fields").EnumerateArray())
                         {
                             var item = new Choice(actual.GetProperty("fieldId").GetString()!, $"{actual.GetProperty("displayName").GetString()} · {actual.GetProperty("logicalType").GetString()}");
                             foreach (var field in fields.Values) field.Items.Add(item);
                         }
+                        SuggestFields();
                     }
                     catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
                     catch (Exception) { if (version == selectionVersion) error.Text = "字段目录读取失败或结构已变化，请关闭后重新配置。"; }
                     finally { if (version == selectionVersion) table.IsEnabled = true; }
                 };
+                string? previousTable = prior.ValueKind == JsonValueKind.Object && prior.TryGetProperty(key, out var previousBinding)
+                    ? previousBinding.GetProperty("tableId").GetString() : null;
+                string? suggested = SuggestedId(entity, tables, "tableId", previousTable);
+                table.SelectedItem = table.Items.Cast<Choice>().FirstOrDefault(item => item.Id == suggested);
             }
+            window.Button("取消", "plugin-model-cancel", () => window.DialogResult = false);
             window.Loaded += (_, _) => window._tables.Values.FirstOrDefault()?.Focus();
             window.Button("检查映射并预览", "plugin-model-preview", () =>
             {
@@ -100,6 +150,15 @@ internal sealed class NativePluginModelWindow : Window
             var window = new NativePluginModelWindow("确认插件数据模型精确计划");
             bool blocked = preview.GetProperty("diagnostics").GetArrayLength() > 0;
             window.Line("仅在整个模型完成后授予下列字段权限。已存在的业务值及用户扩展字段会保留。中断后可查询已完成范围。");
+            if (preview.TryGetProperty("changes", out var changes))
+            {
+                window.Line("以下绑定会被替换。宿主复核两端表的数据历史和已登记规则；提交仅保存新绑定。");
+                foreach (var change in changes.EnumerateArray())
+                    window.Line($"{change.GetProperty("path").GetString()}：{change.GetProperty("oldTableId").GetString()}/{change.GetProperty("oldFieldId").GetString()} → {change.GetProperty("newTableId").GetString()}/{change.GetProperty("newFieldId").GetString()} · {(change.GetProperty("relation").GetBoolean() ? "双向关系" : "标量字段")}");
+                if (!blocked) window.Line("受影响的表均无记录和写入历史，未触及已登记规则依赖。");
+            }
+            foreach (var diagnostic in preview.GetProperty("diagnostics").EnumerateArray())
+                window.Line($"拒绝：{diagnostic.GetProperty("path").GetString()} — {DiagnosticLabel(diagnostic.GetProperty("code").GetString()!)}");
             var bindings = preview.GetProperty("bindings");
             foreach (var entity in preview.GetProperty("model").GetProperty("entities").EnumerateArray())
             {
@@ -114,13 +173,22 @@ internal sealed class NativePluginModelWindow : Window
                     window.Line($"  {field.GetProperty("label").GetString()} · {TypeLabel(field)} → {mapped}");
                 }
             }
-            foreach (var diagnostic in preview.GetProperty("diagnostics").EnumerateArray())
-                window.Line($"拒绝：{diagnostic.GetProperty("path").GetString()} — {DiagnosticLabel(diagnostic.GetProperty("code").GetString()!)}");
             if (!blocked) window.Button("确认此精确计划", "plugin-model-confirm", () => { window.Mappings = JsonSerializer.SerializeToElement(true); window.DialogResult = true; });
             window.Button(blocked ? "关闭诊断" : "取消", "plugin-model-cancel", () => window.DialogResult = false);
             return window;
         }, token);
         return confirmed is not null;
+    }
+
+    internal static string? SuggestedId(JsonElement logical, JsonElement[] candidates, string idKey, string? previous, bool uniqueType = false)
+    {
+        if (previous is not null) return candidates.Any(c => c.GetProperty(idKey).GetString() == previous) ? previous : null;
+        string label = logical.GetProperty("label").GetString()!;
+        string key = logical.GetProperty("key").GetString()!;
+        var named = candidates.Where(c => c.GetProperty("displayName").GetString() is string name
+            && (name.Equals(label, StringComparison.OrdinalIgnoreCase) || name.Equals(key, StringComparison.OrdinalIgnoreCase))).ToArray();
+        if (named.Length == 1) return named[0].GetProperty(idKey).GetString();
+        return uniqueType && named.Length == 0 && candidates.Length == 1 ? candidates[0].GetProperty(idKey).GetString() : null;
     }
 
     private void Line(string text) => _body.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
@@ -139,6 +207,11 @@ internal sealed class NativePluginModelWindow : Window
     private static string OperationLabel(string value) => value switch { "read" => "读取", "query" => "查询", "create" => "新增记录", "update" => "修改记录", "delete" => "删除记录", _ => value };
     private static string DiagnosticLabel(string code) => code switch
     {
+        "plugin_model_history_present" => "原表或目标表已有记录或写入历史",
+        "plugin_model_history_unknown" => "无法核实原表历史",
+        "plugin_model_relation_protected" => "原目标或新目标已用于现有关系",
+        "plugin_model_rule_protected" => "原目标或新目标受已登记事务规则保护",
+        "plugin_model_field_access_denied" => "字段不可访问",
         "plugin_model_precision_loss" => "数字精度不兼容，禁止自动转换或舍入",
         "plugin_model_type_mismatch" => "字段类型不兼容",
         "plugin_model_relation_mismatch" => "关联目标、方向或基数不兼容",

@@ -212,13 +212,6 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     const userData = { tableId: assets.tableId, fieldId: extra.fieldId, physicalName: extra.physicalName, value: "合成备注必须原样保留",
       renamedFieldId: assets.fields.name, renamedLabel: "用户改过的合成资产名称", corePhysicalName: coreName.identity.physicalName, coreValue: "合成资产原值" };
     await renameNativeModelField(page, helpers, assets.tableId, assets.fields.name, userData.renamedLabel);
-    const inserted = await helpers.applyProductMutation(page, assets.tableId, [{ kind: "insert", recordId: null,
-      values: { [userData.physicalName]: userData.value, [userData.corePhysicalName]: userData.coreValue } }], "model-user-data");
-    if (!isAppliedMutationResponse(inserted)) throw new Error(`model user data insert failed: ${JSON.stringify(inserted)}`);
-    const originalRows = (await helpers.rawBridgeRequest(page, "query.page", { tableId: assets.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
-    userData.recordId = originalRows.find(row => row[userData.physicalName] === userData.value)?.id;
-    if (!userData.recordId) throw new Error("synthetic user record identity missing");
-    await verifyUserData(page, frame, recorder, helpers, userData, "before upgrade");
     const tables = await catalog(); const schemas = {};
     for (const [key, binding] of Object.entries(first.bindings)) schemas[key] = (await helpers.rawBridgeRequest(page, "schema.getTable", { tableId: binding.tableId })).payload;
     await page.getByTestId("plugin-app-return").click();
@@ -234,6 +227,43 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     const mapped = await completed(frame);
     await waitForModelCatalog(page, mapped.bindings, beforeCatalog);
     recorder.check("native manual mapping binds differently named logical objects without creating tables", JSON.stringify(mapped.bindings) === JSON.stringify(first.bindings) && (await catalog()).length === 3, { mapped });
+    const alternate = structuredClone(mapped.bindings);
+    alternate.assets.fields.name = extra.fieldId;
+    const repairSelections = modelMappingSelections(tables, schemas, alternate);
+    const reviewRepair = async (choices, stage) => {
+      await frame.locator("#map").click();
+      await nativeModel(runtime, "map", "plugin-model-preview", stage, choices);
+    };
+    await reviewRepair(repairSelections, "repair");
+    const exact = await nativeModel(runtime, "observe", "plugin-model-confirm", "repair");
+    const lines = exact.observation.texts.map(t => t.name + " " + t.value);
+    recorder.check("native repair identifies the old and new canonical targets together", lines.some(line =>
+      line.includes("assets.name") && line.includes(assets.fields.name) && line.includes(extra.fieldId)), { lines });
+    await nativeModel(runtime, "click", "plugin-model-cancel", "repair");
+    const afterCancel = await frameCall(frame, "model.read");
+    recorder.check("cancel preserves the original authoritative binding", afterCancel.result?.requestId === mapped.requestId
+      && afterCancel.result.bindings.assets.fields.name === assets.fields.name, { afterCancel });
+    await reviewRepair(repairSelections, "repair");
+    await nativeModel(runtime, "click", "plugin-model-confirm", "repair");
+    await frame.waitForFunction(field => {
+      try { return JSON.parse(document.querySelector("#result").textContent).bindings.assets.fields.name === field; } catch { return false; }
+    }, extra.fieldId);
+    const repaired = await frameCall(frame, "model.read");
+    recorder.check("approved safe repair reads back the selected canonical field", repaired.result?.status === "completed"
+      && repaired.result.bindings.assets.fields.name === extra.fieldId, { repaired });
+    const inserted = await helpers.applyProductMutation(page, assets.tableId, [{ kind: "insert", recordId: null,
+      values: { [userData.physicalName]: userData.value, [userData.corePhysicalName]: userData.coreValue } }], "model-user-data");
+    if (!isAppliedMutationResponse(inserted)) throw new Error(`model user data insert failed: ${JSON.stringify(inserted)}`);
+    const originalRows = (await helpers.rawBridgeRequest(page, "query.page", { tableId: assets.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } })).payload.rows;
+    userData.recordId = originalRows.find(row => row[userData.physicalName] === userData.value)?.id;
+    if (!userData.recordId) throw new Error("synthetic user record identity missing");
+    await reviewRepair(selections, "blocked");
+    const unsafe = await nativeModel(runtime, "observe", "plugin-model-cancel", "blocked");
+    recorder.check("native repair with history explains the block and offers no approval", !unsafe.observation.buttons.some(b => b.id === "plugin-model-confirm")
+      && unsafe.observation.texts.some(t => (t.name + t.value).includes("写入历史")), { unsafe });
+    await nativeModel(runtime, "click", "plugin-model-cancel", "blocked");
+    const afterBlock = await frameCall(frame, "model.read");
+    recorder.check("blocked repair keeps the approved binding", afterBlock.result?.requestId === repaired.result.requestId, { afterBlock });
     await page.getByTestId("plugin-app-return").click();
     await selectPlugin(page, PLUGIN);
     await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, "model-upgrade.vtplugin")}\n`);
@@ -260,7 +290,7 @@ export async function runPluginModels(page, recorder, runtime, helpers, statePat
     recorder.check("model seed records the authoritative workspace session", typeof session?.workspaceId === "string"
       && Number.isSafeInteger(session.sessionEpoch) && session.sessionEpoch > 0
       && opened.payload.projectKey === `local:${session.workspaceId.replaceAll("-", "").toLowerCase()}`, { session });
-    await fs.writeFile(path.join(runtime.evidenceDir, "54-models.json"), JSON.stringify({ first, repeated, mapped, beforeUpgrade, upgraded,
+    await fs.writeFile(path.join(runtime.evidenceDir, "54-models.json"), JSON.stringify({ first, repeated, mapped, exact, afterCancel, repaired, unsafe, beforeUpgrade, upgraded,
       reopened, cancelled, userData, preserved, nativePreview: observed, session }, null, 2));
     return { workspaceId: session.workspaceId, sessionEpoch: session.sessionEpoch, projectKey: opened.payload.projectKey,
       bindings: reopened.bindings, userData };

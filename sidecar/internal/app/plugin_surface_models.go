@@ -32,10 +32,12 @@ type modelStep struct {
 }
 type modelPreview struct {
 	pluginmodel.State
-	Mode        string          `json:"mode"`
-	ExpiresAt   time.Time       `json:"expiresAt"`
-	Steps       []modelStep     `json:"steps"`
-	Diagnostics []v2.Diagnostic `json:"diagnostics"`
+	PreviousRequestID string               `json:"previousRequestId,omitempty"`
+	Changes           []modelBindingChange `json:"changes,omitempty"`
+	Mode              string               `json:"mode"`
+	ExpiresAt         time.Time            `json:"expiresAt"`
+	Steps             []modelStep          `json:"steps"`
+	Diagnostics       []v2.Diagnostic      `json:"diagnostics"`
 }
 type modelPreviewRequest struct {
 	Mode     string                         `json:"mode"`
@@ -74,10 +76,38 @@ func resolveModelGrants(ctx context.Context, app core.App, project, plugin strin
 	return nil
 }
 
-func executeSurfaceModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, domain *schemaFieldChangeDomain) (any, error) {
-	installed, err := surfaceInstallation(ctx, app, workspace, input)
-	if err != nil {
+func executeSurfaceModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, domain *schemaFieldChangeDomain, installed pluginSurfaceInstallation, err error) (any, error) {
+	var stale *modelBindingStale
+	if err != nil && !errors.As(err, &stale) {
 		return nil, err
+	}
+	if stale != nil {
+		// Authentication succeeded but the old binding cannot confer any data access.
+		// Permit inspection and exact repair only. Every write rechecks the old and new identities.
+		if len(installed.ModelGrants) != 0 {
+			return nil, err
+		}
+		switch input.Method {
+		case "model.read", "model.status", "model.catalog":
+		case "model.preview":
+			var req modelPreviewRequest
+			if decodePluginParams(input.Request, &req) != nil || (req.Mode != "repair" && req.Mode != "map") {
+				return nil, err
+			}
+		case "model.commit":
+			var req struct {
+				RequestID string `json:"requestId"`
+			}
+			if decodePluginParams(input.Request, &req) != nil {
+				return nil, err
+			}
+			plan, e := loadModelPreview(ctx, app, workspace, input, req.RequestID)
+			if e != nil || plan.Mode != "repair" || len(plan.Changes) == 0 || plan.InstallationID != input.InstallationID || plan.InstallationRevision != input.InstallationRevision {
+				return nil, err
+			}
+		default:
+			return nil, err
+		}
 	}
 	model := installed.Manifest.Permissions.Model
 	if model == nil || model.Validate() != nil {
@@ -104,7 +134,18 @@ func executeSurfaceModel(ctx context.Context, app core.App, workspace string, in
 					}
 					return nil, pluginDataError("plugin_plan_stale")
 				}
-				return modelPublicState(s), nil
+				public := modelPublicState(s)
+				if public.Status == "completed" {
+					diagnostics, err := modelDiagnostics(ctx, app, public)
+					if err != nil {
+						return nil, err
+					}
+					if len(diagnostics) != 0 {
+						public.Status = "stale"
+						public.Diagnostics = diagnostics
+					}
+				}
+				return public, nil
 			}
 		}
 		return map[string]any{"contract": pluginmodel.Contract, "status": "unconfigured", "bindings": map[string]any{}}, nil
@@ -118,7 +159,7 @@ func executeSurfaceModel(ctx context.Context, app core.App, workspace string, in
 			return nil, pluginDataError("plugin_api_unsupported")
 		}
 		var request modelPreviewRequest
-		if decodePluginParams(input.Request, &request) != nil || (request.Mode != "create" && request.Mode != "map") {
+		if decodePluginParams(input.Request, &request) != nil || (request.Mode != "create" && request.Mode != "map" && request.Mode != "repair") {
 			return nil, pluginDataError("plugin_capability_invalid")
 		}
 		return previewSurfaceModel(ctx, app, workspace, input, installed, request, states, domain)
@@ -177,7 +218,8 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 	var result map[string]any
 	err := app.RunInTransaction(func(tx core.App) error {
 		installed, err := surfaceInstallation(ctx, tx, workspace, input)
-		if err != nil {
+		var stale *modelBindingStale
+		if err != nil && !(errors.As(err, &stale) && len(installed.ModelGrants) == 0) {
 			return err
 		}
 		catalog := schemaapi.New(tx)
@@ -189,6 +231,10 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 			if err != nil || table.Snapshot.Kind != "base" || table.Snapshot.SchemaRevision != request.SchemaRevision || request.Offset > len(table.Snapshot.Fields) {
 				return pluginDataError("plugin_plan_stale")
 			}
+			collection, err := tx.FindCollectionByNameOrId(table.PhysicalName)
+			if err != nil {
+				return err
+			}
 			result = map[string]any{"tableId": request.TableID, "schemaRevision": request.SchemaRevision, "fields": []any{}, "nextOffset": nil}
 			for index := request.Offset; index < len(table.Snapshot.Fields); index++ {
 				if len(result["fields"].([]any)) == modelCatalogPageSize {
@@ -196,12 +242,23 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 					break
 				}
 				field := table.Snapshot.Fields[index]
-				if field.Lifecycle.State == "active" {
+				physical := collection.Fields.GetByName(field.Identity.PhysicalName)
+				if field.Lifecycle.State == "active" && physical != nil && !physical.GetHidden() {
 					var next any
 					if index+1 < len(table.Snapshot.Fields) {
 						next = index + 1
 					}
-					added, err := appendModelCatalogItem(result, "fields", "nextOffset", map[string]any{"fieldId": field.Identity.FieldID, "displayName": field.DisplayName, "logicalType": field.LogicalType}, next)
+					item := map[string]any{"fieldId": field.Identity.FieldID, "displayName": field.DisplayName, "logicalType": field.LogicalType}
+					if field.LogicalType == v2.LogicalNumber {
+						item["precision"] = "float64"
+						if field.Storage.Options.OnlyInt {
+							item["precision"] = "integer"
+						}
+					}
+					if r := field.Relation; r != nil {
+						item["targetTableId"], item["reciprocalFieldId"], item["cardinality"] = r.TargetTableID, r.ReciprocalFieldID, r.Cardinality
+					}
+					added, err := appendModelCatalogItem(result, "fields", "nextOffset", item, next)
 					if err != nil {
 						return err
 					}
@@ -230,6 +287,16 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 		tables = base
 		afterFound := request.AfterTableID == ""
 		result = map[string]any{"model": installed.Manifest.Permissions.Model, "tables": []any{}, "nextAfterTableId": nil}
+		if request.AfterTableID == "" {
+			states, err := pluginmodel.States(ctx, tx, input.ProjectKey, input.PluginID)
+			if err != nil {
+				return err
+			}
+			prior := latestModelState(states, installed.Manifest.Permissions.Model.ModelID)
+			if prior.RequestID != "" {
+				result["bindings"] = modelPublicState(prior).Bindings
+			}
+		}
 		for index, table := range tables {
 			s := table.Snapshot
 			if !afterFound {
@@ -270,6 +337,7 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 
 func previewSurfaceModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, request modelPreviewRequest, states []pluginmodel.State, domain *schemaFieldChangeDomain) (modelPreview, error) {
 	model := *installed.Manifest.Permissions.Model
+	var err error
 	plan := modelPreview{State: pluginmodel.State{Contract: pluginmodel.Contract, RequestID: security.RandomString(24), InstallationID: input.InstallationID, InstallationRevision: input.InstallationRevision, Model: model, Status: "pending", Bindings: map[string]pluginmodel.Binding{}, Revisions: map[string]string{}}, Mode: request.Mode, ExpiresAt: time.Now().UTC().Add(30 * time.Minute), Steps: []modelStep{}, Diagnostics: []v2.Diagnostic{}}
 	diagnose := func(code, path string) {
 		plan.Diagnostics = append(plan.Diagnostics, v2.Diagnostic{Code: code, Path: path, Message: code, Details: map[string]any{}})
@@ -279,13 +347,25 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		if s.Model.ModelID != model.ModelID {
 			continue
 		}
+		plan.PreviousRequestID = s.RequestID
 		if model.Version < s.Model.Version || model.Version == s.Model.Version && !pluginmodel.Equal(model, s.Model) {
 			return plan, pluginDataError("plugin_model_version_conflict")
 		}
 		if s.InstallationID == input.InstallationID && s.InstallationRevision == input.InstallationRevision && pluginmodel.Equal(s.Model, model) {
 			if s.Status == "completed" {
-				plan.State = s
-				return plan, nil
+				if request.Mode == "create" {
+					plan.State = s
+					plan.Diagnostics, err = modelDiagnostics(ctx, app, s)
+					if err != nil {
+						return plan, err
+					}
+					if len(plan.Diagnostics) > 0 {
+						plan.Status = "blocked"
+					}
+					return plan, nil
+				}
+				plan.Bindings = modelPublicState(s).Bindings
+				break
 			}
 			// Resuming uses the original accepted plan and canonical identities.
 			prior, err := loadModelPreview(ctx, app, workspace, input, s.RequestID)
@@ -316,20 +396,21 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		byID[t.Snapshot.TableID] = t.Snapshot
 		names[t.Snapshot.DisplayName] = true
 	}
+	prior := latestModelState(states, model.ModelID)
 	entityKeys := map[string]bool{}
 	usedTables := map[string]bool{}
 	for _, e := range model.Entities {
 		entityKeys[e.Key] = true
 		b, bound := plan.Bindings[e.Key]
 		if mapped, ok := request.Mappings[e.Key]; ok {
-			if bound && !reflect.DeepEqual(mapped, b) {
+			if bound && !reflect.DeepEqual(mapped, b) && (request.Mode == "create" || prior.Status != "completed") {
 				diagnose("plugin_model_binding_conflict", e.Key)
 			} else {
 				b = mapped
 			}
 		}
 		if b.TableID == "" {
-			if request.Mode == "map" {
+			if request.Mode != "create" {
 				diagnose("plugin_model_mapping_required", e.Key)
 				continue
 			}
@@ -398,7 +479,7 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 				}
 				continue
 			}
-			if request.Mode == "map" {
+			if request.Mode != "create" {
 				diagnose("plugin_model_mapping_required", path)
 				continue
 			}
@@ -439,13 +520,42 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		}
 	}
 	plan.Total = len(plan.Steps)
+	if request.Mode == "repair" && prior.Status != "completed" {
+		diagnose("plugin_model_mapping_required", "model")
+	}
+	if request.Mode != "create" && len(plan.Diagnostics) == 0 {
+		live, err := modelDiagnostics(ctx, app, plan.State)
+		if err != nil {
+			return plan, err
+		}
+		plan.Diagnostics = append(plan.Diagnostics, live...)
+	}
+	if request.Mode != "create" && prior.Status == "completed" {
+		var risks []v2.Diagnostic
+		plan.Changes, risks, err = checkModelRepair(ctx, app, prior, plan.State)
+		plan.Diagnostics = append(plan.Diagnostics, risks...)
+		if err != nil {
+			return plan, err
+		}
+		if len(plan.Changes) != 0 {
+			plan.Mode = "repair"
+		} else {
+			plan.Mode = "map"
+		}
+		if len(plan.Changes) == 0 && len(plan.Diagnostics) == 0 && prior.InstallationID == input.InstallationID && prior.InstallationRevision == input.InstallationRevision {
+			plan.State = prior
+			return plan, nil
+		}
+	}
 	if len(plan.Diagnostics) > 0 {
 		plan.Status = "blocked"
 		return plan, nil
 	}
 	err = runBusinessWrite(ctx, domain.gates, "plugin.model.preview", plan.RequestID, func(ctx context.Context) error {
-		if _, err := surfaceInstallation(ctx, app, workspace, input); err != nil {
-			return err
+		principal, authErr := surfaceInstallation(ctx, app, workspace, input)
+		var stale *modelBindingStale
+		if authErr != nil && !(plan.Mode == "repair" && len(plan.Changes) > 0 && len(principal.ModelGrants) == 0 && errors.As(authErr, &stale)) {
+			return authErr
 		}
 		raw := modelAudit(input, installed, plan.RequestID+":preview", "model.preview", plan)
 		_, err := pluginstore.New(app, workspace).RecordAudit(ctx, raw)
@@ -529,30 +639,12 @@ func modelValidateRevisions(ctx context.Context, app core.App, s pluginmodel.Sta
 	return nil
 }
 func modelValidateBindings(ctx context.Context, app core.App, s pluginmodel.State) error {
-	tables := modelTableIDs(s)
-	for _, e := range s.Model.Entities {
-		b := s.Bindings[e.Key]
-		schema, err := schemaexecution.Describe(ctx, app, b.TableID)
-		if err != nil {
-			return pluginDataError("plugin_model_binding_stale")
-		}
-		for _, f := range e.Fields {
-			found := false
-			for _, actual := range schema.Snapshot.Fields {
-				if actual.Identity.FieldID == b.Fields[f.Key] {
-					found = true
-					if f.Compatibility(actual, tables) != "" {
-						return pluginDataError("plugin_model_binding_stale")
-					}
-					if f.Relation != nil && actual.Relation.ReciprocalFieldID != s.Bindings[f.Relation.Entity].Fields[f.Relation.Field] {
-						return pluginDataError("plugin_model_binding_stale")
-					}
-				}
-			}
-			if !found {
-				return pluginDataError("plugin_model_binding_stale")
-			}
-		}
+	diagnostics, err := modelDiagnostics(ctx, app, s)
+	if err != nil {
+		return err
+	}
+	if len(diagnostics) != 0 {
+		return &modelBindingStale{diagnostics}
 	}
 	return nil
 }
@@ -577,21 +669,81 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 		}
 	}
 	if plan.Status == "completed" {
-		return plan.State, nil
+		if latestModelState(states, plan.Model.ModelID).RequestID != id {
+			return plan.State, pluginDataError("plugin_plan_stale")
+		}
+		return plan.State, modelValidateBindings(ctx, app, plan.State)
 	}
 	if !started && !time.Now().Before(plan.ExpiresAt) {
 		return plan.State, pluginDataError("plugin_plan_stale")
 	}
 	save := func(ctx context.Context, tx core.App, s pluginmodel.State, suffix string) error {
-		if _, err := surfaceInstallation(ctx, tx, workspace, input); err != nil {
-			return err
+		principal, authErr := surfaceInstallation(ctx, tx, workspace, input)
+		var stale *modelBindingStale
+		if authErr != nil && !(plan.Mode == "repair" && suffix == "completed" && s.Status == "completed" && principal.ActionRisk != "read" && len(principal.ModelGrants) == 0 && errors.As(authErr, &stale)) {
+			return authErr
 		}
 		_, err := pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, installed, id+":"+suffix, "model.progress", s))
 		return err
 	}
+	checkPredecessor := func(ctx context.Context, tx core.App) (pluginmodel.State, error) {
+		current, err := pluginmodel.States(ctx, tx, input.ProjectKey, input.PluginID)
+		if err != nil {
+			return pluginmodel.State{}, err
+		}
+		latest := latestModelState(current, plan.Model.ModelID)
+		if latest.RequestID != plan.PreviousRequestID && latest.RequestID != id {
+			return latest, pluginDataError("plugin_plan_stale")
+		}
+		return latest, nil
+	}
+	if plan.Mode == "repair" {
+		if len(plan.Changes) == 0 || len(plan.Steps) != 0 || plan.PreviousRequestID == "" {
+			return plan.State, pluginDataError("plugin_plan_stale")
+		}
+		err = runBusinessWrite(ctx, domain.gates, "plugin.model.repair", id, func(ctx context.Context) error {
+			return app.RunInTransaction(func(tx core.App) error {
+				old, err := checkPredecessor(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if old.RequestID == id && old.Status == "completed" {
+					plan.State = old
+					return modelValidateBindings(ctx, tx, old)
+				}
+				if old.Status != "completed" || time.Now().After(plan.ExpiresAt) {
+					return pluginDataError("plugin_plan_stale")
+				}
+				if err := modelValidateRevisions(ctx, tx, plan.State); err != nil {
+					return err
+				}
+				if err := modelValidateBindings(ctx, tx, plan.State); err != nil {
+					return err
+				}
+				changes, diagnostics, err := checkModelRepair(ctx, tx, old, plan.State)
+				if err != nil {
+					return err
+				}
+				if len(diagnostics) != 0 || !reflect.DeepEqual(changes, plan.Changes) {
+					return pluginDataError("plugin_plan_stale")
+				}
+				next := plan.State
+				next.Status = "completed"
+				if err := save(ctx, tx, next, "completed"); err != nil {
+					return err
+				}
+				plan.State = next
+				return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
+			})
+		})
+		return plan.State, err
+	}
 	if !started {
 		err = runBusinessWrite(ctx, domain.gates, "plugin.model.accept", id, func(ctx context.Context) error {
 			return app.RunInTransaction(func(tx core.App) error {
+				if _, err := checkPredecessor(ctx, tx); err != nil {
+					return err
+				}
 				if err := modelValidateRevisions(ctx, tx, plan.State); err != nil {
 					return err
 				}
@@ -741,6 +893,9 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 	}
 	err = runBusinessWrite(ctx, domain.gates, "plugin.model.complete", id, func(ctx context.Context) error {
 		return app.RunInTransaction(func(tx core.App) error {
+			if _, err := checkPredecessor(ctx, tx); err != nil {
+				return err
+			}
 			if err := modelValidateRevisions(ctx, tx, plan.State); err != nil {
 				return err
 			}

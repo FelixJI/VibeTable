@@ -52,7 +52,7 @@ func modelCall(t *testing.T, pb core.App, workspace string, input pluginSurfaceA
 	t.Helper()
 	input.Method = method
 	input.Request, _ = json.Marshal(request)
-	return executeSurfaceModel(context.Background(), pb, workspace, input, domain)
+	return executePluginSurfaceAPI(context.Background(), pb, nil, nil, workspace, input, nil, &pluginSurfaceIO{models: domain})
 }
 
 func TestPluginModelCreateIdentityGrantsAndNativeProtection(t *testing.T) {
