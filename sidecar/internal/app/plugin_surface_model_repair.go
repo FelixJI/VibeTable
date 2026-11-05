@@ -12,6 +12,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/relationpair"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
@@ -26,8 +27,26 @@ func modelDiagnostic(code, path string) v2.Diagnostic {
 	return v2.Diagnostic{Code: code, Path: path, Message: code, Details: map[string]any{}}
 }
 
-// Compare the same provider contract used by the schema compiler, including the nullable-value companion.
-func modelPhysicalFieldCode(app core.App, collection *core.Collection, f v2.FieldDefinition) (string, error) {
+// A nil collection denotes proven canonical drift. Storage and cancellation failures propagate.
+func describeModelTable(ctx context.Context, app core.App, id string) (schemaexecution.Table, *core.Collection, error) {
+	table, err := schemaexecution.Describe(ctx, app, id)
+	var invalid *schemaerror.ProductError
+	if errors.Is(err, schemaexecution.ErrTableNotFound) || errors.Is(err, schemaexecution.ErrProviderCollectionMissing) ||
+		errors.As(err, &invalid) && (invalid.Code == "schema.metadata.invalid_schema_revision" || invalid.Code == "schema.metadata.invalid_data_revision") {
+		return table, nil, nil
+	}
+	if err != nil || table.Kind != "base" {
+		return table, nil, err
+	}
+	collection, err := app.FindCollectionByNameOrId(table.CollectionID)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && collection.Name != table.PhysicalName {
+		return table, nil, nil
+	}
+	return table, collection, err
+}
+
+// Grants and native candidates share the provider contract, nullable companion and reciprocal metadata checks.
+func modelFieldCode(ctx context.Context, app core.App, tableID string, collection *core.Collection, f v2.FieldDefinition, checkedPairs map[[2]string]bool) (string, error) {
 	physical := collection.Fields.GetById(f.Identity.ProviderFieldID)
 	if physical == nil || physical.GetName() != f.Identity.PhysicalName {
 		return "plugin_model_field_missing", nil
@@ -67,6 +86,21 @@ func modelPhysicalFieldCode(app core.App, collection *core.Collection, f v2.Fiel
 		if actual.CollectionId != wanted.CollectionId || actual.MaxSelect != wanted.MaxSelect || actual.CascadeDelete != wanted.CascadeDelete {
 			return "plugin_model_relation_mismatch", nil
 		}
+		key := [2]string{tableID, f.Identity.FieldID}
+		ok, seen := checkedPairs[key]
+		if !seen {
+			ok, err = relationpair.MetadataCompatible(ctx, app, tableID, f.Identity.FieldID)
+			if err != nil {
+				return "", err
+			}
+			checkedPairs[key] = ok
+			if ok {
+				checkedPairs[[2]string{f.Relation.TargetTableID, f.Relation.ReciprocalFieldID}] = true
+			}
+		}
+		if !ok {
+			return "plugin_model_relation_mismatch", nil
+		}
 	}
 	return "", nil
 }
@@ -77,21 +111,13 @@ func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([
 	checkedPairs := map[[2]string]bool{}
 	for _, entity := range s.Model.Entities {
 		binding := s.Bindings[entity.Key]
-		table, err := schemaexecution.Describe(ctx, app, binding.TableID)
-		if errors.Is(err, schemaexecution.ErrTableNotFound) || errors.Is(err, schemaexecution.ErrProviderCollectionMissing) || err == nil && table.Kind != "base" {
-			diagnostics = append(diagnostics, modelDiagnostic("plugin_model_table_missing", entity.Key))
-			continue
-		}
+		table, collection, err := describeModelTable(ctx, app, binding.TableID)
 		if err != nil {
 			return nil, err
 		}
-		collection, err := app.FindCollectionByNameOrId(table.CollectionID)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && collection.Name != table.PhysicalName {
+		if collection == nil {
 			diagnostics = append(diagnostics, modelDiagnostic("plugin_model_table_missing", entity.Key))
 			continue
-		}
-		if err != nil {
-			return nil, err
 		}
 		for _, f := range entity.Fields {
 			actual, ok := table.Field(binding.Fields[f.Key])
@@ -101,23 +127,8 @@ func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([
 				if code == "" && f.Relation != nil && actual.Relation.ReciprocalFieldID != s.Bindings[f.Relation.Entity].Fields[f.Relation.Field] {
 					code = "plugin_model_relation_mismatch"
 				}
-				if code == "" && f.Relation != nil {
-					key := [2]string{binding.TableID, actual.Identity.FieldID}
-					ok, seen := checkedPairs[key]
-					if !seen {
-						ok, err = relationpair.MetadataCompatible(ctx, app, key[0], key[1])
-						if err != nil {
-							return nil, err
-						}
-						checkedPairs[key] = ok
-						checkedPairs[[2]string{actual.Relation.TargetTableID, actual.Relation.ReciprocalFieldID}] = ok
-					}
-					if !ok {
-						code = "plugin_model_relation_mismatch"
-					}
-				}
 				if code == "" {
-					code, err = modelPhysicalFieldCode(app, collection, actual)
+					code, err = modelFieldCode(ctx, app, binding.TableID, collection, actual, checkedPairs)
 					if err != nil {
 						return nil, err
 					}
@@ -190,15 +201,15 @@ func checkModelRepair(ctx context.Context, app core.App, old, next pluginmodel.S
 		if err := fieldchange.CheckTableWriteFence(ctx, app, id); err != nil {
 			return "", err
 		}
-		table, err := schemaexecution.Describe(ctx, app, id)
-		if errors.Is(err, schemaexecution.ErrTableNotFound) || errors.Is(err, schemaexecution.ErrProviderCollectionMissing) {
-			return "plugin_model_history_unknown", nil
-		}
+		table, collection, err := describeModelTable(ctx, app, id)
 		if err != nil {
 			return "", err
 		}
+		if collection == nil {
+			return "plugin_model_history_unknown", nil
+		}
 		revisions[id] = table.Snapshot.SchemaRevision
-		rows, err := app.CountRecords(table.PhysicalName)
+		rows, err := app.CountRecords(collection.Id)
 		if err != nil {
 			return "", err
 		}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -212,7 +213,86 @@ func TestPluginModelRelationMetadataDrift(t *testing.T) {
 			if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
 				t.Fatal("invalid pair granted data access")
 			}
+			for _, endpoint := range []struct{ entity, relation, scalar string }{{"people", "tickets", "name"}, {"tickets", "person", "title"}} {
+				binding := s.Bindings[endpoint.entity]
+				page := call("model.catalog", map[string]string{"tableId": binding.TableID, "schemaRevision": s.Revisions[binding.TableID]}).(map[string]any)
+				ids := map[string]bool{}
+				for _, item := range page["fields"].([]any) {
+					ids[item.(map[string]any)["fieldId"].(string)] = true
+				}
+				if ids[binding.Fields[endpoint.relation]] || !ids[binding.Fields[endpoint.scalar]] {
+					t.Fatalf("drifted relation or missing healthy scalar in %s catalog: %v", endpoint.entity, ids)
+				}
+			}
+			if drift == "mirror" {
+				// An unavailable metadata store is a real I/O failure, distinct from an absent mirror row.
+				if _, err := pb.DB().NewQuery("ALTER TABLE vibetable_relations RENAME TO synthetic_unavailable_relations").Execute(); err != nil {
+					t.Fatal(err)
+				}
+				for _, method := range []string{"model.read", "model.catalog"} {
+					_, err := modelCall(t, pb, workspace, input, domain, method, map[string]string{})
+					var stale *modelBindingStale
+					if err == nil || errors.As(err, &stale) || !strings.Contains(err.Error(), "vibetable_relations") {
+						t.Fatalf("%s suppressed metadata storage failure: %v", method, err)
+					}
+				}
+			}
 		})
+	}
+}
+
+func TestPluginModelRelationTargetTableBindingDrift(t *testing.T) {
+	pb, workspace, input, domain := modelFixture(t)
+	call := func(method string, params any) any {
+		t.Helper()
+		r, err := modelCall(t, pb, workspace, input, domain, method, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	p := call("model.preview", modelPreviewRequest{Mode: "create"}).(modelPreview)
+	req := map[string]string{"requestId": p.RequestID}
+	s := call("model.commit", req).(pluginmodel.State)
+	target := s.Bindings["tickets"]
+	unrelated := core.NewBaseCollection("unrelated_empty_provider")
+	if err := pb.Save(unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pb.DB().NewQuery("UPDATE vibetable_tables SET physical_name={:name} WHERE table_id={:id}").Bind(dbx.Params{"name": unrelated.Name, "id": target.TableID}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := call("model.read", map[string]string{}).(pluginmodel.State)
+	has := func(path, code string) bool {
+		return slices.ContainsFunc(got.Diagnostics, func(d v2.Diagnostic) bool { return d.Path == path && d.Code == code })
+	}
+	if got.Status != "stale" || !reflect.DeepEqual(got.Bindings, s.Bindings) || !has("people.tickets", "plugin_model_relation_mismatch") || !has("tickets", "plugin_model_table_missing") {
+		t.Fatalf("live binding: %+v", got)
+	}
+	page := call("model.catalog", map[string]string{}).(map[string]any)
+	if page["status"] != "blocked" || !reflect.DeepEqual(page["bindings"], s.Bindings) || !slices.ContainsFunc(page["diagnostics"].([]v2.Diagnostic), func(d v2.Diagnostic) bool { return d.Path == "tickets" && d.Code == "plugin_model_history_unknown" }) {
+		t.Fatalf("repair admission: %+v", page)
+	}
+	if _, err := surfaceInstallation(t.Context(), pb, workspace, input); err == nil {
+		t.Fatal("stale table granted data access")
+	}
+	if _, err := modelCall(t, pb, workspace, input, domain, "model.commit", req); err == nil {
+		t.Fatal("obsolete completion admitted")
+	}
+	next := cloneModelState(s)
+	next.Bindings["tickets"].Fields["title"] = s.Bindings["assets"].Fields["name"]
+	_, diagnostics, err := checkModelRepair(t.Context(), pb, s, next)
+	if err != nil || !slices.ContainsFunc(diagnostics, func(d v2.Diagnostic) bool {
+		return d.Path == "tickets.title" && d.Code == "plugin_model_history_unknown"
+	}) {
+		t.Fatalf("unrelated empty collection used as old history proof: %v %v", diagnostics, err)
+	}
+	if _, err := pb.DB().NewQuery("UPDATE vibetable_tables SET data_revision=-1 WHERE table_id={:id}").Bind(dbx.Params{"id": target.TableID}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got = call("model.read", map[string]string{}).(pluginmodel.State)
+	if got.Status != "stale" || !has("tickets", "plugin_model_table_missing") {
+		t.Fatalf("invalid provider revision: %+v", got)
 	}
 }
 

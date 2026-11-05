@@ -227,14 +227,14 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 			if request.AfterTableID != "" || request.SchemaRevision == "" {
 				return pluginDataError("plugin_capability_invalid")
 			}
-			table, err := catalog.Describe(ctx, request.TableID)
-			if err != nil || table.Snapshot.Kind != "base" || table.Snapshot.SchemaRevision != request.SchemaRevision || request.Offset > len(table.Snapshot.Fields) {
-				return pluginDataError("plugin_plan_stale")
-			}
-			collection, err := tx.FindCollectionByNameOrId(table.CollectionID)
+			table, collection, err := describeModelTable(ctx, tx, request.TableID)
 			if err != nil {
 				return err
 			}
+			if collection == nil || table.Snapshot.SchemaRevision != request.SchemaRevision || request.Offset > len(table.Snapshot.Fields) {
+				return pluginDataError("plugin_plan_stale")
+			}
+			checkedPairs := map[[2]string]bool{}
 			result = map[string]any{"tableId": request.TableID, "schemaRevision": request.SchemaRevision, "fields": []any{}, "nextOffset": nil}
 			for index := request.Offset; index < len(table.Snapshot.Fields); index++ {
 				if len(result["fields"].([]any)) == modelCatalogPageSize {
@@ -242,11 +242,11 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 					break
 				}
 				field := table.Snapshot.Fields[index]
-				code, err := modelPhysicalFieldCode(tx, collection, field)
+				code, err := modelFieldCode(ctx, tx, request.TableID, collection, field, checkedPairs)
 				if err != nil {
 					return err
 				}
-				if field.Lifecycle.State == "active" && collection.Name == table.PhysicalName && code == "" {
+				if field.Lifecycle.State == "active" && code == "" {
 					var next any
 					if index+1 < len(table.Snapshot.Fields) {
 						next = index + 1

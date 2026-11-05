@@ -23,6 +23,7 @@ const (
 
 var ErrRevisionChanged = errors.New("relation.inspect.revision_changed")
 var ErrInvalidRequest = errors.New("relation.inspect.invalid_request")
+var errInvalidTableBinding = errors.New("relation.inspect.invalid_table_binding")
 var physicalField = regexp.MustCompile(`^f_[a-z0-9_]{8,}$`)
 
 type endpointState struct {
@@ -152,7 +153,7 @@ func reciprocalEndpoints(source, target endpointState) bool {
 func MetadataCompatible(ctx context.Context, app core.App, tableID, fieldID string) (bool, error) {
 	report := Report{Counts: map[string]int{}}
 	source, err := loadEndpoint(ctx, app, tableID, fieldID, 0, &report)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errInvalidTableBinding) {
 		return false, nil
 	}
 	if err != nil {
@@ -163,7 +164,7 @@ func MetadataCompatible(ctx context.Context, app core.App, tableID, fieldID stri
 		return false, nil
 	}
 	target, err := loadEndpoint(ctx, app, spec.TargetTableID, spec.ReciprocalFieldID, 1, &report)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errInvalidTableBinding) {
 		return false, nil
 	}
 	if err != nil {
@@ -195,7 +196,7 @@ func tableBinding(ctx context.Context, app core.App, tableID string) (Endpoint, 
 		return Endpoint{}, "", fmt.Errorf("read inspection table binding: %w", err)
 	}
 	if row.Schema < 0 || row.Data < 0 || row.Physical == "" || (row.Kind != "base" && row.Kind != "") {
-		return Endpoint{}, "", errors.New("relation.inspect.invalid_table_binding")
+		return Endpoint{}, "", errInvalidTableBinding
 	}
 	collection := &core.Collection{}
 	err = app.CollectionQuery().WithContext(ctx).AndWhere(dbx.HashExp{"id": row.Collection}).One(collection)
@@ -203,7 +204,7 @@ func tableBinding(ctx context.Context, app core.App, tableID string) (Endpoint, 
 		return Endpoint{}, "", fmt.Errorf("read inspection collection: %w", err)
 	}
 	if collection.Name != row.Physical {
-		return Endpoint{}, "", errors.New("relation.inspect.invalid_table_binding")
+		return Endpoint{}, "", errInvalidTableBinding
 	}
 	return Endpoint{TableID: tableID, SchemaRevision: v2.FormatSchemaRevision(row.Schema), DataRevision: row.Data}, row.Physical, nil
 }
