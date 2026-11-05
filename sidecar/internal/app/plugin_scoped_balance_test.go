@@ -93,6 +93,7 @@ func TestNullableTransactionSourcesCompareOptionalOwnerAndExcludeDoubleUse(t *te
 			if !errors.As(err, &denied) || denied.Code != tc.want || before != transactionBusinessSnapshot(t, f) {
 				t.Fatalf("unexpected write outcome: %v", err)
 			}
+			requireRuleRejectionOverHTTP(t, f, result.(transactionPreview), tc.want)
 			// Ordinary workspace edits enter the mutation kernel without a plugin transaction.
 			physical := map[string]any{}
 			for key, value := range values {
@@ -172,7 +173,7 @@ func TestScopedBalanceConcurrentCurrentWritesAndForeignVersionRollback(t *testin
 		}
 	}
 	verifyRejected(errs[2], "transaction.decimal_sign_violation")
-	verifyRejected(commit(preview(planFor("0.00"))), "transaction.decimal_sign_violation")
+	requireRuleRejectionOverHTTP(t, f, preview(planFor("0.00")), "transaction.decimal_sign_violation")
 	for _, err := range errs[:2] {
 		if err != nil {
 			verifyRejected(err, "transaction.balance_violation")

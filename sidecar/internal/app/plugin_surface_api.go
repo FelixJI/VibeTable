@@ -164,7 +164,9 @@ func surfaceCommitRejection(code string) bool {
 	switch code {
 	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
 		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict",
-		"mutation.record.not_found":
+		"mutation.record.not_found",
+		// Registered business guards also reject ordinary single-table mutations.
+		"transaction.decimal_sign_violation", "transaction.at_most_one_violation":
 		return true
 	default:
 		return false

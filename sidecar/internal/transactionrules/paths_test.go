@@ -2,6 +2,7 @@ package transactionrules
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
@@ -71,6 +72,18 @@ func TestOptionalPointerOnlySkipsAnEmptyFirstHop(t *testing.T) {
 	d.Rules[0].WhenPresent = "other"
 	if d.Validate() == nil {
 		t.Fatal("unrelated optional field accepted")
+	}
+}
+
+func TestTransactionDecodeRejectsPythonAttributeNames(t *testing.T) {
+	raw := `{"contract":"vibetable.plugin-transactions.v1","modelId":"m","version":1,"decimals":[{"entity":"e","field":"q","storage":"decimalText","scale":0,"digits":3}],"rules":[{"id":"scope","kind":"sameTarget","entity":"e","left":[{"field":"a","target":"e"}],"right":[],"whenPresent":"a","skipEmptyLeftEnd":true},{"id":"cap","kind":"balance","entity":"e","relation":"a","target":"e","amount":"q","limit":"q","currentWhen":{"left":[{"field":"a","target":"e"}],"right":[{"field":"a","target":"e"}]}},{"id":"freeze","kind":"state","entity":"e","field":"state","transitions":{"done":[]},"frozenStates":["done"]}]}`
+	if _, err := Decode([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	for public, private := range map[string]string{"modelId": "model_id", "whenPresent": "when_present", "skipEmptyLeftEnd": "skip_empty_left_end", "currentWhen": "current_when", "frozenStates": "frozen_states"} {
+		if _, err := Decode([]byte(strings.Replace(raw, public, private, 1))); err == nil {
+			t.Errorf("accepted %s in a manifest", private)
+		}
 	}
 }
 

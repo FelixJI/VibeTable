@@ -122,7 +122,7 @@ class PluginManifest(PluginContract):
             if not native:
                 raise ValueError("transactions permissions require native plugin API 3.x")
             declaration = PluginTransactionsDeclaration.model_validate(
-                self.permissions["transactions"]
+                self.permissions["transactions"], by_alias=True, by_name=False
             )
             # Go rejects a transactions permission without a decodable sibling model.
             model = PluginModelDeclaration.model_validate(self.permissions.get("model"))

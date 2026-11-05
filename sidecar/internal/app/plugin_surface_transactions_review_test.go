@@ -205,6 +205,36 @@ func transactionHTTP(t *testing.T, f *transactionFixture, gate businessWriteGate
 	}
 }
 
+func requireRuleRejectionOverHTTP(t *testing.T, f *transactionFixture, p transactionPreview, code string) {
+	t.Helper()
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(t.Context(), f.pb); err != nil {
+		t.Fatal(err)
+	}
+	call := transactionHTTP(t, f, nil)
+	before := transactionBusinessSnapshot(t, f)
+	for range 2 {
+		response := call("transaction.commit", map[string]any{"requestId": p.RequestID, "previewRevision": p.PreviewRevision})
+		var wire struct {
+			Code    string `json:"code"`
+			Outcome string `json:"commitOutcome"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil || response.Code != http.StatusConflict || wire.Code != code || wire.Outcome != "not-committed" {
+			t.Fatalf("rejected commit returned HTTP %d %s", response.Code, response.Body.String())
+		}
+	}
+	status := call("transaction.status", map[string]any{"requestId": p.RequestID})
+	var stored struct {
+		RequestID string `json:"requestId"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &stored); err != nil || status.Code != http.StatusOK || stored.Status != "prepared" || stored.RequestID != p.RequestID {
+		t.Fatalf("rejected request %s returned status %d/%s/%s: %v", p.RequestID, status.Code, stored.RequestID, stored.Status, err)
+	}
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("repeating a rejected request changed business facts")
+	}
+}
+
 func TestTransactionHTTPCommitOutcomeUsesAuthorityProof(t *testing.T) {
 	for _, scenario := range []string{"stale", "rule", "permission", "unknown", "imported proof", "wrong outer proof", "proof unavailable", "configure denied", "configure unknown", "configure imported proof"} {
 		t.Run(scenario, func(t *testing.T) {

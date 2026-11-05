@@ -179,6 +179,46 @@ def test_native_manifest_accepts_closed_transaction_rules() -> None:
     assert validate_plugin_manifest(package_entries(manifest)) == manifest
 
 
+@pytest.mark.parametrize(
+    ("public", "private"),
+    [
+        ("whenPresent", "when_present"),
+        ("skipEmptyLeftEnd", "skip_empty_left_end"),
+        ("currentWhen", "current_when"),
+        ("frozenStates", "frozen_states"),
+        ("modelId", "model_id"),
+    ],
+)
+def test_raw_transaction_permissions_accept_only_wire_aliases(public: str, private: str) -> None:
+    manifest = transactions_manifest()
+    d = declaration(manifest)
+    path = [{"field": "header", "target": "headers"}]
+    scope = {
+        "id": "scope",
+        "kind": "sameTarget",
+        "entity": "lines",
+        "left": path,
+        "right": path,
+        "whenPresent": "header",
+        "skipEmptyLeftEnd": True,
+    }
+    d["rules"].append(scope)
+    balance = d["rules"][2]
+    balance.update(kind="balance", currentWhen={"left": path, "right": path})
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    assert PluginManifest.model_validate(manifest).permissions["transactions"] == d
+
+    owner = next(item for item in [d, *d["rules"]] if public in item)
+    owner[private] = owner.pop(public)
+    # In-process model construction may use Python attributes. Only raw package/manifest
+    # admission promises that these same bytes will be accepted by the native decoder.
+    assert PluginTransactionsDeclaration.model_validate(d).model_id == "synthetic"
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
+    with pytest.raises(PluginPackageError):
+        validate_plugin_manifest(package_entries(manifest))
+
+
 def test_conformance_fixture_passes_closed_manifest_and_package_validation() -> None:
     manifest = conformance_manifest()
     parsed = PluginManifest.model_validate(manifest)
