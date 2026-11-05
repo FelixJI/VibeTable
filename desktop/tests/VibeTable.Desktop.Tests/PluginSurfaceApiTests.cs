@@ -635,6 +635,8 @@ public sealed class PluginSurfaceApiTests
             """{"code":"mutation.digest_conflict","message":"plugin request could not be completed"}""",
             """{"code":"plugin_request_failed","commitOutcome":"not-committed","message":"plugin request could not be completed"}""",
             """{"code":"mutation.future_conflict","commitOutcome":"not-committed","message":"plugin request could not be completed"}""",
+            """{"code":"transaction.same_target_violation","commitOutcome":"unknown"}""",
+            """{"code":"transaction.plan_stale","commitOutcome":"not-committed"}""",
         })
         {
             using var fixture = new Fixture();
@@ -656,7 +658,7 @@ public sealed class PluginSurfaceApiTests
     [TestMethod]
     public async Task ExplicitAuthorityProofPreservesPermissionRejectionAndCommitCancellationIsUnknown()
     {
-        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale", "mutation.relation.restricted" })
+        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale", "mutation.relation.restricted", "transaction.same_target_violation", "transaction.balance_violation", "transaction.decimal_sign_violation", "transaction.at_most_one_violation" })
         {
             using var fixture = new Fixture();
             fixture.Http.CommitErrorBody = JsonSerializer.Serialize(new { code, commitOutcome = "not-committed" });
@@ -666,6 +668,10 @@ public sealed class PluginSurfaceApiTests
             Assert.IsTrue(fixture.Tasks.TryGetTask(start.GetProperty("request").GetProperty("taskId").GetString()!, out var task));
             Assert.AreEqual("failed", task.State);
             Assert.AreEqual(code, task.Error!.Code);
+            var audit = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.finish").GetProperty("request");
+            Assert.AreEqual("failed", audit.GetProperty("outcome").GetString());
+            Assert.AreEqual(code, audit.GetProperty("errorCode").GetString());
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
         }
         using var cancelled = new Fixture();
         cancelled.Http.OnCommit = () => cancelled.Tasks.RequestCancel(cancelled.TaskId, out _, out _);
@@ -1330,6 +1336,9 @@ public sealed class PluginSurfaceApiTests
     [DataRow("plugin_read_denied", "not-committed", "plugin_read_denied", "failed")]
     [DataRow("plugin_commit_unknown", "unknown", "plugin_commit_unknown", "aborted")]
     [DataRow("transaction.plan_stale", null, "plugin_commit_unknown", "aborted")]
+    [DataRow("transaction.same_target_violation", "not-committed", "transaction.same_target_violation", "failed")]
+    [DataRow("transaction.balance_violation", "unknown", "plugin_commit_unknown", "aborted")]
+    [DataRow("transaction.future_conflict", "not-committed", "plugin_commit_unknown", "aborted")]
     public async Task TransactionHttpOutcomePreservesProvenRejectionsAndNeverReplays(
         string code, string? outcome, string expectedCode, string expectedState)
     {
@@ -1343,6 +1352,22 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(expectedCode, task.Error!.Code);
         Assert.AreEqual(1, fixture.Confirmations);
         Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "transaction.commit"));
+    }
+
+    [TestMethod]
+    [DataRow("transaction.balance_violation", "not-committed", "transaction.balance_violation", "failed")]
+    [DataRow("transaction.balance_violation", "unknown", "plugin_commit_unknown", "aborted")]
+    [DataRow("transaction.future_conflict", "not-committed", "plugin_commit_unknown", "aborted")]
+    public async Task TransactionConfigurationChecksAuthorityOutcome(string code, string outcome, string expectedCode, string expectedState)
+    {
+        using var fixture = new Fixture();
+        fixture.Http.TransactionConfigureErrorBody = JsonSerializer.Serialize(new { code, commitOutcome = outcome });
+        var declaration = JsonDocument.Parse(TransactionPreviewBody).RootElement.GetProperty("declaration").Clone();
+        Assert.AreEqual(expectedCode, Code(await fixture.Call("transaction.configure", JsonSerializer.Serialize(new { declaration }))));
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual(expectedState, task.State);
+        Assert.AreEqual(expectedCode, task.Error!.Code);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "transaction.configure"));
     }
 
     [TestMethod]
@@ -1503,6 +1528,7 @@ public sealed class PluginSurfaceApiTests
         internal string TransactionCommitBody { get; set; } = TransactionAppliedBody;
         internal long TransactionConfigureVersion { get; set; } = 1;
         internal string? TransactionCommitErrorBody { get; set; }
+        internal string? TransactionConfigureErrorBody { get; set; }
         internal Func<CancellationToken, Task>? OnTransactionCommit { get; set; }
         internal Action? OnCommit { get; set; }
         internal bool CommitObservedCancellation { get; private set; }
@@ -1512,6 +1538,8 @@ public sealed class PluginSurfaceApiTests
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
+            if (method == "transaction.configure" && TransactionConfigureErrorBody is { } configureError)
+                return new(HttpStatusCode.Conflict) { Content = new StringContent(configureError) };
             if (method == "transaction.commit" && OnTransactionCommit is { } transactionCommit) await transactionCommit(token);
             if (method == "transaction.commit" && TransactionCommitErrorBody is { } transactionError)
                 return new(HttpStatusCode.Conflict) { Content = new StringContent(transactionError) };

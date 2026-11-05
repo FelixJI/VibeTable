@@ -41,6 +41,8 @@
              Link="contracts\v2\provider-support.json"
              CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\..\..\sidecar\internal\app\surface_commit_rejections.json"
+                      LogicalName="VibeTable.Desktop.surface_commit_rejections.json" />
     <EmbeddedResource Include="..\..\..\contracts\v2\workspace-rpc-capability-manifest.json"
                       LogicalName="VibeTable.Desktop.workspace-rpc-capability-manifest.json" />
     <EmbeddedResource Include="..\..\..\contracts\v2\product-rpc-capability-manifest.json"

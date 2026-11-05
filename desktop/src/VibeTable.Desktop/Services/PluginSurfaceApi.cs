@@ -385,7 +385,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                         }
                         catch (Exception ex)
                         {
-                            if (ex is SurfaceAuthorityException { NotCommitted: true } rejection && IsCommitRejection(rejection.Code)) committing = false;
+                            if (ex is SurfaceAuthorityException { NotCommitted: true }) committing = false;
                             bool timedOut = deadline.IsCancellationRequested && !state.Lifetime.IsCancellationRequested && !state.Cancelled.ContainsKey(requestId);
                             string code = committing ? "plugin_commit_unknown" : ex switch
                             {
@@ -545,8 +545,14 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         { if (memory.Length + count > MaxBytes) throw Error("plugin_message_too_large"); memory.Write(buffer, 0, count); }
         using var document = JsonDocument.Parse(memory.ToArray());
         if (!response.IsSuccessStatusCode)
-            throw new SurfaceAuthorityException(document.RootElement.TryGetProperty("code", out var code) ? code.GetString() ?? "plugin_request_failed" : "plugin_request_failed",
-                document.RootElement.TryGetProperty("commitOutcome", out var outcome) && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "not-committed");
+        {
+            string code = document.RootElement.TryGetProperty("code", out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()! : "plugin_request_failed";
+            bool notCommitted = document.RootElement.TryGetProperty("commitOutcome", out var outcome)
+                && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "not-committed"
+                && CommitRejectionScopes.Any(scope => scope.Methods.Contains(method) && scope.Codes.Contains(code));
+            throw new SurfaceAuthorityException(code, notCommitted);
+        }
         // A fully read and validated commit receipt settles the captured run even
         // when retirement follows the response. Other responses require a live session.
         if (method == "mutation.commit") ValidateReceipt(document.RootElement, parameters);
@@ -579,9 +585,15 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private static string ReadHandle(JsonElement parameters, string name)
     { if (parameters.ValueKind != JsonValueKind.Object || parameters.EnumerateObject().Count() != 1 || !parameters.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())) throw Error("plugin_capability_invalid"); return value.GetString()!; }
     private static PluginSurfacePolicyException Error(string code) => new(code, "插件请求未完成。");
-    private static bool IsCommitRejection(string code) => code is
-        "plugin_read_denied" or "plugin_write_denied" or "plugin_cursor_stale" or "plugin_api_unsupported" or "plugin_capability_invalid" or "plugin_guard_required" or "plugin_audit_invalid"
-        or "mutation.relation.restricted" or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict" or "mutation.record.not_found";
+    private sealed record CommitRejectionScope(string[] Methods, string[] Codes);
+    private static readonly CommitRejectionScope[] CommitRejectionScopes = LoadCommitRejectionScopes();
+    private static CommitRejectionScope[] LoadCommitRejectionScopes()
+    {
+        using var stream = typeof(PluginSurfaceApi).Assembly.GetManifestResourceStream("VibeTable.Desktop.surface_commit_rejections.json")
+            ?? throw new InvalidOperationException("Missing embedded plugin commit rejection catalog.");
+        return JsonSerializer.Deserialize<CommitRejectionScope[]>(stream, Json)
+            ?? throw new InvalidOperationException("Invalid embedded plugin commit rejection catalog.");
+    }
     private sealed class SurfaceAuthorityException(string code, bool notCommitted) : Exception
     { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
     private static string ReadBlockReply(string? id, object? result)
