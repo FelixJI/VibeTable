@@ -731,7 +731,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 			break
 		}
 	}
-	if plan.Mode == "create" && hasCompletedBase {
+	if hasCompletedBase && (plan.Mode == "create" || plan.Mode == "map") {
 		// A completed model already has live tables. Publish its entire extension and binding together.
 		var committed pluginmodel.State
 		err = runBusinessWrite(ctx, domain.gates, "plugin.model.upgrade", id, func(ctx context.Context) error {

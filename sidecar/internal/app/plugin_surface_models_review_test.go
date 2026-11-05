@@ -160,6 +160,66 @@ func TestPluginModelMappingFencesCopyingMigrationAndSwitchRechecksBinding(t *tes
 	}
 }
 
+func TestMappedUpgradeProtectsUserTableOnlyAfterCommit(t *testing.T) {
+	ctx := t.Context()
+	pb, workspace, input, domain, initial, _ := existingModelMapping(t)
+	commit := func(plan modelPreview) (any, error) {
+		return modelCall(t, pb, workspace, input, domain, "model.commit", map[string]string{"requestId": plan.RequestID})
+	}
+	if _, err := commit(initial); err != nil {
+		t.Fatal(err)
+	}
+	input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
+		m.Version++
+		extra := m.Entities[0]
+		extra.Key, extra.Label = "extra", "Extra"
+		m.Entities = append(m.Entities, extra)
+	})
+	preview := func(label string) modelPreview {
+		t.Helper()
+		table, err := domain.CreateTable(ctx, v2.TableCreateIntent{DisplayName: label, OperationID: "create-" + label, Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		field := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Name", "field-"+label)
+		mapping := pluginmodel.Binding{TableID: table.TableID, Fields: map[string]string{"name": field.FieldID}}
+		raw, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "map", Mappings: map[string]pluginmodel.Binding{"extra": mapping}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := raw.(modelPreview)
+		if plan.Mode != "map" || len(plan.Diagnostics) != 0 || plan.Total != 0 || !reflect.DeepEqual(plan.Bindings["extra"], mapping) {
+			t.Fatalf("mapped upgrade did not use the selected user table: %+v", plan)
+		}
+		return plan
+	}
+	first := preview("first")
+	injected := false
+	hook := pb.OnRecordCreate("vibetable_plugin_records").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetString("item_key") == first.RequestID+":completed" {
+			injected = true
+			return errors.New("failed to persist completed mapping")
+		}
+		return e.Next()
+	})
+	_, err := commit(first)
+	pb.OnRecordCreate("vibetable_plugin_records").Unbind(hook)
+	if err == nil || !injected {
+		t.Fatalf("expected injected final audit failure, got %v", err)
+	}
+	if err := pluginmodel.ProtectTable(ctx, pb, first.Bindings["extra"].TableID); err != nil {
+		t.Fatalf("unsuccessful mapping protected the user table: %v", err)
+	}
+	second := preview("second")
+	result, err := commit(second)
+	if err != nil || result.(pluginmodel.State).Status != "completed" {
+		t.Fatalf("retry with another user table: %v, %v", result, err)
+	}
+	if err := pluginmodel.ProtectTable(ctx, pb, second.Bindings["extra"].TableID); err == nil {
+		t.Fatal("committed binding must protect the selected table")
+	}
+}
+
 func TestLegacyAcceptedUpgradeResumesAtomically(t *testing.T) {
 	for _, completed := range []int{0, 1} {
 		t.Run(fmt.Sprint(completed), func(t *testing.T) {
