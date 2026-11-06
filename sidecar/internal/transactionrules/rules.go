@@ -27,27 +27,56 @@ import (
 const Contract = "vibetable.plugin-transactions.v1"
 const MaxRows = 10000
 const MaxBytes = 1 << 20
-const MaxRules = 64
+const MaxRules = 128
+const MaxRegistrations = 64
+const MaxDecimals = 64
+
+// These options distinguish an omitted policy from an invalid explicit value.
+type decimalSign string
+
+func (s *decimalSign) UnmarshalJSON(raw []byte) error {
+	var value string
+	if json.Unmarshal(raw, &value) != nil || (value != "nonnegative" && value != "positive") {
+		return failure("decimal_invalid")
+	}
+	*s = decimalSign(value)
+	return nil
+}
+
+type enabledOption bool
+
+func (flag *enabledOption) UnmarshalJSON(raw []byte) error {
+	if string(raw) != "true" {
+		return failure("rules_invalid")
+	}
+	*flag = true
+	return nil
+}
 
 type Decimal struct {
 	Entity string `json:"entity"`
 	Field  string `json:"field"`
 	exactdecimal.Format
+	Sign decimalSign `json:"sign,omitempty"`
 }
 
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
 type Rule struct {
-	ID           string              `json:"id"`
-	Kind         string              `json:"kind"`
-	Entity       string              `json:"entity"`
-	Fields       []string            `json:"fields,omitempty"`
-	Field        string              `json:"field,omitempty"`
-	Target       string              `json:"target,omitempty"`
-	Relation     string              `json:"relation,omitempty"`
-	Amount       string              `json:"amount,omitempty"`
-	Limit        string              `json:"limit,omitempty"`
-	Transitions  map[string][]string `json:"transitions,omitempty"`
-	FrozenStates []string            `json:"frozenStates,omitempty"`
+	PathMatch
+	SkipEmptyLeftEnd enabledOption       `json:"skipEmptyLeftEnd,omitempty"`
+	WhenPresent      string              `json:"whenPresent,omitempty"`
+	CurrentWhen      *PathMatch          `json:"currentWhen,omitempty"`
+	ID               string              `json:"id"`
+	Kind             string              `json:"kind"`
+	Entity           string              `json:"entity"`
+	Fields           []string            `json:"fields,omitempty"`
+	Field            string              `json:"field,omitempty"`
+	Target           string              `json:"target,omitempty"`
+	Relation         string              `json:"relation,omitempty"`
+	Amount           string              `json:"amount,omitempty"`
+	Limit            string              `json:"limit,omitempty"`
+	Transitions      map[string][]string `json:"transitions,omitempty"`
+	FrozenStates     []string            `json:"frozenStates,omitempty"`
 }
 
 type Declaration struct {
@@ -82,13 +111,13 @@ func Decode(raw []byte) (Declaration, error) {
 }
 
 func (d Declaration) Validate() error {
-	if d.Contract != Contract || d.ModelID == "" || d.Version < 1 || len(d.Rules) == 0 || len(d.Rules) > MaxRules || len(d.Decimals) > MaxRules {
+	if d.Contract != Contract || d.ModelID == "" || d.Version < 1 || len(d.Rules) == 0 || len(d.Rules) > MaxRules || len(d.Decimals) > MaxDecimals {
 		return failure("rules_invalid")
 	}
 	decimals := map[string]bool{}
 	for _, f := range d.Decimals {
 		key := f.Entity + "\x00" + f.Field
-		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || decimals[key] {
+		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || (f.Sign != "" && f.Sign != "nonnegative" && f.Sign != "positive") || decimals[key] {
 			return failure("decimal_invalid")
 		}
 		decimals[key] = true
@@ -99,10 +128,15 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
+			return failure("rules_invalid")
+		}
 		valid := false
 		switch r.Kind {
-		case "unique":
-			valid = len(r.Fields) > 0 && len(r.Fields) <= 8 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
+		case "sameTarget":
+			valid = r.PathMatch.valid(r.Entity) && (r.WhenPresent == "" || r.WhenPresent == r.Left[0].Field) && len(r.Fields) == 0 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
+		case "unique", "atMostOne":
+			valid = (r.Kind != "atMostOne" || len(r.Fields) == 2) && len(r.Fields) > 0 && len(r.Fields) <= 8 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "reference":
 			valid = r.Field != "" && r.Target != "" && len(r.Fields) == 0 && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "conservation", "balance":
@@ -157,7 +191,10 @@ func (r Registration) dependencies() map[string]map[string]bool {
 		if rule.Target != "" {
 			add(rule.Target, rule.Limit)
 		}
-		add(rule.Entity, rule.Relation)
+		rule.relationSteps(func(entity string, step RelationStep) {
+			add(entity, step.Field)
+			add(step.Target, "")
+		})
 		add(rule.Entity, rule.Amount)
 	}
 	return result
@@ -232,19 +269,26 @@ func (r Registration) Read(ctx context.Context, app core.App) (Images, error) {
 			}
 		}
 		for _, rule := range r.Declaration.Rules {
-			if rule.Entity != entity {
-				continue
-			}
-			name := rule.Relation
-			if rule.Kind == "reference" {
-				name = rule.Field
-			}
-			if name != "" {
-				field, _ := table.Field(binding.Fields[name])
-				target := r.Bindings[rule.Target]
-				if field.Relation == nil || field.Relation.TargetTableID != target.TableID || field.Relation.Cardinality != "one" {
-					return nil, failure("reference_mapping_invalid")
+			if rule.Kind == "atMostOne" && rule.Entity == entity {
+				for _, key := range rule.Fields {
+					field, _ := table.Field(binding.Fields[key])
+					if field.Relation == nil || field.Relation.Cardinality != "one" {
+						return nil, failure("reference_mapping_invalid")
+					}
 				}
+			}
+			valid := true
+			rule.relationSteps(func(source string, step RelationStep) {
+				if source != entity {
+					return
+				}
+				field, _ := table.Field(binding.Fields[step.Field])
+				if field.Relation == nil || field.Relation.TargetTableID != r.Bindings[step.Target].TableID || field.Relation.Cardinality != "one" {
+					valid = false
+				}
+			})
+			if !valid {
+				return nil, failure("reference_mapping_invalid")
 			}
 		}
 		collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
@@ -348,6 +392,9 @@ func (r Registration) Validate(before, after Images) error {
 			if err != nil {
 				return err
 			}
+			if d.Sign == "nonnegative" && n.Sign() < 0 || d.Sign == "positive" && n.Sign() <= 0 {
+				return failure("decimal_sign_violation")
+			}
 			if d.Storage == "decimalText" {
 				text, _ := d.Text(n)
 				if row[d.Field] != text {
@@ -359,6 +406,41 @@ func (r Registration) Validate(before, after Images) error {
 	for _, rule := range r.Declaration.Rules {
 		rows := after[rule.Entity]
 		switch rule.Kind {
+		case "sameTarget":
+			for id, row := range rows {
+				if rule.WhenPresent != "" {
+					if value, present := row[rule.WhenPresent]; present && (value == nil || value == "") {
+						continue
+					}
+				}
+				match, err := rule.matches(after, row, id, pathEndPolicy{skipEmptyLeft: bool(rule.SkipEmptyLeftEnd)})
+				if err != nil {
+					return err
+				}
+				if !match {
+					return failure("same_target_violation")
+				}
+			}
+		case "atMostOne":
+			for _, row := range rows {
+				occupied := false
+				for _, field := range rule.Fields {
+					value, found := row[field]
+					if !found {
+						return failure("reference_violation")
+					}
+					if value == nil || value == "" {
+						continue
+					}
+					if _, ok := value.(string); !ok {
+						return failure("reference_violation")
+					}
+					if occupied {
+						return failure("at_most_one_violation")
+					}
+					occupied = true
+				}
+			}
 		case "unique":
 			seen := map[string]bool{}
 			for _, row := range rows {
@@ -402,6 +484,15 @@ func (r Registration) Validate(before, after Images) error {
 				target, ok := row[rule.Relation].(string)
 				if !ok || after[rule.Target][target] == nil {
 					return failure("reference_violation")
+				}
+				if rule.CurrentWhen != nil {
+					current, err := rule.CurrentWhen.matches(after, row, id, pathEndPolicy{allowEmptyRight: true})
+					if err != nil {
+						return err
+					}
+					if !current {
+						continue
+					}
 				}
 				amount, err := format.Parse(row[rule.Amount])
 				if err != nil {
@@ -479,6 +570,83 @@ func contains(values []string, wanted string) bool {
 	return false
 }
 
+// ValidateAdmission checks a normal write on each affected table against the same
+// effective registrations and combined before/after image budget used at commit.
+func (candidate Registration) ValidateAdmission(ctx context.Context, app core.App, history []Registration) error {
+	type trigger struct {
+		writes WriteSet
+		budget imageBudget
+	}
+	// Inserting or deleting a row also touches its reciprocal fields. A candidate
+	// can therefore be selected by writes originating outside its dependency tables.
+	sources := map[string]bool{}
+	tables := map[string]schemaexecution.Table{}
+	for entity, fields := range candidate.dependencies() {
+		binding := candidate.Bindings[entity]
+		table, err := schemaexecution.Describe(ctx, app, binding.TableID)
+		if err != nil {
+			return err
+		}
+		tables[binding.TableID] = table
+		sources[binding.TableID] = true
+		for key := range fields {
+			field, ok := table.Field(binding.Fields[key])
+			if !ok {
+				return failure("binding_stale")
+			}
+			if rel := field.Relation; rel != nil && rel.ReciprocalFieldID != "" {
+				sources[rel.TargetTableID] = true
+			}
+		}
+	}
+	var triggers []trigger
+	for source := range sources {
+		table, ok := tables[source]
+		if !ok {
+			var err error
+			table, err = schemaexecution.Describe(ctx, app, source)
+			if err != nil {
+				return err
+			}
+		}
+		writes := WriteSet{}
+		writes.AddNative(table.Snapshot, true, nil, "")
+		if candidate.selectedBy(writes) {
+			triggers = append(triggers, trigger{writes: writes})
+		}
+	}
+	for i, guard := range activeGuards(append(history, candidate)) {
+		var affected []*imageBudget
+		for j := range triggers {
+			if guard.selectedBy(triggers[j].writes) {
+				affected = append(affected, &triggers[j].budget)
+			}
+		}
+		if len(affected) == 0 {
+			continue
+		}
+		images, err := guard.Read(ctx, app)
+		if err != nil {
+			return err
+		}
+		if i == 0 { // activeGuards puts the newly appended registration first.
+			if err := candidate.Validate(nil, images); err != nil {
+				return err
+			}
+		}
+		var image imageBudget
+		if err := image.count(images); err != nil {
+			return err
+		}
+		for _, budget := range affected {
+			if err := budget.add(2*image.rows, 2*image.bytes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Load reads immutable platform events; disabling or removing an installation never removes protection.
 func Load(ctx context.Context, app core.App) ([]Registration, error) {
 	if _, err := app.FindCollectionByNameOrId("vibetable_plugin_records"); errors.Is(err, sql.ErrNoRows) {
@@ -486,11 +654,11 @@ func Load(ctx context.Context, app core.App) ([]Registration, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	rows, err := app.FindRecordsByFilter("vibetable_plugin_records", "kind='audit' && payload_json.eventType='transaction.rules'", "seq", MaxRules+1, 0)
+	rows, err := app.FindRecordsByFilter("vibetable_plugin_records", "kind='audit' && payload_json.eventType='transaction.rules'", "seq", MaxRegistrations+1, 0)
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) > MaxRules {
+	if len(rows) > MaxRegistrations {
 		return nil, failure("rule_budget_exceeded")
 	}
 	result := []Registration{}
@@ -543,6 +711,101 @@ func IntegerInputs(ctx context.Context, app core.App, table string) (map[string]
 	return formats, nil
 }
 
+// Retains allows an identical declaration or a strictly newer version that keeps
+// each previously approved rule and exact decimal mapping.
+func (d Declaration) Retains(old Declaration) bool {
+	if old.ModelID != d.ModelID || old.Contract != d.Contract || d.Version < old.Version {
+		return false
+	}
+	if d.Version == old.Version {
+		return reflect.DeepEqual(d, old)
+	}
+	rules := map[string]Rule{}
+	for _, rule := range d.Rules {
+		rules[rule.ID] = rule
+	}
+	for _, rule := range old.Rules {
+		if !reflect.DeepEqual(rule, rules[rule.ID]) {
+			return false
+		}
+	}
+	decimals := map[Decimal]bool{}
+	for _, decimal := range d.Decimals {
+		decimals[decimal] = true
+	}
+	for _, decimal := range old.Decimals {
+		if !decimals[decimal] {
+			return false
+		}
+	}
+	return true
+}
+
+// Cumulative upgrades keep their immutable registrations. Execute the superset once so
+// previously readable workspaces do not spend the bounded image budget twice on the same rows.
+func activeGuards(history []Registration) []Registration {
+	active := make([]Registration, 0, len(history))
+	for i := len(history) - 1; i >= 0; i-- {
+		old := history[i]
+		covered := false
+		for _, next := range active {
+			covered = old.WorkspaceID == next.WorkspaceID && old.PluginID == next.PluginID && old.InstallationID == next.InstallationID &&
+				next.Declaration.Version > old.Declaration.Version && next.Declaration.Retains(old.Declaration) && old.MatchesBindings(next.Bindings)
+			if covered {
+				break
+			}
+		}
+		if !covered {
+			active = append(active, old)
+		}
+	}
+	return active
+}
+
+type WriteSet map[string]map[string]bool
+
+// AddNative includes the same single-table and reciprocal writes for native mutation
+// and for admission's largest single-row operation (insert/delete).
+func (w WriteSet) AddNative(table v2.SchemaSnapshot, whole bool, values map[string]any, attachment string) {
+	mark := func(table, field string) {
+		if w[table] == nil {
+			w[table] = map[string]bool{}
+		}
+		w[table][field] = true
+	}
+	if whole {
+		mark(table.TableID, "*")
+	}
+	if attachment != "" {
+		mark(table.TableID, attachment)
+	}
+	for _, f := range table.Fields {
+		_, set := values[f.Identity.PhysicalName]
+		if set {
+			mark(table.TableID, f.Identity.FieldID)
+		}
+		if r := f.Relation; r != nil && r.ReciprocalFieldID != "" && (whole || set) {
+			mark(r.TargetTableID, r.ReciprocalFieldID)
+		}
+	}
+}
+
+func (r Registration) selectedBy(writes WriteSet) bool {
+	for entity, fields := range r.dependencies() {
+		binding := r.Bindings[entity]
+		touched := writes[binding.TableID]
+		if touched["*"] {
+			return true
+		}
+		for field := range fields {
+			if touched[binding.Fields[field]] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Capture selects by actual canonical writes, including reciprocal targets, never a caller's rule list.
 func Capture(ctx context.Context, app core.App, touched map[string]map[string]bool) ([]Guard, error) {
 	registrations, err := Load(ctx, app)
@@ -550,29 +813,16 @@ func Capture(ctx context.Context, app core.App, touched map[string]map[string]bo
 		return nil, err
 	}
 	guards := []Guard{}
-	rowsRead, bytesRead := 0, 0
-	for _, r := range registrations {
-		selected := false
-		for entity, fields := range r.dependencies() {
-			b := r.Bindings[entity]
-			writes := touched[b.TableID]
-			if writes["*"] {
-				selected = true
-			}
-			for field := range fields {
-				if writes[b.Fields[field]] {
-					selected = true
-				}
-			}
-		}
-		if !selected {
+	var budget imageBudget
+	for _, r := range activeGuards(registrations) {
+		if !r.selectedBy(touched) {
 			continue
 		}
 		before, err := r.Read(ctx, app)
 		if err != nil {
 			return nil, err
 		}
-		if err := countImages(before, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(before); err != nil {
 			return nil, err
 		}
 		guards = append(guards, Guard{r, before})
@@ -581,9 +831,9 @@ func Capture(ctx context.Context, app core.App, touched map[string]map[string]bo
 }
 
 func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
-	rowsRead, bytesRead := 0, 0
+	var budget imageBudget
 	for _, guard := range guards {
-		if err := countImages(guard.Before, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(guard.Before); err != nil {
 			return err
 		}
 	}
@@ -592,7 +842,7 @@ func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
 		if err != nil {
 			return err
 		}
-		if err := countImages(after, &rowsRead, &bytesRead); err != nil {
+		if err := budget.count(after); err != nil {
 			return err
 		}
 		if err := guard.Registration.Validate(guard.Before, after); err != nil {
@@ -602,16 +852,24 @@ func ValidateGuards(ctx context.Context, app core.App, guards []Guard) error {
 	return nil
 }
 
-func countImages(images Images, rows, size *int) error {
+type imageBudget struct{ rows, bytes int }
+
+func (b *imageBudget) count(images Images) error {
+	rows := 0
 	for _, records := range images {
-		*rows += len(records)
+		rows += len(records)
 	}
 	raw, err := json.Marshal(images)
 	if err != nil {
 		return err
 	}
-	*size += len(raw)
-	if *rows > MaxRows || *size > MaxBytes {
+	return b.add(rows, len(raw))
+}
+
+func (b *imageBudget) add(rows, bytes int) error {
+	b.rows += rows
+	b.bytes += bytes
+	if b.rows > MaxRows || b.bytes > MaxBytes {
 		return failure("read_budget_exceeded")
 	}
 	return nil

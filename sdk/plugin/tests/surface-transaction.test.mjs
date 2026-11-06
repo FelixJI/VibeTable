@@ -16,6 +16,23 @@ function fixture() {
   } };
 }
 
+test("plugin callers receive the native rejection code or uncertainty without resubmission", async () => {
+  const f = fixture();
+  const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "orders", version: 1,
+    decimals: [], rules: [{ id: "code", kind: "unique", entity: "headers", fields: ["number"] }] };
+  for (const [invoke, code] of [
+    [() => f.client.mutation.submit("plan"), "transaction.same_target_violation"],
+    [() => f.client.transaction.submit({ requestId: "business" }), "transaction.balance_violation"],
+    [() => f.client.transaction.configure({ declaration }), "plugin_commit_unknown"],
+  ]) {
+    const request = invoke();
+    f.reply(undefined, { code, message: "Plugin request failed." });
+    await assert.rejects(request, error => error instanceof sdk.PluginCapabilityError && error.code === code);
+  }
+  assert.deepEqual(f.calls.map(call => call.method), ["mutation.submit", "transaction.submit", "transaction.configure"]);
+  f.client.dispose();
+});
+
 test("transaction uses persistent business identity and single calls without retry or host commit channel", async () => {
   const f = fixture();
   const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "orders", version: 1,

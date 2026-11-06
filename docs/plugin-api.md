@@ -147,10 +147,10 @@ if (outcome.status === "rejected") return; // 保留表单，不显示“保存�
 manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经由 `model.configure` 完成绑定的
 logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
 完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
-规则包括 `unique`、`reference`、`conservation`、`balance` 和 `state`；不接收脚本、SQL 或可省略的
-调用方条件。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
+每个声明最多 128 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget` 和 `atMostOne`。
+`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
 
-`decimals` 指定 `{entity,field,storage,scale,digits}`。`decimalText` 绑定 Text，值使用规范十进制
+`decimals` 指定 `{entity,field,storage,scale,digits}`，可选 `sign` 为 `nonnegative` 或 `positive`。省略时接受有符号数。`decimalText` 绑定 Text，值使用规范十进制
 字符串；`integerUnits` 绑定整数 Number，值为安全整数最小单位。scale 为 0–18，digits 为
 1–38，且 scale 不大于 digits；拒绝超精度、溢出、隐式舍入及 null 代零。普通小数 Number
 不能当作可无损恢复的精确金额。
@@ -188,6 +188,7 @@ Host 将确认的版本传给 commit，Go 在同一业务事务内核对该版�
 变化报 `transaction.plan_stale`，整笔拒绝。SDK 不自动刷新；影响预览不替代提交时的完整余额等规则检查。
 旧 ID 缺失或恢复围栏失效返回 `unknown`，不会重新签发。`transaction.status({requestId}, signal?)`
 在当前授权下返回 `prepared`、原 `applied`（包含稳定 `newIds` 和逐表逐行回执）或 `unknown`。
+同一安装的模型与规则仅追加定义，并保留原先涉及的物理绑定和读取权限时，可按原 ID 查询已应用回执。升级前的待提交计划须重新预览并确认。
 关闭再开、丢失 acknowledgement 或收到 `plugin_commit_unknown` 后只查询原 ID；SDK 从不自动
 重试 submit，不以 `unknown` 换 key 补交。用户拒绝确认返回 null；迟到取消和后续通知失败不撤回
 已确认成功。每次 Host task 独立于持久业务 requestId，任务列表不会把并发操作合并成一个任务。

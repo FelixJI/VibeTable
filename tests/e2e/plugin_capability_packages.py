@@ -47,10 +47,14 @@ def prepare_capability_packages(controls: Path) -> None:
     pack_plugin(target, controls / "capability-other.vtplugin")
 
 
-def _pack_example(source: Path, controls: Path, name: str) -> None:
+def _pack_example(source: Path, controls: Path, name: str, *, manifest: dict | None = None) -> None:
     """Build and pack a real repository example through the plugin CLI."""
     target = controls / name
     shutil.copytree(source, target, ignore=shutil.ignore_patterns("node_modules", "dist"))
+    if manifest is not None:
+        (target / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
     subprocess.run(
         [sys.executable, str(ROOT / "scripts/vibetable_plugin.py"), "build", str(target)],
         cwd=ROOT,

@@ -179,6 +179,46 @@ def test_native_manifest_accepts_closed_transaction_rules() -> None:
     assert validate_plugin_manifest(package_entries(manifest)) == manifest
 
 
+@pytest.mark.parametrize(
+    ("public", "private"),
+    [
+        ("whenPresent", "when_present"),
+        ("skipEmptyLeftEnd", "skip_empty_left_end"),
+        ("currentWhen", "current_when"),
+        ("frozenStates", "frozen_states"),
+        ("modelId", "model_id"),
+    ],
+)
+def test_raw_transaction_permissions_accept_only_wire_aliases(public: str, private: str) -> None:
+    manifest = transactions_manifest()
+    d = declaration(manifest)
+    path = [{"field": "header", "target": "headers"}]
+    scope = {
+        "id": "scope",
+        "kind": "sameTarget",
+        "entity": "lines",
+        "left": path,
+        "right": path,
+        "whenPresent": "header",
+        "skipEmptyLeftEnd": True,
+    }
+    d["rules"].append(scope)
+    balance = d["rules"][2]
+    balance.update(kind="balance", currentWhen={"left": path, "right": path})
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    assert PluginManifest.model_validate(manifest).permissions["transactions"] == d
+
+    owner = next(item for item in [d, *d["rules"]] if public in item)
+    owner[private] = owner.pop(public)
+    # In-process model construction may use Python attributes. Only raw package/manifest
+    # admission promises that these same bytes will be accepted by the native decoder.
+    assert PluginTransactionsDeclaration.model_validate(d).model_id == "synthetic"
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
+    with pytest.raises(PluginPackageError):
+        validate_plugin_manifest(package_entries(manifest))
+
+
 def test_conformance_fixture_passes_closed_manifest_and_package_validation() -> None:
     manifest = conformance_manifest()
     parsed = PluginManifest.model_validate(manifest)
@@ -299,6 +339,158 @@ def test_transactions_reject_unknown_or_cross_kind_declarations(case: str) -> No
         PluginManifest.model_validate(manifest)
     with pytest.raises(PluginPackageError):
         validate_plugin_manifest(package_entries(manifest))
+
+
+def test_package_capacity_and_closed_relation_paths() -> None:
+    manifest = transactions_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    for index in range(30):
+        entities.append(
+            {
+                "key": f"e{index}",
+                "label": f"T{index}",
+                "operations": ["read", "query"],
+                "fields": [{"key": "code", "label": "Code", "type": "text"}],
+            }
+        )
+    path = [{"field": "header", "target": "headers"}]
+    rules = declaration(manifest)["rules"]
+    rules.extend(
+        [
+            {"id": "scope", "kind": "sameTarget", "entity": "lines", "left": path, "right": path},
+            {
+                **rules[2],
+                "id": "current",
+                "kind": "balance",
+                "currentWhen": {"left": path, "right": path},
+            },
+        ]
+    )
+    rules.extend({**rules[0], "id": f"u{i}"} for i in range(128 - len(rules)))
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+
+    for invalid_path in (
+        [],
+        path * 5,
+        [{"field": "amount", "target": "headers"}],
+        [{"field": "header", "target": "lines"}],
+        [*path, {"field": "lines", "target": "lines"}],
+    ):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][4]["right"] = invalid_path
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+    for key, collection in (
+        ("entities", entities),
+        ("rules", rules),
+        ("decimals", declaration(manifest)["decimals"]),
+    ):
+        invalid = copy.deepcopy(manifest)
+        dest = (invalid["permissions"]["model"] if key == "entities" else declaration(invalid))[key]
+        if key == "decimals":
+            dest.extend({**collection[0], "field": f"n{i}"} for i in range(65 - len(dest)))
+        else:
+            dest.append({**collection[-1], ("key" if key == "entities" else "id"): "extra"})
+            if key == "entities":
+                dest[-1]["label"] = "Extra"
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_optional_single_pointer_cannot_skip_an_unrelated_path() -> None:
+    manifest = transactions_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    entities[0]["fields"].append(
+        {
+            "key": "current",
+            "label": "Current",
+            "type": "relation",
+            "relation": {"entity": "lines", "field": "current_for", "cardinality": "one"},
+        }
+    )
+    entities[1]["fields"].append(
+        {
+            "key": "current_for",
+            "label": "Current for",
+            "type": "relation",
+            "relation": {"entity": "headers", "field": "current", "cardinality": "many"},
+        }
+    )
+    rule = {
+        "id": "owner",
+        "kind": "sameTarget",
+        "entity": "headers",
+        "whenPresent": "current",
+        "left": [{"field": "current", "target": "lines"}, {"field": "header", "target": "headers"}],
+        "right": [],
+    }
+    declaration(manifest)["rules"].append(rule)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    rule["whenPresent"] = "code"
+    with pytest.raises(PluginPackageError):
+        validate_plugin_manifest(package_entries(manifest))
+
+
+def test_transaction_source_choice_and_decimal_sign_match_package_admission() -> None:
+    manifest = transactions_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    entities[1]["fields"].append(
+        {
+            "key": "other",
+            "label": "Other",
+            "type": "relation",
+            "relation": {"entity": "headers", "field": "others", "cardinality": "one"},
+        }
+    )
+    entities[0]["fields"].append(
+        {
+            "key": "others",
+            "label": "Others",
+            "type": "relation",
+            "relation": {"entity": "lines", "field": "other", "cardinality": "many"},
+        }
+    )
+    d = declaration(manifest)
+    d["decimals"][0]["sign"] = "nonnegative"
+    d["decimals"][1]["sign"] = "positive"
+    path = [{"field": "header", "target": "headers"}]
+    d["rules"].extend(
+        [
+            {
+                "id": "sources",
+                "kind": "atMostOne",
+                "entity": "lines",
+                "fields": ["header", "other"],
+            },
+            {
+                "id": "owner",
+                "kind": "sameTarget",
+                "entity": "lines",
+                "skipEmptyLeftEnd": True,
+                "left": path,
+                "right": path,
+            },
+        ]
+    )
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for section, index, patch in [
+        ("decimals", 0, {"sign": "signed"}),
+        ("decimals", 0, {"sign": None}),
+        ("rules", -2, {"fields": ["header", "header"]}),
+        ("rules", -2, {"fields": ["header", "amount"]}),
+        ("rules", -2, {"entity": "headers", "fields": ["lines", "others"]}),
+        ("rules", -2, {"fields": ["header"]}),
+        ("rules", -2, {"skipEmptyLeftEnd": True}),
+        ("rules", -1, {"skipEmptyLeftEnd": False}),
+    ]:
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)[section][index].update(patch)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
 
 
 def test_transactions_enforce_declared_budgets() -> None:

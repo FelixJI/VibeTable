@@ -527,15 +527,23 @@ def _observe_confirmation_chrome(
     observer: Path,
     hwnd: int,
     host_pid: int,
-    screenshot: Path,
+    screenshot: Path | None,
     *,
     deadline: float,
 ) -> dict[str, Any]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise OSError("confirmation observation exceeded its request budget")
+    # Passive read: the observer walks the owned WPF UIA tree (full texts,
+    # buttons, textOverflow) without any foreground right. The BitBlt capture
+    # stays optional and belongs to the actual-input path only, where the
+    # window was really activated first; without activation the capture could
+    # just mirror whatever peer window holds the screen.
+    command = [str(observer), "--buttons", str(hwnd)]
+    if screenshot is not None:
+        command = [str(observer), "--screenshot", str(hwnd), str(screenshot.resolve())]
     result = subprocess.run(
-        [str(observer), "--screenshot", str(hwnd), str(screenshot.resolve())],
+        command,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -638,17 +646,16 @@ def _handle_confirmation_pending(
             time.sleep(min(0.05, remaining))
             continue
         observations = []
-        for index, window in enumerate(windows):
+        for window in windows:
             hwnd = window["hwnd"]
             owner_root = _owned_confirmation_root(native, hwnd, host_pid)
-            native.foreground(hwnd, host_pid)
+            # Pending evidence is strictly read-only: two owned confirmation
+            # popups fight over the single foreground right (cloud run
+            # 42044079567 job 127313256227), and the passive UIA read needs no
+            # activation. No per-window screenshot is taken either; a capture
+            # without activation would only mirror the peer window's pixels.
             observation = _observe_confirmation_chrome(
-                native,
-                observer,
-                hwnd,
-                host_pid,
-                evidence / f"48-native-pending-{index}.png",
-                deadline=deadline,
+                native, observer, hwnd, host_pid, None, deadline=deadline
             )
             # Detail parsing and bounded-text failures are stable evidence
             # errors and fail closed immediately, not transient waits.
@@ -678,7 +685,9 @@ def _handle_confirmation_pending(
             "action": "confirm-pending",
             "windows": observations,
             "input": None,
-            "foreground": native.foreground_observation,
+            # No activation was attempted, so the foreground evidence stays
+            # empty rather than fabricating an activation fact.
+            "foreground": getattr(native, "foreground_observation", None),
         }
 
 

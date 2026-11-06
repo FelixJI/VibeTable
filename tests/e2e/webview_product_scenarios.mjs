@@ -2,7 +2,7 @@ import { seedLegacyLayoutProduct, resumeLegacyLayoutProduct, rejectLegacyRoutes,
 import { runRecordManagerProduct } from "./record_manager_product.mjs";
 import { runCapabilityServices } from "./plugin_capability_services.mjs";
 import { runPluginModels } from "./plugin_models.mjs";
-import { runPluginTransactions } from "./plugin_transactions.mjs";
+import { capacityFixture, runPluginTransactions } from "./plugin_transactions.mjs";
 import { runPluginDatasets } from "./plugin_datasets.mjs";
 import { runPluginIntegration } from "./plugin_integration.mjs";
 
@@ -12185,7 +12185,7 @@ const scenarios = {
   "54-plugin-models": (page, recorder, _network, runtime) => runPluginModels(page, recorder, runtime, { waitForShell, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, activateRestartedWorkspace, applyProductMutation, createV2Field }),
 
   "55-plugin-surface-outputs": (page, recorder, _network, runtime) => runPluginSurfaceOutputs(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
-  "56-plugin-transactions": (page, recorder, _network, runtime) => runPluginTransactions(page, recorder, runtime, { waitForShell, rawBridgeRequest }),
+  "56-plugin-transactions": (page, recorder, _network, runtime) => runPluginTransactions(page, recorder, runtime, { waitForShell, rawBridgeRequest }, capacityFixture),
   "57-plugin-datasets": (page, recorder, _network, runtime) => runPluginDatasets(page, recorder, runtime, { waitForShell, rawBridgeRequest, applyProductMutation }),
   "58-plugin-integration-evidence": (page, recorder, _network, runtime) => runPluginIntegration(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
 

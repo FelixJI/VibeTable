@@ -36,6 +36,7 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 		{"timeout", context.DeadlineExceeded},
 		{"typed_conflict_after_commit", &mutation.ProductError{Code: "mutation.digest_conflict"}},
 		{"typed_restrict_after_commit", &mutation.ProductError{Code: "mutation.relation.restricted"}},
+		{"typed_guard_after_commit", &mutation.ProductError{Code: "transaction.same_target_violation"}},
 		{"precommit_conflict", nil},
 	} {
 		t.Run(failure.name, func(t *testing.T) {

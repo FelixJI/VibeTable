@@ -97,6 +97,9 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 			{Key: "lines", Label: "合成明细", Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "amount", Label: "金额", Type: v2.LogicalText}, {Key: "header", Label: "单头", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "headers", Field: "lines", Cardinality: "one"}}, {Key: "allocations", Label: "分配", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "allocations", Field: "line", Cardinality: "many"}}}},
 			{Key: "allocations", Label: "合成分配", Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "amount", Label: "金额", Type: v2.LogicalText}, {Key: "line", Label: "明细", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "allocations", Cardinality: "one"}}}},
 		}
+		if len(storage) > 0 && storage[0] == "scoped" {
+			addVersionModel(m)
+		}
 		if len(storage) > 0 && storage[0] == "receipt-repair" {
 			m.Entities = append(m.Entities, pluginmodel.Entity{Key: "notes", Label: "合成独立备注", Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "名称", Type: v2.LogicalText}}})
 		}
@@ -126,6 +129,11 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
 	if len(storage) > 0 && storage[0] == "state" {
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "posted", Kind: "state", Entity: "headers", Field: "status", Fields: []string{"code"}, Transitions: map[string][]string{"draft": {"posted"}, "posted": {}}, FrozenStates: []string{"posted"}})
+	}
+	if len(storage) > 0 && storage[0] == "scoped" {
+		d.Rules[2].CurrentWhen = &transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "version", Target: "versions"}}, Right: []transactionrules.RelationStep{{Field: "line", Target: "lines"}, {Field: "current", Target: "versions"}}}
+		d.Rules = append(d.Rules, transactionrules.Rule{ID: "current_owner", Kind: "sameTarget", Entity: "lines", WhenPresent: "current", PathMatch: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "current", Target: "versions"}, {Field: "owner", Target: "lines"}}, Right: []transactionrules.RelationStep{}}})
+		d.Rules = append(d.Rules, transactionrules.Rule{ID: "scope", Kind: "sameTarget", Entity: "allocations", PathMatch: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "line", Target: "lines"}}, Right: []transactionrules.RelationStep{{Field: "version", Target: "versions"}, {Field: "owner", Target: "lines"}}}})
 	}
 	for _, entity := range []string{"headers", "lines", "allocations"} {
 		format := "decimalText"

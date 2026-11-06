@@ -3,12 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -160,24 +162,40 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 	})
 }
 
-func surfaceCommitRejection(code string) bool {
-	switch code {
-	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
-		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict",
-		"mutation.record.not_found":
-		return true
-	default:
-		return false
+// The desktop service embeds this same catalog to interpret authenticated sidecar
+// replies. A listed code is eligible for non-commit only after a receipt proof check.
+//
+//go:embed surface_commit_rejections.json
+var surfaceCommitRejectionJSON []byte
+
+type surfaceRejectionScope struct {
+	Methods []string `json:"methods"`
+	Codes   []string `json:"codes"`
+}
+
+var surfaceRejectionScopes = func() []surfaceRejectionScope {
+	var scopes []surfaceRejectionScope
+	if err := json.Unmarshal(surfaceCommitRejectionJSON, &scopes); err != nil {
+		panic(err)
 	}
+	return scopes
+}()
+
+func surfaceCommitRejection(method, code string) bool {
+	for _, scope := range surfaceRejectionScopes {
+		if slices.Contains(scope.Methods, method) && slices.Contains(scope.Codes, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // Error type/status alone cannot establish rollback: the workspace writer can
 // fail after PB committed. Only an exact rejection plus absent recovery proof can.
 func surfaceCommitOutcome(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, result any, code string) string {
 	kind, identity := "plugin.surface.mutation", input.RequestID
-	rejected := surfaceCommitRejection(code)
+	rejected := surfaceCommitRejection(input.Method, code)
 	if input.Method == "transaction.configure" || input.Method == "transaction.commit" {
-		rejected = rejected || surfaceTransactionRejection(code)
 		kind = "plugin." + input.Method
 		if input.Method == "transaction.commit" {
 			var request struct {
@@ -207,23 +225,6 @@ func surfaceCommitOutcome(ctx context.Context, app core.App, workspace string, i
 		return "unknown"
 	}
 	return "not-committed"
-}
-
-func surfaceTransactionRejection(code string) bool {
-	switch code {
-	case "transaction.plan_stale", "transaction.request_invalid", "transaction.declaration_invalid", "transaction.model_required",
-		"transaction.configuration_denied", "transaction.configuration_conflict", "transaction.configuration_required",
-		"transaction.plan_invalid", "transaction.operation_invalid", "transaction.duplicate_row", "transaction.id_required",
-		"transaction.budget_exceeded", "transaction.result_budget_exceeded", "transaction.rule_budget_exceeded", "transaction.read_budget_exceeded",
-		"transaction.input_conflict", "transaction.relation_conflict", "transaction.reference_invalid", "transaction.binding_stale",
-		"transaction.decimal_invalid", "transaction.decimal_noncanonical", "transaction.decimal_scale_mismatch",
-		"transaction.unique_null", "transaction.unique_violation", "transaction.reference_violation",
-		"transaction.conservation_violation", "transaction.balance_violation", "transaction.state_invalid", "transaction.state_frozen", "transaction.state_transition_denied",
-		"mutation.relation.cardinality", "mutation.relation.reciprocal_cardinality", "mutation.relation.target_not_found":
-		return true
-	default:
-		return false
-	}
 }
 
 func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate, ioPorts ...*pluginSurfaceIO) (any, error) {

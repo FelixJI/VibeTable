@@ -143,7 +143,7 @@ func authorizeTransactionRecovery(ctx context.Context, app core.App, workspace s
 	if err != nil {
 		return err
 	}
-	if !found || preview.WorkspaceID != workspace || preview.InstallationID != input.InstallationID || installed.Manifest.Permissions.Model == nil || !pluginmodel.Equal(preview.Model.Model, *installed.Manifest.Permissions.Model) || !reflect.DeepEqual(installed.Manifest.Permissions.Transactions, &preview.Declaration) {
+	if !found || preview.WorkspaceID != workspace || preview.InstallationID != input.InstallationID || installed.Manifest.Permissions.Model == nil || !installed.Manifest.Permissions.Model.Retains(preview.Model.Model) || installed.Manifest.Permissions.Transactions == nil || !installed.Manifest.Permissions.Transactions.Retains(preview.Declaration) {
 		return pluginDataError("plugin_read_denied")
 	}
 	states, err := pluginmodel.States(ctx, app, input.ProjectKey, input.PluginID)
@@ -170,13 +170,19 @@ func authorizeReceiptTables(installed pluginSurfaceInstallation, active string, 
 	for _, entity := range current.Model.Entities {
 		prior, ok := original.Bindings[entity.Key]
 		if !ok {
-			return pluginDataError("plugin_read_denied")
+			continue // A newly mapped entity cannot confer access to an old external table.
 		}
 		if _, affected := receipt.Revisions[prior.TableID]; !affected {
 			continue
 		}
-		if !reflect.DeepEqual(prior, current.Bindings[entity.Key]) {
+		now := current.Bindings[entity.Key]
+		if prior.TableID != now.TableID {
 			return pluginDataError("plugin_read_denied")
+		}
+		for key, field := range prior.Fields {
+			if field == "" || field != now.Fields[key] {
+				return pluginDataError("plugin_read_denied")
+			}
 		}
 		installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: prior.TableID, Fields: []string{"id"}, Operations: entity.Operations})
 	}
@@ -283,14 +289,10 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 				if err != nil {
 					return err
 				}
-				if len(registered) >= transactionrules.MaxRules {
+				if len(registered) >= transactionrules.MaxRegistrations {
 					return pluginDataError("transaction.rule_budget_exceeded")
 				}
-				images, err := registration.Read(ctx, tx)
-				if err != nil {
-					return err
-				}
-				if err := registration.Validate(nil, images); err != nil {
+				if err := registration.ValidateAdmission(ctx, tx, registered); err != nil {
 					return err
 				}
 				_, err = pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, installed, "transaction:rules:"+id, "transaction.rules", registration))

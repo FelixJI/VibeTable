@@ -3,7 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { nativePluginInput, openApplication } from "./plugin_applications.mjs";
 import { picker } from "./plugin_capability_services.mjs";
-import { requestTransactionNativeInput, runPluginTransactions } from "./plugin_transactions.mjs";
+import { businessFixture, requestTransactionNativeInput, runPluginTransactions } from "./plugin_transactions.mjs";
 
 export function exactSyntheticCents(rows, field) {
   return rows.reduce((sum, row) => {
@@ -83,7 +83,7 @@ function transactionBoundaryDetails(value, rows) {
 
 /** Real SDK model -> protected transaction -> shared dataset -> native atomic CSV. */
 export async function runPluginDatasets(page, recorder, runtime, helpers) {
-  await runPluginTransactions(page, recorder, runtime, helpers);
+  await runPluginTransactions(page, recorder, runtime, helpers, businessFixture);
   const prior = JSON.parse(await fs.readFile(path.join(runtime.evidenceDir, "56-transactions.json"), "utf8"));
   let frame = page.frameLocator(".surface-shell iframe");
   async function finish(expected = "succeeded") {

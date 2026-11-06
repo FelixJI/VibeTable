@@ -57,7 +57,7 @@ func validateManifest(value any, pluginID, version string) error {
 		declaration, err := transactionrules.Decode(raw)
 		modelRaw, modelErr := json.Marshal(manifest["permissions"].(map[string]any)["model"])
 		model, decodeErr := pluginmodel.Decode(modelRaw)
-		if err != nil || modelErr != nil || decodeErr != nil || declaration.ModelID != model.ModelID {
+		if err != nil || modelErr != nil || decodeErr != nil || declaration.ModelID != model.ModelID || declaration.ValidatePaths(model) != nil {
 			return invalidPayload()
 		}
 	}

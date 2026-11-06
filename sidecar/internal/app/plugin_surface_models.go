@@ -723,6 +723,89 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 		}
 		return latest, nil
 	}
+	hasCompletedBase := false
+	for i := len(states) - 1; i >= 0; i-- {
+		state := states[i]
+		if state.RequestID != id && state.Status == "completed" && state.Model.ModelID == plan.Model.ModelID {
+			hasCompletedBase = state.Model.Version < plan.Model.Version
+			break
+		}
+	}
+	if hasCompletedBase && (plan.Mode == "create" || plan.Mode == "map") {
+		// A completed model already has live tables. Publish its entire extension and binding together.
+		var committed pluginmodel.State
+		err = runBusinessWrite(ctx, domain.gates, "plugin.model.upgrade", id, func(ctx context.Context) error {
+			txErr := app.RunInTransaction(func(tx core.App) error {
+				old, err := checkPredecessor(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if _, err := surfaceInstallation(ctx, tx, workspace, input); err != nil {
+					return err
+				}
+				if old.RequestID == id && old.Status == "completed" {
+					if err := modelValidateBindings(ctx, tx, old); err != nil {
+						return err
+					}
+					committed = old
+					return writecoordinator.ReplayedBusinessWrite(ctx, "plugin.model.upgrade", id)
+				}
+				next := plan
+				if old.RequestID == id {
+					// An earlier host may already have accepted this request and committed some steps.
+					validStatus := old.Status == "pending" || old.Status == "partial" || old.Status == "failed"
+					if !validStatus || old.InstallationID != input.InstallationID || old.InstallationRevision != input.InstallationRevision || !pluginmodel.Equal(old.Model, *installed.Manifest.Permissions.Model) || old.Completed < 0 || old.Completed > len(plan.Steps) || old.Total != len(plan.Steps) {
+						return pluginDataError("plugin_plan_stale")
+					}
+					next.State = old
+				} else if !time.Now().Before(plan.ExpiresAt) {
+					return pluginDataError("plugin_plan_stale")
+				}
+				if err := modelValidateRevisions(ctx, tx, next.State); err != nil {
+					return err
+				}
+				scoped := newSchemaFieldDomain(tx, domain.migration, domain.logger, domain.executorOptions)
+				next.State = cloneModelState(next.State)
+				for _, step := range next.Steps[next.Completed:] {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					before := next.Completed
+					err := applyModelStep(ctx, &scoped, &next, step, func(_ core.App, state pluginmodel.State) error {
+						state.Completed++
+						next.State = state
+						return nil
+					})
+					if err != nil {
+						return err
+					}
+					if next.Completed != before+1 {
+						return pluginDataError("plugin_model_progress_missing")
+					}
+				}
+				if err := modelValidateRevisions(ctx, tx, next.State); err != nil {
+					return err
+				}
+				if err := modelValidateBindings(ctx, tx, next.State); err != nil {
+					return err
+				}
+				next.Status, next.ErrorCode = "completed", ""
+				if err := save(ctx, tx, next.State, "completed"); err != nil {
+					return err
+				}
+				if err := writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC()); err != nil {
+					return err
+				}
+				committed = next.State
+				return ctx.Err()
+			})
+			return writecoordinator.ClassifyPocketBaseTransactionError(ctx, app, txErr)
+		})
+		if err != nil {
+			return plan.State, err
+		}
+		return committed, nil
+	}
 	if plan.Mode == "repair" {
 		if len(plan.Changes) == 0 || len(plan.Steps) != 0 || plan.PreviousRequestID == "" {
 			return plan.State, pluginDataError("plugin_plan_stale")
@@ -787,7 +870,6 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 			return plan.State, err
 		}
 	}
-	actor := v2.Actor{ID: "local-user", Kind: "user"}
 	for plan.Completed < len(plan.Steps) {
 		if err = ctx.Err(); err != nil {
 			break
@@ -811,49 +893,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 			plan.State = next
 			return nil
 		}
-		if step.Kind == "table" {
-			_, err = domain.CreateTableWithCommit(ctx, v2.TableCreateIntent{DisplayName: modelLabel(plan.Model, step.Entity), OperationID: step.OperationID, Actor: actor}, func(tx core.App, r v2.TableCreateReceipt) error {
-				next := cloneModelState(plan.State)
-				next.Revisions[r.TableID] = r.SchemaRevision
-				return project(tx, next)
-			})
-		} else {
-			f := modelField(plan.Model, step.Entity, step.Field)
-			draft, draftErr := f.Draft(modelTableIDs(plan.State))
-			if draftErr != nil {
-				err = draftErr
-				break
-			}
-			b := plan.Bindings[step.Entity]
-			intent := v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: b.TableID, ExpectedSchemaRev: plan.Revisions[b.TableID], Draft: &draft, Actor: actor}
-			if f.Relation != nil {
-				reverse := modelField(plan.Model, f.Relation.Entity, f.Relation.Field)
-				intent.Draft.Relation.DisplayField = modelDisplayField(plan.State, f.Relation.Entity)
-				intent.RelationPair = &v2.RelationPairDraft{ReciprocalDisplayName: reverse.Label, ReciprocalCardinality: reverse.Relation.Cardinality, SourceDisplayFieldID: modelDisplayField(plan.State, step.Entity)}
-			}
-			var p v2.FieldChangePlan
-			p, err = domain.Plan(ctx, intent)
-			if err != nil {
-				break
-			}
-			if !p.CanApply || p.CreatesMigration || len(p.Confirmations) > 0 {
-				err = pluginDataError("plugin_model_schema_rejected")
-				break
-			}
-			_, err = domain.ApplyWithCommit(ctx, v2.ApplyRequest{PlanID: p.PlanID, PlanHash: p.PlanHash, OperationID: step.OperationID, Actor: actor, Confirmations: []string{}}, func(tx core.App, r v2.ApplyReceipt) error {
-				next := cloneModelState(plan.State)
-				next.Bindings[step.Entity].Fields[step.Field] = r.FieldID
-				next.Revisions[r.TableID] = r.SchemaRevision
-				if f.Relation != nil {
-					if len(r.Related) != 1 {
-						return pluginDataError("plugin_model_schema_rejected")
-					}
-					next.Bindings[f.Relation.Entity].Fields[f.Relation.Field] = r.Related[0].FieldID
-					next.Revisions[r.Related[0].TableID] = r.Related[0].SchemaRevision
-				}
-				return project(tx, next)
-			})
-		}
+		err = applyModelStep(ctx, domain, &plan, step, project)
 		if err != nil {
 			break
 		}
@@ -947,6 +987,53 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 	})
 	return plan.State, err
 }
+func applyModelStep(ctx context.Context, domain *schemaFieldChangeDomain, plan *modelPreview, step modelStep, project func(core.App, pluginmodel.State) error) error {
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	var err error
+	if step.Kind == "table" {
+		_, err = domain.CreateTableWithCommit(ctx, v2.TableCreateIntent{DisplayName: modelLabel(plan.Model, step.Entity), OperationID: step.OperationID, Actor: actor}, func(tx core.App, r v2.TableCreateReceipt) error {
+			next := cloneModelState(plan.State)
+			next.Revisions[r.TableID] = r.SchemaRevision
+			return project(tx, next)
+		})
+	} else {
+		f := modelField(plan.Model, step.Entity, step.Field)
+		draft, draftErr := f.Draft(modelTableIDs(plan.State))
+		if draftErr != nil {
+			return draftErr
+		}
+		b := plan.Bindings[step.Entity]
+		intent := v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: b.TableID, ExpectedSchemaRev: plan.Revisions[b.TableID], Draft: &draft, Actor: actor}
+		if f.Relation != nil {
+			reverse := modelField(plan.Model, f.Relation.Entity, f.Relation.Field)
+			intent.Draft.Relation.DisplayField = modelDisplayField(plan.State, f.Relation.Entity)
+			intent.RelationPair = &v2.RelationPairDraft{ReciprocalDisplayName: reverse.Label, ReciprocalCardinality: reverse.Relation.Cardinality, SourceDisplayFieldID: modelDisplayField(plan.State, step.Entity)}
+		}
+		var p v2.FieldChangePlan
+		p, err = domain.Plan(ctx, intent)
+		if err != nil {
+			return err
+		}
+		if !p.CanApply || p.CreatesMigration || len(p.Confirmations) > 0 {
+			return pluginDataError("plugin_model_schema_rejected")
+		}
+		_, err = domain.ApplyWithCommit(ctx, v2.ApplyRequest{PlanID: p.PlanID, PlanHash: p.PlanHash, OperationID: step.OperationID, Actor: actor, Confirmations: []string{}}, func(tx core.App, r v2.ApplyReceipt) error {
+			next := cloneModelState(plan.State)
+			next.Bindings[step.Entity].Fields[step.Field] = r.FieldID
+			next.Revisions[r.TableID] = r.SchemaRevision
+			if f.Relation != nil {
+				if len(r.Related) != 1 {
+					return pluginDataError("plugin_model_schema_rejected")
+				}
+				next.Bindings[f.Relation.Entity].Fields[f.Relation.Field] = r.Related[0].FieldID
+				next.Revisions[r.Related[0].TableID] = r.Related[0].SchemaRevision
+			}
+			return project(tx, next)
+		})
+	}
+	return err
+}
+
 func cloneModelState(s pluginmodel.State) pluginmodel.State {
 	raw, _ := json.Marshal(s)
 	var clone pluginmodel.State

@@ -21,6 +21,30 @@ import (
 
 const maxFieldRequestBytes = 1 << 20
 
+func newSchemaFieldDomain(app core.App, migration *fieldchange.MigrationService, logger *slog.Logger, options []fieldchange.ExecutorOption) schemaFieldChangeDomain {
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(
+		catalog, catalog, store, v2.NewIdentityAllocator(nil),
+		fieldchange.WithPlannerLogger(logger),
+	)
+	executor := fieldchange.NewExecutor(app, store, options...)
+	schemaCore, coreErr := schemacore.New(catalog, planner, executor)
+	if coreErr != nil {
+		panic(coreErr)
+	}
+	tableLifecycle, lifecycleErr := schemacore.NewTableLifecycle(app)
+	if lifecycleErr != nil {
+		panic(lifecycleErr)
+	}
+
+	return schemaFieldChangeDomain{
+		fieldSettingsDescribeDomain: fieldSettingsDescribeDomain{schema: schemaCore, fields: catalog},
+		core:                        schemaCore, tables: tableLifecycle, catalog: catalog, migration: migration, logger: logger, executorOptions: options,
+	}
+
+}
+
 func registerFieldRoutes(
 	r *router.Router[*core.RequestEvent],
 	app core.App,
@@ -31,12 +55,6 @@ func registerFieldRoutes(
 	autoNumberReformatter fieldchange.AutoNumberReformatter,
 	gates ...businessWriteGate,
 ) schemaFieldChangeDomain {
-	catalog := fieldchange.NewCatalog(app)
-	store := fieldchange.NewPocketBasePlanStore(app)
-	planner := fieldchange.NewPlanner(
-		catalog, catalog, store, v2.NewIdentityAllocator(nil),
-		fieldchange.WithPlannerLogger(logger),
-	)
 	executorOptions := []fieldchange.ExecutorOption{
 		fieldchange.WithMigrationScheduler(migration),
 		fieldchange.WithExecutorLogger(logger),
@@ -54,20 +72,8 @@ func registerFieldRoutes(
 			fieldchange.WithProtectionSnapshotVerifier(protectionVerifier),
 		)
 	}
-	executor := fieldchange.NewExecutor(app, store, executorOptions...)
-	schemaCore, coreErr := schemacore.New(catalog, planner, executor)
-	if coreErr != nil {
-		panic(coreErr)
-	}
-	tableLifecycle, lifecycleErr := schemacore.NewTableLifecycle(app)
-	if lifecycleErr != nil {
-		panic(lifecycleErr)
-	}
-
-	domain := schemaFieldChangeDomain{
-		fieldSettingsDescribeDomain: fieldSettingsDescribeDomain{schema: schemaCore, fields: catalog},
-		core:                        schemaCore, tables: tableLifecycle, catalog: catalog, migration: migration, gates: gates,
-	}
+	domain := newSchemaFieldDomain(app, migration, logger, executorOptions)
+	domain.gates = gates
 
 	r.GET("/api/vibetable/v2/schema/tables/{tableId}", func(
 		request *core.RequestEvent,
@@ -115,7 +121,7 @@ func registerFieldRoutes(
 			request.Request.Context(), gates, "schema.table.settings", intent.OperationID,
 			func(ctx context.Context) error {
 				var configureErr error
-				receipt, configureErr = tableLifecycle.Configure(ctx, intent)
+				receipt, configureErr = domain.tables.Configure(ctx, intent)
 				return configureErr
 			},
 		)
@@ -124,7 +130,7 @@ func registerFieldRoutes(
 		}
 		if receipt.TableID == "" {
 			var replayErr error
-			receipt, replayErr = tableLifecycle.Configure(request.Request.Context(), intent)
+			receipt, replayErr = domain.tables.Configure(request.Request.Context(), intent)
 			if replayErr != nil {
 				return writeFieldError(request, replayErr)
 			}
@@ -136,14 +142,14 @@ func registerFieldRoutes(
 		request *core.RequestEvent,
 	) error {
 		tableID := request.Request.PathValue("tableId")
-		snapshot, err := schemaCore.Describe(request.Request.Context(), tableID)
+		snapshot, err := domain.core.Describe(request.Request.Context(), tableID)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
 		fieldID := request.Request.URL.Query().Get("fieldId")
 		var definition *v2.FieldDefinition
 		if fieldID != "" {
-			definition, err = catalog.Field(
+			definition, err = domain.catalog.Field(
 				request.Request.Context(), tableID, fieldID,
 			)
 			if err != nil {
