@@ -185,6 +185,25 @@ export function approveExactConfirmation(runtime, hwnd, expectEffects, stage) {
   return nativeRequest(runtime, { action: "confirm-exact", buttonId: "plugin-confirm-approve", stage, hwnd, expectEffects }, 20000);
 }
 
+/** Approve the already foreground bound request before its overlapping peer. */
+export async function approveConcurrentConfirmations(runtime, recorder, pending, prepared, mapping) {
+  const leading = ["first", "second"].filter(key => mapping[key] === pending.foregroundHwnd);
+  if (leading.length !== 1) throw new Error("foreground is not one of the bound pending confirmations");
+  const order = [leading[0], leading[0] === "first" ? "second" : "first"];
+  // Evidence keys follow prepared request identity, not click order.
+  const approvals = {};
+  for (const [index, key] of order.entries()) {
+    const stage = index === 0 ? "concurrent" : "concurrent-second";
+    const approval = await approveExactConfirmation(runtime, mapping[key], pendingEffects(prepared[key]), stage);
+    await fs.copyFile(path.join(runtime.evidenceDir, `48-native-${stage}.png`), path.join(runtime.evidenceDir, `58-native-${stage}.png`));
+    recorder.check(`${index === 0 ? "first" : "second"} native approval clicks the exact bound Host window`,
+      approval.hwnd === mapping[key] && approval.input === "SendInput"
+      && JSON.stringify([...approval.boundEffects].sort()) === JSON.stringify(pendingEffects(prepared[key])), { request: key, approval });
+    approvals[`${key}Approval`] = approval;
+  }
+  return approvals;
+}
+
 /**
  * One public query -> canonical logical-field projection for the three model
  * tables. The same projection is used before and after the output chain so a
@@ -288,16 +307,7 @@ export async function runPluginIntegration(page, recorder, runtime, helpers) {
     throw error;
   }
 
-  const firstApproval = await approveExactConfirmation(runtime, mapping.first, pendingEffects(prepared.first), "concurrent");
-  await fs.copyFile(path.join(runtime.evidenceDir, "48-native-concurrent.png"), path.join(runtime.evidenceDir, "58-native-concurrent.png"));
-  recorder.check("first native approval clicks the exact bound Host window",
-    firstApproval.hwnd === mapping.first && firstApproval.input === "SendInput"
-    && JSON.stringify([...firstApproval.boundEffects].sort()) === JSON.stringify(pendingEffects(prepared.first)), { firstApproval });
-  const secondApproval = await approveExactConfirmation(runtime, mapping.second, pendingEffects(prepared.second), "concurrent-second");
-  await fs.copyFile(path.join(runtime.evidenceDir, "48-native-concurrent-second.png"), path.join(runtime.evidenceDir, "58-native-concurrent-second.png"));
-  recorder.check("second native approval clicks the other exact bound Host window",
-    secondApproval.hwnd === mapping.second && secondApproval.input === "SendInput"
-    && JSON.stringify([...secondApproval.boundEffects].sort()) === JSON.stringify(pendingEffects(prepared.second)), { secondApproval });
+  const { firstApproval, secondApproval } = await approveConcurrentConfirmations(runtime, recorder, pending, prepared, mapping);
   await submitting;
   const outcomeRaw = await finish();
   let outcome;
