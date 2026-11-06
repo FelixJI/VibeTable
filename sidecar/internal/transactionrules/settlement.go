@@ -755,6 +755,20 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	}
 	planItems, planCurrent := planIndex.items, planIndex.current
 	if plans := spec.Plans; plans != nil {
+		// A selected source fixes the reservation bucket. An explicit actual
+		// item may name another version of that bucket, but cannot move its
+		// execution to a different scope/logical item/share (or a direct source).
+		for _, entry := range afterFacts {
+			if entry.requestID == "" || entry.planItem == "" {
+				continue
+			}
+			sourceItem, err := optionalRef(after, after[request.Entity][entry.requestID], request.PlanItem, plans.Entity)
+			sourceKey, sourceOK := planItems[sourceItem]
+			actualKey, actualOK := planItems[entry.planItem]
+			if err != nil || !sourceOK || !actualOK || sourceKey != actualKey {
+				return failure("settlement_invalid")
+			}
+		}
 		preserveItem := func(item string) error {
 			if item != "" && beforePlanIndex.items[item] != planItems[item] {
 				return failure("settlement_invalid")

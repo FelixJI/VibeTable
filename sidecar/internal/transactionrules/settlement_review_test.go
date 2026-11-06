@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 )
 
 func TestSettlementReviewSequentialQuantityClosures(t *testing.T) {
@@ -135,5 +137,80 @@ func TestSettlementReviewOptionalAuthorityRefsRoundTripAndRejectEmpty(t *testing
 	}
 	if rule.Settlement.valid() {
 		t.Fatal("33 capacity directions accepted")
+	}
+}
+
+func TestSettlementReviewActualKeepsSourcePlanBucket(t *testing.T) {
+	rule := newKindRule(t, "settlement")
+	s := rule.Settlement
+	s.Capacity = SettlementCapacity{Entity: "obligations", Quantity: "quantity"}
+	s.Request.Capacity = "obligation"
+	s.Request.PlanItem = "plan_item"
+	s.Request.Directions = []string{"blue"}
+	s.Request.Purpose = AuthorityRef{}
+	s.Request.Purposes = nil
+	s.Actual.Capacity = "obligation"
+	s.Actual.PlanItem = "plan_item"
+	s.Actual.Directions = []string{"blue"}
+	s.Actual.Purpose = AuthorityRef{}
+	s.Actual.Purposes = nil
+	s.Actual.ZeroQuantityPurposes = nil
+	s.Capacity.Net, s.Capacity.Tax, s.Capacity.Gross = "", "", ""
+	s.Request.Net, s.Request.Tax, s.Request.Gross = "", "", ""
+	s.Actual.Net, s.Actual.Tax, s.Actual.Gross = "", "", ""
+	s.Adjustment.CloseNet, s.Adjustment.CloseTax, s.Adjustment.CloseGross = "", "", ""
+	s.Plans = reservationPlanRule().Reservation.Plans
+	d := Declaration{Contract: Contract, ModelID: "m", Version: 1, Decimals: invoiceGuardsDecimals(), Rules: []Rule{rule}}
+	for _, entity := range []string{"obligations", "plan_items"} {
+		d.Decimals = append(d.Decimals, Decimal{Entity: entity, Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Sign: "nonnegative"})
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	r := Registration{Declaration: d}
+	images := settlementImages()
+	delete(images["allocations"], "red")
+	images["allocations"]["orig"]["quantity"] = "8"
+	images["allocations"]["orig"]["application_source"] = "s1"
+	images["allocations"]["orig"]["obligation"] = "o1"
+	images["allocations"]["orig"]["plan_item"] = "p1"
+	images["requests"]["r1"]["direction"] = "blue"
+	images["request_sources"]["s1"]["quantity"] = "8"
+	images["request_sources"]["s1"]["obligation"] = "o1"
+	images["request_sources"]["s1"]["plan_item"] = "p1"
+	for _, entity := range []string{"series", "plan_versions", "logical_items", "plan_items"} {
+		images[entity] = reservationPlanImages()[entity]
+	}
+	images["obligations"] = map[string]map[string]any{"o1": {"quantity": "16"}}
+	images["plan_items"]["p1"]["quantity"] = "8"
+	for _, tc := range []struct {
+		name, logical string
+		share         float64
+		source        any
+		want          bool
+	}{
+		{"explicit same bucket", "L1", 1, "p1", true},
+		{"different logical", "L2", 1, "p1", false},
+		{"different share", "L1", 2, "p1", false},
+		{"direct source cannot move to plan", "L1", 1, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := clone(images)
+			version := "v2"
+			if tc.logical != "L1" || tc.share != 1 {
+				version = "v1"
+			}
+			i["plan_items"]["old"] = map[string]any{"plan_version": version, "logical_item": tc.logical, "share": tc.share, "scope": "o1", "quantity": "8"}
+			i["allocations"]["orig"]["plan_item"] = "old"
+			i["request_sources"]["s1"]["plan_item"] = tc.source
+			err := r.Validate(nil, i)
+			if tc.want && err != nil || !tc.want && (err == nil || err.Error() != "transaction.settlement_invalid") {
+				t.Fatalf("want valid=%v got %v", tc.want, err)
+			}
+		})
+	}
+	images["allocations"]["orig"]["plan_item"] = nil
+	if err := r.Validate(nil, images); err != nil {
+		t.Fatalf("source plan inheritance: %v", err)
 	}
 }

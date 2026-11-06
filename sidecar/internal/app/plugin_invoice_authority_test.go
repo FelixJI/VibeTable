@@ -1168,3 +1168,82 @@ func TestInvoiceAuthorityGroupedAnchorIsSingleLayer(t *testing.T) {
 	red.Operations[2].Values["agreement"] = a
 	f.submit(t, red)
 }
+
+func TestInvoiceAuthoritySettlementPlanSourceBucket(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, true)
+	seeded := f.submit(t, invoicePlan(
+		invoiceCreate("obligations", "o", map[string]any{"quantity": "16", "currency": "CNY", "unit": "piece"}),
+		invoiceCreate("series", "s", map[string]any{"label": "s", "current_version": regressionRef("plan_versions", "v")}),
+		invoiceCreate("plan_versions", "v", map[string]any{"label": "v", "series": regressionRef("series", "s")}),
+		invoiceCreate("logical_items", "a", map[string]any{"label": "a"}),
+		invoiceCreate("logical_items", "b", map[string]any{"label": "b"}),
+		invoiceCreate("plan_items", "a", map[string]any{"quantity": "8", "share": 0, "plan_version": regressionRef("plan_versions", "v"), "logical_item": regressionRef("logical_items", "a"), "scope": regressionRef("obligations", "o")}),
+		invoiceCreate("plan_items", "b", map[string]any{"quantity": "8", "share": 1, "plan_version": regressionRef("plan_versions", "v"), "logical_item": regressionRef("logical_items", "b"), "scope": regressionRef("obligations", "o")}),
+	)).NewIDs
+	obligation, a, b := seeded["obligations"]["o"], seeded["plan_items"]["a"], seeded["plan_items"]["b"]
+	request := func(id string) transactionPlan {
+		p := invoiceRequest(id, "normal", "quantity", "8", "8.00", "0.00", "8.00", nil)
+		p.Operations[0].Values["direction"] = "blue"
+		p.Operations[2].Values["obligation"] = obligation
+		p.Operations[2].Values["plan_item"] = a
+		return p
+	}
+	source := f.submit(t, request("reserved")).NewIDs["request_sources"]["reserved"]
+	actual := func(id, q string, item any) transactionPlan {
+		p := invoiceFace(id, "blue", "", q, q+".00", "0.00", q+".00", source, nil, true)
+		p.Operations[2].Values["obligation"] = obligation
+		p.Operations[2].Values["plan_item"] = item
+		return p
+	}
+	regressionReject(t, f, actual("wrong", "8", b), "transaction.settlement_invalid")
+	f.submit(t, actual("explicit", "4", a))
+	f.submit(t, actual("inherited", "4", nil))
+	regressionReject(t, f, request("reused"), "transaction.settlement_exceeded")
+}
+
+func TestInvoiceAuthoritySettlementPlanManifestFields(t *testing.T) {
+	for _, field := range []string{"quantity", "share"} {
+		t.Run(field, func(t *testing.T) {
+			f := newInvoiceAuthorityFixture(t, true)
+			store := pluginstore.New(f.pb, f.workspace)
+			original, err := store.GetInstallation(context.Background(), f.input.ProjectKey, f.input.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := append([]byte(nil), original...)
+			var object map[string]any
+			if err := json.Unmarshal(raw, &object); err != nil {
+				t.Fatal(err)
+			}
+			permissions := object["manifest"].(map[string]any)["permissions"].(map[string]any)
+			entities := permissions["model"].(map[string]any)["entities"].([]any)
+			for _, value := range entities {
+				entity := value.(map[string]any)
+				if entity["key"] == "plan_items" {
+					fields := entity["fields"].([]any)
+					for index, value := range fields {
+						if value.(map[string]any)["key"] == field {
+							entity["fields"] = append(fields[:index], fields[index+1:]...)
+							break
+						}
+					}
+				}
+			}
+			object["revision"] = f.input.InstallationRevision + 1
+			raw, _ = json.Marshal(object)
+			previous := f.input.InstallationRevision
+			if _, err := store.SaveInstallation(context.Background(), raw, &previous); err == nil {
+				t.Fatal("installed manifest accepted absent plan " + field)
+			} else {
+				var invalid *pluginstore.Error
+				if !errors.As(err, &invalid) || invalid.Code != "plugin.request_invalid" {
+					t.Fatalf("unexpected install rejection: %v", err)
+				}
+			}
+			after, err := store.GetInstallation(context.Background(), f.input.ProjectKey, f.input.PluginID)
+			if err != nil || !reflect.DeepEqual(original, after) {
+				t.Fatalf("rejected install changed registration: %v", err)
+			}
+		})
+	}
+}

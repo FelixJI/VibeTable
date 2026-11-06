@@ -339,6 +339,13 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 			}
 		}
 		if spec := rule.Settlement; spec != nil {
+			if plans := spec.Plans; plans != nil {
+				for _, field := range []string{plans.Quantity, plans.Scope, plans.LogicalItem.Field, plans.Share} {
+					if !scalars[[2]string{plans.Entity, field}] {
+						return failure("rules_invalid")
+					}
+				}
+			}
 			for _, field := range []string{spec.Capacity.Quantity, spec.Capacity.Net, spec.Capacity.Tax, spec.Capacity.Gross} {
 				if field != "" && !scalars[[2]string{spec.Capacity.Entity, field}] {
 					return failure("rules_invalid")

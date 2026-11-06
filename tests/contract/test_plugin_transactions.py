@@ -1271,3 +1271,87 @@ def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> No
             PluginManifest.model_validate(invalid)
         with pytest.raises(PluginPackageError):
             validate_plugin_manifest(package_entries(invalid))
+
+
+def test_settlement_plan_model_fields_rejected_at_package_seams() -> None:
+    manifest = invoice_guard_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {entity["key"]: entity for entity in model["entities"]}
+    for key, fields in (
+        ("plans", ("quantity", "share")),
+        ("logical_items", ("label",)),
+        ("versions", ("label",)),
+    ):
+        entities[key] = {
+            "key": key,
+            "label": key,
+            "operations": ["read", "query", "create", "update", "delete"],
+            "fields": [{"key": field, "label": field, "type": "text"} for field in fields],
+        }
+
+    def edge(source: str, field: str, target: str) -> None:
+        reverse = f"back_{source}_{field}"
+        for owner, key, other, inverse, cardinality in (
+            (source, field, target, reverse, "one"),
+            (target, reverse, source, field, "many"),
+        ):
+            entities[owner]["fields"].append(
+                {
+                    "key": key,
+                    "label": key,
+                    "type": "relation",
+                    "relation": {"entity": other, "field": inverse, "cardinality": cardinality},
+                }
+            )
+
+    edge("request_sources", "plan_item", "plans")
+    edge("plans", "scope", "allocations")
+    edge("plans", "logical", "logical_items")
+    edge("plans", "version", "versions")
+    edge("plans", "current", "versions")
+    model["entities"] = list(entities.values())
+    transactions = declaration(manifest)
+    rule = transactions["rules"][1]
+    transactions["rules"] = [rule]
+    spec = rule["settlement"]
+    spec["request"]["planItem"] = "plan_item"
+    for role in ("capacity", "request", "actual"):
+        for field in ("net", "tax", "gross"):
+            spec[role].pop(field)
+    for field in ("closeNet", "closeTax", "closeGross"):
+        spec["adjustment"].pop(field)
+    spec["plans"] = {
+        "entity": "plans",
+        "quantity": "quantity",
+        "scope": "scope",
+        "share": "share",
+        "logicalItem": {"field": "logical", "target": "logical_items"},
+        "currentWhen": {
+            "left": [{"field": "version", "target": "versions"}],
+            "right": [{"field": "current", "target": "versions"}],
+        },
+    }
+    transactions["decimals"].append(
+        {
+            "entity": "plans",
+            "field": "quantity",
+            "storage": "decimalText",
+            "scale": 0,
+            "digits": 38,
+            "sign": "nonnegative",
+        }
+    )
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for field in ("quantity", "share"):
+        invalid = copy.deepcopy(manifest)
+        plans = next(
+            entity
+            for entity in invalid["permissions"]["model"]["entities"]
+            if entity["key"] == "plans"
+        )
+        plans["fields"] = [entry for entry in plans["fields"] if entry["key"] != field]
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
