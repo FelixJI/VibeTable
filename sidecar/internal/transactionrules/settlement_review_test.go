@@ -214,3 +214,43 @@ func TestSettlementReviewActualKeepsSourcePlanBucket(t *testing.T) {
 		t.Fatalf("source plan inheritance: %v", err)
 	}
 }
+
+func TestSettlementReviewAdmissionPreservesClosedHistory(t *testing.T) {
+	r := Registration{Declaration: invoiceGuardsDeclaration(t, newKindRule(t, "settlement"))}
+	closed := settlementImages()
+	closed["requests"]["r1"]["status"] = "closed"
+	closed["adjustments"]["close"] = map[string]any{"kind": "closeRemaining", "source": "s1", "close_remaining": true, "quantity": "4", "net": "40.00", "tax": "0.00", "gross": "40.00"}
+	if err := r.Validate(closed, closed); err != nil {
+		t.Fatalf("unchanged history: %v", err)
+	}
+	if err := r.Validate(nil, closed); err != nil {
+		t.Fatalf("admission treated historical execution as new: %v", err)
+	}
+	for _, state := range []any{"draft", "", nil} {
+		invalid := clone(closed)
+		invalid["requests"]["r1"]["status"] = state
+		if err := r.Validate(nil, invalid); err == nil {
+			t.Fatalf("admission accepted source state %v", state)
+		}
+	}
+	if err := r.Validate(Images{}, closed); err == nil || err.Error() != "transaction.settlement_invalid" {
+		t.Fatalf("real initial write to closed source: %v", err)
+	}
+	increased := clone(closed)
+	increased["allocations"]["red"]["net"] = "-91.00"
+	increased["allocations"]["red"]["gross"] = "-91.00"
+	if err := r.Validate(closed, increased); err == nil || err.Error() != "transaction.settlement_invalid" {
+		t.Fatalf("increased closed consumption: %v", err)
+	}
+	corrupt := clone(closed)
+	corrupt["allocations"]["orig"]["net"] = "80.00"
+	corrupt["allocations"]["orig"]["gross"] = "80.00"
+	if err := r.Validate(nil, corrupt); err == nil {
+		t.Fatal("admission skipped capacity")
+	}
+	corrupt = clone(closed)
+	corrupt["allocations"]["red"]["original"] = "missing"
+	if err := r.Validate(nil, corrupt); err == nil {
+		t.Fatal("admission skipped source/capacity relation")
+	}
+}

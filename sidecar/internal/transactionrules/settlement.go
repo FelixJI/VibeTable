@@ -538,6 +538,10 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		_ = id
 		if entry.requestID != "" {
 			sourceRow := after[request.Entity][entry.requestID]
+			sourceState, err := authorityValue(after, sourceRow, request.State)
+			if err != nil || sourceState == "" || contains(request.DraftStates, sourceState) {
+				return failure("settlement_invalid")
+			}
 			if sourceCapacity[entry.requestID] != entry.capacityID {
 				return failure("settlement_invalid")
 			}
@@ -583,7 +587,9 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				increased = true
 			}
 		}
-		if increased && entry.requestID != "" {
+		// Admission validates a stored graph with no before image. Actual writes
+		// always capture a non-nil image, including an empty initial database.
+		if before != nil && increased && entry.requestID != "" {
 			state, err := authorityValue(after, after[request.Entity][entry.requestID], request.State)
 			confirmedNow := contains(request.OpenStates, state)
 			if before != nil && before[request.Entity][entry.requestID] != nil {

@@ -1247,3 +1247,83 @@ func TestInvoiceAuthoritySettlementPlanManifestFields(t *testing.T) {
 		})
 	}
 }
+
+func TestInvoiceAuthorityAdmissionPreservesClosedHistory(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(fmt.Sprint("partial-", partial), func(t *testing.T) {
+			f := newInvoiceAuthorityFixture(t)
+			blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+			requested := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs
+			source, request := requested["request_sources"]["request"], requested["requests"]["request"]
+			actual := invoiceFace("red", "red", "physicalReturn", "-10", "-100.00", "0.00", "-100.00", source, blue, true)
+			if partial {
+				for key, value := range invoiceMeasures("-4", "-40.00", "0.00", "-40.00") {
+					actual.Operations[2].Values[key] = value
+				}
+			}
+			allocation := f.submit(t, actual).NewIDs["allocations"]["red"]
+			_, requestDigest := regressionRow(t, f, "requests", request)
+			closePlan := invoicePlan(transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &requestDigest, Values: map[string]any{"status": "closed"}})
+			if partial {
+				close := invoiceMeasures("6", "60.00", "0.00", "60.00")
+				close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "固定关闭剩余", true
+				closePlan.Operations = append(closePlan.Operations, invoiceCreate("adjustments", "close", close))
+			}
+			f.submit(t, closePlan)
+			history, err := transactionrules.Load(t.Context(), f.pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := history[len(history)-1].Read(t.Context(), f.pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := pluginstore.New(f.pb, f.workspace)
+			installed, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]any
+			if err = json.Unmarshal(installed, &object); err != nil {
+				t.Fatal(err)
+			}
+			upgraded := f.declaration
+			upgraded.Version++
+			object["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = upgraded
+			previous := f.input.InstallationRevision
+			f.input.InstallationRevision++
+			object["revision"] = f.input.InstallationRevision
+			raw, _ := json.Marshal(object)
+			if _, err = store.SaveInstallation(t.Context(), raw, &previous); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]any{"requestId": preview.(modelPreview).RequestID}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = f.call("transaction.configure", map[string]any{"declaration": upgraded}); err != nil {
+				t.Fatalf("register closed historical source: %v", err)
+			}
+			registered, err := transactionrules.Load(t.Context(), f.pb)
+			if err != nil || len(registered) != len(history)+1 {
+				t.Fatalf("new registration not persisted: %v", err)
+			}
+			after, err := registered[len(registered)-1].Read(t.Context(), f.pb)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("registration changed business facts: %v", err)
+			}
+			if !reflect.DeepEqual(history, registered[:len(history)]) {
+				t.Fatal("registration replaced historical guards")
+			}
+			f.declaration = upgraded
+			regressionReject(t, f, invoiceFace("late", "red", "physicalReturn", "-1", "-1.00", "0.00", "-1.00", source, blue, true), "transaction.settlement_invalid")
+			if partial {
+				_, digest := regressionRow(t, f, "allocations", allocation)
+				regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"net": "-41.00", "gross": "-41.00"}}), "transaction.settlement_invalid")
+			}
+		})
+	}
+}
