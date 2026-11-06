@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   pendingEffects,
   distinguishableRequests,
@@ -218,3 +220,128 @@ test("a swapped self-consistent id chain with identical amounts fails T01 genera
     /versions differ/,
   );
 });
+
+
+const integrationSource = await fs.readFile(new URL("./plugin_integration.mjs", import.meta.url), "utf8");
+// Exercise the actual complete scenario with controlled external I/O, following
+// plugin_application_commit_unknown.test.mjs; no production statement is skipped.
+const integrationBody = integrationSource.replace(/^import .*;\r?\n/gmu, "").replace(/^export /gmu, "");
+
+for (const foregroundRequest of ["first", "second"]) {
+  test(`complete integration persists both prepared-request approvals when ${foregroundRequest} is foreground`, async () => {
+    const previews = {
+      first: { ...firstPreview, status: "prepared" },
+      second: { ...secondPreview, status: "prepared" },
+    };
+    const winner = previews[foregroundRequest];
+    const winningLine = winner.newIds.lines.l;
+    const winningAllocation = winner.newIds.allocations.a;
+    const rows = {
+      heads: [{ id: "headshared001", code: "SYNTHETIC-CONCURRENCY-01", budget: "10.00", lines: [winningLine] }],
+      lines: [{ id: winningLine, amount: "8.00", head: "headshared001", allocations: [winningAllocation] }],
+      allocations: [{ id: winningAllocation, amount: "8.00", line: winningLine }],
+    };
+    const fixtureModel = { status: "completed", bindings: Object.fromEntries(Object.entries(rows).map(([entity, values]) => [entity, {
+      tableId: model.bindings[entity].tableId, fields: Object.fromEntries(Object.keys(values[0]).filter(key => key !== "id").map(key => [key, key])),
+    }])) };
+    const opened = { ...t01Opened, sources: Object.keys(rows).map(() => ({ filteredRows: 1 })) };
+    const generated = t01Generated([
+      { entity: "heads", recordId: rows.heads[0].id, amount: "10.00", relation: "" },
+      { entity: "lines", recordId: winningLine, amount: "8.00", relation: "headshared001" },
+      { entity: "allocations", recordId: winningAllocation, amount: "8.00", relation: winningLine },
+    ]);
+    const pending = { status: "completed", input: null, foreground: null,
+      foregroundHwnd: foregroundRequest === "first" ? firstWindow.hwnd : secondWindow.hwnd,
+      windows: [firstWindow, secondWindow].map(window => ({ ...window, win32OwnerRoot: 42, approveButton: { enabled: true } })),
+    };
+    const runtime = { controlsDir: "controls", evidenceDir: "evidence" };
+    const written = new Map();
+    const approvals = new Map();
+    const approvalOrder = [];
+    let currentAction, saveCount = 0, changed = false, captured = false;
+    const seedPreview = { status: "prepared", requestId: "seed", newIds: { heads: { h: "headshared001" } } };
+    const reopened = { artifactId: generated.outputId, source: generated.source };
+    const saved = { state: "succeeded", committed: true, bytes: generated.bytes };
+    const result = () => ({
+      model: fixtureModel,
+      configure: { status: "configured" },
+      "concurrent-seed": seedPreview,
+      submit: { ...seedPreview, status: "applied", receipt: { rows: [{ tableId: "tbl_head", recordId: "headshared001" }] } },
+      "concurrent-prepare": previews,
+      "concurrent-submit": { requests: previews,
+        first: foregroundRequest === "first" ? appliedPreview(previews.first) : { code: "transaction.plan_stale" },
+        second: foregroundRequest === "second" ? appliedPreview(previews.second) : { code: "transaction.plan_stale" },
+      },
+      dataset: opened,
+      "t01-generate": generated,
+      "t01-save": saveCount === 1 ? { state: "cancelled", committed: false } : saved,
+      "t01-archive": { artifactId: generated.outputId, saved: { status: "succeeded" } },
+      "t01-reopen": reopened,
+    })[currentAction];
+    const frame = { locator(selector) {
+      const element = {
+        async click() { currentAction = selector.slice(1); if (currentAction === "t01-save") saveCount++; },
+        async fill() {}, async waitFor() {}, filter() { return element; },
+        async innerText() { return selector === "#status" ? "succeeded" : JSON.stringify(result()); },
+      };
+      return element;
+    } };
+    const page = {
+      getByTestId() { return { async click() {} }; },
+      locator() { return { async waitFor() {} }; },
+      async waitForFunction() {},
+      async screenshot({ path: target }) { assert.equal(target, path.join(runtime.evidenceDir, "58-integration.png")); captured = true; },
+    };
+    const fakeFs = {
+      async writeFile(target, text) { written.set(target, text); },
+      async readFile(target) { assert.ok(written.has(target), target); return written.get(target); },
+      async copyFile() {},
+      async stat() { throw Object.assign(new Error("cancelled save has no file"), { code: "ENOENT" }); },
+      async rename(source, target) {
+        const request = JSON.parse(written.get(source));
+        assert.equal(target, path.join(runtime.evidenceDir, "plugin-native-request.json"));
+        let response = { ...pending, requestId: request.requestId };
+        if (request.action === "confirm-exact") {
+          const key = request.hwnd === firstWindow.hwnd ? "first" : "second";
+          assert.equal(request.hwnd, key === "first" ? firstWindow.hwnd : secondWindow.hwnd);
+          assert.deepEqual(request.expectEffects, pendingEffects(previews[key]));
+          response = { requestId: request.requestId, status: "completed", action: request.action,
+            hwnd: request.hwnd, win32OwnerRoot: 42, boundEffects: request.expectEffects,
+            observation: { texts: [{ value: `complete observed approval ${key}` }] },
+            input: "SendInput", foreground: { afterHwnd: request.hwnd },
+          };
+          approvals.set(key, response); approvalOrder.push(key);
+        } else assert.equal(request.action, "confirm-pending");
+        written.set(path.join(runtime.evidenceDir, "plugin-native-result.json"), JSON.stringify(response));
+      },
+    };
+    const helpers = {
+      async waitForShell() {},
+      async createSimpleTable() { return { tableId: "attachments", field: { physicalName: "text" } }; },
+      async createV2Field() { return { physicalName: "files" }; },
+      async applyProductMutation(_page, tableId) { if (tableId === "tbl_head") changed = true; },
+      async rawBridgeRequest(_page, type, payload) {
+        if (payload.tableId === "attachments") return { payload: { rows: [{ id: "attachment", text: "SYNTHETIC-INTEGRATION-UNCHANGED" }] } };
+        const entity = Object.keys(fixtureModel.bindings).find(key => fixtureModel.bindings[key].tableId === payload.tableId);
+        if (type === "schema.getTable") return { payload: { fields: Object.keys(fixtureModel.bindings[entity].fields).map(key => ({ identity: { fieldId: key, physicalName: key } })) } };
+        assert.equal(type, "query.page");
+        return { payload: { rows: rows[entity].map(row => changed && entity === "heads" ? { ...row, code: "SYNTHETIC-INTEGRATION-CHANGED" } : row) } };
+      },
+    };
+    const run = new Function("fs", "path", "installApplication", "openApplication", "nativePluginInput", "nativeModel", "picker",
+      `${integrationBody}\nreturn runPluginIntegration;`)(fakeFs, path, async () => {}, async () => frame,
+      async () => ({ status: "completed" }), async () => {}, async () => ({ status: "completed" }));
+    await run(page, { check(name, passed, details) { assert.ok(passed, `${name}: ${JSON.stringify(details)}`); } }, runtime, helpers);
+    assert.deepEqual(approvalOrder, [foregroundRequest, foregroundRequest === "first" ? "second" : "first"]);
+    for (const target of [path.join(runtime.controlsDir, "58-t01-proof.json"), path.join(runtime.evidenceDir, "58-integration.json")]) {
+      assert.ok(written.has(target), `missing final evidence ${target}`);
+      const proof = JSON.parse(written.get(target));
+      assert.deepEqual(proof.approvals, { firstApproval: approvals.get("first"), secondApproval: approvals.get("second") });
+      assert.equal(proof.approvals.firstApproval.hwnd, firstWindow.hwnd);
+      assert.equal(proof.approvals.secondApproval.hwnd, secondWindow.hwnd);
+      assert.equal(proof.outcome.winner, foregroundRequest);
+      assert.deepEqual(proof.pending.windows, pending.windows);
+    }
+    assert.equal(captured, true);
+  });
+}

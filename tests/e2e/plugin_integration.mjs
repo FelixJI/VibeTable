@@ -190,6 +190,8 @@ export async function approveConcurrentConfirmations(runtime, recorder, pending,
   const leading = ["first", "second"].filter(key => mapping[key] === pending.foregroundHwnd);
   if (leading.length !== 1) throw new Error("foreground is not one of the bound pending confirmations");
   const order = [leading[0], leading[0] === "first" ? "second" : "first"];
+  // Evidence keys follow prepared request identity, not click order.
+  const approvals = {};
   for (const [index, key] of order.entries()) {
     const stage = index === 0 ? "concurrent" : "concurrent-second";
     const approval = await approveExactConfirmation(runtime, mapping[key], pendingEffects(prepared[key]), stage);
@@ -197,7 +199,9 @@ export async function approveConcurrentConfirmations(runtime, recorder, pending,
     recorder.check(`${index === 0 ? "first" : "second"} native approval clicks the exact bound Host window`,
       approval.hwnd === mapping[key] && approval.input === "SendInput"
       && JSON.stringify([...approval.boundEffects].sort()) === JSON.stringify(pendingEffects(prepared[key])), { request: key, approval });
+    approvals[`${key}Approval`] = approval;
   }
+  return approvals;
 }
 
 /**
@@ -303,7 +307,7 @@ export async function runPluginIntegration(page, recorder, runtime, helpers) {
     throw error;
   }
 
-  await approveConcurrentConfirmations(runtime, recorder, pending, prepared, mapping);
+  const { firstApproval, secondApproval } = await approveConcurrentConfirmations(runtime, recorder, pending, prepared, mapping);
   await submitting;
   const outcomeRaw = await finish();
   let outcome;
