@@ -51,17 +51,60 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 			entity = step.Target
 		}
 	}
+	if r.Kind == "parentFreeze" {
+		entity := r.Entity
+		for _, step := range r.ParentPath {
+			visit(entity, step)
+			entity = step.Target
+		}
+	}
+	if r.Reservation != nil {
+		res := r.Reservation
+		visit(r.Entity, RelationStep{res.Scope, res.Obligation.Entity})
+		if res.PlanItem != "" {
+			visit(r.Entity, RelationStep{res.PlanItem, res.Plans.Entity})
+		}
+		if res.InstructionSource != "" {
+			visit(r.Entity, RelationStep{res.InstructionSource, r.Entity})
+		}
+		if res.TransferredFrom != "" {
+			visit(r.Entity, RelationStep{res.TransferredFrom, r.Entity})
+		}
+		entity := r.Entity
+		for _, step := range res.Phase.Path {
+			visit(entity, step)
+			entity = step.Target
+		}
+		purposeEntity := r.Entity
+		for _, step := range res.Purpose.Path {
+			visit(purposeEntity, step)
+			purposeEntity = step.Target
+		}
+		if res.Plans != nil {
+			visit(res.Plans.Entity, RelationStep{res.Plans.Scope, res.Obligation.Entity})
+			visit(res.Plans.Entity, RelationStep{res.Plans.LogicalItem.Field, res.Plans.LogicalItem.Target})
+			for _, path := range [][]RelationStep{res.Plans.CurrentWhen.Left, res.Plans.CurrentWhen.Right} {
+				entity := res.Plans.Entity
+				for _, step := range path {
+					visit(entity, step)
+					entity = step.Target
+				}
+			}
+		}
+	}
 }
 
 // ValidatePaths binds new path declarations at installation. Existing rule kinds retain their
 // original physical validation at native configuration.
 func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 	singles := map[[2]string]string{}
+	scalars := map[[2]string]bool{}
 	for _, entity := range model.Entities {
 		for _, field := range entity.Fields {
 			if field.Relation != nil && field.Relation.Cardinality == "one" {
 				singles[[2]string{entity.Key, field.Key}] = field.Relation.Entity
 			}
+			scalars[[2]string{entity.Key, field.Key}] = true
 		}
 	}
 	for _, rule := range d.Rules {
@@ -72,7 +115,53 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 				}
 			}
 		}
-		if rule.Kind != "sameTarget" && rule.CurrentWhen == nil {
+		if rule.Kind == "parentFreeze" {
+			for _, key := range rule.Fields {
+				if !scalars[[2]string{rule.Entity, key}] {
+					return failure("rules_invalid")
+				}
+			}
+			parent := rule.Entity
+			for _, step := range rule.ParentPath {
+				parent = step.Target
+			}
+			if !scalars[[2]string{parent, rule.ParentStateField}] {
+				return failure("rules_invalid")
+			}
+		}
+		if rule.Reservation != nil {
+			res := rule.Reservation
+			for _, key := range []string{res.Quantity, res.Scope, res.PlanItem, res.InstructionSource, res.TransferredFrom} {
+				if key != "" && !scalars[[2]string{rule.Entity, key}] {
+					return failure("rules_invalid")
+				}
+			}
+			purposeEntity := rule.Entity
+			for _, step := range res.Purpose.Path {
+				purposeEntity = step.Target
+			}
+			if !scalars[[2]string{purposeEntity, res.Purpose.Field}] {
+				return failure("rules_invalid")
+			}
+			phaseEntity := rule.Entity
+			for _, step := range res.Phase.Path {
+				phaseEntity = step.Target
+			}
+			if !scalars[[2]string{phaseEntity, res.Phase.Field}] {
+				return failure("rules_invalid")
+			}
+			if !scalars[[2]string{res.Obligation.Entity, res.Obligation.Quantity}] {
+				return failure("rules_invalid")
+			}
+			if res.Plans != nil {
+				for _, key := range []string{res.Plans.Quantity, res.Plans.Scope, res.Plans.LogicalItem.Field, res.Plans.Share} {
+					if !scalars[[2]string{res.Plans.Entity, key}] {
+						return failure("rules_invalid")
+					}
+				}
+			}
+		}
+		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.CurrentWhen == nil {
 			continue
 		}
 		valid := true

@@ -344,7 +344,7 @@ def test_transactions_reject_unknown_or_cross_kind_declarations(case: str) -> No
 def test_package_capacity_and_closed_relation_paths() -> None:
     manifest = transactions_manifest()
     entities = manifest["permissions"]["model"]["entities"]
-    for index in range(30):
+    for index in range(38):
         entities.append(
             {
                 "key": f"e{index}",
@@ -366,7 +366,7 @@ def test_package_capacity_and_closed_relation_paths() -> None:
             },
         ]
     )
-    rules.extend({**rules[0], "id": f"u{i}"} for i in range(128 - len(rules)))
+    rules.extend({**rules[0], "id": f"u{i}"} for i in range(MAX_RULES - len(rules)))
     assert PluginManifest.model_validate(manifest)
     assert validate_plugin_manifest(package_entries(manifest)) == manifest
 
@@ -511,3 +511,302 @@ def test_transactions_enforce_declared_budgets() -> None:
         PluginManifest.model_validate(oversized)
     with pytest.raises(PluginPackageError, match="1 MiB"):
         validate_plugin_manifest(package_entries(oversized))
+
+
+def delivery_manifest() -> dict:
+    manifest = transactions_manifest()
+    manifest["permissions"]["model"] = {
+        "contract": "vibetable.plugin-model.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "entities": [
+            {
+                "key": "obligations",
+                "label": "交付义务",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "quantity", "label": "义务数量", "type": "text"},
+                    {
+                        "key": "deliveries",
+                        "label": "交付来源",
+                        "type": "relation",
+                        "relation": {"entity": "sources", "field": "scope", "cardinality": "many"},
+                    },
+                ],
+            },
+            {
+                "key": "documents",
+                "label": "交付单据",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "phase", "label": "阶段", "type": "text"},
+                    {
+                        "key": "lines",
+                        "label": "业务行",
+                        "type": "relation",
+                        "relation": {"entity": "lines", "field": "document", "cardinality": "many"},
+                    },
+                ],
+            },
+            {
+                "key": "lines",
+                "label": "交付业务行",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "purpose", "label": "用途", "type": "text"},
+                    {
+                        "key": "real_qty",
+                        "label": "真实数量",
+                        "type": "number",
+                        "precision": "float64",
+                    },
+                    {
+                        "key": "document",
+                        "label": "单据",
+                        "type": "relation",
+                        "relation": {"entity": "documents", "field": "lines", "cardinality": "one"},
+                    },
+                    {
+                        "key": "sources",
+                        "label": "来源",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "owner_line",
+                            "cardinality": "many",
+                        },
+                    },
+                ],
+            },
+            {
+                "key": "sources",
+                "label": "交付来源",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "quantity", "label": "数量", "type": "text"},
+                    {"key": "note", "label": "备注", "type": "text"},
+                    {
+                        "key": "scope",
+                        "label": "义务",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "obligations",
+                            "field": "deliveries",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "owner_line",
+                        "label": "所属行",
+                        "type": "relation",
+                        "relation": {"entity": "lines", "field": "sources", "cardinality": "one"},
+                    },
+                    {
+                        "key": "instruction_source",
+                        "label": "指令来源",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "instruction_uses",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "instruction_uses",
+                        "label": "指令占用",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "instruction_source",
+                            "cardinality": "many",
+                        },
+                    },
+                    {
+                        "key": "transferred_from",
+                        "label": "转出指令",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "transfer_targets",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "transfer_targets",
+                        "label": "转入指令",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "transferred_from",
+                            "cardinality": "many",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    manifest["permissions"]["transactions"] = {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "decimals": [
+            {
+                "entity": "sources",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "nonnegative",
+            },
+            {
+                "entity": "obligations",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "positive",
+            },
+        ],
+        "rules": [
+            {
+                "id": "freeze_sources",
+                "kind": "parentFreeze",
+                "entity": "sources",
+                "parentPath": [
+                    {"field": "owner_line", "target": "lines"},
+                    {"field": "document", "target": "documents"},
+                ],
+                "parentStateField": "phase",
+                "frozenStates": ["delivery_confirmed"],
+                "fields": ["quantity", "scope", "instruction_source"],
+            },
+            {
+                "id": "freeze_lines",
+                "kind": "parentFreeze",
+                "entity": "lines",
+                "parentPath": [{"field": "document", "target": "documents"}],
+                "parentStateField": "phase",
+                "frozenStates": ["delivery_confirmed"],
+                "fields": ["purpose", "real_qty"],
+            },
+            {
+                "id": "capacity",
+                "kind": "reservationBalance",
+                "entity": "sources",
+                "reservation": {
+                    "obligation": {"entity": "obligations", "quantity": "quantity"},
+                    "scope": "scope",
+                    "quantity": "quantity",
+                    "purpose": {
+                        "path": [{"field": "owner_line", "target": "lines"}],
+                        "field": "purpose",
+                    },
+                    "normalPurpose": "normal",
+                    "phase": {
+                        "path": [
+                            {"field": "owner_line", "target": "lines"},
+                            {"field": "document", "target": "documents"},
+                        ],
+                        "field": "phase",
+                        "instructionDraft": "instruction_draft",
+                        "instructionOpen": "instruction_open",
+                        "instructionClosed": "instruction_closed",
+                        "instructionTransferred": "instruction_transferred",
+                        "deliveryDraft": "delivery_draft",
+                        "deliveryConfirmed": "delivery_confirmed",
+                    },
+                    "instructionSource": "instruction_source",
+                    "transferredFrom": "transferred_from",
+                },
+            },
+        ],
+    }
+    return manifest
+
+
+def test_delivery_guard_rules_form_a_closed_shape() -> None:
+    manifest = delivery_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+
+    for index, patch in (
+        (0, {"amount": "quantity"}),
+        (0, {"parentStateField": ""}),
+        (0, {"frozenStates": []}),
+        (2, {"reservation": None}),
+        (2, {"parentPath": [{"field": "owner_line", "target": "lines"}]}),
+    ):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][index].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+    for section, index, patch in (
+        ("decimals", 0, {"nullable": True}),
+        ("decimals", 1, {"sign": None}),
+        ("decimals", 1, {"scale": 2}),
+        (
+            "rules",
+            2,
+            {
+                "reservation": {
+                    "obligation": {"entity": "obligations", "quantity": "quantity"},
+                    "scope": "scope",
+                    "quantity": "quantity",
+                    "purpose": {
+                        "path": [{"field": "owner_line", "target": "lines"}],
+                        "field": "missing",
+                    },
+                    "normalPurpose": "normal",
+                    "phase": {
+                        "path": [
+                            {"field": "owner_line", "target": "lines"},
+                            {"field": "document", "target": "documents"},
+                        ],
+                        "field": "phase",
+                        "instructionDraft": "instruction_draft",
+                        "instructionOpen": "instruction_open",
+                        "instructionClosed": "instruction_closed",
+                        "instructionTransferred": "instruction_transferred",
+                        "deliveryDraft": "delivery_draft",
+                        "deliveryConfirmed": "delivery_confirmed",
+                    },
+                    "instructionSource": "instruction_source",
+                    "transferredFrom": "transferred_from",
+                }
+            },
+        ),
+    ):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)[section][index].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_model_capacity_allows_forty_entities() -> None:
+    manifest = transactions_manifest()
+    model = manifest["permissions"]["model"]
+    for index in range(40 - len(model["entities"])):
+        model["entities"].append(
+            {
+                "key": f"extra_{index}",
+                "label": f"扩展{index}",
+                "operations": ["read", "query"],
+                "fields": [{"key": "code", "label": "代码", "type": "text"}],
+            }
+        )
+    assert PluginManifest.model_validate(manifest)
+    model["entities"].append(
+        {
+            "key": "over",
+            "label": "超额",
+            "operations": ["read", "query"],
+            "fields": [{"key": "code", "label": "代码", "type": "text"}],
+        }
+    )
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)

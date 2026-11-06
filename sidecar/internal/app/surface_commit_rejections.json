@@ -41,7 +41,15 @@
       "transaction.same_target_violation",
       "transaction.state_invalid",
       "transaction.state_frozen",
-      "transaction.state_transition_denied"
+      "transaction.state_transition_denied",
+      "transaction.parent_frozen",
+      "transaction.reservation_invalid",
+      "transaction.reservation_exhausted",
+      "transaction.reservation_exceeded",
+      "transaction.reservation_released",
+      "transaction.reservation_frozen",
+      "transaction.reservation_transfer_invalid",
+      "transaction.reservation_plan_required"
     ]
   },
   {

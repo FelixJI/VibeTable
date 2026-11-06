@@ -100,6 +100,35 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		if len(storage) > 0 && storage[0] == "scoped" {
 			addVersionModel(m)
 		}
+		if len(storage) > 0 && storage[0] == "delivery" {
+			all := []string{"read", "query", "create", "update", "delete"}
+			m.Entities = []pluginmodel.Entity{
+				{Key: "obligations", Label: "交付义务", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "quantity", Label: "义务数量", Type: v2.LogicalText},
+					{Key: "deliveries", Label: "交付来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "scope", Cardinality: "many"}},
+				}},
+				{Key: "documents", Label: "交付单据", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "phase", Label: "阶段", Type: v2.LogicalText},
+					{Key: "lines", Label: "业务行", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "document", Cardinality: "many"}},
+				}},
+				{Key: "lines", Label: "交付业务行", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "purpose", Label: "用途", Type: v2.LogicalText},
+					{Key: "real_qty", Label: "真实数量", Type: v2.LogicalNumber, Precision: "float64"},
+					{Key: "document", Label: "单据", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "documents", Field: "lines", Cardinality: "one"}},
+					{Key: "sources", Label: "来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "owner_line", Cardinality: "many"}},
+				}},
+				{Key: "sources", Label: "交付来源", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "quantity", Label: "数量", Type: v2.LogicalText},
+					{Key: "note", Label: "备注", Type: v2.LogicalText},
+					{Key: "scope", Label: "义务", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "obligations", Field: "deliveries", Cardinality: "one"}},
+					{Key: "owner_line", Label: "所属行", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "sources", Cardinality: "one"}},
+					{Key: "instruction_source", Label: "指令来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "instruction_uses", Cardinality: "one"}},
+					{Key: "instruction_uses", Label: "指令占用", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "instruction_source", Cardinality: "many"}},
+					{Key: "transferred_from", Label: "转出指令", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "transfer_targets", Cardinality: "one"}},
+					{Key: "transfer_targets", Label: "转入指令", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "transferred_from", Cardinality: "many"}},
+				}},
+			}
+		}
 		if len(storage) > 0 && storage[0] == "receipt-repair" {
 			m.Entities = append(m.Entities, pluginmodel.Entity{Key: "notes", Label: "合成独立备注", Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "名称", Type: v2.LogicalText}}})
 		}
@@ -127,6 +156,27 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		}
 	})
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
+	if len(storage) > 0 && storage[0] == "delivery" {
+		d = transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{
+			{Entity: "sources", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
+			{Entity: "obligations", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
+		}, Rules: []transactionrules.Rule{
+			{ID: "freeze_sources", Kind: "parentFreeze", Entity: "sources",
+				ParentPath:       []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}, {Field: "document", Target: "documents"}},
+				ParentStateField: "phase", FrozenStates: []string{"delivery_confirmed"}, Fields: []string{"quantity", "scope", "instruction_source"}},
+			{ID: "freeze_lines", Kind: "parentFreeze", Entity: "lines",
+				ParentPath:       []transactionrules.RelationStep{{Field: "document", Target: "documents"}},
+				ParentStateField: "phase", FrozenStates: []string{"delivery_confirmed"}, Fields: []string{"purpose", "real_qty"}},
+			{ID: "capacity", Kind: "reservationBalance", Entity: "sources", Reservation: &transactionrules.ReservationSpec{
+				Obligation: transactionrules.ReservationObligation{Entity: "obligations", Quantity: "quantity"},
+				Scope:      "scope", Quantity: "quantity",
+				Purpose:           transactionrules.ReservationFieldRef{Path: []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}}, Field: "purpose"},
+				NormalPurpose:     "normal",
+				Phase:             transactionrules.ReservationPhase{Path: []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}, {Field: "document", Target: "documents"}}, Field: "phase", InstructionDraft: "instruction_draft", InstructionOpen: "instruction_open", InstructionClosed: "instruction_closed", InstructionTransferred: "instruction_transferred", DeliveryDraft: "delivery_draft", DeliveryConfirmed: "delivery_confirmed"},
+				InstructionSource: "instruction_source", TransferredFrom: "transferred_from",
+			}},
+		}}
+	}
 	if len(storage) > 0 && storage[0] == "state" {
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "posted", Kind: "state", Entity: "headers", Field: "status", Fields: []string{"code"}, Transitions: map[string][]string{"draft": {"posted"}, "posted": {}}, FrozenStates: []string{"posted"}})
 	}
@@ -136,6 +186,9 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "scope", Kind: "sameTarget", Entity: "allocations", PathMatch: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "line", Target: "lines"}}, Right: []transactionrules.RelationStep{{Field: "version", Target: "versions"}, {Field: "owner", Target: "lines"}}}})
 	}
 	for _, entity := range []string{"headers", "lines", "allocations"} {
+		if len(storage) > 0 && storage[0] == "delivery" {
+			break
+		}
 		format := "decimalText"
 		if integerUnits {
 			format = "integerUnits"

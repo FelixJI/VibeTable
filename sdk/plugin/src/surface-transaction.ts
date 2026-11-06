@@ -9,10 +9,47 @@ export interface TransactionDecimal {
   readonly scale: number;
   readonly digits: number;
   readonly sign?: "nonnegative" | "positive";
+  /** Optional explicit-null amounts only; never for balance/conservation/reservation sums. */
+  readonly nullable?: boolean;
 }
 interface RelationStep { readonly field: string; readonly target: string }
 interface PathMatch { readonly left: readonly RelationStep[]; readonly right: readonly RelationStep[] }
 interface RuleIdentity { readonly id: string; readonly entity: string }
+export interface ReservationObligation { readonly entity: string; readonly quantity: string }
+/** An authoritative scalar selected through 1-4 single-value relation hops. */
+export interface ReservationFieldRef { readonly path: readonly RelationStep[]; readonly field: string }
+export interface ReservationPhase {
+  readonly path: readonly RelationStep[];
+  readonly field: string;
+  readonly instructionDraft: string;
+  readonly instructionOpen: string;
+  readonly instructionClosed: string;
+  readonly instructionTransferred: string;
+  readonly deliveryDraft: string;
+  readonly deliveryConfirmed: string;
+}
+export interface ReservationLogical { readonly field: string; readonly target: string }
+export interface ReservationPlans {
+  readonly entity: string;
+  readonly quantity: string;
+  readonly scope: string;
+  readonly logicalItem: ReservationLogical;
+  readonly share: string;
+  readonly currentWhen: PathMatch;
+}
+/** Closed typed shape of a reservationBalance rule: field and relation names only. */
+export interface ReservationSpec {
+  readonly obligation: ReservationObligation;
+  readonly scope: string;
+  readonly quantity: string;
+  readonly purpose: ReservationFieldRef;
+  readonly normalPurpose: string;
+  readonly phase: ReservationPhase;
+  readonly planItem?: string;
+  readonly instructionSource?: string;
+  readonly transferredFrom?: string;
+  readonly plans?: ReservationPlans;
+}
 export type TransactionRule = RuleIdentity & (
   { readonly kind: "unique"; readonly fields: readonly string[] }
   | { readonly kind: "atMostOne"; readonly fields: readonly [string, string] }
@@ -21,6 +58,9 @@ export type TransactionRule = RuleIdentity & (
   | (({ readonly kind: "conservation" } | { readonly kind: "balance"; readonly currentWhen?: PathMatch }) & { readonly target: string; readonly relation: string; readonly amount: string; readonly limit: string })
   | { readonly kind: "state"; readonly field: string; readonly transitions: Readonly<Record<string, readonly string[]>>;
       readonly fields?: readonly string[]; readonly frozenStates?: readonly string[] }
+  | ({ readonly kind: "parentFreeze"; readonly parentPath: readonly RelationStep[]; readonly parentStateField: string;
+      readonly frozenStates: readonly string[]; readonly fields?: readonly string[] })
+  | { readonly kind: "reservationBalance"; readonly reservation: ReservationSpec }
 );
 export interface TransactionDeclaration {
   readonly contract: "vibetable.plugin-transactions.v1";

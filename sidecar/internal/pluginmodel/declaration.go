@@ -54,7 +54,7 @@ func Decode(raw []byte) (*Declaration, error) {
 }
 func (d Declaration) Validate() error {
 	bad := func(path string) error { return fmt.Errorf("plugin.model.declaration_invalid: %s", path) }
-	if d.Contract != Contract || !keyPattern.MatchString(d.ModelID) || d.Version < 1 || d.Version > 2147483647 || len(d.Entities) < 1 || len(d.Entities) > 32 {
+	if d.Contract != Contract || !keyPattern.MatchString(d.ModelID) || d.Version < 1 || d.Version > 2147483647 || len(d.Entities) < 1 || len(d.Entities) > 40 {
 		return bad("model")
 	}
 	entities, labels := map[string]bool{}, map[string]bool{}

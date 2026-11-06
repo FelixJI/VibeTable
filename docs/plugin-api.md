@@ -147,10 +147,10 @@ if (outcome.status === "rejected") return; // 保留表单，不显示“保存�
 manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经由 `model.configure` 完成绑定的
 logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
 完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
-每个声明最多 128 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget` 和 `atMostOne`。
-`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
+每个声明最多 192 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget`、`atMostOne`、`parentFreeze` 和 `reservationBalance`。
+`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)；`parentFreeze` 与 `reservationBalance` 的固定结构、权威阶段/用途路径与数量不变量同样见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。
 
-`decimals` 指定 `{entity,field,storage,scale,digits}`，可选 `sign` 为 `nonnegative` 或 `positive`。省略时接受有符号数。`decimalText` 绑定 Text，值使用规范十进制
+`decimals` 指定 `{entity,field,storage,scale,digits}`，可选 `sign` 为 `nonnegative` 或 `positive`，可选 `nullable:true` 表示仅显式 null 合法（不得用于求和/预算字段）。省略时接受有符号数。`decimalText` 绑定 Text，值使用规范十进制
 字符串；`integerUnits` 绑定整数 Number，值为安全整数最小单位。scale 为 0–18，digits 为
 1–38，且 scale 不大于 digits；拒绝超精度、溢出、隐式舍入及 null 代零。普通小数 Number
 不能当作可无损恢复的精确金额。
