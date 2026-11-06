@@ -58,6 +58,14 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 			entity = step.Target
 		}
 	}
+	if spec := r.Reversal; spec != nil {
+		visit(r.Entity, RelationStep{spec.Original, r.Entity})
+		entity := r.Entity
+		for _, step := range spec.OwnerPath {
+			visit(entity, step)
+			entity = step.Target
+		}
+	}
 	if r.Reservation != nil {
 		res := r.Reservation
 		visit(r.Entity, RelationStep{res.Scope, res.Obligation.Entity})
@@ -129,6 +137,19 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 				return failure("rules_invalid")
 			}
 		}
+		if spec := rule.Reversal; spec != nil {
+			for _, field := range append([]string{spec.Quantity, spec.Purpose}, spec.SameFields...) {
+				if !scalars[[2]string{rule.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+			owner := spec.OwnerPath[len(spec.OwnerPath)-1].Target
+			for _, field := range append([]string{spec.OwnerStateField}, spec.SameOwnerFields...) {
+				if !scalars[[2]string{owner, field}] {
+					return failure("rules_invalid")
+				}
+			}
+		}
 		if rule.Reservation != nil {
 			res := rule.Reservation
 			for _, key := range []string{res.Quantity, res.Scope, res.PlanItem, res.InstructionSource, res.TransferredFrom} {
@@ -161,7 +182,7 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 				}
 			}
 		}
-		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.CurrentWhen == nil {
+		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.Kind != "reversalBalance" && rule.CurrentWhen == nil {
 			continue
 		}
 		valid := true

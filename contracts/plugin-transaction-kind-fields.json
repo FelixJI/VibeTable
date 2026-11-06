@@ -6,13 +6,16 @@
     {"parentStateField": ""},
     {"parentStateField": "phase"},
     {"reservation": null},
-    {"reservation": {}}
+    {"reservation": {}},
+    {"reversal": null},
+    {"reversal": {}}
   ],
   "parentFreeze": [
     {"transitions": {}},
     {"transitions": {"draft": ["open"]}},
     {"currentWhen": null},
     {"reservation": null},
-    {"field": ""}
+    {"field": ""},
+    {"reversal": null}
   ]
 }

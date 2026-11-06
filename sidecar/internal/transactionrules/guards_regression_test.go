@@ -138,6 +138,7 @@ func TestDeliveryGuardClosedShapeCorpus(t *testing.T) {
 		{ID: "u", Kind: "state", Entity: "sources", Field: "phase", Transitions: map[string][]string{"draft": {"open"}}},
 		{ID: "u", Kind: "sameTarget", Entity: "sources", PathMatch: PathMatch{Left: []RelationStep{{Field: "scope", Target: "obligations"}}, Right: []RelationStep{{Field: "scope", Target: "obligations"}}}},
 		parentFreezeRule(),
+		reservationPlanRule(),
 	} {
 		base.Rules = []Rule{rule}
 		encoded, _ := json.Marshal(base)

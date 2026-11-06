@@ -1,0 +1,18 @@
+{
+  "id": "return_capacity",
+  "kind": "reversalBalance",
+  "entity": "lines",
+  "reversal": {
+    "original": "original_line",
+    "quantity": "quantity",
+    "purpose": "purpose",
+    "reversalPurpose": "salesReturn",
+    "originalPurpose": "normal",
+    "ownerPath": [{"field": "document", "target": "documents"}],
+    "ownerStateField": "phase",
+    "requiredStates": ["instruction_open", "instruction_closed", "instruction_transferred", "delivery_confirmed"],
+    "confirmedState": "delivery_confirmed",
+    "sameFields": ["material", "project", "package", "unit", "currency"],
+    "sameOwnerFields": ["agreement"]
+  }
+}

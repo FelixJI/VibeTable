@@ -773,6 +773,7 @@ def test_delivery_guard_kind_fields_shared_with_go() -> None:
                 "right": [{"field": "scope", "target": "obligations"}],
             },
             declaration(delivery_manifest())["rules"][0],
+            declaration(delivery_manifest())["rules"][2],
         ]
     )
     for rule in rules:
@@ -864,3 +865,87 @@ def test_model_capacity_allows_forty_entities() -> None:
     )
     with pytest.raises(ValidationError):
         PluginManifest.model_validate(manifest)
+
+
+def reversal_manifest() -> dict:
+    manifest = delivery_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    entities[1]["fields"].append({"key": "agreement", "label": "agreement", "type": "text"})
+    entities[2]["fields"].extend(
+        {"key": field, "label": field, "type": "text"}
+        for field in ("quantity", "material", "project", "package", "unit", "currency")
+    )
+    entities[2]["fields"].extend(
+        [
+            {
+                "key": "original_line",
+                "label": "original",
+                "type": "relation",
+                "relation": {"entity": "lines", "field": "reversals", "cardinality": "one"},
+            },
+            {
+                "key": "reversals",
+                "label": "reversals",
+                "type": "relation",
+                "relation": {"entity": "lines", "field": "original_line", "cardinality": "many"},
+            },
+        ]
+    )
+    d = declaration(manifest)
+    d["decimals"].append(
+        {
+            "entity": "lines",
+            "field": "quantity",
+            "storage": "decimalText",
+            "scale": 0,
+            "digits": 38,
+            "sign": "positive",
+        }
+    )
+    d["rules"].append(
+        json.loads((Path(__file__).parents[2] / "contracts/plugin-reversal-rule.json").read_text())
+    )
+    return manifest
+
+
+def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:
+    manifest = reversal_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    patches = [
+        {"original": "missing"},
+        {"quantity": "missing"},
+        {"purpose": "missing"},
+        {"ownerPath": []},
+        {"ownerPath": [{"field": "document", "target": "lines"}]},
+        {"ownerStateField": "missing"},
+        {"requiredStates": []},
+        {"requiredStates": ["delivery_confirmed", "delivery_confirmed"]},
+        {"confirmedState": "missing"},
+        {"originalPurpose": "salesReturn"},
+        {"sameFields": ["missing"]},
+        {"sameFields": ["unit", "unit"]},
+        {"sameOwnerFields": ["missing"]},
+        {"script": "ignore"},
+    ]
+    for patch in patches:
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][-1]["reversal"].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    for patch in ({"nullable": True}, {"sign": None}):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["decimals"][-1].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    for patch in ({"reservation": None}, {"fields": []}, {"parentPath": None}, {"reversal": None}):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][-1].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))

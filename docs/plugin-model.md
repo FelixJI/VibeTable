@@ -34,6 +34,18 @@
 
 父冻结比较路径每一跳的行身份：即使最终仍指向同一单据，换所属行或重挂中间祖先也拒绝，不依赖这些关系是否列在 `fields` 中。
 
+`reversalBalance` 为退回业务行增加独立的原行与数量检查，不要求该行具有来源分配：
+
+```json
+{"id":"delivery_return_capacity","kind":"reversalBalance","entity":"delivery_lines","reversal":{"original":"original_line","quantity":"quantity","purpose":"purpose","reversalPurpose":"salesReturn","originalPurpose":"normal","ownerPath":[{"field":"document","target":"delivery_documents"}],"ownerStateField":"phase","requiredStates":["instruction_open","instruction_closed","instruction_transferred","delivery_confirmed"],"confirmedState":"delivery_confirmed","sameFields":["material","project","package","unit","currency"],"sameOwnerFields":["agreement"]}}
+```
+
+`ownerPath` 为 1–4 跳单值关系，`original` 必须是指向同行实体的单值关系；`quantity` 使用既有非 nullable 十进制，`positive` 或 `nonnegative` 声明均可，保留其零值政策。`requiredStates` 为 1–32 个互异非空值，必须包含 `confirmedState`；两个快照字段列表必须显式给出，各最多 64 项且不得重复。所有字段、原行关系、父路径、父阶段与父快照都参与持久依赖及共同读取预算。
+
+在最终事务图中，退回处于 `requiredStates` 时必须关联不同于自身的 `originalPurpose` 原行，且原行的父阶段为 `confirmedState`；`sameFields` 与 `sameOwnerFields` 比较存储的历史快照，不沿当前包件推导。双方 null 相等，null 与非 null 不相等。每条下达/确认退回量不得超过原量，仅处于 `confirmedState` 的退回按原行累计不得超过原量；原单与退回同事务确认合法。未进入 `requiredStates` 的草稿可以缺原行、暂指向未确认原行或保留超量输入，仍受原有 FK、类型和十进制校验；确认失败不截断输入或改用途。
+
+确认历史须结合 `parentFreeze`/`state` 冻结原行关系、数量、用途、身份和父归属，未冻结的扩展字段仍可编辑。该规则不限制 normal 真实超发、不检查金额、不改变 reservation 的 X 或释放正常来源。仅修改父单 phase 的普通原生写入同样执行检查；登记规则时已有坏确认事实会拒绝登记，不自动清洗。拒绝码分别为 `transaction.reversal_invalid`（原行、自引、用途或阶段不合法）、`transaction.reversal_mismatch`（行或父快照不相等）、`transaction.reversal_exceeded`（单行或确认累计超量），都明确表示 not-committed。
+
 计划来源的 `scope` 必须与关联计划项的义务一致，消费与转移同样适用。已下达指令或已确认实际引用的历史计划项，其 `scope/logicalItem/share` 稳定身份不可改写；新版本可以建立同稳定身份的新计划项并正常切换当前版本。
 
 规则按 `kind` 校验字段归属。其他类型的字段即使显式给出 `null`、空对象、空列表或默认空字符串，也会在 Go 登记和 Python manifest/package 校验中拒绝。

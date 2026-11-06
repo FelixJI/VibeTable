@@ -50,6 +50,20 @@ export interface ReservationSpec {
   readonly transferredFrom?: string;
   readonly plans?: ReservationPlans;
 }
+/** Stored original-line snapshots and a confirmed reversal quantity ceiling. */
+export interface ReversalSpec {
+  readonly original: string;
+  readonly quantity: string;
+  readonly purpose: string;
+  readonly reversalPurpose: string;
+  readonly originalPurpose: string;
+  readonly ownerPath: readonly RelationStep[];
+  readonly ownerStateField: string;
+  readonly requiredStates: readonly string[];
+  readonly confirmedState: string;
+  readonly sameFields: readonly string[];
+  readonly sameOwnerFields: readonly string[];
+}
 export type TransactionRule = RuleIdentity & (
   { readonly kind: "unique"; readonly fields: readonly string[] }
   | { readonly kind: "atMostOne"; readonly fields: readonly [string, string] }
@@ -61,6 +75,7 @@ export type TransactionRule = RuleIdentity & (
   | ({ readonly kind: "parentFreeze"; readonly parentPath: readonly RelationStep[]; readonly parentStateField: string;
       readonly frozenStates: readonly string[]; readonly fields?: readonly string[] })
   | { readonly kind: "reservationBalance"; readonly reservation: ReservationSpec }
+  | { readonly kind: "reversalBalance"; readonly reversal: ReversalSpec }
 );
 export interface TransactionDeclaration {
   readonly contract: "vibetable.plugin-transactions.v1";

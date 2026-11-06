@@ -102,6 +102,7 @@ type Rule struct {
 	ParentPath       []RelationStep      `json:"parentPath,omitempty"`
 	ParentStateField string              `json:"parentStateField,omitempty"`
 	Reservation      *ReservationSpec    `json:"reservation,omitempty"`
+	Reversal         *ReversalSpec       `json:"reversal,omitempty"`
 }
 
 // Presence matters even when a foreign field decodes to its zero value.
@@ -131,6 +132,8 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 		allowed += "parentPath parentStateField frozenStates fields "
 	case "reservationBalance":
 		allowed += "reservation "
+	case "reversalBalance":
+		allowed += "reversal "
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -198,7 +201,7 @@ func (d Declaration) Validate() error {
 		}
 		ids[r.ID] = true
 		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) ||
-			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" {
+			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" || r.Reversal != nil && r.Kind != "reversalBalance" {
 			return failure("rules_invalid")
 		}
 		valid := false
@@ -219,6 +222,11 @@ func (d Declaration) Validate() error {
 			valid = len(r.ParentPath) > 0 && len(r.ParentPath) <= 4 && r.ParentStateField != "" && len(r.FrozenStates) > 0 && len(r.FrozenStates) <= MaxFrozenStates && len(r.Fields) <= MaxParentFreezeFields && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.Reservation == nil
 		case "reservationBalance":
 			valid = r.Reservation != nil && r.Reservation.valid() && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && len(r.ParentPath) == 0 && r.ParentStateField == ""
+		case "reversalBalance":
+			if r.Reversal != nil {
+				quantity, declared := decimals[r.Entity+"\x00"+r.Reversal.Quantity]
+				valid = r.Reversal.valid() && declared && !quantity.Nullable && (quantity.Sign == "positive" || quantity.Sign == "nonnegative") && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil
+			}
 		}
 		if !valid {
 			return failure("rules_invalid")
@@ -302,6 +310,18 @@ func (r Registration) dependencies() map[string]map[string]bool {
 				parent = step.Target
 			}
 			add(parent, rule.ParentStateField)
+		}
+		if spec := rule.Reversal; spec != nil {
+			add(rule.Entity, spec.Quantity)
+			add(rule.Entity, spec.Purpose)
+			for _, field := range spec.SameFields {
+				add(rule.Entity, field)
+			}
+			owner := spec.OwnerPath[len(spec.OwnerPath)-1].Target
+			add(owner, spec.OwnerStateField)
+			for _, field := range spec.SameOwnerFields {
+				add(owner, field)
+			}
 		}
 		if rule.Reservation != nil {
 			res := rule.Reservation
@@ -699,6 +719,10 @@ func (r Registration) Validate(before, after Images) error {
 			}
 		case "reservationBalance":
 			if err := rule.validateReservation(before, after, formats); err != nil {
+				return err
+			}
+		case "reversalBalance":
+			if err := rule.validateReversal(after, formats); err != nil {
 				return err
 			}
 		}

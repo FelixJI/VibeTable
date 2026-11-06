@@ -159,6 +159,31 @@ class ReservationSpec(TransactionContract):
         return self
 
 
+class ReversalSpec(TransactionContract):
+    original: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    reversal_purpose: str = Field(alias="reversalPurpose", min_length=1)
+    original_purpose: str = Field(alias="originalPurpose", min_length=1)
+    owner_path: RelationPath = Field(alias="ownerPath")
+    owner_state_field: str = Field(alias="ownerStateField", min_length=1)
+    required_states: list[str] = Field(alias="requiredStates", min_length=1, max_length=MAX_STATES)
+    confirmed_state: str = Field(alias="confirmedState", min_length=1)
+    same_fields: list[str] = Field(alias="sameFields", max_length=MAX_STATE_FIELDS)
+    same_owner_fields: list[str] = Field(alias="sameOwnerFields", max_length=MAX_STATE_FIELDS)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> ReversalSpec:
+        if self.original_purpose == self.reversal_purpose:
+            raise ValueError("original and reversal purposes must differ")
+        if self.confirmed_state not in self.required_states:
+            raise ValueError("confirmedState must require a valid original")
+        for fields in (self.required_states, self.same_fields, self.same_owner_fields):
+            if any(not field for field in fields) or len(set(fields)) != len(fields):
+                raise ValueError("reversal states and snapshot fields must be nonempty and unique")
+        return self
+
+
 class TransactionRule(TransactionContract):
     """Closed rule union; fields of another kind never validate."""
 
@@ -173,6 +198,7 @@ class TransactionRule(TransactionContract):
         "atMostOne",
         "parentFreeze",
         "reservationBalance",
+        "reversalBalance",
     ]
     entity: str = Field(min_length=1)
     fields: list[str] = Field(default_factory=list)
@@ -192,6 +218,7 @@ class TransactionRule(TransactionContract):
     parent_path: RelationPath | None = Field(default=None, alias="parentPath")
     parent_state_field: str = Field(default="", alias="parentStateField")
     reservation: ReservationSpec | None = None
+    reversal: ReversalSpec | None = None
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> TransactionRule:
@@ -205,9 +232,12 @@ class TransactionRule(TransactionContract):
             "sameTarget": {"left", "right", "when_present", "skip_empty_left_end"},
             "parentFreeze": {"parent_path", "parent_state_field", "frozen_states", "fields"},
             "reservationBalance": {"reservation"},
+            "reversalBalance": {"reversal"},
         }
         if self.model_fields_set - {"id", "kind", "entity"} - allowed[self.kind]:
             raise ValueError("rule fields must belong to the declared kind, even when empty")
+        if self.kind == "reversalBalance" and self.reversal is None:
+            raise ValueError("reversalBalance requires one closed reversal structure")
         scalar_clear = (
             self.field == ""
             and self.target == ""
@@ -349,6 +379,25 @@ class PluginTransactionsDeclaration(TransactionContract):
                 entity = step.target
 
         for rule in self.rules:
+            if rule.reversal is not None:
+                spec = rule.reversal
+                for field in (spec.quantity, spec.purpose, *spec.same_fields):
+                    if (rule.entity, field) not in owned:
+                        raise ValueError("reversal fields must belong to the line entity")
+                original = relations.get((rule.entity, spec.original))
+                if (
+                    original is None
+                    or original.cardinality != "one"
+                    or original.entity != rule.entity
+                ):
+                    raise ValueError("original must be a declared single self relation")
+                walk(rule.entity, spec.owner_path)
+                owner = spec.owner_path[-1].target
+                for field in (spec.owner_state_field, *spec.same_owner_fields):
+                    if (owner, field) not in owned:
+                        raise ValueError(
+                            "reversal owner fields must belong to the owner path target"
+                        )
             if rule.kind == "atMostOne":
                 for field in rule.fields:
                     relation = relations.get((rule.entity, field))
@@ -466,6 +515,14 @@ class PluginTransactionsDeclaration(TransactionContract):
             if rule.id in ids:
                 raise ValueError("rule ids must be unique")
             ids.add(rule.id)
+            if rule.reversal is not None:
+                quantity = decimals.get((rule.entity, rule.reversal.quantity))
+                if (
+                    quantity is None
+                    or quantity.nullable
+                    or quantity.sign not in ("positive", "nonnegative")
+                ):
+                    raise ValueError("reversal quantity needs a non-nullable nonnegative decimal")
             if rule.kind in ("conservation", "balance"):
                 amount = decimals.get((rule.entity, rule.amount))
                 limit = decimals.get((rule.target, rule.limit))
@@ -512,5 +569,6 @@ __all__ = [
     "MAX_RULES",
     "DecimalDeclaration",
     "PluginTransactionsDeclaration",
+    "ReversalSpec",
     "TransactionRule",
 ]

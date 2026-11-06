@@ -49,7 +49,10 @@
       "transaction.reservation_released",
       "transaction.reservation_frozen",
       "transaction.reservation_transfer_invalid",
-      "transaction.reservation_plan_required"
+      "transaction.reservation_plan_required",
+      "transaction.reversal_invalid",
+      "transaction.reversal_mismatch",
+      "transaction.reversal_exceeded"
     ]
   },
   {

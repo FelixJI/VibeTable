@@ -134,6 +134,9 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		if delivery && storage[0] == "delivery-plans" {
 			addDeliveryPlanModel(m)
 		}
+		if delivery && strings.HasPrefix(storage[0], "delivery-reversal") {
+			addReversalModel(m)
+		}
 		if nullable {
 			price := pluginmodel.Field{Key: "price", Label: "未知价格", Type: v2.LogicalText}
 			if storage[0] == "nullable-integer" {
@@ -200,6 +203,24 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 				},
 			}
 			d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "plan_items", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"})
+		}
+		if strings.HasPrefix(storage[0], "delivery-reversal") {
+			d.Decimals = append(d.Decimals,
+				transactionrules.Decimal{Entity: "lines", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "positive"},
+				transactionrules.Decimal{Entity: "lines", Field: "amount", Format: exactdecimal.Format{Storage: "decimalText", Scale: 2, Digits: 38}, Nullable: true})
+			d.Rules[1].Fields = append(d.Rules[1].Fields, "quantity", "original_line", "material", "project", "package", "unit", "currency", "amount")
+			d.Rules = append(d.Rules, transactionrules.Rule{ID: "document_state", Kind: "state", Entity: "documents", Field: "phase", Fields: []string{"agreement"}, FrozenStates: []string{"delivery_confirmed"}, Transitions: map[string][]string{
+				"delivery_draft": {"delivery_confirmed"}, "delivery_confirmed": {},
+				"instruction_draft": {"instruction_open"}, "instruction_open": {"instruction_closed", "instruction_transferred"}, "instruction_closed": {}, "instruction_transferred": {},
+			}})
+			if storage[0] != "delivery-reversal-legacy" {
+				var reversal transactionrules.Rule
+				raw, err := os.ReadFile("../../../contracts/plugin-reversal-rule.json")
+				if err != nil || json.Unmarshal(raw, &reversal) != nil {
+					t.Fatal("invalid reversal fixture", err)
+				}
+				d.Rules = append(d.Rules, reversal)
+			}
 		}
 	}
 	if len(storage) > 0 && storage[0] == "state" {
