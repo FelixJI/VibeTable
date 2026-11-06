@@ -479,7 +479,10 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 		}
 		source := beforeRows[row.instruction]
 		if source != nil && source.state != "open" {
-			return failure("reservation_invalid")
+			opened := afterRows[row.instruction]
+			if source.state != "draft" || opened == nil || opened.state != "open" {
+				return failure("reservation_invalid")
+			}
 		}
 	}
 	// Transfer chains: identical purpose, scope and stable share, exact

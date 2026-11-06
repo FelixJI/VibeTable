@@ -412,6 +412,91 @@ func TestReservationBalanceTransferChains(t *testing.T) {
 	}
 }
 
+func TestReservationDraftInstructionOpensWithConsumption(t *testing.T) {
+	registration := Registration{Declaration: reservationDeclaration(reservationRule())}
+	for _, purpose := range []string{"normal", "gift", "afterSales"} {
+		for _, existingActual := range []bool{false, true} {
+			name := purpose + map[bool]string{false: "/new-actual", true: "/confirm-draft"}[existingActual]
+			t.Run(name, func(t *testing.T) {
+				before := reservationImages()
+				delete(before["sources"], "a")
+				before["documents"]["di"]["phase"] = "instruction_draft"
+				before["lines"]["li"]["purpose"] = purpose
+				owner := "ld"
+				if existingActual {
+					owner = "ldraft"
+					before["sources"]["a"] = map[string]any{"owner_line": owner, "scope": "o1", "quantity": "8"}
+				}
+				before["lines"][owner]["purpose"] = purpose
+				if err := registration.Validate(nil, before); err != nil {
+					t.Fatalf("illegal fixture before image: %v", err)
+				}
+				after := clone(before)
+				after["documents"]["di"]["phase"] = "instruction_open"
+				if existingActual {
+					after["documents"]["ddraft"]["phase"] = "delivery_confirmed"
+				}
+				after["sources"]["a"] = map[string]any{"owner_line": owner, "scope": "o1", "quantity": "8", "instruction_source": "h"}
+				if err := registration.Validate(before, after); err != nil {
+					t.Fatalf("same-transaction issue/consume: %v", err)
+				}
+				if err := registration.Validate(nil, after); err != nil {
+					t.Fatalf("new open instruction and consumption control: %v", err)
+				}
+				for _, phase := range []string{"instruction_draft", "instruction_closed", "instruction_transferred"} {
+					invalid := clone(after)
+					invalid["documents"]["di"]["phase"] = phase
+					if err := registration.Validate(before, invalid); err == nil {
+						t.Fatalf("draft final %s consumed", phase)
+					}
+				}
+				over := clone(after)
+				over["sources"]["a"]["quantity"] = "11"
+				if err := registration.Validate(before, over); err == nil || err.Error() != "transaction.reservation_exhausted" {
+					t.Fatalf("over-consumption: %v", err)
+				}
+				cross := clone(after)
+				otherPurpose := "normal"
+				if purpose == otherPurpose {
+					otherPurpose = "gift"
+				}
+				cross["lines"][owner]["purpose"] = otherPurpose
+				if err := registration.Validate(before, cross); err == nil || err.Error() != "transaction.reservation_invalid" {
+					t.Fatalf("cross-purpose: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestReservationFinishedInstructionCannotConsumeOrReopen(t *testing.T) {
+	registration := Registration{Declaration: reservationDeclaration(reservationRule())}
+	for _, phase := range []string{"instruction_closed", "instruction_transferred"} {
+		t.Run(phase, func(t *testing.T) {
+			before := reservationImages()
+			before["documents"]["di"]["phase"] = phase
+			if phase == "instruction_transferred" {
+				before["documents"]["dt"] = map[string]any{"phase": "instruction_open"}
+				before["lines"]["lt"] = map[string]any{"purpose": "normal", "document": "dt"}
+				before["sources"]["t"] = map[string]any{"quantity": "2", "scope": "o1", "owner_line": "lt", "transferred_from": "h"}
+			}
+			if err := registration.Validate(nil, before); err != nil {
+				t.Fatalf("illegal fixture: %v", err)
+			}
+			after := clone(before)
+			after["sources"]["b"] = map[string]any{"owner_line": "ld", "quantity": "1", "scope": "o1", "instruction_source": "h"}
+			if err := registration.Validate(before, after); err == nil || err.Error() != "transaction.reservation_invalid" {
+				t.Fatalf("new consumption: %v", err)
+			}
+			after = clone(before)
+			after["documents"]["di"]["phase"] = "instruction_open"
+			if err := registration.Validate(before, after); err == nil || err.Error() != "transaction.reservation_frozen" {
+				t.Fatalf("reopened: %v", err)
+			}
+		})
+	}
+}
+
 func TestReservationBalancePurposeCapacitySplit(t *testing.T) {
 	registration := Registration{Declaration: reservationDeclaration(reservationRule())}
 	// Three same-size instructions; only the normal one occupies obligation 10.
