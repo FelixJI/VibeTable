@@ -86,7 +86,7 @@ func TestSettlementFixedCloseAndFulfillmentScopes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			i := settlementImages()
 			tc.prepare(i)
-			if err := registration.Validate(nil, i); err == nil || err.Error() != "transaction."+tc.want {
+			if err := registration.Validate(Images{}, i); err == nil || err.Error() != "transaction."+tc.want {
 				t.Fatalf("invalid close accepted: %v", err)
 			}
 		})

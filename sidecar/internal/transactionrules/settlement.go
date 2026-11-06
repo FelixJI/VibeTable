@@ -664,7 +664,9 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 						return failure("settlement_invalid")
 					}
 				}
-				if before == nil || before[adj.Entity][eventID] == nil {
+				// Only a newly written close captures today's remaining scope.
+				// Admission keeps the fixed scope of historical close events.
+				if before != nil && before[adj.Entity][eventID] == nil {
 					if closingNow[target] {
 						return failure("settlement_invalid")
 					}

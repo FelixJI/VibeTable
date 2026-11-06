@@ -254,3 +254,38 @@ func TestSettlementReviewAdmissionPreservesClosedHistory(t *testing.T) {
 		t.Fatal("admission skipped source/capacity relation")
 	}
 }
+
+func TestSettlementReviewAdmissionKeepsFixedCloseAfterCorrection(t *testing.T) {
+	r := Registration{Declaration: invoiceGuardsDeclaration(t, newKindRule(t, "settlement"))}
+	closed := settlementImages()
+	closed["requests"]["r1"]["status"] = "closed"
+	closed["adjustments"]["close"] = map[string]any{"kind": "closeRemaining", "source": "s1", "close_remaining": true, "quantity": "4", "net": "40.00", "tax": "0.00", "gross": "40.00"}
+	corrected := clone(closed)
+	corrected["allocations"]["red"]["quantity"] = "-5"
+	corrected["allocations"]["red"]["net"] = "-80.00"
+	corrected["allocations"]["red"]["gross"] = "-80.00"
+	if err := r.Validate(closed, corrected); err != nil {
+		t.Fatalf("decreased historical allocation: %v", err)
+	}
+	if err := r.Validate(nil, corrected); err != nil {
+		t.Fatalf("admission recalculated immutable close: %v", err)
+	}
+	beforeClose := clone(corrected)
+	beforeClose["requests"]["r1"]["status"] = "open"
+	beforeClose["allocations"]["red"]["net"] = "-50.00"
+	beforeClose["allocations"]["red"]["gross"] = "-50.00"
+	delete(beforeClose["adjustments"], "close")
+	if err := r.Validate(nil, beforeClose); err != nil {
+		t.Fatalf("valid graph before new close: %v", err)
+	}
+	if err := r.Validate(beforeClose, corrected); err == nil {
+		t.Fatal("new close accepted stale remaining range")
+	}
+	exact := clone(corrected)
+	exact["adjustments"]["close"]["quantity"] = "5"
+	exact["adjustments"]["close"]["net"] = "50.00"
+	exact["adjustments"]["close"]["gross"] = "50.00"
+	if err := r.Validate(beforeClose, exact); err != nil {
+		t.Fatalf("new exact close: %v", err)
+	}
+}

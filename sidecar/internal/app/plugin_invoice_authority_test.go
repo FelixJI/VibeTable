@@ -709,6 +709,11 @@ func TestInvoiceAuthorityReviewSequentialQuantityClose(t *testing.T) {
 			remaining["source"] = source
 			remaining["close_remaining"] = true
 			remaining["note"] = "捕获当前剩余四范围"
+			if tc.name == "normal" {
+				bad := invoiceMeasures(tc.last, "100.00", "0.00", "100.00")
+				bad["kind"], bad["source"], bad["close_remaining"], bad["note"] = "closeRemaining", source, true, "伪造新增关闭范围"
+				regressionReject(t, f, invoicePlan(invoiceCreate("adjustments", "bad-remaining", bad)), "transaction.settlement_invalid")
+			}
 			f.submit(t, invoicePlan(invoiceCreate("adjustments", "remaining", remaining)))
 			kept, digest := regressionRow(t, f, "adjustments", eventID)
 			if !reflect.DeepEqual(old, kept) || digest != oldDigest {
@@ -1249,27 +1254,58 @@ func TestInvoiceAuthoritySettlementPlanManifestFields(t *testing.T) {
 }
 
 func TestInvoiceAuthorityAdmissionPreservesClosedHistory(t *testing.T) {
-	for _, partial := range []bool{false, true} {
-		t.Run(fmt.Sprint("partial-", partial), func(t *testing.T) {
+	for _, mode := range []string{"full", "partial", "corrected"} {
+		t.Run(mode, func(t *testing.T) {
+			partial := mode != "full"
+			corrected := mode == "corrected"
 			f := newInvoiceAuthorityFixture(t)
 			blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
 			requested := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs
 			source, request := requested["request_sources"]["request"], requested["requests"]["request"]
 			actual := invoiceFace("red", "red", "physicalReturn", "-10", "-100.00", "0.00", "-100.00", source, blue, true)
 			if partial {
-				for key, value := range invoiceMeasures("-4", "-40.00", "0.00", "-40.00") {
+				measures := invoiceMeasures("-4", "-40.00", "0.00", "-40.00")
+				if corrected {
+					measures = invoiceMeasures("-6", "-90.00", "0.00", "-90.00")
+				}
+				for key, value := range measures {
 					actual.Operations[2].Values[key] = value
 				}
 			}
-			allocation := f.submit(t, actual).NewIDs["allocations"]["red"]
+			if corrected {
+				_, digest := regressionRow(t, f, "requests", request)
+				close := invoiceMeasures("4", "40.00", "0.00", "40.00")
+				close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "按当时执行事实固定关闭", true
+				actual.Operations = append(actual.Operations,
+					invoiceCreate("adjustments", "close", close),
+					transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &digest, Values: map[string]any{"status": "closed"}},
+				)
+			}
+			actualIDs := f.submit(t, actual).NewIDs
+			allocation := actualIDs["allocations"]["red"]
 			_, requestDigest := regressionRow(t, f, "requests", request)
 			closePlan := invoicePlan(transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &requestDigest, Values: map[string]any{"status": "closed"}})
 			if partial {
 				close := invoiceMeasures("6", "60.00", "0.00", "60.00")
+				if corrected {
+					close = invoiceMeasures("4", "40.00", "0.00", "40.00")
+				}
 				close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "固定关闭剩余", true
 				closePlan.Operations = append(closePlan.Operations, invoiceCreate("adjustments", "close", close))
 			}
-			f.submit(t, closePlan)
+			if !corrected {
+				f.submit(t, closePlan)
+			}
+			if corrected {
+				head := actualIDs["invoices"]["red"]
+				_, headDigest := regressionRow(t, f, "invoices", head)
+				_, allocationDigest := regressionRow(t, f, "allocations", allocation)
+				f.submit(t, invoicePlan(
+					invoiceCreate("adjustments", "correction", map[string]any{"invoice": head, "kind": "correction", "note": "核实后减少内部归属，保留原关闭事实"}),
+					transactionOperation{Entity: "invoices", Kind: "update", RecordID: head, ExpectedDigest: &headDigest, Values: map[string]any{"latest_evidence": regressionRef("adjustments", "correction")}},
+					transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &allocationDigest, Values: map[string]any{"quantity": "-5", "net": "-80.00", "gross": "-80.00"}},
+				))
+			}
 			history, err := transactionrules.Load(t.Context(), f.pb)
 			if err != nil {
 				t.Fatal(err)
@@ -1322,7 +1358,11 @@ func TestInvoiceAuthorityAdmissionPreservesClosedHistory(t *testing.T) {
 			regressionReject(t, f, invoiceFace("late", "red", "physicalReturn", "-1", "-1.00", "0.00", "-1.00", source, blue, true), "transaction.settlement_invalid")
 			if partial {
 				_, digest := regressionRow(t, f, "allocations", allocation)
-				regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"net": "-41.00", "gross": "-41.00"}}), "transaction.settlement_invalid")
+				increased := "-41.00"
+				if corrected {
+					increased = "-81.00"
+				}
+				regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"net": increased, "gross": increased}}), "transaction.settlement_invalid")
 			}
 		})
 	}
