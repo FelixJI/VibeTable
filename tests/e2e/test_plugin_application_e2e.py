@@ -211,7 +211,18 @@ def test_confirmation_effects_fail_closed_without_exactly_one_details_array() ->
 
 @pytest.mark.parametrize(
     "failure",
-    [None, "missing", "owner", "cycle", "effects", "truncated", "overflow", "disabled", "obscured"],
+    [
+        None,
+        "missing",
+        "owner",
+        "cycle",
+        "effects",
+        "truncated",
+        "overflow",
+        "disabled",
+        "obscured",
+        "foreground",
+    ],
 )
 def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
     tmp_path, monkeypatch, failure
@@ -222,6 +233,14 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
     from tests.e2e import plugin_application_native as native
 
     sent, focused = [], []
+
+    def take_foreground(*args):
+        focused.append(args)
+        # The exact input path must still demand the real activation; when the
+        # peer confirmation window keeps the foreground right it fails closed.
+        if failure == "foreground":
+            raise OSError("packaged Host cannot become the foreground input owner")
+
     window = {"hwnd": 20, "pid": 12, "visible": True, "title": "VibeTable 插件确认"}
     host = {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"}
     api = SimpleNamespace(
@@ -230,7 +249,7 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
         win32_owner=lambda hwnd: (
             {20: 21, 21: 14, 14: 20}[hwnd] if failure == "cycle" else 14 if hwnd == 20 else 0
         ),
-        foreground=lambda *args: focused.append(args),
+        foreground=take_foreground,
         foreground_observation={"hostHwnd": 20, "hostPid": 12},
         _root_at=lambda *_args: 999 if failure == "obscured" else 20,
     )
@@ -283,6 +302,180 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
         assert result["win32OwnerRoot"] == 14
         assert result["boundEffects"] == ["tbl_head:head1:update"]
         assert result["input"] == "SendInput"
+
+
+def test_pending_confirmation_reads_two_windows_passively_without_foreground(tmp_path, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    # Cloud run 42044079567 job 127313256227 (#58): two same-PID owned
+    # confirmation popups fight over the one foreground right, so a read-only
+    # pending evidence pass must not demand per-window activation at all.
+    host = {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"}
+    windows = [
+        {"hwnd": 20, "pid": 12, "visible": True, "title": "VibeTable 插件确认"},
+        {"hwnd": 30, "pid": 12, "visible": True, "title": "VibeTable 插件确认"},
+    ]
+    activations = []
+
+    def denied_foreground(*args, **_kwargs):
+        activations.append(args)
+        raise OSError("packaged Host cannot become the foreground input owner")
+
+    api = SimpleNamespace(
+        windows=lambda: [host, *windows],
+        owner=lambda _hwnd: 12,
+        win32_owner=lambda hwnd: 14 if hwnd in {20, 30} else 0,
+        foreground=denied_foreground,
+    )
+    commands = []
+
+    def observe(command, **kwargs):
+        commands.append(command)
+        hwnd = int(command[2])
+        detail = {"tableId": f"tbl_{hwnd}", "recordId": f"rec{hwnd}", "operation": "update"}
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "pid": 12,
+                    "hwnd": hwnd,
+                    "texts": [
+                        {"kind": "text", "value": "插件确认", "truncated": False},
+                        {"kind": "edit", "value": json.dumps([detail]), "truncated": False},
+                    ],
+                    "textOverflow": 0,
+                    "buttons": [
+                        {
+                            "id": "plugin-confirm-approve",
+                            "pid": 12,
+                            "enabled": True,
+                            "x": 10,
+                            "y": 20,
+                            "width": 40,
+                            "height": 20,
+                        }
+                    ],
+                }
+            )
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    request = {
+        "requestId": "pending-request",
+        "action": "confirm-pending",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "pending",
+        "expectCount": 2,
+    }
+    result = native._handle_confirmation_pending(
+        api, tmp_path / "observer.exe", 12, request, tmp_path, deadline=time.monotonic() + 5
+    )
+    assert activations == []
+    # Passive read reuses the observer's safe --buttons path: the same full
+    # UIA texts/buttons, without the foreground-dependent BitBlt capture.
+    assert [command[1:3] for command in commands] == [
+        ["--buttons", "20"],
+        ["--buttons", "30"],
+    ]
+    assert result["action"] == "confirm-pending"
+    assert [window["hwnd"] for window in result["windows"]] == [20, 30]
+    assert [window["effects"] for window in result["windows"]] == [
+        ["tbl_20:rec20:update"],
+        ["tbl_30:rec30:update"],
+    ]
+    assert {window["win32OwnerRoot"] for window in result["windows"]} == {14}
+    assert all(window["approveButton"]["enabled"] for window in result["windows"])
+    assert result["input"] is None
+    # No activation was attempted, so the foreground evidence stays empty
+    # instead of fabricating an activation fact.
+    assert result["foreground"] is None
+    assert list(tmp_path.glob("*.png")) == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("identity", "different window"),
+        ("owner-root", "Host main window"),
+        ("truncated", "binding is not complete"),
+        ("overflow", "bounded observation"),
+        ("effects", "canonical effect identity"),
+        ("disabled", "exactly one enabled expected button"),
+    ],
+)
+def test_pending_confirmation_passive_read_fails_closed_without_foreground(
+    tmp_path, monkeypatch, failure, message
+):
+    import time
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    def denied_foreground(*args, **_kwargs):
+        raise OSError("packaged Host cannot become the foreground input owner")
+
+    owned = {20, 30}
+    if failure == "owner-root":
+        # The second popup's GW_OWNER chain no longer ends at the Host main window.
+        owned = {20}
+
+    api = SimpleNamespace(
+        windows=lambda: [
+            {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"},
+            {"hwnd": 20, "pid": 12, "visible": True, "title": "VibeTable 插件确认"},
+            {"hwnd": 30, "pid": 12, "visible": True, "title": "VibeTable 插件确认"},
+        ],
+        owner=lambda _hwnd: 12,
+        win32_owner=lambda hwnd: 14 if hwnd in owned else 0,
+        foreground=denied_foreground,
+    )
+    detail = {"tableId": "tbl_head", "recordId": "head1", "operation": "update"}
+    if failure == "effects":
+        detail = {"recordId": "head1"}
+
+    def observe(command, **kwargs):
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "pid": 99 if failure == "identity" else 12,
+                    "hwnd": int(command[2]),
+                    "texts": [
+                        {
+                            "kind": "edit",
+                            "value": json.dumps([detail]),
+                            "truncated": failure == "truncated",
+                        }
+                    ],
+                    "textOverflow": 1 if failure == "overflow" else 0,
+                    "buttons": [
+                        {
+                            "id": "plugin-confirm-approve",
+                            "pid": 12,
+                            "enabled": failure != "disabled",
+                            "x": 10,
+                            "y": 20,
+                            "width": 40,
+                            "height": 20,
+                        }
+                    ],
+                }
+            )
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    request = {
+        "requestId": "pending-request",
+        "action": "confirm-pending",
+        "buttonId": "plugin-confirm-approve",
+        "stage": "pending",
+        "expectCount": 2,
+    }
+    with pytest.raises((OSError, ValueError), match=message):
+        native._handle_confirmation_pending(
+            api, tmp_path / "observer.exe", 12, request, tmp_path, deadline=time.monotonic() + 5
+        )
 
 
 @pytest.mark.parametrize("failure", [None, "missing", "disabled", "foreign", "background", "dpi"])
