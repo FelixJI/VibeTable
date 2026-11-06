@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { parse, compileStyle } from "../../desktop/web-grid/node_modules/@vue/compiler-sfc/dist/compiler-sfc.esm-browser.js";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import { observeTestPhases } from "./test_phase_evidence.mjs";
@@ -38,12 +38,69 @@ function sampleLayout() {
     footer: rect(panel.querySelector("footer")), active: document.activeElement.className, ancestors };
 }
 
+let browser;
+let page;
+const startupAbort = new AbortController();
+// Allow Playwright's 30s graceful-close window and 5s to settle before failing.
+const cleanupTimeoutMs = 35_000;
+
+async function closeEdge() {
+  const cleanupAbort = new AbortController();
+  const phases = observeTestPhases({
+    signal: cleanupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  let timeout;
+  try {
+    await Promise.race([
+      phases.phase("close Edge", () => browser.close()),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          cleanupAbort.abort();
+          reject(new Error(`Edge cleanup exceeded ${cleanupTimeoutMs}ms`));
+        }, cleanupTimeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    phases.close();
+  }
+}
+
+// Browser startup has its own bounded setup budget; it must not consume the
+// lookup journey's unchanged 15-second budget.
+before(async () => {
+  // Node's before-hook timeout does not abort HookContext.signal. The after
+  // hook cancels startup explicitly; stderr remains observable if it fails.
+  const phases = observeTestPhases({
+    signal: startupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  try {
+    browser = await phases.phase("launch Edge", () => (
+      chromium.launch({ channel: "msedge", headless: true })
+    ));
+    if (startupAbort.signal.aborted) {
+      await closeEdge();
+      return;
+    }
+    page = await phases.phase("create Edge page", () => (
+      browser.newPage({ viewport: { width: 1280, height: 720 } })
+    ));
+  } finally {
+    phases.close();
+  }
+}, { timeout: 30_000 });
+
+after(async () => {
+  startupAbort.abort();
+  if (browser) await closeEdge();
+}, { timeout: cleanupTimeoutMs });
+
 test("lookup source pagination keeps header and load-more inside the viewport", { timeout: 15_000 }, async (t) => {
   const phases = observeTestPhases(t);
-  const browser = await phases.phase("launch Edge", () => chromium.launch({ channel: "msedge", headless: true }));
-  t.after(async () => { await phases.phase("close Edge", () => browser.close()); phases.close(); });
+  t.after(() => phases.close());
   await phases.phase("create evidence directory", () => mkdir(output, { recursive: true }));
-  const page = await phases.phase("create Edge page", () => browser.newPage({ viewport: { width: 1280, height: 720 } }));
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   const reportPageErrors = () => t.diagnostic(`lookup viewport cached page errors: ${JSON.stringify(pageErrors)}`);
