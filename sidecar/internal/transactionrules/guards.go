@@ -538,7 +538,8 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 				continue
 			}
 			prior := beforeRows[id]
-			newlyTransferred := prior == nil || prior.state != "transferred"
+			// A nil before image validates registered history, not a newly executed transfer.
+			newlyTransferred := before != nil && (prior == nil || prior.state != "transferred")
 			consumed := consumedAfter[id]
 			if consumed == nil {
 				consumed = zero
