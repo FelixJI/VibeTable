@@ -27,9 +27,11 @@ import (
 const Contract = "vibetable.plugin-transactions.v1"
 const MaxRows = 10000
 const MaxBytes = 1 << 20
-const MaxRules = 128
+const MaxRules = 192
 const MaxRegistrations = 64
 const MaxDecimals = 64
+const MaxParentFreezeFields = 64
+const MaxFrozenStates = 32
 
 // These options distinguish an omitted policy from an invalid explicit value.
 type decimalSign string
@@ -54,10 +56,30 @@ func (flag *enabledOption) UnmarshalJSON(raw []byte) error {
 }
 
 type Decimal struct {
-	Entity string `json:"entity"`
-	Field  string `json:"field"`
+	Entity   string `json:"entity"`
+	Field    string `json:"field"`
+	Nullable bool   `json:"nullable,omitempty"`
 	exactdecimal.Format
 	Sign decimalSign `json:"sign,omitempty"`
+}
+
+func (d *Decimal) UnmarshalJSON(raw []byte) error {
+	type wireDecimal Decimal
+	var options map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &options); err != nil {
+		return err
+	}
+	if flag, supplied := options["nullable"]; supplied && string(flag) != "true" && string(flag) != "false" {
+		return failure("decimal_invalid")
+	}
+	var decoded wireDecimal
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*d = Decimal(decoded)
+	return nil
 }
 
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
@@ -77,6 +99,77 @@ type Rule struct {
 	Limit            string              `json:"limit,omitempty"`
 	Transitions      map[string][]string `json:"transitions,omitempty"`
 	FrozenStates     []string            `json:"frozenStates,omitempty"`
+	ParentPath       []RelationStep      `json:"parentPath,omitempty"`
+	ParentStateField string              `json:"parentStateField,omitempty"`
+	Reservation      *ReservationSpec    `json:"reservation,omitempty"`
+	Reversal         *ReversalSpec       `json:"reversal,omitempty"`
+}
+
+// Presence matters even when a foreign field decodes to its zero value.
+func (r *Rule) UnmarshalJSON(raw []byte) error {
+	type wireRule Rule
+	var decoded wireRule
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	allowed := " id kind entity "
+	switch decoded.Kind {
+	case "unique", "atMostOne":
+		allowed += "fields "
+	case "reference":
+		allowed += "field target "
+	case "conservation":
+		allowed += "target relation amount limit "
+	case "balance":
+		allowed += "target relation amount limit currentWhen "
+	case "state":
+		allowed += "field fields transitions frozenStates "
+	case "sameTarget":
+		allowed += "left right whenPresent skipEmptyLeftEnd "
+	case "parentFreeze":
+		allowed += "parentPath parentStateField frozenStates fields "
+	case "reservationBalance":
+		allowed += "reservation "
+	case "reversalBalance":
+		allowed += "reversal "
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		if !strings.Contains(allowed, " "+field+" ") {
+			return failure("rules_invalid")
+		}
+	}
+	if decoded.Kind == "parentFreeze" && containsJSONNull(fields) {
+		return failure("rules_invalid")
+	}
+	*r = Rule(decoded)
+	return nil
+}
+
+// Only new non-nullable declaration shapes call this; legacy kinds keep their policy.
+func containsJSONNull(value any) bool {
+	switch node := value.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		for _, child := range node {
+			if containsJSONNull(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if containsJSONNull(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type Declaration struct {
@@ -114,13 +207,16 @@ func (d Declaration) Validate() error {
 	if d.Contract != Contract || d.ModelID == "" || d.Version < 1 || len(d.Rules) == 0 || len(d.Rules) > MaxRules || len(d.Decimals) > MaxDecimals {
 		return failure("rules_invalid")
 	}
-	decimals := map[string]bool{}
+	decimals := map[string]Decimal{}
 	for _, f := range d.Decimals {
 		key := f.Entity + "\x00" + f.Field
-		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || (f.Sign != "" && f.Sign != "nonnegative" && f.Sign != "positive") || decimals[key] {
+		if f.Entity == "" || f.Field == "" || f.Format.Validate() != nil || (f.Sign != "" && f.Sign != "nonnegative" && f.Sign != "positive") {
 			return failure("decimal_invalid")
 		}
-		decimals[key] = true
+		if _, duplicate := decimals[key]; duplicate {
+			return failure("decimal_invalid")
+		}
+		decimals[key] = f
 	}
 	ids := map[string]bool{}
 	for _, r := range d.Rules {
@@ -128,7 +224,8 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
-		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) ||
+			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" || r.Reversal != nil && r.Kind != "reversalBalance" {
 			return failure("rules_invalid")
 		}
 		valid := false
@@ -140,9 +237,20 @@ func (d Declaration) Validate() error {
 		case "reference":
 			valid = r.Field != "" && r.Target != "" && len(r.Fields) == 0 && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "conservation", "balance":
-			valid = r.Target != "" && r.Relation != "" && r.Amount != "" && r.Limit != "" && r.Field == "" && len(r.Fields) == 0 && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && decimals[r.Entity+"\x00"+r.Amount] && decimals[r.Target+"\x00"+r.Limit]
+			amount, hasAmount := decimals[r.Entity+"\x00"+r.Amount]
+			limit, hasLimit := decimals[r.Target+"\x00"+r.Limit]
+			valid = r.Target != "" && r.Relation != "" && r.Amount != "" && r.Limit != "" && r.Field == "" && len(r.Fields) == 0 && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && hasAmount && !amount.Nullable && hasLimit && !limit.Nullable
 		case "state":
 			valid = r.Field != "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) > 0 && len(r.Transitions) <= 32 && len(r.Fields) <= 64 && len(r.FrozenStates) <= 32
+		case "parentFreeze":
+			valid = len(r.ParentPath) > 0 && len(r.ParentPath) <= 4 && r.ParentStateField != "" && len(r.FrozenStates) > 0 && len(r.FrozenStates) <= MaxFrozenStates && len(r.Fields) <= MaxParentFreezeFields && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.Reservation == nil
+		case "reservationBalance":
+			valid = r.Reservation != nil && r.Reservation.valid() && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && len(r.ParentPath) == 0 && r.ParentStateField == ""
+		case "reversalBalance":
+			if r.Reversal != nil {
+				quantity, declared := decimals[r.Entity+"\x00"+r.Reversal.Quantity]
+				valid = r.Reversal.valid() && declared && !quantity.Nullable && (quantity.Sign == "positive" || quantity.Sign == "nonnegative") && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil
+			}
 		}
 		if !valid {
 			return failure("rules_invalid")
@@ -162,6 +270,30 @@ func (d Declaration) Validate() error {
 				if s == "" {
 					return failure("rules_invalid")
 				}
+			}
+		}
+	}
+	for _, r := range d.Rules {
+		if r.Kind != "reservationBalance" || r.Reservation == nil {
+			continue
+		}
+		res := r.Reservation
+		keys := [][2]string{{r.Entity, res.Quantity}, {res.Obligation.Entity, res.Obligation.Quantity}}
+		if res.Plans != nil {
+			keys = append(keys, [2]string{res.Plans.Entity, res.Plans.Quantity})
+		}
+		first := exactdecimal.Format{}
+		for i, key := range keys {
+			declared, ok := decimals[key[0]+"\x00"+key[1]]
+			// positive is a strictly stronger non-negative policy: formal plugins
+			// keep their existing declarations instead of relaxing them.
+			if !ok || declared.Nullable || (declared.Sign != "nonnegative" && declared.Sign != "positive") {
+				return failure("rules_invalid")
+			}
+			if i == 0 {
+				first = declared.Format
+			} else if declared.Format != first {
+				return failure("rules_invalid")
 			}
 		}
 	}
@@ -196,6 +328,51 @@ func (r Registration) dependencies() map[string]map[string]bool {
 			add(step.Target, "")
 		})
 		add(rule.Entity, rule.Amount)
+		if rule.Kind == "parentFreeze" {
+			parent := rule.Entity
+			for _, step := range rule.ParentPath {
+				parent = step.Target
+			}
+			add(parent, rule.ParentStateField)
+		}
+		if spec := rule.Reversal; spec != nil {
+			add(rule.Entity, spec.Quantity)
+			add(rule.Entity, spec.Purpose)
+			for _, field := range spec.SameFields {
+				add(rule.Entity, field)
+			}
+			owner := spec.OwnerPath[len(spec.OwnerPath)-1].Target
+			add(owner, spec.OwnerStateField)
+			for _, field := range spec.SameOwnerFields {
+				add(owner, field)
+			}
+		}
+		if rule.Reservation != nil {
+			res := rule.Reservation
+			add(res.Obligation.Entity, res.Obligation.Quantity)
+			add(rule.Entity, res.Quantity)
+			purposeEntity := rule.Entity
+			for _, step := range res.Purpose.Path {
+				purposeEntity = step.Target
+			}
+			add(purposeEntity, res.Purpose.Field)
+			add(rule.Entity, res.Scope)
+			add(rule.Entity, res.PlanItem)
+			add(rule.Entity, res.InstructionSource)
+			add(rule.Entity, res.TransferredFrom)
+			if res.Plans != nil {
+				add(res.Plans.Entity, res.Plans.Quantity)
+				add(res.Plans.Entity, res.Plans.Scope)
+				add(res.Plans.Entity, res.Plans.LogicalItem.Field)
+				add(res.Plans.Entity, res.Plans.Share)
+				add(res.Plans.LogicalItem.Target, "")
+			}
+			entity := rule.Entity
+			for _, step := range res.Phase.Path {
+				entity = step.Target
+			}
+			add(entity, res.Phase.Field)
+		}
 	}
 	return result
 }
@@ -388,6 +565,10 @@ func (r Registration) Validate(before, after Images) error {
 	for _, d := range r.Declaration.Decimals {
 		formats[d.Entity+"\x00"+d.Field] = d.Format
 		for _, row := range after[d.Entity] {
+			value, present := row[d.Field]
+			if d.Nullable && present && value == nil {
+				continue
+			}
 			n, err := d.Parse(row[d.Field])
 			if err != nil {
 				return err
@@ -556,6 +737,18 @@ func (r Registration) Validate(before, after Images) error {
 					return failure("state_invalid")
 				}
 			}
+		case "parentFreeze":
+			if err := rule.validateParentFreeze(before, after); err != nil {
+				return err
+			}
+		case "reservationBalance":
+			if err := rule.validateReservation(before, after, formats); err != nil {
+				return err
+			}
+		case "reversalBalance":
+			if err := rule.validateReversal(after, formats); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -689,22 +882,23 @@ type Guard struct {
 	Before       Images
 }
 
-// IntegerInputs is read before normalization can turn an inexact wire value into a float.
-func IntegerInputs(ctx context.Context, app core.App, table string) (map[string][]exactdecimal.Format, error) {
+// DecimalInputs retains nullability and input presence before schema defaults
+// or normalization can erase the distinction from null or inexact numbers.
+func DecimalInputs(ctx context.Context, app core.App, table string) (map[string][]Decimal, error) {
 	registrations, err := Load(ctx, app)
 	if err != nil {
 		return nil, err
 	}
-	formats := map[string][]exactdecimal.Format{}
+	formats := map[string][]Decimal{}
 	for _, registration := range registrations {
 		for _, decimal := range registration.Declaration.Decimals {
 			binding := registration.Bindings[decimal.Entity]
-			if binding.TableID == table && decimal.Storage == "integerUnits" {
+			if binding.TableID == table {
 				field := binding.Fields[decimal.Field]
 				if field == "" {
 					return nil, failure("binding_stale")
 				}
-				formats[field] = append(formats[field], decimal.Format)
+				formats[field] = append(formats[field], decimal)
 			}
 		}
 	}

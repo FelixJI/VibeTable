@@ -18,7 +18,11 @@ from pydantic import ValidationError
 
 from backend._version import __version__
 from backend.contracts.plugin import PluginManifest
-from backend.contracts.plugin_transactions import MAX_RULES, PluginTransactionsDeclaration
+from backend.contracts.plugin_transactions import (
+    MAX_RULES,
+    PluginTransactionsDeclaration,
+    TransactionRule,
+)
 from backend.infrastructure.plugin_package import (
     InspectedPluginPackage,
     PluginPackageError,
@@ -344,7 +348,7 @@ def test_transactions_reject_unknown_or_cross_kind_declarations(case: str) -> No
 def test_package_capacity_and_closed_relation_paths() -> None:
     manifest = transactions_manifest()
     entities = manifest["permissions"]["model"]["entities"]
-    for index in range(30):
+    for index in range(38):
         entities.append(
             {
                 "key": f"e{index}",
@@ -366,7 +370,7 @@ def test_package_capacity_and_closed_relation_paths() -> None:
             },
         ]
     )
-    rules.extend({**rules[0], "id": f"u{i}"} for i in range(128 - len(rules)))
+    rules.extend({**rules[0], "id": f"u{i}"} for i in range(MAX_RULES - len(rules)))
     assert PluginManifest.model_validate(manifest)
     assert validate_plugin_manifest(package_entries(manifest)) == manifest
 
@@ -511,3 +515,490 @@ def test_transactions_enforce_declared_budgets() -> None:
         PluginManifest.model_validate(oversized)
     with pytest.raises(PluginPackageError, match="1 MiB"):
         validate_plugin_manifest(package_entries(oversized))
+
+
+def delivery_manifest() -> dict:
+    manifest = transactions_manifest()
+    manifest["permissions"]["model"] = {
+        "contract": "vibetable.plugin-model.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "entities": [
+            {
+                "key": "obligations",
+                "label": "交付义务",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "quantity", "label": "义务数量", "type": "text"},
+                    {
+                        "key": "deliveries",
+                        "label": "交付来源",
+                        "type": "relation",
+                        "relation": {"entity": "sources", "field": "scope", "cardinality": "many"},
+                    },
+                ],
+            },
+            {
+                "key": "documents",
+                "label": "交付单据",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "phase", "label": "阶段", "type": "text"},
+                    {
+                        "key": "lines",
+                        "label": "业务行",
+                        "type": "relation",
+                        "relation": {"entity": "lines", "field": "document", "cardinality": "many"},
+                    },
+                ],
+            },
+            {
+                "key": "lines",
+                "label": "交付业务行",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "purpose", "label": "用途", "type": "text"},
+                    {
+                        "key": "real_qty",
+                        "label": "真实数量",
+                        "type": "number",
+                        "precision": "float64",
+                    },
+                    {
+                        "key": "document",
+                        "label": "单据",
+                        "type": "relation",
+                        "relation": {"entity": "documents", "field": "lines", "cardinality": "one"},
+                    },
+                    {
+                        "key": "sources",
+                        "label": "来源",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "owner_line",
+                            "cardinality": "many",
+                        },
+                    },
+                ],
+            },
+            {
+                "key": "sources",
+                "label": "交付来源",
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [
+                    {"key": "quantity", "label": "数量", "type": "text"},
+                    {"key": "note", "label": "备注", "type": "text"},
+                    {
+                        "key": "scope",
+                        "label": "义务",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "obligations",
+                            "field": "deliveries",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "owner_line",
+                        "label": "所属行",
+                        "type": "relation",
+                        "relation": {"entity": "lines", "field": "sources", "cardinality": "one"},
+                    },
+                    {
+                        "key": "instruction_source",
+                        "label": "指令来源",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "instruction_uses",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "instruction_uses",
+                        "label": "指令占用",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "instruction_source",
+                            "cardinality": "many",
+                        },
+                    },
+                    {
+                        "key": "transferred_from",
+                        "label": "转出指令",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "transfer_targets",
+                            "cardinality": "one",
+                        },
+                    },
+                    {
+                        "key": "transfer_targets",
+                        "label": "转入指令",
+                        "type": "relation",
+                        "relation": {
+                            "entity": "sources",
+                            "field": "transferred_from",
+                            "cardinality": "many",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    manifest["permissions"]["transactions"] = {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "decimals": [
+            {
+                "entity": "sources",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "nonnegative",
+            },
+            {
+                "entity": "obligations",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "positive",
+            },
+        ],
+        "rules": [
+            {
+                "id": "freeze_sources",
+                "kind": "parentFreeze",
+                "entity": "sources",
+                "parentPath": [
+                    {"field": "owner_line", "target": "lines"},
+                    {"field": "document", "target": "documents"},
+                ],
+                "parentStateField": "phase",
+                "frozenStates": ["delivery_confirmed"],
+                "fields": ["quantity", "scope", "instruction_source"],
+            },
+            {
+                "id": "freeze_lines",
+                "kind": "parentFreeze",
+                "entity": "lines",
+                "parentPath": [{"field": "document", "target": "documents"}],
+                "parentStateField": "phase",
+                "frozenStates": ["delivery_confirmed"],
+                "fields": ["purpose", "real_qty"],
+            },
+            {
+                "id": "capacity",
+                "kind": "reservationBalance",
+                "entity": "sources",
+                "reservation": {
+                    "obligation": {"entity": "obligations", "quantity": "quantity"},
+                    "scope": "scope",
+                    "quantity": "quantity",
+                    "purpose": {
+                        "path": [{"field": "owner_line", "target": "lines"}],
+                        "field": "purpose",
+                    },
+                    "normalPurpose": "normal",
+                    "phase": {
+                        "path": [
+                            {"field": "owner_line", "target": "lines"},
+                            {"field": "document", "target": "documents"},
+                        ],
+                        "field": "phase",
+                        "instructionDraft": "instruction_draft",
+                        "instructionOpen": "instruction_open",
+                        "instructionClosed": "instruction_closed",
+                        "instructionTransferred": "instruction_transferred",
+                        "deliveryDraft": "delivery_draft",
+                        "deliveryConfirmed": "delivery_confirmed",
+                    },
+                    "instructionSource": "instruction_source",
+                    "transferredFrom": "transferred_from",
+                },
+            },
+        ],
+    }
+    return manifest
+
+
+def test_delivery_guard_rules_form_a_closed_shape() -> None:
+    manifest = delivery_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+
+    for index, patch in (
+        (0, {"amount": "quantity"}),
+        (0, {"parentStateField": ""}),
+        (0, {"frozenStates": []}),
+        (2, {"reservation": None}),
+        (2, {"parentPath": [{"field": "owner_line", "target": "lines"}]}),
+    ):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][index].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_delivery_guard_kind_fields_shared_with_go() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-kind-fields.json").read_text()
+    )
+    rules = copy.deepcopy(declaration(transactions_manifest())["rules"])
+    rules.extend(
+        [
+            {"id": "one", "kind": "atMostOne", "entity": "sources", "fields": ["a", "b"]},
+            {
+                "id": "balance",
+                "kind": "balance",
+                "entity": "sources",
+                "relation": "scope",
+                "amount": "quantity",
+                "target": "obligations",
+                "limit": "quantity",
+            },
+            {
+                "id": "same",
+                "kind": "sameTarget",
+                "entity": "sources",
+                "left": [{"field": "scope", "target": "obligations"}],
+                "right": [{"field": "scope", "target": "obligations"}],
+            },
+            declaration(delivery_manifest())["rules"][0],
+            declaration(delivery_manifest())["rules"][2],
+        ]
+    )
+    for rule in rules:
+        assert TransactionRule.model_validate(rule)
+        patches = corpus["parentFreeze" if rule["kind"] == "parentFreeze" else "legacy"]
+        for patch in patches:
+            with pytest.raises(ValidationError):
+                TransactionRule.model_validate(rule | patch)
+
+    for factory, index, patches in (
+        (transactions_manifest, 0, corpus["legacy"]),
+        (delivery_manifest, 0, corpus["parentFreeze"]),
+    ):
+        for patch in patches:
+            manifest = factory()
+            declaration(manifest)["rules"][index].update(patch)
+            with pytest.raises(ValidationError):
+                PluginManifest.model_validate(manifest)
+            with pytest.raises(PluginPackageError):
+                validate_plugin_manifest(package_entries(manifest))
+
+
+def test_delivery_guard_quantity_and_purpose_validation() -> None:
+    manifest = delivery_manifest()
+    for section, index, patch in (
+        ("decimals", 0, {"nullable": True}),
+        ("decimals", 1, {"sign": None}),
+        ("decimals", 1, {"scale": 2}),
+        (
+            "rules",
+            2,
+            {
+                "reservation": {
+                    "obligation": {"entity": "obligations", "quantity": "quantity"},
+                    "scope": "scope",
+                    "quantity": "quantity",
+                    "purpose": {
+                        "path": [{"field": "owner_line", "target": "lines"}],
+                        "field": "missing",
+                    },
+                    "normalPurpose": "normal",
+                    "phase": {
+                        "path": [
+                            {"field": "owner_line", "target": "lines"},
+                            {"field": "document", "target": "documents"},
+                        ],
+                        "field": "phase",
+                        "instructionDraft": "instruction_draft",
+                        "instructionOpen": "instruction_open",
+                        "instructionClosed": "instruction_closed",
+                        "instructionTransferred": "instruction_transferred",
+                        "deliveryDraft": "delivery_draft",
+                        "deliveryConfirmed": "delivery_confirmed",
+                    },
+                    "instructionSource": "instruction_source",
+                    "transferredFrom": "transferred_from",
+                }
+            },
+        ),
+    ):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)[section][index].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_model_capacity_allows_forty_entities() -> None:
+    manifest = transactions_manifest()
+    model = manifest["permissions"]["model"]
+    for index in range(40 - len(model["entities"])):
+        model["entities"].append(
+            {
+                "key": f"extra_{index}",
+                "label": f"扩展{index}",
+                "operations": ["read", "query"],
+                "fields": [{"key": "code", "label": "代码", "type": "text"}],
+            }
+        )
+    assert PluginManifest.model_validate(manifest)
+    model["entities"].append(
+        {
+            "key": "over",
+            "label": "超额",
+            "operations": ["read", "query"],
+            "fields": [{"key": "code", "label": "代码", "type": "text"}],
+        }
+    )
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
+
+
+def reversal_manifest() -> dict:
+    manifest = delivery_manifest()
+    entities = manifest["permissions"]["model"]["entities"]
+    entities[1]["fields"].append({"key": "agreement", "label": "agreement", "type": "text"})
+    entities[2]["fields"].extend(
+        {"key": field, "label": field, "type": "text"}
+        for field in ("quantity", "material", "project", "package", "unit", "currency")
+    )
+    entities[2]["fields"].extend(
+        [
+            {
+                "key": "original_line",
+                "label": "original",
+                "type": "relation",
+                "relation": {"entity": "lines", "field": "reversals", "cardinality": "one"},
+            },
+            {
+                "key": "reversals",
+                "label": "reversals",
+                "type": "relation",
+                "relation": {"entity": "lines", "field": "original_line", "cardinality": "many"},
+            },
+        ]
+    )
+    d = declaration(manifest)
+    d["decimals"].append(
+        {
+            "entity": "lines",
+            "field": "quantity",
+            "storage": "decimalText",
+            "scale": 0,
+            "digits": 38,
+            "sign": "positive",
+        }
+    )
+    d["rules"].append(
+        json.loads((Path(__file__).parents[2] / "contracts/plugin-reversal-rule.json").read_text())
+    )
+    return manifest
+
+
+def test_new_rule_null_shapes_match_go() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text()
+    )
+
+    def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
+        rule = copy.deepcopy(corpus["rules"][base])
+        node = rule
+        for index, key in enumerate(path):
+            key = int(key) if isinstance(node, list) else key
+            if index == len(path) - 1:
+                if omit:
+                    del node[key]
+                else:
+                    node[key] = value
+            else:
+                node = node[key]
+        PluginTransactionsDeclaration.model_validate(
+            {
+                "contract": "vibetable.plugin-transactions.v1",
+                "modelId": "m",
+                "version": 1,
+                "rules": [rule],
+                "decimals": [
+                    {
+                        "entity": "sources",
+                        "field": "quantity",
+                        "storage": "decimalText",
+                        "scale": 0,
+                        "digits": 38,
+                        "sign": "nonnegative",
+                    },
+                    {
+                        "entity": "obligations",
+                        "field": "quantity",
+                        "storage": "decimalText",
+                        "scale": 0,
+                        "digits": 38,
+                        "sign": "nonnegative",
+                    },
+                ],
+            }
+        )
+
+    for base in corpus["rules"]:
+        validate(base, [])
+    for case in corpus["invalid"]:
+        with pytest.raises(ValidationError):
+            validate(case["base"], case["path"])
+    for case in corpus["valid"]:
+        validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+
+
+def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:
+    manifest = reversal_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    patches = [
+        {"original": "missing"},
+        {"quantity": "missing"},
+        {"purpose": "missing"},
+        {"ownerPath": []},
+        {"ownerPath": [{"field": "document", "target": "lines"}]},
+        {"ownerStateField": "missing"},
+        {"requiredStates": []},
+        {"requiredStates": ["delivery_confirmed", "delivery_confirmed"]},
+        {"confirmedState": "missing"},
+        {"originalPurpose": "salesReturn"},
+        {"sameFields": ["missing"]},
+        {"sameFields": ["unit", "unit"]},
+        {"sameOwnerFields": ["missing"]},
+        {"script": "ignore"},
+    ]
+    for patch in patches:
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][-1]["reversal"].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    for patch in ({"nullable": True}, {"sign": None}):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["decimals"][-1].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    for patch in ({"reservation": None}, {"fields": []}, {"parentPath": None}, {"reversal": None}):
+        invalid = copy.deepcopy(manifest)
+        declaration(invalid)["rules"][-1].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))

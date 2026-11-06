@@ -16,12 +16,13 @@ from backend.contracts.plugin_model import PluginModelDeclaration
 
 CONTRACT = "vibetable.plugin-transactions.v1"
 # Go transactionrules/exactdecimal budgets; plugins cannot raise them.
-MAX_RULES = 128
+MAX_RULES = 192
 MAX_DECIMALS = 64
 MAX_UNIQUE_FIELDS = 8
 MAX_STATE_FIELDS = 64
 MAX_STATES = 32
 MAX_TRANSITIONS = 32
+MAX_RELATION_HOPS = 4
 MAX_SCALE = 18
 MAX_DIGITS = 38
 MAX_ID_LENGTH = 64
@@ -44,6 +45,7 @@ class DecimalDeclaration(TransactionContract):
     digits: int = Field(ge=1, le=MAX_DIGITS)
 
     sign: Literal["nonnegative", "positive"] | None = None
+    nullable: bool = False
 
     @model_validator(mode="after")
     def validate_format(self) -> DecimalDeclaration:
@@ -73,12 +75,130 @@ class PathMatch(TransactionContract):
         return self
 
 
+class ReservationObligation(TransactionContract):
+    """Capacity anchor: the entity and exact quantity field being reserved."""
+
+    entity: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+
+
+class ReservationFieldRef(TransactionContract):
+    """An authoritative scalar selected through 1-4 single-value relation hops."""
+
+    path: RelationPath
+    field: str = Field(min_length=1)
+
+
+class ReservationPhase(TransactionContract):
+    """Phase roles resolved through the owner path; child rows never self-report."""
+
+    path: RelationPath
+    field: str = Field(min_length=1)
+    instruction_draft: str = Field(alias="instructionDraft", min_length=1)
+    instruction_open: str = Field(alias="instructionOpen", min_length=1)
+    instruction_closed: str = Field(alias="instructionClosed", min_length=1)
+    instruction_transferred: str = Field(alias="instructionTransferred", min_length=1)
+    delivery_draft: str = Field(alias="deliveryDraft", min_length=1)
+    delivery_confirmed: str = Field(alias="deliveryConfirmed", min_length=1)
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> ReservationPhase:
+        states = (
+            self.instruction_draft,
+            self.instruction_open,
+            self.instruction_closed,
+            self.instruction_transferred,
+            self.delivery_draft,
+            self.delivery_confirmed,
+        )
+        if len(set(states)) != len(states):
+            raise ValueError("phase roles are mutually exclusive")
+        return self
+
+
+class ReservationLogical(TransactionContract):
+    field: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+
+
+class ReservationPlans(TransactionContract):
+    """Stable plan buckets keyed by scope, logical item and integer share."""
+
+    entity: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    logical_item: ReservationLogical = Field(alias="logicalItem")
+    share: str = Field(min_length=1)
+    current_when: PathMatch = Field(alias="currentWhen")
+
+
+class ReservationSpec(TransactionContract):
+    """Closed typed shape of a reservationBalance rule: field names and relation
+    mappings only; no formulas or scripts are accepted."""
+
+    obligation: ReservationObligation
+    scope: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+    purpose: ReservationFieldRef
+    normal_purpose: str = Field(alias="normalPurpose", min_length=1)
+    phase: ReservationPhase
+    plan_item: str = Field(default="", alias="planItem")
+    instruction_source: str = Field(default="", alias="instructionSource")
+    transferred_from: str = Field(default="", alias="transferredFrom")
+    plans: ReservationPlans | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> ReservationSpec:
+        if self.transferred_from and not self.instruction_source:
+            raise ValueError("transferredFrom requires instructionSource")
+        if self.plans is not None:
+            if self.plan_item == "":
+                raise ValueError("plans require a declared planItem relation")
+        elif self.plan_item != "":
+            raise ValueError("planItem requires a declared plans structure")
+        return self
+
+
+class ReversalSpec(TransactionContract):
+    original: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    reversal_purpose: str = Field(alias="reversalPurpose", min_length=1)
+    original_purpose: str = Field(alias="originalPurpose", min_length=1)
+    owner_path: RelationPath = Field(alias="ownerPath")
+    owner_state_field: str = Field(alias="ownerStateField", min_length=1)
+    required_states: list[str] = Field(alias="requiredStates", min_length=1, max_length=MAX_STATES)
+    confirmed_state: str = Field(alias="confirmedState", min_length=1)
+    same_fields: list[str] = Field(alias="sameFields", max_length=MAX_STATE_FIELDS)
+    same_owner_fields: list[str] = Field(alias="sameOwnerFields", max_length=MAX_STATE_FIELDS)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> ReversalSpec:
+        if self.original_purpose == self.reversal_purpose:
+            raise ValueError("original and reversal purposes must differ")
+        if self.confirmed_state not in self.required_states:
+            raise ValueError("confirmedState must require a valid original")
+        for fields in (self.required_states, self.same_fields, self.same_owner_fields):
+            if any(not field for field in fields) or len(set(fields)) != len(fields):
+                raise ValueError("reversal states and snapshot fields must be nonempty and unique")
+        return self
+
+
 class TransactionRule(TransactionContract):
     """Closed rule union; fields of another kind never validate."""
 
     id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
     kind: Literal[
-        "unique", "reference", "conservation", "balance", "state", "sameTarget", "atMostOne"
+        "unique",
+        "reference",
+        "conservation",
+        "balance",
+        "state",
+        "sameTarget",
+        "atMostOne",
+        "parentFreeze",
+        "reservationBalance",
+        "reversalBalance",
     ]
     entity: str = Field(min_length=1)
     fields: list[str] = Field(default_factory=list)
@@ -95,9 +215,29 @@ class TransactionRule(TransactionContract):
     when_present: str = Field(default="", alias="whenPresent")
     skip_empty_left_end: bool = Field(default=False, alias="skipEmptyLeftEnd")
     current_when: PathMatch | None = Field(default=None, alias="currentWhen")
+    parent_path: RelationPath | None = Field(default=None, alias="parentPath")
+    parent_state_field: str = Field(default="", alias="parentStateField")
+    reservation: ReservationSpec | None = None
+    reversal: ReversalSpec | None = None
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> TransactionRule:
+        allowed = {
+            "unique": {"fields"},
+            "atMostOne": {"fields"},
+            "reference": {"field", "target"},
+            "conservation": {"target", "relation", "amount", "limit"},
+            "balance": {"target", "relation", "amount", "limit", "current_when"},
+            "state": {"field", "fields", "transitions", "frozen_states"},
+            "sameTarget": {"left", "right", "when_present", "skip_empty_left_end"},
+            "parentFreeze": {"parent_path", "parent_state_field", "frozen_states", "fields"},
+            "reservationBalance": {"reservation"},
+            "reversalBalance": {"reversal"},
+        }
+        if self.model_fields_set - {"id", "kind", "entity"} - allowed[self.kind]:
+            raise ValueError("rule fields must belong to the declared kind, even when empty")
+        if self.kind == "reversalBalance" and self.reversal is None:
+            raise ValueError("reversalBalance requires one closed reversal structure")
         scalar_clear = (
             self.field == ""
             and self.target == ""
@@ -106,16 +246,17 @@ class TransactionRule(TransactionContract):
             and self.limit == ""
         )
         lists_clear = not self.transitions and not self.frozen_states
+        path_clear = (
+            self.left is None
+            and self.right is None
+            and not self.when_present
+            and not self.skip_empty_left_end
+        )
         if "skip_empty_left_end" in self.model_fields_set and not self.skip_empty_left_end:
             raise ValueError("skipEmptyLeftEnd must be true when supplied")
         if self.current_when is not None and self.kind != "balance":
             raise ValueError("currentWhen is only valid on a balance rule")
-        if self.kind != "sameTarget" and (
-            self.left is not None
-            or self.right is not None
-            or self.when_present
-            or self.skip_empty_left_end
-        ):
+        if self.kind != "sameTarget" and not path_clear:
             raise ValueError("left/right paths require a sameTarget rule")
         if self.kind == "sameTarget":
             if (
@@ -155,17 +296,49 @@ class TransactionRule(TransactionContract):
                 or not lists_clear
             ):
                 raise ValueError("conservation/balance rules use relation, amount and target limit")
-        elif (
-            self.field == ""
+        elif self.kind == "state":
+            if (
+                self.field == ""
+                or self.target != ""
+                or self.relation != ""
+                or self.amount != ""
+                or self.limit != ""
+                or not 0 < len(self.transitions) <= MAX_TRANSITIONS
+                or len(self.fields) > MAX_STATE_FIELDS
+                or len(self.frozen_states) > MAX_STATES
+            ):
+                raise ValueError(
+                    "state rules declare one field, bounded transitions and frozen states"
+                )
+        elif self.kind == "parentFreeze":
+            if (
+                self.parent_path is None
+                or len(self.parent_path) > MAX_RELATION_HOPS
+                or self.parent_state_field == ""
+                or not 0 < len(self.frozen_states) <= MAX_STATES
+                or len(self.fields) > MAX_STATE_FIELDS
+                or not scalar_clear
+                or not path_clear
+                or self.reservation is not None
+                or self.transitions
+            ):
+                raise ValueError(
+                    "parentFreeze requires a parent path, state field and frozen states"
+                )
+        elif self.kind == "reservationBalance" and (
+            self.reservation is None
+            or self.field != ""
             or self.target != ""
             or self.relation != ""
             or self.amount != ""
             or self.limit != ""
-            or not 0 < len(self.transitions) <= MAX_TRANSITIONS
-            or len(self.fields) > MAX_STATE_FIELDS
-            or len(self.frozen_states) > MAX_STATES
+            or self.fields
+            or not lists_clear
+            or not path_clear
+            or self.parent_path is not None
+            or self.parent_state_field != ""
         ):
-            raise ValueError("state rules declare one field, bounded transitions and frozen states")
+            raise ValueError("reservationBalance declares one closed reservation structure")
         seen: set[str] = set()
         for name in self.fields:
             if name == "" or name in seen:
@@ -192,12 +365,134 @@ class PluginTransactionsDeclaration(TransactionContract):
         if self.model_id != model.model_id:
             raise ValueError("transactions rules must reference the declared model")
         relations = {(e.key, f.key): f.relation for e in model.entities for f in e.fields}
+        owned = {(e.key, f.key) for e in model.entities for f in e.fields}
+
+        def walk(entity: str, path: list[RelationStep]) -> None:
+            for step in path:
+                relation = relations.get((entity, step.field))
+                if (
+                    relation is None
+                    or relation.cardinality != "one"
+                    or relation.entity != step.target
+                ):
+                    raise ValueError("paths require declared single relations to each target")
+                entity = step.target
+
         for rule in self.rules:
+            if rule.reversal is not None:
+                spec = rule.reversal
+                for field in (spec.quantity, spec.purpose, *spec.same_fields):
+                    if (rule.entity, field) not in owned:
+                        raise ValueError("reversal fields must belong to the line entity")
+                original = relations.get((rule.entity, spec.original))
+                if (
+                    original is None
+                    or original.cardinality != "one"
+                    or original.entity != rule.entity
+                ):
+                    raise ValueError("original must be a declared single self relation")
+                walk(rule.entity, spec.owner_path)
+                owner = spec.owner_path[-1].target
+                for field in (spec.owner_state_field, *spec.same_owner_fields):
+                    if (owner, field) not in owned:
+                        raise ValueError(
+                            "reversal owner fields must belong to the owner path target"
+                        )
             if rule.kind == "atMostOne":
                 for field in rule.fields:
                     relation = relations.get((rule.entity, field))
                     if relation is None or relation.cardinality != "one":
                         raise ValueError("atMostOne requires two declared single relations")
+            if rule.kind == "parentFreeze":
+                for field in rule.fields:
+                    if (rule.entity, field) not in owned:
+                        raise ValueError("parentFreeze fields must belong to the child entity")
+                parent = rule.entity
+                for step in rule.parent_path or ():
+                    parent = step.target
+                if (parent, rule.parent_state_field) not in owned:
+                    raise ValueError("parentStateField must belong to the parent entity")
+                walk(rule.entity, rule.parent_path or [])
+            if rule.reservation is not None:
+                res = rule.reservation
+                for key in (
+                    res.quantity,
+                    res.scope,
+                    res.plan_item,
+                    res.instruction_source,
+                    res.transferred_from,
+                ):
+                    if key and (rule.entity, key) not in owned:
+                        raise ValueError("reservation fields must belong to the declared entity")
+                purpose_entity = rule.entity
+                for step in res.purpose.path:
+                    purpose_entity = step.target
+                if (purpose_entity, res.purpose.field) not in owned:
+                    raise ValueError("the purpose field must belong to the purpose path target")
+                walk(rule.entity, res.purpose.path)
+                phase_entity = rule.entity
+                for step in res.phase.path:
+                    phase_entity = step.target
+                if (phase_entity, res.phase.field) not in owned:
+                    raise ValueError("the phase field must belong to the phase path target")
+                walk(rule.entity, res.phase.path)
+                for key, target in ((res.scope, res.obligation.entity),):
+                    relation = relations.get((rule.entity, key))
+                    if (
+                        relation is None
+                        or relation.cardinality != "one"
+                        or relation.entity != target
+                    ):
+                        raise ValueError("reservation scope must be a declared single relation")
+                if (
+                    res.obligation.entity not in {e.key for e in model.entities}
+                    or (res.obligation.entity, res.obligation.quantity) not in owned
+                ):
+                    raise ValueError("reservation obligation must be a declared entity field")
+                if res.plan_item:
+                    relation = relations.get((rule.entity, res.plan_item))
+                    if (
+                        relation is None
+                        or relation.cardinality != "one"
+                        or res.plans is None
+                        or relation.entity != res.plans.entity
+                    ):
+                        raise ValueError(
+                            "planItem must be a declared single relation to the plans entity"
+                        )
+                for key in (res.instruction_source, res.transferred_from):
+                    if not key:
+                        continue
+                    relation = relations.get((rule.entity, key))
+                    if (
+                        relation is None
+                        or relation.cardinality != "one"
+                        or relation.entity != rule.entity
+                    ):
+                        raise ValueError("instruction relations must be declared self relations")
+                if res.plans is not None:
+                    plans = res.plans
+                    if plans.entity not in {e.key for e in model.entities}:
+                        raise ValueError("plans must be a declared entity")
+                    for key in (plans.quantity, plans.scope, plans.share):
+                        if (plans.entity, key) not in owned:
+                            raise ValueError("plan fields must belong to the plans entity")
+                    relation = relations.get((plans.entity, plans.logical_item.field))
+                    if (
+                        relation is None
+                        or relation.cardinality != "one"
+                        or relation.entity != plans.logical_item.target
+                    ):
+                        raise ValueError("logicalItem must be a declared single relation")
+                    relation = relations.get((plans.entity, plans.scope))
+                    if (
+                        relation is None
+                        or relation.cardinality != "one"
+                        or relation.entity != res.obligation.entity
+                    ):
+                        raise ValueError("plans scope must target the obligation entity")
+                    for plan_path in (plans.current_when.left, plans.current_when.right):
+                        walk(plans.entity, list(plan_path))
             paths = (rule.left, rule.right)
             if rule.current_when:
                 paths = (rule.current_when.left, rule.current_when.right)
@@ -205,35 +500,66 @@ class PluginTransactionsDeclaration(TransactionContract):
                 if edge is None or edge.cardinality != "one" or edge.entity != rule.target:
                     raise ValueError("currentWhen balance requires a declared single relation")
             for path in paths:
-                entity = rule.entity
-                for step in path or ():
-                    relation = relations.get((entity, step.field))
-                    if (
-                        relation is None
-                        or relation.cardinality != "one"
-                        or relation.entity != step.target
-                    ):
-                        raise ValueError("paths require declared single relations to each target")
-                    entity = step.target
+                walk(rule.entity, list(path or ()))
 
     @model_validator(mode="after")
     def validate_declaration(self) -> PluginTransactionsDeclaration:
-        decimals: set[tuple[str, str]] = set()
+        decimals: dict[tuple[str, str], DecimalDeclaration] = {}
         for decimal in self.decimals:
             key = (decimal.entity, decimal.field)
             if key in decimals:
                 raise ValueError("decimal formats must be unique per entity field")
-            decimals.add(key)
+            decimals[key] = decimal
         ids: set[str] = set()
         for rule in self.rules:
             if rule.id in ids:
                 raise ValueError("rule ids must be unique")
             ids.add(rule.id)
-            if rule.kind in ("conservation", "balance") and (
-                (rule.entity, rule.amount) not in decimals
-                or (rule.target, rule.limit) not in decimals
-            ):
-                raise ValueError("conservation/balance amounts need declared decimal formats")
+            if rule.reversal is not None:
+                quantity = decimals.get((rule.entity, rule.reversal.quantity))
+                if (
+                    quantity is None
+                    or quantity.nullable
+                    or quantity.sign not in ("positive", "nonnegative")
+                ):
+                    raise ValueError("reversal quantity needs a non-nullable nonnegative decimal")
+            if rule.kind in ("conservation", "balance"):
+                amount = decimals.get((rule.entity, rule.amount))
+                limit = decimals.get((rule.target, rule.limit))
+                if amount is None or limit is None:
+                    raise ValueError("conservation/balance amounts need declared decimal formats")
+                if amount.nullable or limit.nullable:
+                    raise ValueError("conservation/balance amounts cannot be nullable")
+            if rule.kind == "reservationBalance" and rule.reservation is not None:
+                res = rule.reservation
+                keys = [
+                    (rule.entity, res.quantity),
+                    (res.obligation.entity, res.obligation.quantity),
+                ]
+                if res.plans is not None:
+                    keys.append((res.plans.entity, res.plans.quantity))
+                reference: tuple[int, int, str] | None = None
+                for key in keys:
+                    quantity_decimal = decimals.get(key)
+                    # positive is a strictly stronger non-negative policy:
+                    # formal plugins keep their existing declarations.
+                    if (
+                        quantity_decimal is None
+                        or quantity_decimal.nullable
+                        or quantity_decimal.sign not in ("nonnegative", "positive")
+                    ):
+                        raise ValueError(
+                            "reservation quantities need non-nullable nonnegative decimals"
+                        )
+                    identity = (
+                        quantity_decimal.scale,
+                        quantity_decimal.digits,
+                        quantity_decimal.storage,
+                    )
+                    if reference is None:
+                        reference = identity
+                    elif identity != reference:
+                        raise ValueError("reservation quantities must share one exact format")
         return self
 
 
@@ -243,5 +569,6 @@ __all__ = [
     "MAX_RULES",
     "DecimalDeclaration",
     "PluginTransactionsDeclaration",
+    "ReversalSpec",
     "TransactionRule",
 ]

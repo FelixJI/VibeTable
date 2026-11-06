@@ -90,6 +90,8 @@ func TestTransactionCalculatesOnlyAfterAllInputClocksAdvance(t *testing.T) {
 func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture {
 	t.Helper()
 	integerUnits := len(storage) > 0 && storage[0] == "integerUnits"
+	delivery := len(storage) > 0 && strings.HasPrefix(storage[0], "delivery")
+	nullable := len(storage) > 0 && strings.HasPrefix(storage[0], "nullable-")
 	pb, workspace, input, domain := modelFixture(t)
 	input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
 		m.Entities = []pluginmodel.Entity{
@@ -99,6 +101,48 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		}
 		if len(storage) > 0 && storage[0] == "scoped" {
 			addVersionModel(m)
+		}
+		if delivery {
+			all := []string{"read", "query", "create", "update", "delete"}
+			m.Entities = []pluginmodel.Entity{
+				{Key: "obligations", Label: "交付义务", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "quantity", Label: "义务数量", Type: v2.LogicalText},
+					{Key: "deliveries", Label: "交付来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "scope", Cardinality: "many"}},
+				}},
+				{Key: "documents", Label: "交付单据", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "phase", Label: "阶段", Type: v2.LogicalText},
+					{Key: "lines", Label: "业务行", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "document", Cardinality: "many"}},
+				}},
+				{Key: "lines", Label: "交付业务行", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "purpose", Label: "用途", Type: v2.LogicalText},
+					{Key: "real_qty", Label: "真实数量", Type: v2.LogicalNumber, Precision: "float64"},
+					{Key: "document", Label: "单据", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "documents", Field: "lines", Cardinality: "one"}},
+					{Key: "sources", Label: "来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "owner_line", Cardinality: "many"}},
+				}},
+				{Key: "sources", Label: "交付来源", Operations: all, Fields: []pluginmodel.Field{
+					{Key: "quantity", Label: "数量", Type: v2.LogicalText},
+					{Key: "note", Label: "备注", Type: v2.LogicalText},
+					{Key: "scope", Label: "义务", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "obligations", Field: "deliveries", Cardinality: "one"}},
+					{Key: "owner_line", Label: "所属行", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "lines", Field: "sources", Cardinality: "one"}},
+					{Key: "instruction_source", Label: "指令来源", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "instruction_uses", Cardinality: "one"}},
+					{Key: "instruction_uses", Label: "指令占用", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "instruction_source", Cardinality: "many"}},
+					{Key: "transferred_from", Label: "转出指令", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "transfer_targets", Cardinality: "one"}},
+					{Key: "transfer_targets", Label: "转入指令", Type: v2.LogicalRelation, Relation: &pluginmodel.Relation{Entity: "sources", Field: "transferred_from", Cardinality: "many"}},
+				}},
+			}
+		}
+		if delivery && storage[0] == "delivery-plans" {
+			addDeliveryPlanModel(m)
+		}
+		if delivery && strings.HasPrefix(storage[0], "delivery-reversal") {
+			addReversalModel(m)
+		}
+		if nullable {
+			price := pluginmodel.Field{Key: "price", Label: "未知价格", Type: v2.LogicalText}
+			if storage[0] == "nullable-integer" {
+				price.Type, price.Precision = v2.LogicalNumber, "integer"
+			}
+			m.Entities[0].Fields = append(m.Entities[0].Fields, price)
 		}
 		if len(storage) > 0 && storage[0] == "receipt-repair" {
 			m.Entities = append(m.Entities, pluginmodel.Entity{Key: "notes", Label: "合成独立备注", Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "名称", Type: v2.LogicalText}}})
@@ -127,6 +171,61 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		}
 	})
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
+	if delivery {
+		d = transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{
+			{Entity: "sources", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
+			{Entity: "obligations", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
+		}, Rules: []transactionrules.Rule{
+			{ID: "freeze_sources", Kind: "parentFreeze", Entity: "sources",
+				ParentPath:       []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}, {Field: "document", Target: "documents"}},
+				ParentStateField: "phase", FrozenStates: []string{"delivery_confirmed"}, Fields: []string{"quantity", "scope", "instruction_source"}},
+			{ID: "freeze_lines", Kind: "parentFreeze", Entity: "lines",
+				ParentPath:       []transactionrules.RelationStep{{Field: "document", Target: "documents"}},
+				ParentStateField: "phase", FrozenStates: []string{"delivery_confirmed"}, Fields: []string{"purpose", "real_qty"}},
+			{ID: "capacity", Kind: "reservationBalance", Entity: "sources", Reservation: &transactionrules.ReservationSpec{
+				Obligation: transactionrules.ReservationObligation{Entity: "obligations", Quantity: "quantity"},
+				Scope:      "scope", Quantity: "quantity",
+				Purpose:           transactionrules.ReservationFieldRef{Path: []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}}, Field: "purpose"},
+				NormalPurpose:     "normal",
+				Phase:             transactionrules.ReservationPhase{Path: []transactionrules.RelationStep{{Field: "owner_line", Target: "lines"}, {Field: "document", Target: "documents"}}, Field: "phase", InstructionDraft: "instruction_draft", InstructionOpen: "instruction_open", InstructionClosed: "instruction_closed", InstructionTransferred: "instruction_transferred", DeliveryDraft: "delivery_draft", DeliveryConfirmed: "delivery_confirmed"},
+				InstructionSource: "instruction_source", TransferredFrom: "transferred_from",
+			}},
+		}}
+		if storage[0] == "delivery-reservation-only" {
+			d.Rules = d.Rules[2:]
+		}
+		if storage[0] == "delivery-plans" {
+			res := d.Rules[2].Reservation
+			res.PlanItem = "plan_item"
+			res.Plans = &transactionrules.ReservationPlans{
+				Entity: "plan_items", Quantity: "quantity", Scope: "scope",
+				LogicalItem: transactionrules.ReservationLogical{Field: "logical_item", Target: "logical_items"}, Share: "share",
+				CurrentWhen: transactionrules.PathMatch{
+					Left:  []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}},
+					Right: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}, {Field: "series", Target: "series"}, {Field: "current_version", Target: "plan_versions"}},
+				},
+			}
+			d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "plan_items", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"})
+		}
+		if strings.HasPrefix(storage[0], "delivery-reversal") {
+			d.Decimals = append(d.Decimals,
+				transactionrules.Decimal{Entity: "lines", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "positive"},
+				transactionrules.Decimal{Entity: "lines", Field: "amount", Format: exactdecimal.Format{Storage: "decimalText", Scale: 2, Digits: 38}, Nullable: true})
+			d.Rules[1].Fields = append(d.Rules[1].Fields, "quantity", "original_line", "material", "project", "package", "unit", "currency", "amount")
+			d.Rules = append(d.Rules, transactionrules.Rule{ID: "document_state", Kind: "state", Entity: "documents", Field: "phase", Fields: []string{"agreement"}, FrozenStates: []string{"delivery_confirmed"}, Transitions: map[string][]string{
+				"delivery_draft": {"delivery_confirmed"}, "delivery_confirmed": {},
+				"instruction_draft": {"instruction_open"}, "instruction_open": {"instruction_closed", "instruction_transferred"}, "instruction_closed": {}, "instruction_transferred": {},
+			}})
+			if storage[0] != "delivery-reversal-legacy" {
+				var reversal transactionrules.Rule
+				raw, err := os.ReadFile("../../../contracts/plugin-reversal-rule.json")
+				if err != nil || json.Unmarshal(raw, &reversal) != nil {
+					t.Fatal("invalid reversal fixture", err)
+				}
+				d.Rules = append(d.Rules, reversal)
+			}
+		}
+	}
 	if len(storage) > 0 && storage[0] == "state" {
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "posted", Kind: "state", Entity: "headers", Field: "status", Fields: []string{"code"}, Transitions: map[string][]string{"draft": {"posted"}, "posted": {}}, FrozenStates: []string{"posted"}})
 	}
@@ -136,11 +235,21 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "scope", Kind: "sameTarget", Entity: "allocations", PathMatch: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "line", Target: "lines"}}, Right: []transactionrules.RelationStep{{Field: "version", Target: "versions"}, {Field: "owner", Target: "lines"}}}})
 	}
 	for _, entity := range []string{"headers", "lines", "allocations"} {
+		if delivery {
+			break
+		}
 		format := "decimalText"
 		if integerUnits {
 			format = "integerUnits"
 		}
 		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: entity, Field: "amount", Format: exactdecimal.Format{Storage: format, Scale: 2, Digits: 38}})
+	}
+	if nullable {
+		format := "decimalText"
+		if storage[0] == "nullable-integer" {
+			format = "integerUnits"
+		}
+		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "headers", Field: "price", Nullable: true, Format: exactdecimal.Format{Storage: format, Scale: 2, Digits: 38}})
 	}
 	if len(storage) > 0 && storage[0] == "one-to-one" {
 		d.Decimals = []transactionrules.Decimal{}

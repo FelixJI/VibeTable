@@ -1,6 +1,6 @@
 # 插件逻辑模型 v1
 
-模型声明位于原生 API 3.x manifest 的 `permissions.model`，合同为 `vibetable.plugin-model.v1`。声明包含稳定 `modelId`、递增整数 `version` 和最多 32 个实体；每个实体最多 64 个字段。实体与字段使用稳定逻辑 `key`、用户可读 `label`。同一模型版本不能改变定义。
+模型声明位于原生 API 3.x manifest 的 `permissions.model`，合同为 `vibetable.plugin-model.v1`。声明包含稳定 `modelId`、递增整数 `version` 和最多 40 个实体；每个实体最多 64 个字段。实体与字段使用稳定逻辑 `key`、用户可读 `label`。同一模型版本不能改变定义。
 
 支持 `text`、`number`、`bool`、`date`、`dateTime`、`email`、`url`、`relation`。数字显式选择 `integer` 或 `float64`，沿用原生数字存储语义，不承诺任意精度整数或精确十进制。关系两端均须声明目标 `entity`、反向 `field` 与自身 `cardinality`；创建时使用原生双向关系、`restrict` 删除策略。每个实体须有至少一个标量字段，优先使用首个文本字段作为关系显示字段，否则使用首个标量字段。未知合同、物理字段、SQL 和脚本声明被拒绝。
 
@@ -18,13 +18,37 @@
 
 部分初始化后禁用再启用，新的确认计划只继承已提交表与字段的 canonical ID；尚未创建的表重新进入精确计划，确认之前不会补建。已提交对象丢失会报缺失诊断，不能用空表替代。并发请求的失败状态在写事务内读取最新进度，不能覆盖另一个请求已完成的结果。映射接受与完成均检查原生字段迁移写锁；迁移切换权威字段时也重新检查模型核心保护。
 
-绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 128 条规则、64 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
+绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 192 条规则、64 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
 
 `sameTarget` 比较一行业务记录的两条关系路径，例如 `left:[{field:"version",target:"versions"},{field:"series",target:"series"}]` 与 `right:[{field:"item",target:"items"},{field:"series",target:"series"}]`。每条路径包含 1–4 个单值关系，两端必须抵达同一实体的同一条实际记录。`sameTarget` 的 `right:[]` 表示本行身份，左路径必须抵达本行所属实体。可选 `whenPresent` 只能等于左路径首字段：该单值指针尚为空时跳过；一旦赋值，后续每一跳均须存在。这样可在系列行上验证 `current → version.series` 恰好回到本系列，即使版本还没有明细。多值跳转、悬空引用、跨系列记录都被拒绝。每条来源分配可使用独立规则核对多个来源。
 
 例如，批次例外可选指定义务。逻辑行使用 `whenPresent:"exception"` 和 `skipEmptyLeftEnd:true` 比较 `exception → obligation` 与本行义务。省略例外可照常建行。已有例外的末端指针为空时，右路径仍须有效，双方不作相等比较。末端非空时必须指向同一义务。字段缺失、中间断链或非空悬空引用均阻断写入。`atMostOne` 的 `fields` 必须是本行两个不同的已绑定单值关系。两者都空和仅填其一均可提交。两者都有值时整个写入被拒绝。
 
 已登记的十进制字段可选 `sign:"nonnegative"`（允许零）或 `sign:"positive"`（严格大于零）。按精确系数校验，历史版本的已映射数值也遵循本字段的符号规则。省略 `sign` 时继续接受有符号值，适用于已有红冲记录。
+
+十进制字段还可声明 `nullable:true`（默认 false，显式 false 等价）。仅显式 JSON `null` 合法；新行缺键、空串或错误类型均拒绝，不会把 null 当零；更新省略该字段时保留原值。这些语义同时适用于插件事务和原生单表写入，原始空白单元格不作为显式 null。nullable 不得用于 `conservation`、`balance` 的金额/限额字段，也不得用于任何 `reservationBalance` 的数量字段；适用于价格、税率等未知可为空的单据金额。
+
+`parentFreeze` 声明 `{entity, parentPath, parentStateField, frozenStates, fields}`。`parentPath` 由 1–4 个已声明单值关系组成，指向持有阶段字段的父实体；父行在事务前镜像中已处于 `frozenStates` 时，子行不得删除、不得修改 `fields` 列出的核心字段、不得迁出，其他子行也不得迁入或新建到该父行之下。同事务新建并确认的父行及其最终子事实允许；未列入 `fields` 的扩展字段仍可编辑。路径逐跳解析子行旧/新两套祖先，改中间祖先不能绕过；路径断裂（父删除或悬空）fail closed 报 `transaction.parent_frozen` 或 `transaction.reference_violation`，不会静默跳过。父行自身的阶段转移仍由既有 `state` 规则保护。
+
+`reservationBalance` 是固定结构的原生数量检查，声明字段名与关系映射，不是公式或脚本：`{obligation:{entity,quantity}, scope, quantity, purpose:{path,field}, normalPurpose, phase:{path,field,六个互斥阶段值}, instructionSource?, transferredFrom?, planItem?, plans?{entity,quantity,scope,logicalItem,share,currentWhen}}`。阶段与用途只沿 `owner_line → document` 路径取权威值，子行自报字段不参与判定。X 是指令执行量：对每份指令 h，Xh=所有已确认、明确消费 h 且用途与 h 完全相同（沿权威路径比较）的实际来源量；0≤Xh≤Qh；open 时 Rh=Qh−Xh，closed/transferred 时 Rh=0。E 是正常履约量：只计 normal 实际；正常容量只计 normal 实际与 normal 开放指令的 R，gift/afterSales 等用途有自己的 Q/X/R，不占正常义务额度。消费与 transferred_from 都要求完整 purpose 相等：normal→gift、gift→normal、gift→afterSales 均拒绝；已确认消费的用途不可更改或删除恢复 X；salesReturn 退回依 original_line 记录新事实，不得用 instruction_source 混作对旧指令的消费。稳定计划桶 U=normal E+normal 开放 R：当前计划存在时 U≤P 且桶占用 P，否则占用 U；全部桶与无计划直连合计不得超过义务数量，禁止 P+E 重复计数。换版不得丢失或缩小已执行份额（E>0 的 stableKey 必须仍在当前版本内）。转移必须同事务成对且同用途：余量>0 的转出指令有唯一转入指令，转入数量等于转出时 Q−X，范围/稳定份额一致，重复、自引用、循环、错数量、零余量造行均拒绝；仅新转入必须进入 open，历史承接允许随后 closed 或再次转移。已记录的 X 单调不降：退款或改用途不得释放既有执行。超发真实行不受限制，仅内部来源分配受预算约束。数量字段必须是非空、非负且同一精确格式的十进制声明（`sign` 为 `nonnegative` 或 `positive` 均可，其中 `positive` 的零值仍由十进制层拒绝）；金额字段不参与预算。相关拒绝码：`transaction.reservation_invalid`、`reservation_exhausted`、`reservation_exceeded`、`reservation_released`、`reservation_frozen`、`reservation_transfer_invalid`、`reservation_plan_required`，以及 `transaction.parent_frozen`。
+
+父冻结比较路径每一跳的行身份：即使最终仍指向同一单据，换所属行或重挂中间祖先也拒绝，不依赖这些关系是否列在 `fields` 中。
+
+`reversalBalance` 为退回业务行增加独立的原行与数量检查，不要求该行具有来源分配：
+
+```json
+{"id":"delivery_return_capacity","kind":"reversalBalance","entity":"delivery_lines","reversal":{"original":"original_line","quantity":"quantity","purpose":"purpose","reversalPurpose":"salesReturn","originalPurpose":"normal","ownerPath":[{"field":"document","target":"delivery_documents"}],"ownerStateField":"phase","requiredStates":["instruction_open","instruction_closed","instruction_transferred","delivery_confirmed"],"confirmedState":"delivery_confirmed","sameFields":["material","project","package","unit","currency"],"sameOwnerFields":["agreement"]}}
+```
+
+`ownerPath` 为 1–4 跳单值关系，`original` 必须是指向同行实体的单值关系；`quantity` 使用既有非 nullable 十进制，`positive` 或 `nonnegative` 声明均可，保留其零值政策。`requiredStates` 为 1–32 个互异非空值，必须包含 `confirmedState`；两个快照字段列表必须显式给出，各最多 64 项且不得重复。所有字段、原行关系、父路径、父阶段与父快照都参与持久依赖及共同读取预算。
+
+在最终事务图中，退回处于 `requiredStates` 时必须关联不同于自身的 `originalPurpose` 原行，且原行的父阶段为 `confirmedState`；`sameFields` 与 `sameOwnerFields` 比较存储的历史快照，不沿当前包件推导。双方 null 相等，null 与非 null 不相等。每条下达/确认退回量不得超过原量，仅处于 `confirmedState` 的退回按原行累计不得超过原量；原单与退回同事务确认合法。未进入 `requiredStates` 的草稿可以缺原行、暂指向未确认原行或保留超量输入，仍受原有 FK、类型和十进制校验；确认失败不截断输入或改用途。
+
+确认历史须结合 `parentFreeze`/`state` 冻结原行关系、数量、用途、身份和父归属，未冻结的扩展字段仍可编辑。该规则不限制 normal 真实超发、不检查金额、不改变 reservation 的 X 或释放正常来源。仅修改父单 phase 的普通原生写入同样执行检查；登记规则时已有坏确认事实会拒绝登记，不自动清洗。拒绝码分别为 `transaction.reversal_invalid`（原行、自引、用途或阶段不合法）、`transaction.reversal_mismatch`（行或父快照不相等）、`transaction.reversal_exceeded`（单行或确认累计超量），都明确表示 not-committed。
+
+计划来源的 `scope` 必须与关联计划项的义务一致，消费与转移同样适用。已下达指令或已确认实际引用的历史计划项，其 `scope/logicalItem/share` 稳定身份不可改写；新版本可以建立同稳定身份的新计划项并正常切换当前版本。
+
+规则按 `kind` 校验字段归属。其他类型的字段即使显式给出 `null`、空对象、空列表或默认空字符串，也会在 Go 登记和 Python manifest/package 校验中拒绝。
 
 `balance` 可选 `currentWhen:{left:[...],right:[...]}`，两端相同才将该行金额计入目标余额。左路径通常指向行所属版本，右路径指向系列当前版本；仅允许右路径的最后一个指针为空，表示尚无当前版本。悬空引用仍拒绝。切换当前指针与多行分配均在原生事务的最终图上检查。历史行仍受十进制和关系校验。
 

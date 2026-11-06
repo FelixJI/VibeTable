@@ -1198,8 +1198,8 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
-    [DataRow(128, 1, true)]
-    [DataRow(129, 0, false)]
+    [DataRow(192, 1, true)]
+    [DataRow(193, 0, false)]
     [DataRow(1, 65, false)]
     public async Task TransactionConfigurationBoundsRulesAndDecimalsIndependently(int rules, int decimals, bool permitted)
     {

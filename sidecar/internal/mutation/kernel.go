@@ -280,9 +280,9 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 		}
 	}
 	fields := make(map[string]v2.FieldDefinition)
-	var integerInputs map[string][]exactdecimal.Format
+	var decimalInputs map[string][]transactionrules.Decimal
 	if app != nil {
-		integerInputs, err = transactionrules.IntegerInputs(ctx, app, request.TableID)
+		decimalInputs, err = transactionrules.DecimalInputs(ctx, app, request.TableID)
 		if err != nil {
 			return PreviewResult{}, businessRuleError(err)
 		}
@@ -454,8 +454,11 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				}
 				input = rawInput
 			}
-			for _, format := range integerInputs[field.Identity.FieldID] {
-				if _, err := format.Parse(input.Value); err != nil {
+			for _, decimal := range decimalInputs[field.Identity.FieldID] {
+				if decimal.Nullable && value == nil && input.Value == nil {
+					continue
+				}
+				if _, err := decimal.Parse(input.Value); err != nil {
 					return PreviewResult{}, businessRuleError(err)
 				}
 			}
@@ -498,6 +501,15 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			suppliedV2[field.Identity.FieldID] = struct{}{}
 		}
 		if operation.Kind == OperationInsert {
+			for fieldID, decimals := range decimalInputs {
+				if _, supplied := suppliedV2[fieldID]; !supplied {
+					for _, decimal := range decimals {
+						if decimal.Nullable {
+							return PreviewResult{}, businessRuleError(exactdecimal.ErrInvalid)
+						}
+					}
+				}
+			}
 			for _, field := range definition.Snapshot.Fields {
 				if _, supplied := suppliedV2[field.Identity.FieldID]; supplied {
 					continue

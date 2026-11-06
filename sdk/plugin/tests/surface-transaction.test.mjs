@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sdk } from "./load-sdk.mjs";
+import { readFileSync } from "node:fs";
 
 function fixture() {
   const calls = [];
@@ -15,6 +16,23 @@ function fixture() {
     receive({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: calls.at(-1).requestId, result, error } });
   } };
 }
+
+test("reversal declarations preserve owner snapshots and native rejection codes", async () => {
+  const f = fixture();
+  const rule = JSON.parse(readFileSync(new URL("../../../contracts/plugin-reversal-rule.json", import.meta.url), "utf8"));
+  const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "synthetic", version: 1,
+    decimals: [{ entity: "lines", field: "quantity", storage: "decimalText", scale: 0, digits: 38, sign: "positive" }], rules: [rule] };
+  const configuring = f.client.transaction.configure({ declaration });
+  assert.deepEqual(f.calls.at(-1).params, { declaration });
+  f.reply(null);
+  await configuring;
+  for (const code of ["transaction.reversal_invalid", "transaction.reversal_mismatch", "transaction.reversal_exceeded"]) {
+    const submit = f.client.transaction.submit({ requestId: "original-budget" });
+    f.reply(undefined, { code });
+    await assert.rejects(submit, error => error instanceof sdk.PluginCapabilityError && error.code === code);
+  }
+  f.client.dispose();
+});
 
 test("plugin callers receive the native rejection code or uncertainty without resubmission", async () => {
   const f = fixture();

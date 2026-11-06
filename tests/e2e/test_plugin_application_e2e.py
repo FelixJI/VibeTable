@@ -1684,6 +1684,7 @@ def test_concurrent_confirmation_file_handshake_approves_foreground_bound_reques
         }
 
     def send(_native, **_kwargs):
+        assert not (tmp_path / "plugin-native-request.json").exists()
         sent.append(active[0])
         pending_hwnds.remove(active[0])
         active[0] = pending_hwnds[0] if pending_hwnds else 14
@@ -1735,29 +1736,27 @@ await approveConcurrentConfirmations({ evidenceDir }, recorder, pending, prepare
     try:
         while child.poll() is None and time.monotonic() < deadline:
             request_file = tmp_path / "plugin-native-request.json"
-            if request_file.exists():
-                request = json.loads(request_file.read_text(encoding="utf-8"))
-                if request["requestId"] not in checks:
-                    checks.append(request["requestId"])
-                    try:
-                        result = native._handle_confirmation_exact(
-                            window,
-                            tmp_path / "observer",
-                            12,
-                            request,
-                            tmp_path,
-                            deadline=time.monotonic() + 5,
-                        )
-                    except (OSError, ValueError) as error:
-                        result = {
-                            "requestId": request["requestId"],
-                            "status": "failed",
-                            "error": str(error),
-                        }
-                    result_file = tmp_path / "plugin-native-result.json"
-                    result_temp = tmp_path / "plugin-native-result.tmp"
-                    result_temp.write_text(json.dumps(result), encoding="utf-8")
-                    result_temp.replace(result_file)
+            request = runner._read_json(request_file)
+            if request is not None and request["requestId"] not in checks:
+                # Match the real driver: consume the slot before acknowledging it.
+                request_file.unlink()
+                checks.append(request["requestId"])
+                try:
+                    result = native._handle_confirmation_exact(
+                        window,
+                        tmp_path / "observer",
+                        12,
+                        request,
+                        tmp_path,
+                        deadline=time.monotonic() + 5,
+                    )
+                except (OSError, ValueError) as error:
+                    result = {
+                        "requestId": request["requestId"],
+                        "status": "failed",
+                        "error": str(error),
+                    }
+                runner._write_json_atomic(tmp_path / "plugin-native-result.json", result)
             time.sleep(0.01)
         stdout, stderr = child.communicate(timeout=1)
     finally:

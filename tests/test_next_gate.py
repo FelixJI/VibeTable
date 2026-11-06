@@ -563,7 +563,14 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
     tmp_path: Path,
 ) -> None:
     observed: list[tuple[list[str], int]] = []
-    slow = sorted(next_gate.RACE_LONG_TESTS)
+    slow = [
+        "TestDeliveryGuardNativePlanIdentityAndScope",
+        "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
+        "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
+        "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
+        "TestReversalNativeSnapshotsDraftsAndSameTransaction",
+    ]
+    assert set(slow) == next_gate.RACE_LONG_TESTS
     package_dir = tmp_path / "integration"
     package_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)

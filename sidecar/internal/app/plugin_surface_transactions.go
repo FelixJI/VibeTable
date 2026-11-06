@@ -324,7 +324,7 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 					continue
 				}
 				value, supplied := op.Values[decimal.Field]
-				if !supplied {
+				if !supplied || decimal.Nullable && value == nil {
 					continue
 				}
 				coefficient, err := decimal.Format.Parse(value)

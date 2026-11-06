@@ -95,6 +95,13 @@ func TestRuleUpgradePreflightsBothImagesWithoutBlockingDisjointTables(t *testing
 }
 
 func (f *transactionFixture) configureUpgradedRules(t *testing.T, d transactionrules.Declaration) error {
+	t.Helper()
+	f.prepareUpgradedRules(t, d)
+	_, err := f.call("transaction.configure", map[string]any{"declaration": d})
+	return err
+}
+
+func (f *transactionFixture) prepareUpgradedRules(t *testing.T, d transactionrules.Declaration) {
 	ctx := t.Context()
 	t.Helper()
 	store := pluginstore.New(f.pb, f.workspace)
@@ -124,8 +131,6 @@ func (f *transactionFixture) configureUpgradedRules(t *testing.T, d transactionr
 	if _, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]string{"requestId": p.(modelPreview).RequestID}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.call("transaction.configure", map[string]any{"declaration": d})
-	return err
 }
 
 func TestReciprocalRegistrationBudgetPreservesNativeInsertAndDelete(t *testing.T) {

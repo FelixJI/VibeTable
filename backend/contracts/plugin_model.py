@@ -69,7 +69,7 @@ class PluginModelDeclaration(ModelContract):
     contract: Literal["vibetable.plugin-model.v1"]
     model_id: str = Field(alias="modelId", pattern=r"^[a-z][a-z0-9_]{0,63}$")
     version: int = Field(ge=1, le=2_147_483_647)
-    entities: list[ModelEntity] = Field(min_length=1, max_length=32)
+    entities: list[ModelEntity] = Field(min_length=1, max_length=40)
 
     @model_validator(mode="after")
     def validate_relations(self) -> PluginModelDeclaration:
