@@ -779,6 +779,8 @@ def test_delivery_guard_kind_fields_shared_with_go() -> None:
     for rule in rules:
         assert TransactionRule.model_validate(rule)
         patches = corpus["parentFreeze" if rule["kind"] == "parentFreeze" else "legacy"]
+        if rule["kind"] != "sameTarget":
+            patches = [*patches, *corpus["sameTargetOnly"]]
         for patch in patches:
             with pytest.raises(ValidationError):
                 TransactionRule.model_validate(rule | patch)
@@ -957,7 +959,7 @@ def test_new_rule_null_shapes_match_go() -> None:
         validate(base, [])
     for case in corpus["invalid"]:
         with pytest.raises(ValidationError):
-            validate(case["base"], case["path"])
+            validate(case["base"], case["path"], case.get("value"))
     for case in corpus["valid"]:
         validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
 
@@ -1105,6 +1107,100 @@ def invoice_guard_manifest() -> dict:
         "rules": rules,
     }
     return manifest
+
+
+def test_settlement_plan_shape_rejects_money_measures() -> None:
+    rule = declaration(invoice_guard_manifest())["rules"][1]
+    rule["settlement"]["request"]["planItem"] = "plan_item"
+    rule["settlement"]["plans"] = {
+        "entity": "plans",
+        "quantity": "quantity",
+        "scope": "scope",
+        "share": "share",
+        "logicalItem": {"field": "logical", "target": "logical_items"},
+        "currentWhen": {
+            "left": [{"field": "version", "target": "versions"}],
+            "right": [{"field": "current", "target": "versions"}],
+        },
+    }
+    with pytest.raises(ValidationError, match="quantity"):
+        TransactionRule.model_validate(rule)
+
+
+def test_state_cases_and_group_contracts_bind_all_declared_relations() -> None:
+    manifest = invoice_guard_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {entity["key"]: entity for entity in model["entities"]}
+
+    def ensure_entity(key: str) -> None:
+        if key not in entities:
+            entities[key] = {
+                "key": key,
+                "label": key,
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [{"key": "label", "label": "label", "type": "text"}],
+            }
+
+    def edge(source: str, field: str, target: str) -> None:
+        ensure_entity(source)
+        ensure_entity(target)
+        if any(existing["key"] == field for existing in entities[source]["fields"]):
+            return
+        reverse = f"back_{source}_{field}"
+        entities[source]["fields"].append(
+            {
+                "key": field,
+                "label": field,
+                "type": "relation",
+                "relation": {"entity": target, "field": reverse, "cardinality": "one"},
+            }
+        )
+        entities[target]["fields"].append(
+            {
+                "key": reverse,
+                "label": reverse,
+                "type": "relation",
+                "relation": {"entity": source, "field": field, "cardinality": "many"},
+            }
+        )
+
+    def path(entity: str, steps: list[dict]) -> None:
+        for step in steps:
+            edge(entity, step["field"], step["target"])
+            entity = step["target"]
+
+    root = Path(__file__).parents[2] / "contracts"
+    state = json.loads((root / "plugin-state-relations-rule.json").read_text(encoding="utf-8"))
+    group = json.loads((root / "plugin-group-same-target-rule.json").read_text(encoding="utf-8"))
+    entities[state["entity"]]["fields"].append(
+        {"key": state["field"], "label": state["field"], "type": "text"}
+    )
+    for case in state["relationCases"].values():
+        for step in [*case["required"], *case["optional"]]:
+            edge(state["entity"], step["field"], step["target"])
+    path(group["entity"], group["group"])
+    for selector in group["targets"]:
+        path(group["entity"], selector["path"])
+    edge(group["entity"], group["related"]["field"], group["related"]["target"])
+    reference = group["reference"]
+    path(reference["entity"], reference["group"])
+    for selector in reference["targets"]:
+        path(reference["entity"], selector["path"])
+    model["entities"] = list(entities.values())
+    declaration(manifest)["rules"].extend([state, group])
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for index, edit in ((-2, "case"), (-1, "group")):
+        invalid = copy.deepcopy(manifest)
+        rule = declaration(invalid)["rules"][index]
+        if edit == "case":
+            rule["relationCases"]["delivery"]["required"][0]["field"] = "missing"
+        else:
+            rule["targets"][0]["path"][0]["field"] = "missing"
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
 
 
 def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:

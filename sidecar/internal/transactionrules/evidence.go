@@ -20,8 +20,9 @@ type EvidenceRecord struct {
 }
 
 // ChangeEvidenceSpec is the closed typed shape of a changeEvidence rule.
-// Corrections of the listed core fields, or adding, removing and rebinding
-// rows under an owner that already existed, are allowed only when the same
+// Corrections of the listed core fields, removing and rebinding
+// rows under an existing owner require new evidence; allowInsert may exempt
+// only new child attachment. Other corrections are allowed only when the same
 // transaction adds one new valid evidence row and binds it to that same owner
 // through the owner's latest-evidence pointer. An empty ownerPath declares the
 // rule entity as its own owner without any artificial self relation. Recorded
@@ -30,6 +31,7 @@ type EvidenceRecord struct {
 // covered separately. Erasing a registration by deleting its owner cannot be
 // based on evidence at all, so it stays rejected.
 type ChangeEvidenceSpec struct {
+	AllowInsert    enabledOption  `json:"allowInsert,omitempty"`
 	Fields         []string       `json:"fields,omitempty"`
 	OwnerPath      []RelationStep `json:"ownerPath,omitempty"`
 	LatestEvidence string         `json:"latestEvidence"`
@@ -131,11 +133,11 @@ func (rule Rule) validateEvidence(before, after Images) error {
 		}
 		if bound, err := optionalRef(after, row, spec.Evidence.Owner, ownerEntity); err != nil {
 			return failure("evidence_invalid")
-		} else if bound != "" {
-			// Types lists only the kinds that can prove an actual correction;
-			// owner-bound events must carry one of them.
+		} else {
+			// Correction kinds always require a real owner; request events never
+			// acquire correction authority by leaving that owner blank.
 			evidenceType, _ := row[spec.Evidence.Type].(string)
-			if !contains(spec.Types, evidenceType) {
+			if contains(spec.Types, evidenceType) != (bound != "") {
 				return failure("evidence_invalid")
 			}
 		}
@@ -221,7 +223,7 @@ func (rule Rule) validateEvidence(before, after Images) error {
 		}
 		// Adding an allocation to an owner that already existed is a covered
 		// correction; rows under a same-transaction owner stay free.
-		if before[ownerEntity][owner] != nil {
+		if before[ownerEntity][owner] != nil && !bool(spec.AllowInsert) {
 			if err := requireEvidence(owner); err != nil {
 				return err
 			}

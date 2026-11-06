@@ -58,7 +58,9 @@ func evidenceImages() Images {
 }
 
 func TestChangeEvidenceCorrectionLifecycle(t *testing.T) {
-	registration := Registration{Declaration: invoiceGuardsDeclaration(t, newKindRule(t, "evidence"))}
+	rule := newKindRule(t, "evidence")
+	rule.Evidence.AllowInsert = false
+	registration := Registration{Declaration: invoiceGuardsDeclaration(t, rule)}
 	before := evidenceImages()
 	// A same-transaction new evidence bound to the same owner authorizes the
 	// correction of existing core fields.

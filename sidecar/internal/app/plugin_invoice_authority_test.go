@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,6 +26,10 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 	t.Helper()
 	normal := len(withPlans) > 0 && withPlans[0]
 	scoped := len(withPlans) > 1 && withPlans[1]
+	legacy := len(withPlans) > 2 && withPlans[2]
+	optionalContracts := len(withPlans) > 3 && withPlans[3]
+	relationCases := len(withPlans) > 4 && withPlans[4]
+	groupContracts := len(withPlans) > 5 && withPlans[5]
 	pb, workspace, input, domain := modelFixture(t)
 	input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
 		m.Entities = nil
@@ -77,6 +82,12 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 				m.Entities = append(m.Entities, pluginmodel.Entity{Key: key, Label: key, Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "label", Label: "label", Type: v2.LogicalText}}})
 			}
 		}
+		if relationCases {
+			for _, key := range []string{"projects", "packages", "obligations", "plan_items", "source_versions", "delivery_lines"} {
+				m.Entities = append(m.Entities, pluginmodel.Entity{Key: key, Label: key, Operations: []string{"read", "query", "create", "update", "delete"}, Fields: []pluginmodel.Field{{Key: "label", Label: "label", Type: v2.LogicalText}}})
+			}
+			m.Entities[2].Fields = append(m.Entities[2].Fields, pluginmodel.Field{Key: "source_kind", Label: "source kind", Type: v2.LogicalText})
+		}
 		relation := func(source, field, target, reverse string) {
 			for i := range m.Entities {
 				if m.Entities[i].Key == source {
@@ -103,6 +114,17 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 			relation("requests", "agreement", "agreements", "requests")
 			relation("actual_lines", "material", "materials", "actual_lines")
 			relation("request_lines", "material", "materials", "request_lines")
+		}
+		if relationCases {
+			for _, pair := range []struct{ field, target string }{{"project", "projects"}, {"package", "packages"}, {"agreement", "agreements"}, {"obligation", "obligations"}, {"plan_item", "plan_items"}, {"version", "source_versions"}, {"application_source", "request_sources"}, {"delivery_line", "delivery_lines"}, {"actual_line", "actual_lines"}} {
+				relation("request_sources", pair.field, pair.target, "kind_"+pair.field+"_sources")
+			}
+		}
+		if groupContracts {
+			relation("allocations", "agreement", "agreements", "allocation_snapshots")
+			if !relationCases {
+				relation("request_sources", "agreement", "agreements", "source_snapshots")
+			}
 		}
 		if normal {
 			relation("series", "current_version", "plan_versions", "current_for")
@@ -131,6 +153,9 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 		}
 	}
 	fillerCount := 45
+	if legacy {
+		fillerCount = 44
+	}
 	if normal {
 		fillerCount = 43
 	}
@@ -164,6 +189,7 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 	// Protect face lines and headers without a second history API or self-FK.
 	lineEvidence := d.Rules[2]
 	lineSpec := *lineEvidence.Evidence
+	lineSpec.AllowInsert = false
 	lineEvidence.ID = "line_evidence"
 	lineEvidence.Entity = "actual_lines"
 	lineSpec.OwnerPath = []transactionrules.RelationStep{{Field: "invoice", Target: "invoices"}}
@@ -186,7 +212,12 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 			{"request_contract", "request_sources", "original", []transactionrules.RelationStep{{Field: "original", Target: "allocations"}, {Field: "line", Target: "actual_lines"}, {Field: "invoice", Target: "invoices"}, {Field: "agreement", Target: "agreements"}}, []transactionrules.RelationStep{{Field: "line", Target: "request_lines"}, {Field: "request", Target: "requests"}, {Field: "agreement", Target: "agreements"}}},
 			{"source_contract", "allocations", "application_source", []transactionrules.RelationStep{{Field: "application_source", Target: "request_sources"}, {Field: "line", Target: "request_lines"}, {Field: "request", Target: "requests"}, {Field: "agreement", Target: "agreements"}}, []transactionrules.RelationStep{{Field: "line", Target: "actual_lines"}, {Field: "invoice", Target: "invoices"}, {Field: "agreement", Target: "agreements"}}},
 		} {
-			d.Rules = append(d.Rules, transactionrules.Rule{ID: entry.id, Kind: "sameTarget", Entity: entry.entity, WhenPresent: entry.first, PathMatch: transactionrules.PathMatch{Left: entry.left, Right: entry.right}})
+			rule := transactionrules.Rule{ID: entry.id, Kind: "sameTarget", Entity: entry.entity, WhenPresent: entry.first, PathMatch: transactionrules.PathMatch{Left: entry.left, Right: entry.right}}
+			if optionalContracts {
+				rule.SkipEmptyLeftEnd = true
+				rule.SkipEmptyRightEnd = true
+			}
+			d.Rules = append(d.Rules, rule)
 		}
 	}
 	if normal {
@@ -222,6 +253,22 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 		spec.Adjustment.CloseTax = ""
 		spec.Adjustment.CloseGross = ""
 		spec.Plans = &transactionrules.ReservationPlans{Entity: "plan_items", Quantity: "quantity", Scope: "scope", LogicalItem: transactionrules.ReservationLogical{Field: "logical_item", Target: "logical_items"}, Share: "share", CurrentWhen: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}}, Right: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}, {Field: "series", Target: "series"}, {Field: "current_version", Target: "plan_versions"}}}}
+		d.Rules = append(d.Rules, rule)
+	}
+	d.Rules = append(d.Rules, transactionrules.Rule{ID: "request_allocation_complete", Kind: "allocationBalance", Entity: "request_sources", Allocation: &transactionrules.AllocationSpec{RequireCompleteWhenAllocated: true, Owner: "line", Parent: transactionrules.AllocationParent{Entity: "request_lines", Quantity: "quantity", Net: "net", Tax: "tax", Gross: "gross"}, Quantity: "quantity", Net: "net", Tax: "tax", Gross: "gross", State: transactionrules.AuthorityRef{Path: []transactionrules.RelationStep{{Field: "line", Target: "request_lines"}, {Field: "request", Target: "requests"}}, Field: "status"}, DraftStates: []string{"draft"}, Purpose: transactionrules.AuthorityRef{Path: []transactionrules.RelationStep{{Field: "line", Target: "request_lines"}, {Field: "request", Target: "requests"}}, Field: "basis"}, ZeroQuantityPurposes: []string{"amount"}}})
+	if relationCases || groupContracts {
+		name := "state-relations"
+		if groupContracts {
+			name = "group-same-target"
+		}
+		raw, err := os.ReadFile("../../../contracts/plugin-" + name + "-rule.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rule transactionrules.Rule
+		if err = json.Unmarshal(raw, &rule); err != nil {
+			t.Fatal(err)
+		}
 		d.Rules = append(d.Rules, rule)
 	}
 	store := pluginstore.New(pb, workspace)
@@ -620,4 +667,504 @@ func TestInvoiceAuthoritySameInvoiceLineMoveNeedsNewEvidence(t *testing.T) {
 	}
 	_, headDigest := regressionRow(t, f, "invoices", invoice)
 	f.submit(t, invoicePlan(invoiceCreate("adjustments", "e", map[string]any{"invoice": invoice, "kind": "correction", "note": "明确更正内部票面行归属"}), transactionOperation{Entity: "invoices", Kind: "update", RecordID: invoice, ExpectedDigest: &headDigest, Values: map[string]any{"latest_evidence": regressionRef("adjustments", "e")}}, transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"line": secondLine}}))
+}
+
+func TestInvoiceAuthorityReviewSharedAdjustmentRoles(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, true)
+	obligation := f.submit(t, invoicePlan(invoiceCreate("obligations", "o", map[string]any{"quantity": "10", "currency": "CNY", "unit": "piece"}))).NewIDs["obligations"]["o"]
+	bluePlan := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	bluePlan.Operations[2].Values["obligation"] = obligation
+	blue := f.submit(t, bluePlan).NewIDs["allocations"]["blue"]
+	source := f.submit(t, invoiceRequest("r", "priceDiscount", "amount", "0", "100.00", "0.00", "100.00", blue)).NewIDs["request_sources"]["r"]
+	other := f.submit(t, invoiceRequest("other", "priceDiscount", "amount", "0", "0.00", "0.00", "0.00", blue)).NewIDs["request_sources"]["other"]
+	plan := invoiceFace("red", "red", "priceDiscount", "0", "-100.00", "0.00", "-100.00", source, blue, true)
+	event := invoiceMeasures("0", "100.00", "0.00", "100.00")
+	event["kind"] = "fulfillAmount"
+	event["source"] = source
+	event["allocation"] = regressionRef("allocations", "red")
+	event["note"] = "两个结算桶共享事件表"
+	event["close_remaining"] = false
+	plan.Operations = append(plan.Operations, invoiceCreate("adjustments", "fulfilled", event))
+	// A real but wrong allocation remains a rejected binding.
+	event["allocation"] = blue
+	regressionReject(t, f, plan, "transaction.settlement_invalid")
+	event["allocation"] = regressionRef("allocations", "red")
+	event["source"] = other
+	regressionReject(t, f, plan, "transaction.settlement_invalid")
+	event["source"] = source
+	f.submit(t, plan)
+}
+
+func TestInvoiceAuthorityReviewSequentialQuantityClose(t *testing.T) {
+	for _, tc := range []struct{ name, q, n, tax, g, first, last, rn, rt, rg string }{{"normal", "10", "100.00", "0.00", "100.00", "4", "6", "60.00", "0.00", "60.00"}, {"round-down", "3", "0.01", "0.01", "0.02", "1", "2", "0.01", "0.01", "0.02"}, {"round-up", "3", "0.01", "0.01", "0.02", "2", "1", "0.00", "0.00", "0.00"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInvoiceAuthorityFixture(t)
+			blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "100.00", "200.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+			source := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", tc.q, tc.n, tc.tax, tc.g, blue)).NewIDs["request_sources"]["request"]
+			partial := map[string]any{"kind": "sourceClose", "source": source, "close_remaining": false, "quantity": tc.first, "net": nil, "tax": nil, "gross": nil, "note": "明确关闭数量"}
+			eventID := f.submit(t, invoicePlan(invoiceCreate("adjustments", "partial", partial))).NewIDs["adjustments"]["partial"]
+			old, oldDigest := regressionRow(t, f, "adjustments", eventID)
+			remaining := invoiceMeasures(tc.last, tc.rn, tc.rt, tc.rg)
+			remaining["kind"] = "closeRemaining"
+			remaining["source"] = source
+			remaining["close_remaining"] = true
+			remaining["note"] = "捕获当前剩余四范围"
+			f.submit(t, invoicePlan(invoiceCreate("adjustments", "remaining", remaining)))
+			kept, digest := regressionRow(t, f, "adjustments", eventID)
+			if !reflect.DeepEqual(old, kept) || digest != oldDigest {
+				t.Fatal("later close rewrote historical quantity-only fact")
+			}
+		})
+	}
+}
+
+func TestInvoiceAuthorityReviewOriginalConfirmationAndDowngrade(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	bluePlan := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	bluePlan.Operations[0].Values["status"] = "draft"
+	ids := f.submit(t, bluePlan).NewIDs
+	blue, head := ids["allocations"]["blue"], ids["invoices"]["blue"]
+	regressionReject(t, f, invoiceRequest("too-early", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue), "transaction.settlement_invalid")
+	regressionReject(t, f, invoiceFace("too-early-actual", "red", "physicalReturn", "-1", "-10.00", "0.00", "-10.00", nil, blue, true), "transaction.settlement_invalid")
+	_, digest := regressionRow(t, f, "invoices", head)
+	confirmation := invoicePlan(invoiceCreate("adjustments", "confirm", map[string]any{"invoice": head, "kind": "correction", "note": "核对真实蓝票确认事实"}), transactionOperation{Entity: "invoices", Kind: "update", RecordID: head, ExpectedDigest: &digest, Values: map[string]any{"status": "issued", "latest_evidence": regressionRef("adjustments", "confirm")}})
+	request := invoiceRequest("r", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)
+	actual := invoiceFace("red", "red", "physicalReturn", "-10", "-100.00", "0.00", "-100.00", regressionRef("request_sources", "r"), blue, true)
+	confirmation.Operations = append(confirmation.Operations, request.Operations...)
+	confirmation.Operations = append(confirmation.Operations, actual.Operations...)
+	f.submit(t, confirmation)
+	_, digest = regressionRow(t, f, "invoices", head)
+	downgrade := invoicePlan(invoiceCreate("adjustments", "downgrade", map[string]any{"invoice": head, "kind": "correction", "note": "尝试退回草稿"}), transactionOperation{Entity: "invoices", Kind: "update", RecordID: head, ExpectedDigest: &digest, Values: map[string]any{"status": "draft", "latest_evidence": regressionRef("adjustments", "downgrade")}})
+	regressionReject(t, f, downgrade, "transaction.settlement_invalid")
+}
+
+func TestInvoiceAuthorityReviewPurposeProjection(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+	source := f.submit(t, invoiceRequest("r", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs["request_sources"]["r"]
+	f.submit(t, invoiceFace("red", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", source, blue, true))
+	rule := f.declaration.Rules[1]
+	spec := *rule.Settlement
+	rule.Settlement = &spec
+	spec.Request.Purposes = nil
+	spec.Actual.Purposes = nil
+	declaration := f.declaration
+	declaration.Rules = []transactionrules.Rule{rule}
+	registration := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Declaration: declaration, Bindings: f.model.Bindings}
+	projected, err := registration.Read(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = registration.Validate(projected, projected); err != nil {
+		t.Fatalf("declared purpose refs were missing from native read projection: %v", err)
+	}
+}
+
+func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, false, true)
+	if len(f.declaration.Decimals) != 64 {
+		t.Fatal("legacy fixture must have 64 mappings")
+	}
+	id := f.submit(t, invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["invoices"]["kept"]
+	oldRow, oldDigest := regressionRow(t, f, "invoices", id)
+	oldRules, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := pluginstore.New(f.pb, f.workspace)
+	commitUpgrade := func(declaration transactionrules.Declaration, version, hashDigit string) (json.RawMessage, error) {
+		installed, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
+		if err != nil {
+			return nil, err
+		}
+		var object map[string]any
+		if err = json.Unmarshal(installed, &object); err != nil {
+			return nil, err
+		}
+		manifest := object["manifest"].(map[string]any)
+		manifest["version"] = version
+		manifest["permissions"].(map[string]any)["transactions"] = declaration
+		packageHash := "sha256:" + strings.Repeat(hashDigit, 64)
+		plan := map[string]any{"planId": "invoice-upgrade-" + version, "projectKey": f.input.ProjectKey, "projectRevision": "synthetic", "sourceType": "package", "sourceLocation": "host-managed", "packageHash": packageHash, "manifest": manifest, "schemas": map[string]any{}, "targetInstallationId": object["installationId"], "targetRevision": f.input.InstallationRevision}
+		revision := map[string]any{"projectKey": f.input.ProjectKey, "pluginId": f.input.PluginID, "version": version, "packageHash": packageHash, "localPath": "synthetic.vtplugin", "manifest": manifest, "state": "current"}
+		planRaw, _ := json.Marshal(plan)
+		revisionRaw, _ := json.Marshal(revision)
+		return store.CommitUpgrade(t.Context(), planRaw, revisionRaw)
+	}
+	upgraded := f.declaration
+	upgraded.Version++
+	upgraded.Decimals = append(append([]transactionrules.Decimal{}, upgraded.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "budget_44", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
+	installed, err := commitUpgrade(upgraded, "1.0.1", "6")
+	if err != nil {
+		t.Fatalf("real 64 to 65 package upgrade failed: %v", err)
+	}
+	var snapshot struct {
+		Revision    int64  `json:"revision"`
+		PackageHash string `json:"packageHash"`
+	}
+	if err = json.Unmarshal(installed, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	f.input.InstallationRevision = snapshot.Revision
+	f.input.PackageHash = strings.TrimPrefix(snapshot.PackageHash, "sha256:")
+	preview, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]any{"requestId": preview.(modelPreview).RequestID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.call("transaction.configure", map[string]any{"declaration": upgraded}); err != nil {
+		t.Fatalf("65 mapping registration after package upgrade failed: %v", err)
+	}
+	rules, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil || len(rules) != len(oldRules)+1 {
+		t.Fatalf("upgrade lost historical registration: %v", err)
+	}
+	found := false
+	for _, r := range rules {
+		if reflect.DeepEqual(r, oldRules[0]) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("old rule version was replaced")
+	}
+	row, digest := regressionRow(t, f, "invoices", id)
+	if !reflect.DeepEqual(row, oldRow) || digest != oldDigest {
+		t.Fatal("successful upgrade changed business row")
+	}
+	before := transactionBusinessSnapshot(t, f)
+	oversized := upgraded
+	oversized.Version++
+	oversized.Decimals = append(append([]transactionrules.Decimal{}, oversized.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "number", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}})
+	if _, err = commitUpgrade(oversized, "1.0.2", "7"); err == nil {
+		t.Fatal("66 mappings entered actual package upgrade")
+	} else {
+		var invalid *pluginstore.Error
+		if !errors.As(err, &invalid) || invalid.Code != "plugin.request_invalid" {
+			t.Fatalf("unexpected upgrade rejection: %v", err)
+		}
+	}
+	kept, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
+	if err != nil || string(kept) != string(installed) {
+		t.Fatalf("rejected upgrade replaced installed manifest: %v", err)
+	}
+	afterRules, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil || !reflect.DeepEqual(rules, afterRules) || transactionBusinessSnapshot(t, f) != before {
+		t.Fatalf("failed 66 upgrade changed old rules/data/audit: %v", err)
+	}
+}
+
+func TestInvoiceAuthorityRawThenAllocationNeedsNoCorrectionEvent(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+	source := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs["request_sources"]["request"]
+	raw := invoiceFace("raw", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", nil, nil, false)
+	otherLine := invoiceMeasures("-6", "-60.00", "0.00", "-60.00")
+	otherLine["invoice"] = regressionRef("invoices", "raw")
+	otherLine["purpose"] = "physicalReturn"
+	otherLine["unit"] = "piece"
+	raw.Operations = append(raw.Operations, invoiceCreate("actual_lines", "second", otherLine))
+	ids := f.submit(t, raw).NewIDs
+	values := invoiceMeasures("-6", "-60.00", "0.00", "-60.00")
+	values["line"] = ids["actual_lines"]["raw"]
+	values["original"] = blue
+	values["application_source"] = source
+	result := f.submit(t, invoicePlan(invoiceCreate("allocations", "attributed", values)))
+	allocation := result.NewIDs["allocations"]["attributed"]
+	registration := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Declaration: f.declaration, Bindings: f.model.Bindings}
+	images, err := registration.Read(t.Context(), f.pb)
+	if err != nil || len(images["adjustments"]) != 0 {
+		t.Fatalf("normal attribution fabricated a correction event: %v", err)
+	}
+	history, err := audit.New(f.pb, f.kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := history.ReadChangeSets(t.Context(), audit.ReadParams{TableID: f.model.Bindings["allocations"].TableID, ItemID: &allocation, Scope: "row", Limit: 10})
+	if err != nil || len(page.ChangeSets) != 1 || page.ChangeSets[0].ChangeSetID != result.Receipt.ChangeSetID {
+		t.Fatalf("normal attribution lost native audit: %v", err)
+	}
+	_, digest := regressionRow(t, f, "allocations", allocation)
+	for index, change := range []map[string]any{{"quantity": "-5", "net": "-50.00", "gross": "-50.00"}, {"line": ids["actual_lines"]["second"]}} {
+		before := transactionBusinessSnapshot(t, f)
+		response := reversalNative(t, f, fmt.Sprintf("change-existing-attribution-%d", index), "allocations", map[string]any{"kind": "update", "primaryKey": allocation, "expectedDigest": digest, "values": change})
+		requireHTTPNotCommitted(t, response, "transaction.evidence_required")
+		if transactionBusinessSnapshot(t, f) != before {
+			t.Fatal("rejected attribution correction changed facts")
+		}
+	}
+	regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "delete", RecordID: allocation, ExpectedDigest: &digest}), "transaction.evidence_required")
+	extra := invoiceMeasures("-1", "-10.00", "0.00", "-10.00")
+	extra["invoice"] = ids["invoices"]["raw"]
+	extra["purpose"] = "physicalReturn"
+	extra["unit"] = "piece"
+	regressionReject(t, f, invoicePlan(invoiceCreate("actual_lines", "new-face-line", extra)), "transaction.evidence_required")
+}
+
+func TestInvoiceAuthorityInheritedMaterialRemainsKnown(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true)
+	ids := f.submit(t, invoicePlan(invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("materials", "a", map[string]any{"label": "a"}), invoiceCreate("materials", "b", map[string]any{"label": "b"}))).NewIDs
+	agreement, a, b := ids["agreements"]["a"], ids["materials"]["a"], ids["materials"]["b"]
+	requested := invoiceRequest("blue-source", "normal", "quantity", "10", "100.00", "0.00", "100.00", nil)
+	requested.Operations[0].Values["direction"] = "blue"
+	requested.Operations[0].Values["agreement"] = agreement
+	requested.Operations[1].Values["material"] = a
+	source := f.submit(t, requested).NewIDs["request_sources"]["blue-source"]
+	original := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", source, nil, true)
+	original.Operations[0].Values["agreement"] = agreement
+	original.Operations[1].Values["material"] = nil
+	blue := f.submit(t, original).NewIDs["allocations"]["blue"]
+	redRequest := invoiceRequest("red-request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)
+	redRequest.Operations[0].Values["agreement"] = agreement
+	redRequest.Operations[1].Values["material"] = b
+	regressionReject(t, f, redRequest, "transaction.settlement_invalid")
+	redRequest.Operations[1].Values["material"] = a
+	redSource := f.submit(t, redRequest).NewIDs["request_sources"]["red-request"]
+	actual := invoiceFace("red", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", redSource, blue, true)
+	actual.Operations[0].Values["agreement"] = agreement
+	actual.Operations[1].Values["material"] = a
+	f.submit(t, actual)
+	// With no known source material, explicit matching remains possible.
+	original = invoiceFace("unmapped-blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	original.Operations[0].Values["agreement"] = agreement
+	original.Operations[1].Values["material"] = nil
+	unmapped := f.submit(t, original).NewIDs["allocations"]["unmapped-blue"]
+	redRequest = invoiceRequest("unmapped-request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", unmapped)
+	redRequest.Operations[0].Values["agreement"] = agreement
+	redRequest.Operations[1].Values["material"] = b
+	chosen := f.submit(t, redRequest).NewIDs["request_sources"]["unmapped-request"]
+	actual = invoiceFace("chosen", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", chosen, unmapped, true)
+	actual.Operations[0].Values["agreement"] = agreement
+	actual.Operations[1].Values["material"] = b
+	f.submit(t, actual)
+}
+
+func TestInvoiceAuthorityOptionalContractsRejectOnlyKnownConflict(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true, false, true)
+	ids := f.submit(t, invoicePlan(invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("agreements", "b", map[string]any{"label": "b"}))).NewIDs
+	a, b := ids["agreements"]["a"], ids["agreements"]["b"]
+	original := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	original.Operations[0].Values["agreement"] = nil
+	original.Operations[1].Values["material"] = nil
+	blueIDs := f.submit(t, original).NewIDs
+	blue, head := blueIDs["allocations"]["blue"], blueIDs["invoices"]["blue"]
+	requested := invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)
+	requested.Operations[0].Values["agreement"] = a
+	requested.Operations[1].Values["material"] = nil
+	source := f.submit(t, requested).NewIDs["request_sources"]["request"]
+	actual := invoiceFace("red", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", source, blue, true)
+	actual.Operations[0].Values["agreement"] = nil
+	actual.Operations[1].Values["material"] = nil
+	f.submit(t, actual)
+	registration := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Declaration: f.declaration, Bindings: f.model.Bindings}
+	projected, err := registration.Read(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = registration.Validate(projected, projected); err != nil {
+		t.Fatalf("optional terminal contracts failed actual read projection: %v", err)
+	}
+	_, digest := regressionRow(t, f, "invoices", head)
+	before := transactionBusinessSnapshot(t, f)
+	response := reversalNative(t, f, "known-contract-conflict", "invoices", map[string]any{"kind": "update", "primaryKey": head, "expectedDigest": digest, "values": map[string]any{"agreement": b}})
+	requireHTTPNotCommitted(t, response, "transaction.same_target_violation")
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("contract conflict changed facts")
+	}
+}
+
+func TestInvoiceAuthorityGhostCorrectionHasNoOwner(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	regressionReject(t, f, invoicePlan(invoiceCreate("adjustments", "ghost", map[string]any{"invoice": nil, "kind": "correction", "note": "无真实票头的幽灵更正"})), "transaction.evidence_invalid")
+}
+
+func TestInvoiceAuthorityRequestAllocationCompleteOnlyWhenPresent(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+	request := invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)
+	empty := request
+	empty.Operations = append([]transactionOperation{}, request.Operations[:2]...)
+	ids := f.submit(t, empty).NewIDs
+	values := invoiceMeasures("5", "50.00", "0.00", "50.00")
+	values["line"] = ids["request_lines"]["request"]
+	values["original"] = blue
+	regressionReject(t, f, invoicePlan(invoiceCreate("request_sources", "half", values)), "transaction.allocation_mismatch")
+	second := invoiceMeasures("5", "50.00", "0.00", "50.00")
+	second["line"] = ids["request_lines"]["request"]
+	second["original"] = blue
+	sources := f.submit(t, invoicePlan(invoiceCreate("request_sources", "half", values), invoiceCreate("request_sources", "rest", second))).NewIDs
+	actual := invoiceFace("partial-actual", "red", "physicalReturn", "-6", "-60.00", "0.00", "-60.00", sources["request_sources"]["half"], blue, true)
+	actual.Operations[2].Values["quantity"] = "-3"
+	actual.Operations[2].Values["net"] = "-30.00"
+	actual.Operations[2].Values["gross"] = "-30.00"
+	f.submit(t, actual)
+	draft := invoiceRequest("unknown-parent", "physicalReturn", "quantity", "1", "10.00", "0.00", "10.00", blue)
+	draft.Operations[0].Values["status"] = "draft"
+	for _, key := range []string{"quantity", "net", "tax", "gross"} {
+		draft.Operations[1].Values[key] = nil
+	}
+	regressionReject(t, f, draft, "transaction.allocation_invalid")
+}
+
+func TestInvoiceAuthorityStateRelationCasesUseCompleteNativeProjection(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true, false, true, true)
+	targets := f.submit(t, invoicePlan(invoiceCreate("projects", "p", map[string]any{"label": "p"}), invoiceCreate("packages", "p", map[string]any{"label": "p"}), invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("obligations", "o", map[string]any{"label": "o"}), invoiceCreate("plan_items", "p", map[string]any{"label": "p"}), invoiceCreate("source_versions", "v", map[string]any{"label": "v"}))).NewIDs
+	raw := f.submit(t, invoiceFace("raw", "blue", "", "1", "1.00", "0.00", "1.00", nil, nil, false)).NewIDs
+	parent := invoiceRequest("parent", "normal", "quantity", "0", "0.00", "0.00", "0.00", nil)
+	parent.Operations = parent.Operations[:2]
+	parent.Operations[0].Values["direction"] = "blue"
+	parent.Operations[0].Values["status"] = "draft"
+	parent.Operations[0].Values["agreement"] = nil
+	parent.Operations[1].Values["material"] = nil
+	line := f.submit(t, parent).NewIDs["request_lines"]["parent"]
+	values := func(kind string) map[string]any {
+		v := invoiceMeasures("0", "0.00", "0.00", "0.00")
+		v["line"] = line
+		v["source_kind"] = kind
+		v["original"] = nil
+		return v
+	}
+	regressionReject(t, f, invoicePlan(invoiceCreate("request_sources", "missing-project", values("project"))), "transaction.reference_violation")
+	bad := values("planItem")
+	bad["obligation"] = targets["obligations"]["o"]
+	regressionReject(t, f, invoicePlan(invoiceCreate("request_sources", "missing-plan", bad)), "transaction.reference_violation")
+	bad = values("delivery")
+	bad["actual_line"] = raw["actual_lines"]["raw"]
+	regressionReject(t, f, invoicePlan(invoiceCreate("request_sources", "wrong-delivery", bad)), "transaction.reference_violation")
+	valid := values("project")
+	valid["project"] = targets["projects"]["p"]
+	source := f.submit(t, invoicePlan(invoiceCreate("request_sources", "valid", valid))).NewIDs["request_sources"]["valid"]
+	bad = values("project")
+	bad["project"] = targets["projects"]["p"]
+	bad["application_source"] = source
+	regressionReject(t, f, invoicePlan(invoiceCreate("request_sources", "forbidden-application", bad)), "transaction.state_invalid")
+	_, digest := regressionRow(t, f, "request_sources", source)
+	response := reversalNative(t, f, "kind-only-case-change", "request_sources", map[string]any{"kind": "update", "primaryKey": source, "expectedDigest": digest, "values": map[string]any{"source_kind": "planItem"}})
+	requireHTTPNotCommitted(t, response, "transaction.reference_violation")
+	f.submit(t, invoicePlan(transactionOperation{Entity: "request_sources", Kind: "update", RecordID: source, ExpectedDigest: &digest, Values: map[string]any{"source_kind": "planItem", "plan_item": targets["plan_items"]["p"], "version": targets["source_versions"]["v"], "project": targets["projects"]["p"], "package": targets["packages"]["p"], "agreement": targets["agreements"]["a"], "obligation": targets["obligations"]["o"]}}))
+	registration := transactionrules.Registration{WorkspaceID: f.workspace, PluginID: f.input.PluginID, InstallationID: f.input.InstallationID, Declaration: f.declaration, Bindings: f.model.Bindings}
+	projected, err := registration.Read(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = registration.Validate(projected, projected); err != nil {
+		t.Fatal(err)
+	}
+	if !registration.ProtectsBinding(f.model.Bindings["request_sources"].TableID, f.model.Bindings["request_sources"].Fields["actual_line"]) || !registration.ProtectsBinding(f.model.Bindings["delivery_lines"].TableID, "") {
+		t.Fatal("inactive case dependencies are not protected")
+	}
+}
+
+func TestInvoiceAuthorityGroupedContractsNativeEditAndRestore(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true, false, true, false, true)
+	agreements := f.submit(t, invoicePlan(invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("agreements", "b", map[string]any{"label": "b"}))).NewIDs["agreements"]
+	a, b := agreements["a"], agreements["b"]
+	plan := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	plan.Operations[0].Values["agreement"] = nil
+	plan.Operations[1].Values["material"] = nil
+	sibling := invoiceMeasures("10", "100.00", "0.00", "100.00")
+	sibling["invoice"] = regressionRef("invoices", "blue")
+	sibling["purpose"] = nil
+	sibling["unit"] = "piece"
+	sibling["material"] = nil
+	share := invoiceMeasures("10", "100.00", "0.00", "100.00")
+	share["line"] = regressionRef("actual_lines", "sibling")
+	share["original"] = nil
+	share["application_source"] = nil
+	plan.Operations = append(plan.Operations, invoiceCreate("actual_lines", "sibling", sibling), invoiceCreate("allocations", "sibling", share))
+	ids := f.submit(t, plan).NewIDs
+	original, siblingID := ids["allocations"]["blue"], ids["allocations"]["sibling"]
+	requested := invoiceRequest("r", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", original)
+	requested.Operations[0].Values["agreement"] = a
+	requested.Operations[1].Values["material"] = nil
+	requestID := f.submit(t, requested).NewIDs["requests"]["r"]
+	_, digest := regressionRow(t, f, "allocations", siblingID)
+	before := transactionBusinessSnapshot(t, f)
+	response := reversalNative(t, f, "grouped-known-conflict", "allocations", map[string]any{"kind": "update", "primaryKey": siblingID, "expectedDigest": digest, "values": map[string]any{"agreement": b}})
+	requireHTTPNotCommitted(t, response, "transaction.same_target_violation")
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("group rejection changed facts")
+	}
+	f.submit(t, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: siblingID, ExpectedDigest: &digest, Values: map[string]any{"agreement": a}}))
+	history, err := audit.New(f.pb, f.kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := f.model.Bindings["allocations"].TableID
+	page, err := history.ReadChangeSets(t.Context(), audit.ReadParams{TableID: table, ItemID: &siblingID, Scope: "row", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := page.ChangeSets[0].RootRevisionID
+	_, digest = regressionRow(t, f, "allocations", siblingID)
+	_, requestDigest := regressionRow(t, f, "requests", requestID)
+	f.submit(t, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: siblingID, ExpectedDigest: &digest, Values: map[string]any{"agreement": b}}, transactionOperation{Entity: "requests", Kind: "update", RecordID: requestID, ExpectedDigest: &requestDigest, Values: map[string]any{"agreement": b}}))
+	restore, err := history.PreviewRestore(t.Context(), audit.PreviewParams{TableID: table, ItemID: siblingID, TargetRevision: target, Scope: "row"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before = transactionBusinessSnapshot(t, f)
+	if _, err = history.ApplyRestore(t.Context(), audit.ApplyParams{TableID: table, ItemID: siblingID, Token: restore.Token}); err == nil {
+		t.Fatal("history restore bypassed grouped contracts")
+	}
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("rejected grouped restore changed facts")
+	}
+}
+
+func TestInvoiceAuthorityGroupReferencesRemainOneWay(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true, false, true, false, true)
+	agreements := f.submit(t, invoicePlan(invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("agreements", "b", map[string]any{"label": "b"}))).NewIDs["agreements"]
+	plan := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	plan.Operations[0].Values["agreement"] = nil
+	plan.Operations[1].Values["material"] = nil
+	blue := f.submit(t, plan).NewIDs["allocations"]["blue"]
+	for _, id := range []string{"a", "b"} {
+		request := invoiceRequest(id, "physicalReturn", "quantity", "4", "40.00", "0.00", "40.00", blue)
+		request.Operations[0].Values["agreement"] = agreements[id]
+		request.Operations[1].Values["material"] = nil
+		f.submit(t, request)
+	}
+}
+
+func TestInvoiceAuthorityGroupedAnchorIsSingleLayer(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, false, true, false, true, false, true)
+	agreements := f.submit(t, invoicePlan(invoiceCreate("agreements", "a", map[string]any{"label": "a"}), invoiceCreate("agreements", "b", map[string]any{"label": "b"}))).NewIDs["agreements"]
+	a, b := agreements["a"], agreements["b"]
+	request := invoiceRequest("blue-source", "normal", "quantity", "10", "100.00", "0.00", "100.00", nil)
+	request.Operations[0].Values["direction"] = "blue"
+	request.Operations[0].Values["agreement"] = b
+	request.Operations[1].Values["material"] = nil
+	source := f.submit(t, request).NewIDs["request_sources"]["blue-source"]
+	original := invoiceFace("known-anchor", "blue", "", "10", "100.00", "0.00", "100.00", source, nil, true)
+	original.Operations[0].Values["agreement"] = nil
+	original.Operations[1].Values["material"] = nil
+	known := f.submit(t, original).NewIDs["allocations"]["known-anchor"]
+	red := invoiceFace("conflict", "red", "physicalReturn", "-1", "-10.00", "0.00", "-10.00", nil, known, true)
+	red.Operations[0].Values["agreement"] = nil
+	red.Operations[1].Values["material"] = nil
+	red.Operations[2].Values["agreement"] = a
+	regressionReject(t, f, red, "transaction.same_target_violation")
+	original = invoiceFace("unknown-anchor", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)
+	original.Operations[0].Values["agreement"] = nil
+	original.Operations[1].Values["material"] = nil
+	line := invoiceMeasures("10", "100.00", "0.00", "100.00")
+	line["invoice"] = regressionRef("invoices", "unknown-anchor")
+	line["purpose"] = nil
+	line["material"] = nil
+	line["unit"] = "piece"
+	sibling := invoiceMeasures("10", "100.00", "0.00", "100.00")
+	sibling["line"] = regressionRef("actual_lines", "sibling")
+	sibling["original"] = nil
+	sibling["application_source"] = nil
+	sibling["agreement"] = b
+	original.Operations = append(original.Operations, invoiceCreate("actual_lines", "sibling", line), invoiceCreate("allocations", "sibling", sibling))
+	unknown := f.submit(t, original).NewIDs["allocations"]["unknown-anchor"]
+	red = invoiceFace("single-layer", "red", "physicalReturn", "-1", "-10.00", "0.00", "-10.00", nil, unknown, true)
+	red.Operations[0].Values["agreement"] = nil
+	red.Operations[1].Values["material"] = nil
+	red.Operations[2].Values["agreement"] = a
+	f.submit(t, red)
 }

@@ -173,3 +173,22 @@ func TestGuardCoverageRequiresExactCanonicalSuperset(t *testing.T) {
 		t.Fatal("physical binding replaced old guard")
 	}
 }
+
+func TestSameTargetSymmetricOptionalEndsRemainStrictInsidePaths(t *testing.T) {
+	rule := Rule{ID: "optional", Kind: "sameTarget", Entity: "rows", SkipEmptyLeftEnd: true, SkipEmptyRightEnd: true, PathMatch: PathMatch{Left: []RelationStep{{Field: "left", Target: "holders"}, {Field: "agreement", Target: "agreements"}}, Right: []RelationStep{{Field: "right", Target: "holders"}, {Field: "agreement", Target: "agreements"}}}}
+	for _, tc := range []struct {
+		name        string
+		left, right any
+		want        bool
+	}{{"both-unknown", nil, nil, true}, {"left-unknown", nil, "a", true}, {"right-unknown", "a", nil, true}, {"same", "a", "a", true}, {"conflict", "a", "b", false}, {"wrong-type", 42, nil, false}} {
+		images := Images{"rows": {"r": {"left": "l", "right": "r"}}, "holders": {"l": {"agreement": tc.left}, "r": {"agreement": tc.right}}, "agreements": {"a": {}, "b": {}}}
+		err := (Registration{Declaration: Declaration{Rules: []Rule{rule}}}).Validate(nil, images)
+		if (err == nil) != tc.want {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+	}
+	broken := Images{"rows": {"r": {"left": "l", "right": nil}}, "holders": {"l": {"agreement": nil}}, "agreements": {}}
+	if err := (Registration{Declaration: Declaration{Rules: []Rule{rule}}}).Validate(nil, broken); err == nil {
+		t.Fatal("empty terminal masked a broken intermediate path")
+	}
+}

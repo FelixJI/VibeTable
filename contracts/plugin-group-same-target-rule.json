@@ -1,0 +1,123 @@
+{
+  "id": "known_invoice_contract",
+  "kind": "groupSameTarget",
+  "entity": "allocations",
+  "group": [
+    {
+      "field": "line",
+      "target": "actual_lines"
+    },
+    {
+      "field": "invoice",
+      "target": "invoices"
+    }
+  ],
+  "targets": [
+    {
+      "path": [
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ]
+    },
+    {
+      "path": [
+        {
+          "field": "line",
+          "target": "actual_lines"
+        },
+        {
+          "field": "invoice",
+          "target": "invoices"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ]
+    },
+    {
+      "whenPresent": "application_source",
+      "path": [
+        {
+          "field": "application_source",
+          "target": "request_sources"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ]
+    },
+    {
+      "whenPresent": "application_source",
+      "path": [
+        {
+          "field": "application_source",
+          "target": "request_sources"
+        },
+        {
+          "field": "line",
+          "target": "request_lines"
+        },
+        {
+          "field": "request",
+          "target": "requests"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ]
+    }
+  ],
+  "related": {
+    "field": "original",
+    "target": "allocations"
+  },
+  "reference": {
+    "entity": "request_sources",
+    "whenPresent": "original",
+    "group": [
+      {
+        "field": "original",
+        "target": "allocations"
+      },
+      {
+        "field": "line",
+        "target": "actual_lines"
+      },
+      {
+        "field": "invoice",
+        "target": "invoices"
+      }
+    ],
+    "targets": [
+      {
+        "path": [
+          {
+            "field": "agreement",
+            "target": "agreements"
+          }
+        ]
+      },
+      {
+        "path": [
+          {
+            "field": "line",
+            "target": "request_lines"
+          },
+          {
+            "field": "request",
+            "target": "requests"
+          },
+          {
+            "field": "agreement",
+            "target": "agreements"
+          }
+        ]
+      }
+    ]
+  }
+}

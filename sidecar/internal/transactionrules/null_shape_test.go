@@ -12,8 +12,9 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 	var corpus struct {
 		Rules   map[string]json.RawMessage `json:"rules"`
 		Invalid []struct {
-			Base string
-			Path []string
+			Base  string
+			Path  []string
+			Value any
 		} `json:"invalid"`
 		Valid []struct {
 			Base  string
@@ -98,7 +99,7 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 		t.Run(base+"/omitted-options", func(t *testing.T) { check(t, base, nil, nil, false, true) })
 	}
 	for _, tc := range corpus.Invalid {
-		t.Run(tc.Base+"/null/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, nil, false, false) })
+		t.Run(tc.Base+"/invalid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, false, false) })
 	}
 	for _, tc := range corpus.Valid {
 		t.Run(tc.Base+"/valid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, tc.Omit, true) })

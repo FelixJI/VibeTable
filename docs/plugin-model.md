@@ -74,7 +74,7 @@
 `settlementBalance` 的 `capacity/request/actual` 共享一至四个精确 measure。普通蓝桶用真实义务数量，
 红桶用原蓝 allocation 的同一组四个 signed 字段，不另建蓝容量或可写效果副本。
 先按权威 direction 选角色，再检查用途、原蓝资格、容量与 application source；正式红份额不得缺原蓝，
-原蓝必须真实 blue、非自身且容量非负。不同红原因共用原蓝桶。原始未归属票面不参与预算。
+原蓝必须真实 blue、达到 actual.settledStates、非自身且容量非负；同事务确认后可引用，已有红占用时不得降回草稿。不同红原因共用原蓝桶。原始未归属票面不参与预算。
 可选 `currency`、`unit`、`material` 都必须在三方同时声明为 AuthorityRef；币种三方明确一致，
 quantity 路径单位明确一致，已知物料 FK 三方不得冲突。物料显式 null 表示未映射，用户选定具体容量/来源
 构成该份额的匹配依据；缺字段、错误类型和断裂路径仍拒绝。amount 路径跳过物料/单位数量匹配。
@@ -87,16 +87,20 @@ quantity 来源 Q>0，已执行 E 与明确关闭 C 满足 E+C<=Q；剩余净额
 amount 来源数量必须明确为零，只通过 `fulfillKinds` 的明确金额事实或关闭事实释放预留。
 `adjustment` 先按 kind 选择结算事件；关闭可无 actual，兑现必须关联同 source、同 capacity 的真实 allocation，
 累计兑现不得超过该 allocation 的实际效果。关闭和兑现复用 adjustments 的同一组四范围字段。
-`closeRemaining` 必须捕获固定的剩余四范围，不能只存 bool 动态重算；关闭后不允许新增或增加同源消费，
+`closeRemaining` 必须捕获本次动作前剩余的固定四范围；之前仅数量关闭已经按比例消费预留，不能将其缺省金额误读为零释放或改写历史。
+不能只存 bool 动态重算；关闭后不允许新增或增加同源消费，
 历史执行保留。归属与兑现可在一个事务中创建，按最终图验算，不要求先经过非法中间图。
 原先开放或本事务从草稿确认的 source 才能承接新增消费。
 
+`plans` 仅支持 quantity-only 声明，不允许同时声明金额 measure 后静默跳过金额检查。
 普通桶的 `plans` 直接复用 ReservationPlans 的 currentWhen、版本、logicalItem、share、义务及真实 planItem，
 占用为当前计划容量加直接申请剩余和直接执行；计划内申请/执行共同受该计划桶约束。
 义务10、当前计划8、直接申请6会因合占14拒绝，不复制计划余额。
 
-`changeEvidence` 的 `fields` 保护核心事实，`ownerPath:[]` 可保护票头自身；添加/删除/重绑既有 owner
-下的归属也属于更正。更正须同事务新建有效证据并绑定 owner 的 latestEvidence，证据反向 owner 必须一致，
+`changeEvidence` 的 `fields` 保护核心事实，`ownerPath:[]` 可保护票头自身；既存归属的修改、删除、重绑均属于更正。`allowInsert` 省略时仍要求既有 owner 下新增子行有新依据；
+自然 invoice_allocations 可声明 `allowInsert:true`，允许原始票先登记后正常新增归属，无须伪造更正事件。
+该选项只豁免新增子行分支，旧行修改/删除/owner路径迁移不豁免，其他守卫照常执行；票面行新增仍使用默认严格策略。
+显式 false、null 或非 bool 都拒绝。更正须同事务新建有效证据并绑定 owner 的 latestEvidence，证据反向 owner 必须一致，
 `types` 只列更正可用 kind，说明须非空。旧证据不能复用，已记录声明事实不可改删；非声明扩展字段仍可编辑。
 请求关闭等事件 owner 可为 null，不能充当实际更正依据，但其说明及声明范围仍被冻结。
 保护字段与证据字段属于不同实体，可以同名且分别去重；冻结阶段守卫继续独立生效。
@@ -104,3 +108,23 @@ amount 来源数量必须明确为零，只通过 `fulfillKinds` 的明确金额
 
 拒绝使用 `transaction.allocation_invalid/mismatch/exceeded`、`transaction.settlement_invalid/exceeded`、
 `transaction.evidence_invalid/frozen/required/reused`，均表示 not-committed；十进制格式错误保留既有 decimal 码。
+
+
+`allocationBalance.requireCompleteWhenAllocated:true` 用于申请来源：没有任何 child 时允许父原始/草稿事实独立保存；
+一旦有 child，quantity/net/tax/gross 必须完整覆盖父四维，null/未知父或子不能借草稿分支绕过完整性。
+actual allocation 省略该选项，继续允许部分归属。该 enabled option 只接受显式 true，false/null/非 bool 拒绝。
+
+`sameTarget.skipEmptyRightEnd:true` 与 skipEmptyLeftEnd 对称，仅允许对应路径末端的明确 null/空关系；
+双方均已知时仍须同一目标。中间路径缺失、悬空、错类型和缺少末端字段均拒绝，最多四跳不变。
+省略维持原行为，显式 false/null/非 bool 拒绝，其他 rule kind 不接受该字段。
+
+quantity 原蓝 capacity 除真实票面 material 外，还保留其已有 application_source 所指 Request.Material 的已知事实；
+raw material=null 不能抹除来源中的已知物料。已知 raw、继承来源、red source 与 actual 之间不得冲突；
+明确无申请来源且 raw 未映射仍可显式匹配；amount 不套用数量物料规则。此过程不复制/回填 raw 字段。
+更正依据按 Types 判角色：属于更正 Types 必须关联真实非空 owner，非更正类型只允许 owner 空的请求事件；
+不能把 ghost correction 的空 owner 当普通关闭/兑现事件。
+
+
+state 可选 relationCases，键必须与 transitions 完全一致（最多32），每case明确 required/optional RelationStep列表，合计最多64；同case不得重复/重叠，跨case同field须同target。所有case构成受控关系集合：required须存在非空真实单值FK；optional须存在，可明确空；当前case未列的受控字段须明确空。缺字段、错类型、坏FK均拒，完整最终图原子修正可成功；原迁移/冻结仍生效。全部case关系/目标参与读取、绑定和保护，不只读取当前case。省略保持旧行为；显式null、未知字段、非法case键或列表均拒。
+
+groupSameTarget 用 group（1–4跳）分组，对 targets（1–64个 selector）收集同一目标实体的已知FK；末端明确空为unknown，中间缺失/错型/坏FK拒。selector.whenPresent若有须为path首字段，仅跳明确空。related可选且只指同entity；只展开所引用anchor的同一targets一次，不递归，也不读取该anchor的兄弟。每组已知目标最多一个。reference可选，group终点须同外层，每行只将自己的targets与已初始化G比较；不写回G、不在不同reference行之间传播。reference不存在的G拒绝。全部关系/实体/presence受原生Read、绑定与最终图守卫约束；冲突复用transaction.same_target_violation。完整wire见contracts/plugin-group-same-target-rule.json。它与同票守卫、单anchor继承、申请对原蓝整票的单向比较共同闭合合同，而非递归连通分量合并。

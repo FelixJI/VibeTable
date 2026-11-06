@@ -81,7 +81,7 @@ func settlementImages() Images {
 			"redLine":  {"invoice": "redInv", "purpose": "physicalReturn", "quantity": "6", "net": "90.00", "tax": "0.00", "gross": "90.00"},
 		},
 		"allocations": {
-			"orig": {"line": "blueLine", "quantity": "10", "net": "100.00", "tax": "0.00", "gross": "100.00"},
+			"orig": {"application_source": nil, "line": "blueLine", "quantity": "10", "net": "100.00", "tax": "0.00", "gross": "100.00"},
 			"red":  {"line": "redLine", "application_source": "s1", "original": "orig", "quantity": "-6", "net": "-90.00", "tax": "0.00", "gross": "-90.00"},
 		},
 		"adjustments": {},

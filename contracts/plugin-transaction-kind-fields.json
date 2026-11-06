@@ -14,7 +14,13 @@
     {"settlement": null},
     {"settlement": {}},
     {"evidence": null},
-    {"evidence": {}}
+    {"evidence": {}},
+    {"skipEmptyRightEnd": null},
+    {"group": []},
+    {"targets": []},
+    {"related": null},
+    {"reference": null},
+    {"relationCases": null}
   ],
   "parentFreeze": [
     {"transitions": {}},
@@ -25,6 +31,16 @@
     {"reversal": null},
     {"allocation": null},
     {"settlement": null},
-    {"evidence": null}
+    {"evidence": null},
+    {"skipEmptyRightEnd": true},
+    {"skipEmptyRightEnd": null},
+    {"group": []},
+    {"targets": []},
+    {"related": null},
+    {"reference": null},
+    {"relationCases": null}
+  ],
+  "sameTargetOnly": [
+    {"skipEmptyRightEnd": true}
   ]
 }

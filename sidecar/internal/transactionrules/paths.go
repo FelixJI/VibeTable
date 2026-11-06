@@ -34,6 +34,34 @@ func (m PathMatch) valid(self string) bool {
 
 // Each hop participates in write selection and in binding protection, including intermediate tables.
 func (r Rule) relationSteps(visit func(string, RelationStep)) {
+	walk := func(entity string, path []RelationStep) {
+		for _, step := range path {
+			visit(entity, step)
+			entity = step.Target
+		}
+	}
+	if r.Kind == "groupSameTarget" {
+		walk(r.Entity, r.Group)
+		for _, target := range r.Targets {
+			walk(r.Entity, target.Path)
+		}
+		if r.Related != nil {
+			visit(r.Entity, *r.Related)
+		}
+		if ref := r.GroupReference; ref != nil {
+			walk(ref.Entity, ref.Group)
+			for _, target := range ref.Targets {
+				walk(ref.Entity, target.Path)
+			}
+		}
+	}
+	for _, c := range r.RelationCases {
+		for _, steps := range [][]RelationStep{c.Required, c.Optional} {
+			for _, step := range steps {
+				visit(r.Entity, step)
+			}
+		}
+	}
 	if r.Relation != "" {
 		visit(r.Entity, RelationStep{r.Relation, r.Target})
 	}
@@ -146,13 +174,13 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 				ref    AuthorityRef
 			}{spec.Request.Entity, spec.Request.Basis})
 		}
-		if len(spec.Request.Purposes) > 0 {
+		if spec.Request.Purpose.Field != "" {
 			refs = append(refs, struct {
 				entity string
 				ref    AuthorityRef
 			}{spec.Request.Entity, spec.Request.Purpose})
 		}
-		if len(spec.Actual.Purposes) > 0 {
+		if spec.Actual.Purpose.Field != "" {
 			refs = append(refs, struct {
 				entity string
 				ref    AuthorityRef
@@ -351,13 +379,13 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 					ref    AuthorityRef
 				}{spec.Request.Entity, spec.Request.Basis})
 			}
-			if len(spec.Request.Purposes) > 0 {
+			if spec.Request.Purpose.Field != "" {
 				refs = append(refs, struct {
 					entity string
 					ref    AuthorityRef
 				}{spec.Request.Entity, spec.Request.Purpose})
 			}
-			if len(spec.Actual.Purposes) > 0 {
+			if spec.Actual.Purpose.Field != "" {
 				refs = append(refs, struct {
 					entity string
 					ref    AuthorityRef
@@ -399,8 +427,8 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 				}
 			}
 		}
-		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.Kind != "reversalBalance" &&
-			rule.Kind != "allocationBalance" && rule.Kind != "settlementBalance" && rule.Kind != "changeEvidence" && rule.CurrentWhen == nil {
+		if rule.Kind != "groupSameTarget" && rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.Kind != "reversalBalance" &&
+			rule.Kind != "allocationBalance" && rule.Kind != "settlementBalance" && rule.Kind != "changeEvidence" && rule.CurrentWhen == nil && rule.RelationCases == nil {
 			continue
 		}
 		valid := true
@@ -439,6 +467,7 @@ func resolvePath(images Images, row map[string]any, path []RelationStep, allowEm
 
 type pathEndPolicy struct {
 	skipEmptyLeft   bool
+	skipEmptyRight  bool
 	allowEmptyRight bool
 }
 
@@ -450,6 +479,6 @@ func (m PathMatch) matches(images Images, row map[string]any, rowID string, poli
 	if len(m.Right) == 0 {
 		return left == "" || left == rowID, nil
 	}
-	right, err := resolvePath(images, row, m.Right, policy.allowEmptyRight)
-	return left == "" || left == right, err
+	right, err := resolvePath(images, row, m.Right, policy.allowEmptyRight || policy.skipEmptyRight)
+	return left == "" || policy.skipEmptyRight && right == "" || left == right, err
 }

@@ -3,6 +3,7 @@
   "kind": "changeEvidence",
   "entity": "allocations",
   "evidence": {
+    "allowInsert": true,
     "fields": ["quantity", "net", "tax", "gross"],
     "ownerPath": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}],
     "latestEvidence": "latest_evidence",

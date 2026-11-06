@@ -147,7 +147,7 @@ if (outcome.status === "rejected") return; // 保留表单，不显示“保存�
 manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经由 `model.configure` 完成绑定的
 logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
 完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
-每个声明最多 192 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget`、`atMostOne`、`parentFreeze`、`reservationBalance` 和 `reversalBalance`。
+每个声明最多 192 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget`、`groupSameTarget`、`atMostOne`、`parentFreeze`、`reservationBalance`、`reversalBalance`、`allocationBalance`、`settlementBalance` 和 `changeEvidence`。
 `sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)；`parentFreeze`、`reservationBalance`、`reversalBalance`、`allocationBalance`、`settlementBalance` 与 `changeEvidence` 的固定结构、权威阶段/用途路径与数量不变量同样见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。`reversalBalance` 保护无来源退回的原行归属与确认累计量，失败通过 `transaction.reversal_invalid`、`transaction.reversal_mismatch` 或 `transaction.reversal_exceeded` 明确返回 not-committed；数量格式错误继续使用既有 decimal 错误。
 
 `decimals` 指定 `{entity,field,storage,scale,digits}`，可选 `sign` 为 `nonnegative` 或 `positive`，可选 `nullable:true` 表示仅显式 null 合法（不得用于求和/预算字段）。省略时接受有符号数。`decimalText` 绑定 Text，值使用规范十进制
@@ -295,3 +295,9 @@ if (task) {
 缺来源/原蓝或异常票面不会被自动截断或改写。更正须同计划创建新证据、绑定 owner.latestEvidence 并修改事实，
 回执的 changeSetId 可关联既有原生审计前后值；SDK 不提供另一套可写历史。
 `plugin_commit_unknown` 或丢失确认仍只查询原 requestId 的 `transaction.status`，不自动重放登记、兑现或更正。
+
+自然内部归属的 changeEvidence 可声明 `allowInsert:true`：原始票头/票面先保存，再普通新增 allocation，无须创建更正事件；原生审计照常记录。该开关不放宽既有归属的更改/删除/重绑，也不放宽票面行新增或其它守卫。
+
+`sameTarget` 可用 `skipEmptyRightEnd:true` 与既有左端选项对称处理合同末端未知；双方已知冲突仍拒。申请来源的 allocationBalance 可用 `requireCompleteWhenAllocated:true`，空来源集合合法，非空须完整覆盖父四维；actual allocation 继续允许部分归属。
+
+state.relationCases 为不同来源角色声明必填/可空/禁止关系；groupSameTarget 按整票分组比较已知合同，related单层继承，reference单向校验不污染组。二者都在原生最终图执行，写入/历史恢复不能绕过。

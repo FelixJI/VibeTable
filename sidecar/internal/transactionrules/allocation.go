@@ -1,6 +1,7 @@
 package transactionrules
 
 import (
+	"bytes"
 	"encoding/json"
 	"math/big"
 
@@ -24,6 +25,26 @@ func (ref AuthorityRef) MarshalJSON() ([]byte, error) {
 		ref.Path = []RelationStep{}
 	}
 	return json.Marshal(wireRef(ref))
+}
+
+func (ref *AuthorityRef) UnmarshalJSON(raw []byte) error {
+	if string(raw) == "null" {
+		*ref = AuthorityRef{}
+		return nil
+	}
+	type wireRef AuthorityRef
+	var value wireRef
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&value) != nil || !AuthorityRef(value).valid() {
+		return failure("rules_invalid")
+	}
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil || containsJSONNull(fields) {
+		return failure("rules_invalid")
+	}
+	*ref = AuthorityRef(value)
+	return nil
 }
 
 func (ref AuthorityRef) valid() bool {
@@ -83,16 +104,17 @@ type AllocationParent struct {
 // AllocationSpec is the closed typed shape of an allocationBalance rule:
 // field and relation names only; no formulas, SQL or scripts are accepted.
 type AllocationSpec struct {
-	Owner                string           `json:"owner"`
-	Parent               AllocationParent `json:"parent"`
-	Quantity             string           `json:"quantity"`
-	Net                  string           `json:"net"`
-	Tax                  string           `json:"tax"`
-	Gross                string           `json:"gross"`
-	State                AuthorityRef     `json:"state"`
-	DraftStates          []string         `json:"draftStates,omitempty"`
-	Purpose              AuthorityRef     `json:"purpose"`
-	ZeroQuantityPurposes []string         `json:"zeroQuantityPurposes,omitempty"`
+	RequireCompleteWhenAllocated enabledOption    `json:"requireCompleteWhenAllocated,omitempty"`
+	Owner                        string           `json:"owner"`
+	Parent                       AllocationParent `json:"parent"`
+	Quantity                     string           `json:"quantity"`
+	Net                          string           `json:"net"`
+	Tax                          string           `json:"tax"`
+	Gross                        string           `json:"gross"`
+	State                        AuthorityRef     `json:"state"`
+	DraftStates                  []string         `json:"draftStates,omitempty"`
+	Purpose                      AuthorityRef     `json:"purpose"`
+	ZeroQuantityPurposes         []string         `json:"zeroQuantityPurposes,omitempty"`
 }
 
 func uniqueStates(states []string) bool {
@@ -169,6 +191,9 @@ func (rule Rule) validateAllocation(after Images, decimals map[string]exactdecim
 			}
 		}
 		if !draft && (!known || row[spec.Quantity] == nil) {
+			return failure("allocation_invalid")
+		}
+		if bool(spec.RequireCompleteWhenAllocated) && (!known || row[spec.Quantity] == nil) {
 			return failure("allocation_invalid")
 		}
 		if draft && (!known && !unknown || row[spec.Quantity] == nil && !unknown) {
@@ -284,10 +309,16 @@ func (rule Rule) validateAllocation(after Images, decimals map[string]exactdecim
 	for _, total := range totals {
 		for i, sum := range total.child {
 			if total.parent[i] == nil {
+				if bool(spec.RequireCompleteWhenAllocated) {
+					return failure("allocation_invalid")
+				}
 				continue
 			}
 			if directionMismatch(sum, total.parent[i]) || new(big.Int).Abs(sum).Cmp(new(big.Int).Abs(total.parent[i])) > 0 {
 				return failure("allocation_exceeded")
+			}
+			if bool(spec.RequireCompleteWhenAllocated) && sum.Cmp(total.parent[i]) != 0 {
+				return failure("allocation_mismatch")
 			}
 		}
 	}

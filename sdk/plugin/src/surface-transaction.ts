@@ -69,6 +69,7 @@ export interface AllocationParent {
 }
 /** Closed typed shape of an allocationBalance rule: field and relation names only. */
 export interface AllocationSpec {
+  readonly requireCompleteWhenAllocated?: true;
   readonly owner: string;
   readonly parent: AllocationParent;
   readonly quantity: string;
@@ -127,7 +128,7 @@ export interface SettlementActual {
   readonly request: string;
   readonly capacity: string;
   readonly planItem?: string;
-  readonly quantity: string;
+  readonly quantity?: string;
   readonly net?: string;
   readonly tax?: string;
   readonly gross?: string;
@@ -163,6 +164,8 @@ export interface EvidenceRecord {
 }
 /** Closed typed shape of a changeEvidence rule; an empty ownerPath is self-owned. */
 export interface ChangeEvidenceSpec {
+  /** Only new child rows may attach to an existing owner without a correction event. */
+  readonly allowInsert?: true;
   readonly fields?: readonly string[];
   readonly ownerPath: readonly RelationStep[];
   readonly latestEvidence: string;
@@ -183,14 +186,18 @@ export interface ReversalSpec {
   readonly sameFields: readonly string[];
   readonly sameOwnerFields: readonly string[];
 }
+export interface GroupTarget { readonly path: readonly RelationStep[]; readonly whenPresent?: string }
+export interface GroupReference { readonly entity: string; readonly group: readonly RelationStep[]; readonly targets: readonly GroupTarget[]; readonly whenPresent?: string }
+export interface StateRelationCase { readonly required: readonly RelationStep[]; readonly optional: readonly RelationStep[] }
 export type TransactionRule = RuleIdentity & (
-  { readonly kind: "unique"; readonly fields: readonly string[] }
+  { readonly kind: "groupSameTarget"; readonly group: readonly RelationStep[]; readonly targets: readonly GroupTarget[]; readonly related?: RelationStep; readonly reference?: GroupReference }
+  | { readonly kind: "unique"; readonly fields: readonly string[] }
   | { readonly kind: "atMostOne"; readonly fields: readonly [string, string] }
   | { readonly kind: "reference"; readonly field: string; readonly target: string }
-  | ({ readonly kind: "sameTarget"; readonly whenPresent?: string; readonly skipEmptyLeftEnd?: true } & PathMatch)
+  | ({ readonly kind: "sameTarget"; readonly whenPresent?: string; readonly skipEmptyLeftEnd?: true; readonly skipEmptyRightEnd?: true } & PathMatch)
   | (({ readonly kind: "conservation" } | { readonly kind: "balance"; readonly currentWhen?: PathMatch }) & { readonly target: string; readonly relation: string; readonly amount: string; readonly limit: string })
   | { readonly kind: "state"; readonly field: string; readonly transitions: Readonly<Record<string, readonly string[]>>;
-      readonly fields?: readonly string[]; readonly frozenStates?: readonly string[] }
+      readonly fields?: readonly string[]; readonly frozenStates?: readonly string[]; readonly relationCases?: Readonly<Record<string, StateRelationCase>> }
   | ({ readonly kind: "parentFreeze"; readonly parentPath: readonly RelationStep[]; readonly parentStateField: string;
       readonly frozenStates: readonly string[]; readonly fields?: readonly string[] })
   | { readonly kind: "reservationBalance"; readonly reservation: ReservationSpec }

@@ -1,7 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sdk } from "./load-sdk.mjs";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+
+test("public amount-only settlement type permits an omitted quantity", () => {
+  const source = new URL(`../../../build/plugin-sdk/${process.pid}/amount-only.typecheck.ts`, import.meta.url);
+  const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url)).replaceAll("\\", "/");
+  writeFileSync(source, `import type { SettlementSpec, ChangeEvidenceSpec, AllocationSpec } from ${JSON.stringify(entry)};
+const actual: SettlementSpec["actual"] = {
+  entity: "allocations", state: { path: [], field: "status" }, direction: { path: [], field: "direction" },
+  directions: ["red"], settledStates: ["issued"], request: "application_source", capacity: "original",
+  net: "net", tax: "tax", gross: "gross"
+};
+const policy: Pick<ChangeEvidenceSpec, "allowInsert"> = { allowInsert: true };
+void actual;
+const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated"> = { requireCompleteWhenAllocated: true };
+const optional: import(${JSON.stringify(entry)}).TransactionRule = { id: "optional", kind: "sameTarget", entity: "rows", left: [{field:"x",target:"rows"}], right: [], skipEmptyRightEnd: true };
+void policy;
+void complete;
+void optional;
+`);
+  execFileSync(process.execPath, [fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
+    "--ignoreConfig", "--noEmit", "--allowImportingTsExtensions", "--strict", "--target", "ES2022", "--module", "ESNext",
+    "--moduleResolution", "Bundler", "--skipLibCheck", fileURLToPath(source)], { stdio: "inherit" });
+});
 
 function fixture() {
   const calls = [];

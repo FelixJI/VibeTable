@@ -214,6 +214,7 @@ class ChangeEvidenceSpec(TransactionContract):
     """Closed typed shape of a changeEvidence rule; an empty ownerPath makes
     the rule entity its own owner."""
 
+    allow_insert: bool = Field(default=False, alias="allowInsert")
     fields: list[str] = Field(default_factory=list, max_length=MAX_STATE_FIELDS)
     owner_path: OptionalRelationPath = Field(default_factory=list, alias="ownerPath")
     latest_evidence: str = Field(alias="latestEvidence", min_length=1)
@@ -222,9 +223,13 @@ class ChangeEvidenceSpec(TransactionContract):
 
     @model_validator(mode="after")
     def validate_shape(self) -> ChangeEvidenceSpec:
+        if "allow_insert" in self.model_fields_set and not self.allow_insert:
+            raise ValueError("allowInsert must be true when supplied")
         for names in (self.fields, self.evidence.fields, self.types):
             if any(not name for name in names) or len(set(names)) != len(names):
                 raise ValueError("evidence fields and types must be non-empty and unique")
+        if any(len(value.encode("utf-8")) > 64 for value in self.types):
+            raise ValueError("evidence type values must fit the native 64-byte limit")
         return self
 
 
@@ -239,7 +244,7 @@ class AllocationDirection(TransactionContract):
     @model_validator(mode="after")
     def validate_shape(self) -> AllocationDirection:
         if len(set(self.red_directions)) != len(self.red_directions) or any(
-            not v for v in self.red_directions
+            not v or len(v.encode("utf-8")) > 64 for v in self.red_directions
         ):
             raise ValueError("red directions must be non-empty and unique")
         return self
@@ -257,6 +262,9 @@ class AllocationParent(TransactionContract):
 class AllocationSpec(TransactionContract):
     """Closed typed shape of an allocationBalance rule."""
 
+    require_complete_when_allocated: bool = Field(
+        default=False, alias="requireCompleteWhenAllocated"
+    )
     owner: str = Field(min_length=1)
     parent: AllocationParent
     quantity: str = Field(min_length=1)
@@ -274,8 +282,15 @@ class AllocationSpec(TransactionContract):
 
     @model_validator(mode="after")
     def validate_shape(self) -> AllocationSpec:
+        if (
+            "require_complete_when_allocated" in self.model_fields_set
+            and not self.require_complete_when_allocated
+        ):
+            raise ValueError("requireCompleteWhenAllocated must be true when supplied")
         for states in (self.draft_states, self.zero_quantity_purposes):
-            if any(not state for state in states) or len(set(states)) != len(states):
+            if any(not state or len(state.encode("utf-8")) > 64 for state in states) or len(
+                set(states)
+            ) != len(states):
                 raise ValueError("allocation states must be non-empty and unique")
         return self
 
@@ -366,7 +381,9 @@ class SettlementAdjustment(TransactionContract):
         if set(self.close_kinds) & set(self.fulfill_kinds):
             raise ValueError("close and fulfillment kinds must be disjoint")
         for names in (self.close_kinds, self.fulfill_kinds):
-            if any(not name or len(name) > 64 for name in names) or len(set(names)) != len(names):
+            if any(not name or len(name.encode("utf-8")) > 64 for name in names) or len(
+                set(names)
+            ) != len(names):
                 raise ValueError("adjustment kinds must be non-empty and unique")
         return self
 
@@ -394,11 +411,15 @@ class SettlementSpec(TransactionContract):
             self.actual.settled_states,
             self.actual.zero_quantity_purposes,
         ):
-            if any(not name or len(name) > 64 for name in names) or len(set(names)) != len(names):
+            if any(not name or len(name.encode("utf-8")) > 64 for name in names) or len(
+                set(names)
+            ) != len(names):
                 raise ValueError("settlement roles and states must be non-empty and unique")
         if self.request.purposes and self.request.purpose is None:
             raise ValueError("request purposes require an authoritative purpose")
-        if self.actual.purposes and self.actual.purpose is None:
+        if (
+            self.actual.purposes or self.actual.zero_quantity_purposes
+        ) and self.actual.purpose is None:
             raise ValueError("actual purposes require an authoritative purpose")
         declared = [
             (self.capacity.quantity, self.request.quantity, self.actual.quantity),
@@ -427,8 +448,13 @@ class SettlementSpec(TransactionContract):
             raise ValueError("actual draft and settled states must be disjoint")
         if self.plans is not None and not self.request.plan_item:
             raise ValueError("plans require a request planItem relation")
-        if self.plans is not None and not self.capacity.quantity:
-            raise ValueError("plans require the quantity measure")
+        if self.plans is not None and (
+            not self.capacity.quantity
+            or self.capacity.net
+            or self.capacity.tax
+            or self.capacity.gross
+        ):
+            raise ValueError("plans support only the quantity measure")
         for refs in (
             (self.capacity.currency, self.request.currency, self.actual.currency),
             (self.capacity.unit, self.request.unit, self.actual.unit),
@@ -439,6 +465,35 @@ class SettlementSpec(TransactionContract):
         if self.capacity.directions and self.capacity.direction is None:
             raise ValueError("capacity directions require a direction ref")
         return self
+
+
+class GroupTarget(TransactionContract):
+    path: RelationPath
+    when_present: str = Field(default="", alias="whenPresent")
+
+    @model_validator(mode="after")
+    def validate_selector(self) -> GroupTarget:
+        if self.when_present and self.when_present != self.path[0].field:
+            raise ValueError("whenPresent must be the first path field")
+        return self
+
+
+class GroupReference(TransactionContract):
+    entity: str = Field(min_length=1)
+    group: RelationPath
+    targets: list[GroupTarget] = Field(min_length=1, max_length=MAX_STATE_FIELDS)
+    when_present: str = Field(default="", alias="whenPresent")
+
+    @model_validator(mode="after")
+    def validate_selector(self) -> GroupReference:
+        if self.when_present and self.when_present != self.group[0].field:
+            raise ValueError("reference whenPresent must be the first group field")
+        return self
+
+
+class StateRelationCase(TransactionContract):
+    required: list[RelationStep]
+    optional: list[RelationStep]
 
 
 class TransactionRule(TransactionContract):
@@ -452,6 +507,7 @@ class TransactionRule(TransactionContract):
         "balance",
         "state",
         "sameTarget",
+        "groupSameTarget",
         "atMostOne",
         "parentFreeze",
         "reservationBalance",
@@ -461,12 +517,19 @@ class TransactionRule(TransactionContract):
         "changeEvidence",
     ]
     entity: str = Field(min_length=1)
+    group: RelationPath | None = None
+    targets: list[GroupTarget] | None = Field(
+        default=None, min_length=1, max_length=MAX_STATE_FIELDS
+    )
+    related: RelationStep | None = None
+    reference: GroupReference | None = None
     fields: list[str] = Field(default_factory=list)
     field: str = ""
     target: str = ""
     relation: str = ""
     amount: str = ""
     limit: str = ""
+    relation_cases: dict[str, StateRelationCase] | None = Field(default=None, alias="relationCases")
     transitions: dict[str, list[str]] = Field(default_factory=dict)
     frozen_states: list[str] = Field(default_factory=list, alias="frozenStates")
 
@@ -474,6 +537,7 @@ class TransactionRule(TransactionContract):
     right: Annotated[list[RelationStep], Field(max_length=4)] | None = None
     when_present: str = Field(default="", alias="whenPresent")
     skip_empty_left_end: bool = Field(default=False, alias="skipEmptyLeftEnd")
+    skip_empty_right_end: bool = Field(default=False, alias="skipEmptyRightEnd")
     current_when: PathMatch | None = Field(default=None, alias="currentWhen")
     parent_path: RelationPath | None = Field(default=None, alias="parentPath")
     parent_state_field: str = Field(default="", alias="parentStateField")
@@ -486,13 +550,20 @@ class TransactionRule(TransactionContract):
     @model_validator(mode="after")
     def validate_kind_shape(self) -> TransactionRule:
         allowed = {
+            "groupSameTarget": {"group", "targets", "related", "reference"},
             "unique": {"fields"},
             "atMostOne": {"fields"},
             "reference": {"field", "target"},
             "conservation": {"target", "relation", "amount", "limit"},
             "balance": {"target", "relation", "amount", "limit", "current_when"},
-            "state": {"field", "fields", "transitions", "frozen_states"},
-            "sameTarget": {"left", "right", "when_present", "skip_empty_left_end"},
+            "state": {"field", "fields", "transitions", "frozen_states", "relation_cases"},
+            "sameTarget": {
+                "left",
+                "right",
+                "when_present",
+                "skip_empty_left_end",
+                "skip_empty_right_end",
+            },
             "parentFreeze": {"parent_path", "parent_state_field", "frozen_states", "fields"},
             "reservationBalance": {"reservation"},
             "reversalBalance": {"reversal"},
@@ -530,6 +601,7 @@ class TransactionRule(TransactionContract):
                 or self.right is not None
                 or self.when_present
                 or self.skip_empty_left_end
+                or self.skip_empty_right_end
                 or self.current_when is not None
                 or self.parent_path is not None
                 or self.parent_state_field != ""
@@ -550,13 +622,30 @@ class TransactionRule(TransactionContract):
             and self.right is None
             and not self.when_present
             and not self.skip_empty_left_end
+            and not self.skip_empty_right_end
         )
         if "skip_empty_left_end" in self.model_fields_set and not self.skip_empty_left_end:
             raise ValueError("skipEmptyLeftEnd must be true when supplied")
+        if "skip_empty_right_end" in self.model_fields_set and not self.skip_empty_right_end:
+            raise ValueError("skipEmptyRightEnd must be true when supplied")
         if self.current_when is not None and self.kind != "balance":
             raise ValueError("currentWhen is only valid on a balance rule")
         if self.kind != "sameTarget" and not path_clear:
             raise ValueError("left/right paths require a sameTarget rule")
+        if self.kind == "groupSameTarget":
+            if self.group is None or self.targets is None:
+                raise ValueError("groupSameTarget requires group and targets")
+            terminal = self.targets[0].path[-1].target
+            all_targets = [*self.targets, *(self.reference.targets if self.reference else [])]
+            if any(item.path[-1].target != terminal for item in all_targets):
+                raise ValueError("group target selectors must share one terminal entity")
+            if self.related is not None and self.related.target != self.entity:
+                raise ValueError("related must reference the rule entity")
+            if (
+                self.reference is not None
+                and self.reference.group[-1].target != self.group[-1].target
+            ):
+                raise ValueError("reference group must share the group terminal entity")
         if self.kind == "sameTarget":
             if (
                 self.left is None
@@ -638,6 +727,20 @@ class TransactionRule(TransactionContract):
             or self.parent_state_field != ""
         ):
             raise ValueError("reservationBalance declares one closed reservation structure")
+        if "relation_cases" in self.model_fields_set and self.relation_cases is None:
+            raise ValueError("relationCases cannot be null")
+        if self.relation_cases is not None:
+            if set(self.relation_cases) != set(self.transitions):
+                raise ValueError("relationCases keys must equal transition states")
+            targets: dict[str, str] = {}
+            for case in self.relation_cases.values():
+                steps = [*case.required, *case.optional]
+                if len(steps) > 64 or len({step.field for step in steps}) != len(steps):
+                    raise ValueError("relation case fields must be distinct and bounded")
+                for step in steps:
+                    if step.field in targets and targets[step.field] != step.target:
+                        raise ValueError("relation targets must be consistent across cases")
+                    targets[step.field] = step.target
         seen: set[str] = set()
         for name in self.fields:
             if name == "" or name in seen:
@@ -690,6 +793,19 @@ class PluginTransactionsDeclaration(TransactionContract):
             walk(entity, [RelationStep(field=field, target=target)])
 
         for rule in self.rules:
+            if rule.group is not None:
+                walk(rule.entity, rule.group)
+                for selector in rule.targets or []:
+                    walk(rule.entity, selector.path)
+                if rule.related is not None:
+                    require_relation(rule.entity, rule.related.field, rule.related.target)
+                if rule.reference is not None:
+                    walk(rule.reference.entity, rule.reference.group)
+                    for reference_selector in rule.reference.targets:
+                        walk(rule.reference.entity, reference_selector.path)
+            for case in (rule.relation_cases or {}).values():
+                for step in [*case.required, *case.optional]:
+                    require_relation(rule.entity, step.field, step.target)
             if rule.allocation is not None:
                 allocation = rule.allocation
                 require_relation(rule.entity, allocation.owner, allocation.parent.entity)

@@ -15,10 +15,10 @@ import (
 // normal bucket the capacity is the delivery obligation quantity.
 type SettlementCapacity struct {
 	Entity     string       `json:"entity"`
-	Currency   AuthorityRef `json:"currency,omitempty"`
-	Unit       AuthorityRef `json:"unit,omitempty"`
-	Material   AuthorityRef `json:"material,omitempty"`
-	Direction  AuthorityRef `json:"direction,omitempty"`
+	Currency   AuthorityRef `json:"currency,omitzero"`
+	Unit       AuthorityRef `json:"unit,omitzero"`
+	Material   AuthorityRef `json:"material,omitzero"`
+	Direction  AuthorityRef `json:"direction,omitzero"`
 	Directions []string     `json:"directions,omitempty"`
 	Quantity   string       `json:"quantity,omitempty"`
 	Net        string       `json:"net,omitempty"`
@@ -38,12 +38,12 @@ type SettlementRequest struct {
 	State       AuthorityRef `json:"state"`
 	Direction   AuthorityRef `json:"direction"`
 	Directions  []string     `json:"directions"`
-	Purpose     AuthorityRef `json:"purpose,omitempty"`
+	Purpose     AuthorityRef `json:"purpose,omitzero"`
 	Purposes    []string     `json:"purposes,omitempty"`
-	Basis       AuthorityRef `json:"basis,omitempty"`
-	Currency    AuthorityRef `json:"currency,omitempty"`
-	Unit        AuthorityRef `json:"unit,omitempty"`
-	Material    AuthorityRef `json:"material,omitempty"`
+	Basis       AuthorityRef `json:"basis,omitzero"`
+	Currency    AuthorityRef `json:"currency,omitzero"`
+	Unit        AuthorityRef `json:"unit,omitzero"`
+	Material    AuthorityRef `json:"material,omitzero"`
 	DraftStates []string     `json:"draftStates,omitempty"`
 	OpenStates  []string     `json:"openStates,omitempty"`
 	Capacity    string       `json:"capacity"`
@@ -66,10 +66,10 @@ type SettlementActual struct {
 	State                AuthorityRef `json:"state"`
 	Direction            AuthorityRef `json:"direction"`
 	Directions           []string     `json:"directions"`
-	Currency             AuthorityRef `json:"currency,omitempty"`
-	Unit                 AuthorityRef `json:"unit,omitempty"`
-	Material             AuthorityRef `json:"material,omitempty"`
-	Purpose              AuthorityRef `json:"purpose,omitempty"`
+	Currency             AuthorityRef `json:"currency,omitzero"`
+	Unit                 AuthorityRef `json:"unit,omitzero"`
+	Material             AuthorityRef `json:"material,omitzero"`
+	Purpose              AuthorityRef `json:"purpose,omitzero"`
 	Purposes             []string     `json:"purposes,omitempty"`
 	DraftStates          []string     `json:"draftStates,omitempty"`
 	SettledStates        []string     `json:"settledStates"`
@@ -122,13 +122,13 @@ func (s *SettlementSpec) valid() bool {
 	if s == nil || s.Capacity.Entity == "" || s.Request.Entity == "" || s.Actual.Entity == "" ||
 		!s.Request.State.valid() || !s.Request.Direction.valid() || !s.Actual.State.valid() || !s.Actual.Direction.valid() ||
 		s.Request.Capacity == "" || s.Actual.Request == "" || s.Actual.Capacity == "" || s.hasQuantity() && s.Actual.Quantity == "" ||
-		len(s.Request.Directions) < 1 || len(s.Request.Directions) > MaxFrozenStates || len(s.Actual.Directions) < 1 || len(s.Actual.Directions) > MaxFrozenStates ||
+		len(s.Capacity.Directions) > MaxFrozenStates || len(s.Request.Directions) < 1 || len(s.Request.Directions) > MaxFrozenStates || len(s.Actual.Directions) < 1 || len(s.Actual.Directions) > MaxFrozenStates ||
 		len(s.Request.Purposes) > MaxFrozenStates || len(s.Actual.Purposes) > MaxFrozenStates ||
 		len(s.Request.DraftStates) > MaxFrozenStates || len(s.Request.OpenStates) > MaxFrozenStates ||
 		len(s.Actual.DraftStates) > MaxFrozenStates || len(s.Actual.SettledStates) < 1 || len(s.Actual.SettledStates) > MaxFrozenStates || len(s.Actual.ZeroQuantityPurposes) > MaxFrozenStates {
 		return false
 	}
-	if len(s.Request.Purposes) > 0 && !s.Request.Purpose.valid() || len(s.Actual.Purposes) > 0 && !s.Actual.Purpose.valid() {
+	if len(s.Request.Purposes) > 0 && !s.Request.Purpose.valid() || (len(s.Actual.Purposes) > 0 || len(s.Actual.ZeroQuantityPurposes) > 0) && !s.Actual.Purpose.valid() {
 		return false
 	}
 	if s.Request.Basis.Field != "" && !s.Request.Basis.valid() {
@@ -152,7 +152,7 @@ func (s *SettlementSpec) valid() bool {
 	}
 	if s.Plans != nil {
 		plans := s.Plans
-		if !s.hasQuantity() || plans.Entity == "" || plans.Quantity == "" || plans.Scope == "" || plans.LogicalItem.Field == "" ||
+		if !s.hasQuantity() || s.hasNet() || s.hasTax() || s.hasGross() || plans.Entity == "" || plans.Quantity == "" || plans.Scope == "" || plans.LogicalItem.Field == "" ||
 			plans.LogicalItem.Target == "" || plans.Share == "" || s.Request.PlanItem == "" || !plans.CurrentWhen.valid(plans.Entity) {
 			return false
 		}
@@ -300,6 +300,31 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		}
 		return nil
 	}
+	matchCapacityMaterial := func(row map[string]any, ref AuthorityRef, capacityID string) error {
+		original := after[capacity.Entity][capacityID]
+		if err := sameMaterial(row, ref, original, capacity.Material); err != nil {
+			return err
+		}
+		if capacity.Entity == actual.Entity && capacity.Material.Field != "" {
+			if _, present := original[actual.Request]; !present {
+				return failure("settlement_invalid")
+			}
+			sourceID, err := optionalRef(after, original, actual.Request, request.Entity)
+			if err != nil {
+				return failure("settlement_invalid")
+			}
+			if sourceID != "" {
+				source := after[request.Entity][sourceID]
+				if err := sameMaterial(original, capacity.Material, source, request.Material); err != nil {
+					return err
+				}
+				if err := sameMaterial(row, ref, source, request.Material); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	parseRequired := func(format exactdecimal.Format, value any, code string) (*big.Int, error) {
 		if value == nil {
 			return nil, failure(code)
@@ -313,6 +338,12 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			return nil
 		}
 		row := after[capacity.Entity][id]
+		if capacity.Entity == actual.Entity {
+			state, err := authorityValue(after, row, actual.State)
+			if err != nil || !contains(actual.SettledStates, state) {
+				return failure("settlement_invalid")
+			}
+		}
 		if capacity.Direction.Field != "" {
 			direction, err := authorityValue(after, row, capacity.Direction)
 			if err != nil || !contains(capacity.Directions, direction) {
@@ -367,6 +398,14 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				continue
 			}
 			entry := actualFacts{}
+			purpose := ""
+			if actual.Purpose.Field != "" {
+				value, isNull, err := authorityNullAware(images, row, actual.Purpose)
+				if err != nil || isNull && (len(actual.Purposes) > 0 || len(actual.ZeroQuantityPurposes) > 0) || len(actual.Purposes) > 0 && !contains(actual.Purposes, value) {
+					return nil, failure("settlement_invalid")
+				}
+				purpose = value
+			}
 			if spec.hasQuantity() {
 				parsed, err := parseRequired(quantityFormat, row[actual.Quantity], "settlement_invalid")
 				if err != nil {
@@ -375,14 +414,8 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				if direction == "blue" && parsed.Sign() < 0 || direction == "red" && parsed.Sign() > 0 {
 					return nil, failure("settlement_invalid")
 				}
-				if len(actual.Purposes) > 0 {
-					value, isNull, err := authorityNullAware(images, row, actual.Purpose)
-					if err != nil || isNull || !contains(actual.Purposes, value) {
-						return nil, failure("settlement_invalid")
-					}
-					if contains(actual.ZeroQuantityPurposes, value) && parsed.Sign() != 0 {
-						return nil, failure("settlement_invalid")
-					}
+				if contains(actual.ZeroQuantityPurposes, purpose) && parsed.Sign() != 0 {
+					return nil, failure("settlement_invalid")
 				}
 				entry.effect = new(big.Int).Abs(parsed)
 			}
@@ -478,7 +511,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			if err := sameScope(after[actual.Entity][id], actual.Unit, entry.capacityID, capacity.Unit); err != nil {
 				return err
 			}
-			if err := sameMaterial(after[actual.Entity][id], actual.Material, after[capacity.Entity][entry.capacityID], capacity.Material); err != nil {
+			if err := matchCapacityMaterial(after[actual.Entity][id], actual.Material, entry.capacityID); err != nil {
 				return err
 			}
 		}
@@ -573,6 +606,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	closedAmounts := map[string]*settlementBucket{}
 	fulfilledAmounts := map[string]*settlementBucket{}
 	closingNow := map[string]bool{}
+	closingScopes := map[string]*settlementBucket{}
 	if adj := spec.Adjustment; adj != nil {
 		for eventID, row := range after[adj.Entity] {
 			kind, _ := row[adj.Kind].(string)
@@ -589,6 +623,13 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			target, err := relationRef(after, row, adj.Target, request.Entity)
 			if err != nil {
 				return failure("settlement_invalid")
+			}
+			direction, err := authorityValue(after, after[request.Entity][target], request.Direction)
+			if err != nil {
+				return failure("settlement_invalid")
+			}
+			if !contains(request.Directions, direction) {
+				continue
 			}
 			allocationID := ""
 			if fulfillEvent {
@@ -609,9 +650,6 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 			}
 			if flag, present := row[adj.CloseRemaining]; present && flag == true && closeEvent {
-				if before == nil || before[adj.Entity][eventID] == nil {
-					closingNow[target] = true
-				}
 				for _, field := range []string{adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
 					if field == "" {
 						continue
@@ -619,6 +657,23 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 					if value, present := row[field]; !present || value == nil {
 						return failure("settlement_invalid")
 					}
+				}
+				if before == nil || before[adj.Entity][eventID] == nil {
+					if closingNow[target] {
+						return failure("settlement_invalid")
+					}
+					closingNow[target] = true
+					scope := newSettlementBucket()
+					for i, field := range []string{adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
+						if field != "" {
+							parsed, err := parseRequired(measureFormats[i], row[field], "settlement_invalid")
+							if err != nil {
+								return err
+							}
+							scope.measures[i] = parsed
+						}
+					}
+					closingScopes[target] = scope
 				}
 			}
 			bucket := closedAmounts[target]
@@ -812,7 +867,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			if err := sameScope(row, request.Unit, capacityID, capacity.Unit); err != nil {
 				return err
 			}
-			if err := sameMaterial(row, request.Material, after[capacity.Entity][capacityID], capacity.Material); err != nil {
+			if err := matchCapacityMaterial(row, request.Material, capacityID); err != nil {
 				return err
 			}
 		}
@@ -914,12 +969,28 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				if effect == nil {
 					effect = new(big.Int)
 				}
+				// Prior quantity-only close facts already consumed proportional
+				// reservation; compare this fixed capture with the remaining scope.
+				scope := closingScopes[id]
+				priorSpent := new(big.Int).Add(effect, closedAmounts[id].measures[0])
+				priorSpent.Sub(priorSpent, scope.measures[0])
+				var expectedMoney [4]*big.Int
 				for i := 1; i < 3; i++ {
 					if values[i] != nil {
-						expected := new(big.Int).Sub(values[i], proportionalHalfAway(values[i], effect, values[0]))
-						if closedAmounts[id].measures[i].Cmp(expected) != 0 {
+						expected := new(big.Int).Sub(values[i], proportionalHalfAway(values[i], priorSpent, values[0]))
+						expectedMoney[i] = expected
+						if scope.measures[i].Cmp(expected) != 0 {
 							return failure("settlement_invalid")
 						}
+					}
+				}
+				if values[3] != nil {
+					expected := new(big.Int).Sub(values[3], proportionalHalfAway(values[3], priorSpent, values[0]))
+					if expectedMoney[1] != nil && expectedMoney[2] != nil {
+						expected = new(big.Int).Add(expectedMoney[1], expectedMoney[2])
+					}
+					if scope.measures[3].Cmp(expected) != 0 {
+						return failure("settlement_invalid")
 					}
 				}
 			}
