@@ -1200,7 +1200,8 @@ public sealed class PluginSurfaceApiTests
     [TestMethod]
     [DataRow(192, 1, true)]
     [DataRow(193, 0, false)]
-    [DataRow(1, 65, false)]
+    [DataRow(1, 65, true)]
+    [DataRow(1, 66, false)]
     public async Task TransactionConfigurationBoundsRulesAndDecimalsIndependently(int rules, int decimals, bool permitted)
     {
         using var fixture = new Fixture { Decision = "rejected" };

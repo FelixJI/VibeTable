@@ -17,7 +17,7 @@ from backend.contracts.plugin_model import PluginModelDeclaration
 CONTRACT = "vibetable.plugin-transactions.v1"
 # Go transactionrules/exactdecimal budgets; plugins cannot raise them.
 MAX_RULES = 192
-MAX_DECIMALS = 64
+MAX_DECIMALS = 65
 MAX_UNIQUE_FIELDS = 8
 MAX_STATE_FIELDS = 64
 MAX_STATES = 32
@@ -62,6 +62,20 @@ class RelationStep(TransactionContract):
 
 
 RelationPath = Annotated[list[RelationStep], Field(min_length=1, max_length=4)]
+OptionalRelationPath = Annotated[list[RelationStep], Field(min_length=0, max_length=4)]
+
+
+class AuthorityRef(TransactionContract):
+    """One authoritative scalar; an empty path reads the row's own field."""
+
+    path: OptionalRelationPath = Field(default_factory=list)
+    field: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_hops(self) -> AuthorityRef:
+        if any(not step.field or not step.target for step in self.path):
+            raise ValueError("authority hops need field and target")
+        return self
 
 
 class PathMatch(TransactionContract):
@@ -184,6 +198,249 @@ class ReversalSpec(TransactionContract):
         return self
 
 
+class EvidenceRecord(TransactionContract):
+    """Correction-evidence rows: optional role-bound owner, type, non-blank
+    note and additional frozen fact fields in the evidence entity's own
+    namespace."""
+
+    entity: str = Field(min_length=1)
+    owner: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    note: str = Field(min_length=1)
+    fields: list[str] = Field(default_factory=list, max_length=MAX_STATE_FIELDS)
+
+
+class ChangeEvidenceSpec(TransactionContract):
+    """Closed typed shape of a changeEvidence rule; an empty ownerPath makes
+    the rule entity its own owner."""
+
+    fields: list[str] = Field(default_factory=list, max_length=MAX_STATE_FIELDS)
+    owner_path: OptionalRelationPath = Field(default_factory=list, alias="ownerPath")
+    latest_evidence: str = Field(alias="latestEvidence", min_length=1)
+    types: list[str] = Field(min_length=1, max_length=MAX_STATES)
+    evidence: EvidenceRecord
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> ChangeEvidenceSpec:
+        for names in (self.fields, self.evidence.fields, self.types):
+            if any(not name for name in names) or len(set(names)) != len(names):
+                raise ValueError("evidence fields and types must be non-empty and unique")
+        return self
+
+
+class AllocationDirection(TransactionContract):
+    """One-shot signed/magnitude carrier mapping for allocation owners."""
+
+    path: RelationPath
+    convention_field: str = Field(alias="conventionField", min_length=1)
+    direction_field: str = Field(alias="directionField", min_length=1)
+    red_directions: list[str] = Field(alias="redDirections", min_length=1, max_length=MAX_STATES)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> AllocationDirection:
+        if len(set(self.red_directions)) != len(self.red_directions) or any(
+            not v for v in self.red_directions
+        ):
+            raise ValueError("red directions must be non-empty and unique")
+        return self
+
+
+class AllocationParent(TransactionContract):
+    entity: str = Field(min_length=1)
+    quantity: str = Field(min_length=1)
+    net: str = Field(min_length=1)
+    tax: str = Field(min_length=1)
+    gross: str = Field(min_length=1)
+    direction: AllocationDirection | None = None
+
+
+class AllocationSpec(TransactionContract):
+    """Closed typed shape of an allocationBalance rule."""
+
+    owner: str = Field(min_length=1)
+    parent: AllocationParent
+    quantity: str = Field(min_length=1)
+    net: str = Field(min_length=1)
+    tax: str = Field(min_length=1)
+    gross: str = Field(min_length=1)
+    state: AuthorityRef
+    draft_states: list[str] = Field(
+        default_factory=list, alias="draftStates", max_length=MAX_STATES
+    )
+    purpose: AuthorityRef
+    zero_quantity_purposes: list[str] = Field(
+        default_factory=list, alias="zeroQuantityPurposes", max_length=MAX_STATES
+    )
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> AllocationSpec:
+        for states in (self.draft_states, self.zero_quantity_purposes):
+            if any(not state for state in states) or len(set(states)) != len(states):
+                raise ValueError("allocation states must be non-empty and unique")
+        return self
+
+
+class SettlementCapacity(TransactionContract):
+    material: AuthorityRef | None = None
+    currency: AuthorityRef | None = None
+    unit: AuthorityRef | None = None
+    entity: str = Field(min_length=1)
+    direction: AuthorityRef | None = None
+    directions: list[str] = Field(default_factory=list, max_length=MAX_STATES)
+    quantity: str = ""
+    net: str = ""
+    tax: str = ""
+    gross: str = ""
+
+
+class SettlementRequest(TransactionContract):
+    material: AuthorityRef | None = None
+    unit: AuthorityRef | None = None
+    currency: AuthorityRef | None = None
+    entity: str = Field(min_length=1)
+    state: AuthorityRef
+    direction: AuthorityRef
+    directions: list[str] = Field(min_length=1, max_length=MAX_STATES)
+    purpose: AuthorityRef | None = None
+    purposes: list[str] = Field(default_factory=list, max_length=MAX_STATES)
+    basis: AuthorityRef | None = None
+    draft_states: list[str] = Field(
+        default_factory=list, alias="draftStates", max_length=MAX_STATES
+    )
+    open_states: list[str] = Field(default_factory=list, alias="openStates", max_length=MAX_STATES)
+    capacity: str = Field(min_length=1)
+    plan_item: str = Field(default="", alias="planItem")
+    quantity: str = ""
+    net: str = ""
+    tax: str = ""
+    gross: str = ""
+
+
+class SettlementActual(TransactionContract):
+    material: AuthorityRef | None = None
+    unit: AuthorityRef | None = None
+    currency: AuthorityRef | None = None
+    entity: str = Field(min_length=1)
+    state: AuthorityRef
+    direction: AuthorityRef
+    directions: list[str] = Field(min_length=1, max_length=MAX_STATES)
+    purpose: AuthorityRef | None = None
+    purposes: list[str] = Field(default_factory=list, max_length=MAX_STATES)
+    draft_states: list[str] = Field(
+        default_factory=list, alias="draftStates", max_length=MAX_STATES
+    )
+    settled_states: list[str] = Field(alias="settledStates", min_length=1, max_length=MAX_STATES)
+    request: str = Field(min_length=1)
+    capacity: str = Field(min_length=1)
+    plan_item: str = Field(default="", alias="planItem")
+    quantity: str = ""
+    net: str = ""
+    tax: str = ""
+    gross: str = ""
+    zero_quantity_purposes: list[str] = Field(
+        default_factory=list, alias="zeroQuantityPurposes", max_length=MAX_STATES
+    )
+
+
+class SettlementAdjustment(TransactionContract):
+    entity: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    close_kinds: list[str] = Field(default_factory=list, alias="closeKinds", max_length=MAX_STATES)
+    fulfill_kinds: list[str] = Field(
+        default_factory=list, alias="fulfillKinds", max_length=MAX_STATES
+    )
+    target: str = Field(min_length=1)
+    allocation: str = ""
+    close_remaining: str = Field(alias="closeRemaining", min_length=1)
+    close_quantity: str = Field(default="", alias="closeQuantity")
+    close_net: str = Field(default="", alias="closeNet")
+    close_tax: str = Field(default="", alias="closeTax")
+    close_gross: str = Field(default="", alias="closeGross")
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> SettlementAdjustment:
+        if not self.close_kinds and not self.fulfill_kinds:
+            raise ValueError("adjustments need at least one selected kind")
+        if self.fulfill_kinds and not self.allocation:
+            raise ValueError("fulfillment events require the allocation relation")
+        if set(self.close_kinds) & set(self.fulfill_kinds):
+            raise ValueError("close and fulfillment kinds must be disjoint")
+        for names in (self.close_kinds, self.fulfill_kinds):
+            if any(not name or len(name) > 64 for name in names) or len(set(names)) != len(names):
+                raise ValueError("adjustment kinds must be non-empty and unique")
+        return self
+
+
+class SettlementSpec(TransactionContract):
+    """Closed typed shape of a settlementBalance rule."""
+
+    capacity: SettlementCapacity
+    request: SettlementRequest
+    actual: SettlementActual
+    adjustment: SettlementAdjustment | None = None
+    plans: ReservationPlans | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> SettlementSpec:
+        for names in (
+            self.capacity.directions,
+            self.request.directions,
+            self.request.purposes,
+            self.request.draft_states,
+            self.request.open_states,
+            self.actual.directions,
+            self.actual.purposes,
+            self.actual.draft_states,
+            self.actual.settled_states,
+            self.actual.zero_quantity_purposes,
+        ):
+            if any(not name or len(name) > 64 for name in names) or len(set(names)) != len(names):
+                raise ValueError("settlement roles and states must be non-empty and unique")
+        if self.request.purposes and self.request.purpose is None:
+            raise ValueError("request purposes require an authoritative purpose")
+        if self.actual.purposes and self.actual.purpose is None:
+            raise ValueError("actual purposes require an authoritative purpose")
+        declared = [
+            (self.capacity.quantity, self.request.quantity, self.actual.quantity),
+            (self.capacity.net, self.request.net, self.actual.net),
+            (self.capacity.tax, self.request.tax, self.actual.tax),
+            (self.capacity.gross, self.request.gross, self.actual.gross),
+        ]
+        if not any(bool(triple[0]) for triple in declared):
+            raise ValueError("settlement needs at least one measure")
+        for triple in declared:
+            if bool(triple[0]) != bool(triple[1]) or bool(triple[0]) != bool(triple[2]):
+                raise ValueError("settlement measures must be declared together")
+        if self.adjustment is not None:
+            if bool(self.capacity.quantity) != bool(self.adjustment.close_quantity):
+                raise ValueError("close quantity must match the declared measure")
+            for declared_field, close_field in (
+                (self.capacity.net, self.adjustment.close_net),
+                (self.capacity.tax, self.adjustment.close_tax),
+                (self.capacity.gross, self.adjustment.close_gross),
+            ):
+                if close_field and not declared_field:
+                    raise ValueError("close amounts require the corresponding measure")
+        if set(self.request.draft_states) & set(self.request.open_states):
+            raise ValueError("request draft and open states must be disjoint")
+        if set(self.actual.draft_states) & set(self.actual.settled_states):
+            raise ValueError("actual draft and settled states must be disjoint")
+        if self.plans is not None and not self.request.plan_item:
+            raise ValueError("plans require a request planItem relation")
+        if self.plans is not None and not self.capacity.quantity:
+            raise ValueError("plans require the quantity measure")
+        for refs in (
+            (self.capacity.currency, self.request.currency, self.actual.currency),
+            (self.capacity.unit, self.request.unit, self.actual.unit),
+            (self.capacity.material, self.request.material, self.actual.material),
+        ):
+            if any((ref is None) != (refs[0] is None) for ref in refs):
+                raise ValueError("capacity, request and actual scope must be declared together")
+        if self.capacity.directions and self.capacity.direction is None:
+            raise ValueError("capacity directions require a direction ref")
+        return self
+
+
 class TransactionRule(TransactionContract):
     """Closed rule union; fields of another kind never validate."""
 
@@ -199,6 +456,9 @@ class TransactionRule(TransactionContract):
         "parentFreeze",
         "reservationBalance",
         "reversalBalance",
+        "allocationBalance",
+        "settlementBalance",
+        "changeEvidence",
     ]
     entity: str = Field(min_length=1)
     fields: list[str] = Field(default_factory=list)
@@ -219,6 +479,9 @@ class TransactionRule(TransactionContract):
     parent_state_field: str = Field(default="", alias="parentStateField")
     reservation: ReservationSpec | None = None
     reversal: ReversalSpec | None = None
+    allocation: AllocationSpec | None = None
+    settlement: SettlementSpec | None = None
+    evidence: ChangeEvidenceSpec | None = None
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> TransactionRule:
@@ -233,11 +496,47 @@ class TransactionRule(TransactionContract):
             "parentFreeze": {"parent_path", "parent_state_field", "frozen_states", "fields"},
             "reservationBalance": {"reservation"},
             "reversalBalance": {"reversal"},
+            "allocationBalance": {"allocation"},
+            "settlementBalance": {"settlement"},
+            "changeEvidence": {"evidence"},
         }
         if self.model_fields_set - {"id", "kind", "entity"} - allowed[self.kind]:
             raise ValueError("rule fields must belong to the declared kind, even when empty")
         if self.kind == "reversalBalance" and self.reversal is None:
             raise ValueError("reversalBalance requires one closed reversal structure")
+        if self.kind == "allocationBalance" and self.allocation is None:
+            raise ValueError("allocationBalance requires one closed allocation structure")
+        if self.kind == "settlementBalance" and self.settlement is None:
+            raise ValueError("settlementBalance requires one closed settlement structure")
+        if self.kind == "changeEvidence" and self.evidence is None:
+            raise ValueError("changeEvidence requires one closed evidence structure")
+        for kind_key, spec in (
+            ("allocationBalance", self.allocation),
+            ("settlementBalance", self.settlement),
+            ("changeEvidence", self.evidence),
+        ):
+            if spec is None or self.kind != kind_key:
+                continue
+            if (
+                self.field != ""
+                or self.target != ""
+                or self.relation != ""
+                or self.amount != ""
+                or self.limit != ""
+                or self.fields
+                or self.transitions
+                or self.frozen_states
+                or self.left is not None
+                or self.right is not None
+                or self.when_present
+                or self.skip_empty_left_end
+                or self.current_when is not None
+                or self.parent_path is not None
+                or self.parent_state_field != ""
+                or self.reservation is not None
+                or self.reversal is not None
+            ):
+                raise ValueError("closed spec rules allow only their own structure")
         scalar_clear = (
             self.field == ""
             and self.target == ""
@@ -378,7 +677,117 @@ class PluginTransactionsDeclaration(TransactionContract):
                     raise ValueError("paths require declared single relations to each target")
                 entity = step.target
 
+        def fields(entity: str, names: tuple[str, ...] | list[str]) -> None:
+            if any(name and (entity, name) not in owned for name in names):
+                raise ValueError("rule fields must belong to the declared entity")
+
+        def authority(entity: str, ref: AuthorityRef | None) -> None:
+            if ref is not None:
+                walk(entity, ref.path)
+                fields(ref.path[-1].target if ref.path else entity, [ref.field])
+
+        def require_relation(entity: str, field: str, target: str) -> None:
+            walk(entity, [RelationStep(field=field, target=target)])
+
         for rule in self.rules:
+            if rule.allocation is not None:
+                allocation = rule.allocation
+                require_relation(rule.entity, allocation.owner, allocation.parent.entity)
+                for entity, allocation_entry in (
+                    (rule.entity, allocation),
+                    (allocation.parent.entity, allocation.parent),
+                ):
+                    fields(
+                        entity,
+                        [
+                            allocation_entry.quantity,
+                            allocation_entry.net,
+                            allocation_entry.tax,
+                            allocation_entry.gross,
+                        ],
+                    )
+                authority(rule.entity, allocation.state)
+                authority(rule.entity, allocation.purpose)
+                if allocation.parent.direction is not None:
+                    direction = allocation.parent.direction
+                    walk(allocation.parent.entity, direction.path)
+                    fields(
+                        direction.path[-1].target,
+                        [direction.convention_field, direction.direction_field],
+                    )
+            if rule.settlement is not None:
+                settlement = rule.settlement
+                capacity, request, actual = (
+                    settlement.capacity,
+                    settlement.request,
+                    settlement.actual,
+                )
+                for measure_entry in (capacity, request, actual):
+                    fields(
+                        measure_entry.entity,
+                        [
+                            measure_entry.quantity,
+                            measure_entry.net,
+                            measure_entry.tax,
+                            measure_entry.gross,
+                        ],
+                    )
+                authority(capacity.entity, capacity.direction)
+                authority(capacity.entity, capacity.currency)
+                authority(capacity.entity, capacity.unit)
+                authority(capacity.entity, capacity.material)
+                for role_entry in (request, actual):
+                    for ref in (
+                        role_entry.state,
+                        role_entry.direction,
+                        role_entry.currency,
+                        role_entry.unit,
+                        role_entry.material,
+                        role_entry.purpose,
+                    ):
+                        authority(role_entry.entity, ref)
+                    require_relation(role_entry.entity, role_entry.capacity, capacity.entity)
+                authority(request.entity, request.basis)
+                require_relation(actual.entity, actual.request, request.entity)
+                if settlement.adjustment is not None:
+                    adjustment = settlement.adjustment
+                    fields(
+                        adjustment.entity,
+                        [
+                            adjustment.kind,
+                            adjustment.close_remaining,
+                            adjustment.close_quantity,
+                            adjustment.close_net,
+                            adjustment.close_tax,
+                            adjustment.close_gross,
+                        ],
+                    )
+                    require_relation(adjustment.entity, adjustment.target, request.entity)
+                    if adjustment.allocation:
+                        require_relation(adjustment.entity, adjustment.allocation, actual.entity)
+                if settlement.plans is not None:
+                    plans = settlement.plans
+                    require_relation(request.entity, request.plan_item, plans.entity)
+                    if actual.plan_item:
+                        require_relation(actual.entity, actual.plan_item, plans.entity)
+                    fields(plans.entity, [plans.quantity, plans.share])
+                    require_relation(plans.entity, plans.scope, capacity.entity)
+                    require_relation(
+                        plans.entity, plans.logical_item.field, plans.logical_item.target
+                    )
+                    for settlement_path in (plans.current_when.left, plans.current_when.right):
+                        walk(plans.entity, list(settlement_path))
+            if rule.evidence is not None:
+                evidence = rule.evidence
+                fields(rule.entity, evidence.fields)
+                walk(rule.entity, evidence.owner_path)
+                owner = evidence.owner_path[-1].target if evidence.owner_path else rule.entity
+                require_relation(owner, evidence.latest_evidence, evidence.evidence.entity)
+                require_relation(evidence.evidence.entity, evidence.evidence.owner, owner)
+                fields(
+                    evidence.evidence.entity,
+                    [evidence.evidence.type, evidence.evidence.note, *evidence.evidence.fields],
+                )
             if rule.reversal is not None:
                 spec = rule.reversal
                 for field in (spec.quantity, spec.purpose, *spec.same_fields):
@@ -530,16 +939,160 @@ class PluginTransactionsDeclaration(TransactionContract):
                     raise ValueError("conservation/balance amounts need declared decimal formats")
                 if amount.nullable or limit.nullable:
                     raise ValueError("conservation/balance amounts cannot be nullable")
+            if rule.kind == "allocationBalance" and rule.allocation is not None:
+                allocation_spec = rule.allocation
+                for child_key, parent_key in (
+                    (
+                        (rule.entity, allocation_spec.quantity),
+                        (allocation_spec.parent.entity, allocation_spec.parent.quantity),
+                    ),
+                    (
+                        (rule.entity, allocation_spec.net),
+                        (allocation_spec.parent.entity, allocation_spec.parent.net),
+                    ),
+                    (
+                        (rule.entity, allocation_spec.tax),
+                        (allocation_spec.parent.entity, allocation_spec.parent.tax),
+                    ),
+                    (
+                        (rule.entity, allocation_spec.gross),
+                        (allocation_spec.parent.entity, allocation_spec.parent.gross),
+                    ),
+                ):
+                    for key in (child_key, parent_key):
+                        if key not in decimals:
+                            raise ValueError("allocation measures need declared decimal formats")
+                first = decimals[(rule.entity, allocation_spec.quantity)]
+                if any(
+                    decimals[key].scale != first.scale
+                    or decimals[key].digits != first.digits
+                    or decimals[key].storage != first.storage
+                    for key in [
+                        (rule.entity, allocation_spec.quantity),
+                        (allocation_spec.parent.entity, allocation_spec.parent.quantity),
+                    ]
+                ):
+                    raise ValueError("allocation quantities must share one exact format")
+                money_first = decimals[(rule.entity, allocation_spec.net)]
+                for key in [
+                    (rule.entity, allocation_spec.net),
+                    (rule.entity, allocation_spec.tax),
+                    (rule.entity, allocation_spec.gross),
+                    (allocation_spec.parent.entity, allocation_spec.parent.net),
+                    (allocation_spec.parent.entity, allocation_spec.parent.tax),
+                    (allocation_spec.parent.entity, allocation_spec.parent.gross),
+                ]:
+                    if (
+                        decimals[key].scale != money_first.scale
+                        or decimals[key].digits != money_first.digits
+                        or decimals[key].storage != money_first.storage
+                    ):
+                        raise ValueError("allocation money measures must share one exact format")
+            if rule.kind == "settlementBalance" and rule.settlement is not None:
+                settlement_spec = rule.settlement
+                keys = []
+                if settlement_spec.capacity.quantity:
+                    keys = [
+                        (settlement_spec.request.entity, settlement_spec.request.quantity),
+                        (settlement_spec.actual.entity, settlement_spec.actual.quantity),
+                        (settlement_spec.capacity.entity, settlement_spec.capacity.quantity),
+                    ]
+                    if settlement_spec.plans is not None:
+                        keys.append((settlement_spec.plans.entity, settlement_spec.plans.quantity))
+                    if (
+                        settlement_spec.adjustment is not None
+                        and settlement_spec.adjustment.close_quantity
+                    ):
+                        keys.append(
+                            (
+                                settlement_spec.adjustment.entity,
+                                settlement_spec.adjustment.close_quantity,
+                            )
+                        )
+                for key in keys:
+                    if key not in decimals:
+                        raise ValueError("settlement quantities need declared decimal formats")
+                if keys:
+                    first = decimals[keys[0]]
+                    if any(
+                        decimals[key].scale != first.scale
+                        or decimals[key].storage != first.storage
+                        or decimals[key].digits != first.digits
+                        for key in keys
+                    ):
+                        raise ValueError("settlement quantities must share one exact format")
+                    if decimals[keys[0]].sign not in ("positive", "nonnegative"):
+                        raise ValueError("request quantities need a non-negative sign policy")
+                money_keys = [
+                    (entity, field)
+                    for entity, field in (
+                        (settlement_spec.capacity.entity, settlement_spec.capacity.net),
+                        (settlement_spec.capacity.entity, settlement_spec.capacity.tax),
+                        (settlement_spec.capacity.entity, settlement_spec.capacity.gross),
+                        (settlement_spec.request.entity, settlement_spec.request.net),
+                        (settlement_spec.request.entity, settlement_spec.request.tax),
+                        (settlement_spec.request.entity, settlement_spec.request.gross),
+                        (settlement_spec.actual.entity, settlement_spec.actual.net),
+                        (settlement_spec.actual.entity, settlement_spec.actual.tax),
+                        (settlement_spec.actual.entity, settlement_spec.actual.gross),
+                    )
+                    if field
+                ]
+                if settlement_spec.adjustment is not None:
+                    close_keys = [
+                        (settlement_spec.adjustment.entity, field)
+                        for field in (
+                            settlement_spec.adjustment.close_quantity,
+                            settlement_spec.adjustment.close_net,
+                            settlement_spec.adjustment.close_tax,
+                            settlement_spec.adjustment.close_gross,
+                        )
+                        if field
+                    ]
+                    for key in close_keys:
+                        if key not in decimals or decimals[key].sign not in (
+                            "positive",
+                            "nonnegative",
+                        ):
+                            raise ValueError("close measures need nonnegative decimal mappings")
+                    money_keys.extend(
+                        (settlement_spec.adjustment.entity, field)
+                        for field in (
+                            settlement_spec.adjustment.close_net,
+                            settlement_spec.adjustment.close_tax,
+                            settlement_spec.adjustment.close_gross,
+                        )
+                        if field
+                    )
+                if settlement_spec.plans is not None:
+                    planned = decimals.get(
+                        (settlement_spec.plans.entity, settlement_spec.plans.quantity)
+                    )
+                    if planned is None or planned.sign not in ("positive", "nonnegative"):
+                        raise ValueError("plan quantities need nonnegative decimal mappings")
+                if money_keys:
+                    settlement_money = decimals.get(money_keys[0])
+                    if settlement_money is None:
+                        raise ValueError("settlement money measures need declared decimal formats")
+                    for key in money_keys:
+                        if key not in decimals or (
+                            decimals[key].scale != settlement_money.scale
+                            or decimals[key].storage != settlement_money.storage
+                            or decimals[key].digits != settlement_money.digits
+                        ):
+                            raise ValueError(
+                                "settlement money measures must share one exact format"
+                            )
             if rule.kind == "reservationBalance" and rule.reservation is not None:
                 res = rule.reservation
-                keys = [
+                res_keys = [
                     (rule.entity, res.quantity),
                     (res.obligation.entity, res.obligation.quantity),
                 ]
                 if res.plans is not None:
-                    keys.append((res.plans.entity, res.plans.quantity))
+                    res_keys.append((res.plans.entity, res.plans.quantity))
                 reference: tuple[int, int, str] | None = None
-                for key in keys:
+                for key in res_keys:
                     quantity_decimal = decimals.get(key)
                     # positive is a strictly stronger non-negative policy:
                     # formal plugins keep their existing declarations.
@@ -567,8 +1120,11 @@ __all__ = [
     "CONTRACT",
     "MAX_DECLARATION_BYTES",
     "MAX_RULES",
+    "AllocationSpec",
+    "ChangeEvidenceSpec",
     "DecimalDeclaration",
     "PluginTransactionsDeclaration",
     "ReversalSpec",
+    "SettlementSpec",
     "TransactionRule",
 ]

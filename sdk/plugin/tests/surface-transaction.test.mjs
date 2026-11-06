@@ -34,6 +34,25 @@ test("reversal declarations preserve owner snapshots and native rejection codes"
   f.client.dispose();
 });
 
+test("invoice guard declarations keep the natural closed shapes", async () => {
+  const f = fixture();
+  const allocation = JSON.parse(readFileSync(new URL("../../../contracts/plugin-allocation-rule.json", import.meta.url), "utf8"));
+  const settlement = JSON.parse(readFileSync(new URL("../../../contracts/plugin-settlement-rule.json", import.meta.url), "utf8"));
+  const evidence = JSON.parse(readFileSync(new URL("../../../contracts/plugin-evidence-rule.json", import.meta.url), "utf8"));
+  const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "synthetic", version: 1,
+    decimals: [], rules: [allocation, settlement, evidence] };
+  const configuring = f.client.transaction.configure({ declaration });
+  assert.deepEqual(f.calls.at(-1).params, { declaration });
+  f.reply(null);
+  await configuring;
+  for (const code of ["transaction.settlement_exceeded", "transaction.allocation_exceeded", "transaction.evidence_required"]) {
+    const submit = f.client.transaction.submit({ requestId: "invoice-guards" });
+    f.reply(undefined, { code });
+    await assert.rejects(submit, error => error instanceof sdk.PluginCapabilityError && error.code === code);
+  }
+  f.client.dispose();
+});
+
 test("plugin callers receive the native rejection code or uncertainty without resubmission", async () => {
   const f = fixture();
   const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "orders", version: 1,

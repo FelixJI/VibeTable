@@ -148,7 +148,7 @@ manifest 的 `permissions.transactions` 声明闭集业务规则，引用已经�
 logical 实体及字段。`transaction.configure({declaration}, signal?)` 必须传入与已安装 manifest
 完全相同的声明；Host 原生窗口展示规则、绑定及保护后果，经确认并验证现有数据后才持久登记。
 每个声明最多 192 条规则，可用 `unique`、`reference`、`conservation`、`balance`、`state`、`sameTarget`、`atMostOne`、`parentFreeze`、`reservationBalance` 和 `reversalBalance`。
-`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)；`parentFreeze`、`reservationBalance` 与 `reversalBalance` 的固定结构、权威阶段/用途路径与数量不变量同样见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。`reversalBalance` 保护无来源退回的原行归属与确认累计量，失败通过 `transaction.reversal_invalid`、`transaction.reversal_mismatch` 或 `transaction.reversal_exceeded` 明确返回 not-committed；数量格式错误继续使用既有 decimal 错误。
+`sameTarget` 和 `balance.currentWhen` 的有界关系路径见[插件逻辑模型](plugin-model.md)；`parentFreeze`、`reservationBalance`、`reversalBalance`、`allocationBalance`、`settlementBalance` 与 `changeEvidence` 的固定结构、权威阶段/用途路径与数量不变量同样见[插件逻辑模型](plugin-model.md)。登记后普通编辑、导入、撤销和关系联动也受保护，插件停用或卸载不解除保护。`reversalBalance` 保护无来源退回的原行归属与确认累计量，失败通过 `transaction.reversal_invalid`、`transaction.reversal_mismatch` 或 `transaction.reversal_exceeded` 明确返回 not-committed；数量格式错误继续使用既有 decimal 错误。
 
 `decimals` 指定 `{entity,field,storage,scale,digits}`，可选 `sign` 为 `nonnegative` 或 `positive`，可选 `nullable:true` 表示仅显式 null 合法（不得用于求和/预算字段）。省略时接受有符号数。`decimalText` 绑定 Text，值使用规范十进制
 字符串；`integerUnits` 绑定整数 Number，值为安全整数最小单位。scale 为 0–18，digits 为
@@ -288,3 +288,10 @@ if (task) {
 
 取消信号主要用于正在执行的查询、提交、订阅和 IO 等待；不支持 signal 的方法不要伪造参数。
 完整接口类型以 SDK 为准，Host 拒绝未知字段和未授权能力。
+
+
+开票事务可在同一 `transaction.preview` 计划中创建原始票面、内部 signed 归属和关联金额兑现事件，
+由 `transaction.submit` 一次确认并原子提交；不会先保存超预算的中间归属。实际票面登记可以独立于内部归属，
+缺来源/原蓝或异常票面不会被自动截断或改写。更正须同计划创建新证据、绑定 owner.latestEvidence 并修改事实，
+回执的 changeSetId 可关联既有原生审计前后值；SDK 不提供另一套可写历史。
+`plugin_commit_unknown` 或丢失确认仍只查询原 requestId 的 `transaction.status`，不自动重放登记、兑现或更正。

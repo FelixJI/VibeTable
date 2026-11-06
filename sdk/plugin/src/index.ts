@@ -21,7 +21,7 @@ export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from ".
 export type { SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
 export { SURFACE_DATASET_CONTRACT } from "./surface-dataset.js";
 export type { DatasetSource, DatasetVersion, DatasetInfo, DatasetPage, DatasetSum, DatasetSummary, SurfaceDataset, SurfaceDatasets } from "./surface-dataset.js";
-export type { SurfaceTransaction, TransactionDeclaration, TransactionDecimal, TransactionRule, ReversalSpec, TransactionReference, TransactionValue,
+export type { SurfaceTransaction, TransactionDeclaration, TransactionDecimal, TransactionRule, ReversalSpec, AuthorityRef, AllocationSpec, SettlementSpec, ChangeEvidenceSpec, TransactionReference, TransactionValue,
   TransactionOperation, TransactionPlan, TransactionEffect, TransactionPreview, TransactionApplied, TransactionUnknown, TransactionStatus } from "./surface-transaction.js";
 
 export { SURFACE_OUTPUT_CONTRACT, SURFACE_OUTPUT_MAX_BYTES } from "./surface-output.js";

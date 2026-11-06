@@ -52,7 +52,16 @@
       "transaction.reservation_plan_required",
       "transaction.reversal_invalid",
       "transaction.reversal_mismatch",
-      "transaction.reversal_exceeded"
+      "transaction.reversal_exceeded",
+      "transaction.allocation_invalid",
+      "transaction.allocation_mismatch",
+      "transaction.allocation_exceeded",
+      "transaction.settlement_invalid",
+      "transaction.settlement_exceeded",
+      "transaction.evidence_invalid",
+      "transaction.evidence_frozen",
+      "transaction.evidence_required",
+      "transaction.evidence_reused"
     ]
   },
   {

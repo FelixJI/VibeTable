@@ -396,7 +396,7 @@ def test_package_capacity_and_closed_relation_paths() -> None:
         invalid = copy.deepcopy(manifest)
         dest = (invalid["permissions"]["model"] if key == "entities" else declaration(invalid))[key]
         if key == "decimals":
-            dest.extend({**collection[0], "field": f"n{i}"} for i in range(65 - len(dest)))
+            dest.extend({**collection[0], "field": f"n{i}"} for i in range(66 - len(dest)))
         else:
             dest.append({**collection[-1], ("key" if key == "entities" else "id"): "extra"})
             if key == "entities":
@@ -948,6 +948,7 @@ def test_new_rule_null_shapes_match_go() -> None:
                         "digits": 38,
                         "sign": "nonnegative",
                     },
+                    *invoice_guard_decimals(),
                 ],
             }
         )
@@ -959,6 +960,178 @@ def test_new_rule_null_shapes_match_go() -> None:
             validate(case["base"], case["path"])
     for case in corpus["valid"]:
         validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+
+
+def invoice_guard_decimals() -> list[dict]:
+    """Mirrors the Go null-shape harness decimals for the new rule corpus."""
+
+    def decimal(entity: str, field: str, scale: int, sign: str | None = None) -> dict:
+        entry = {
+            "entity": entity,
+            "field": field,
+            "storage": "decimalText",
+            "scale": scale,
+            "digits": 38,
+            "nullable": True,
+        }
+        if sign:
+            entry["sign"] = sign
+        return entry
+
+    decimals = []
+    for entity in ("allocations", "actual_lines", "request_sources"):
+        decimals.append(
+            decimal(entity, "quantity", 0, "nonnegative" if entity == "request_sources" else None)
+        )
+        decimals += [decimal(entity, field, 2) for field in ("net", "tax", "gross")]
+    for field, scale in (
+        ("quantity", 0),
+        ("net", 2),
+        ("tax", 2),
+        ("gross", 2),
+    ):
+        decimals.append(decimal("adjustments", field, scale, "nonnegative"))
+    return decimals
+
+
+def test_invoice_guard_corpus_rules_form_closed_manifest_declarations() -> None:
+    """The natural seven-entity corpus registers through the manifest seam."""
+    for name in (
+        "plugin-allocation-rule.json",
+        "plugin-settlement-rule.json",
+        "plugin-evidence-rule.json",
+    ):
+        rule = json.loads(
+            (Path(__file__).parents[2] / "contracts" / name).read_text(encoding="utf-8")
+        )
+        parsed = PluginTransactionsDeclaration.model_validate(
+            {
+                "contract": "vibetable.plugin-transactions.v1",
+                "modelId": "m",
+                "version": 1,
+                "rules": [rule],
+                "decimals": invoice_guard_decimals(),
+            }
+        )
+        assert parsed.rules[0].kind in (
+            "allocationBalance",
+            "settlementBalance",
+            "changeEvidence",
+        )
+    # The 65th decimal registers and the 66th is rejected with data intact.
+    manifest = transactions_manifest()
+    decimals = declaration(manifest)["decimals"]
+    decimals.extend({**decimals[0], "field": f"n{index}"} for index in range(65 - len(decimals)))
+    assert len(decimals) == 65
+    assert PluginManifest.model_validate(manifest)
+    decimals.append({**decimals[0], "field": "over"})
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
+
+
+def invoice_guard_manifest() -> dict:
+    manifest = transactions_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {}
+    for entity, names in {
+        "requests": ["status", "direction", "purpose", "basis", "currency"],
+        "request_lines": ["unit", "material"],
+        "request_sources": ["quantity", "net", "tax", "gross"],
+        "invoices": ["status", "direction", "amount_convention", "currency"],
+        "actual_lines": ["purpose", "unit", "material", "quantity", "net", "tax", "gross"],
+        "allocations": ["quantity", "net", "tax", "gross"],
+        "adjustments": [
+            "kind",
+            "note",
+            "date",
+            "close_remaining",
+            "quantity",
+            "net",
+            "tax",
+            "gross",
+        ],
+    }.items():
+        entities[entity] = {
+            "key": entity,
+            "label": entity,
+            "operations": ["read", "query", "create", "update", "delete"],
+            "fields": [{"key": name, "label": name, "type": "text"} for name in names],
+        }
+    for source, field, target, reverse in (
+        ("request_lines", "request", "requests", "lines"),
+        ("request_sources", "line", "request_lines", "sources"),
+        ("actual_lines", "invoice", "invoices", "lines"),
+        ("allocations", "line", "actual_lines", "allocations"),
+        ("request_sources", "original", "allocations", "requests"),
+        ("allocations", "original", "allocations", "reversals"),
+        ("allocations", "application_source", "request_sources", "actuals"),
+        ("adjustments", "source", "request_sources", "adjustments"),
+        ("adjustments", "allocation", "allocations", "adjustments"),
+        ("adjustments", "invoice", "invoices", "evidence"),
+        ("invoices", "latest_evidence", "adjustments", "latest_for"),
+    ):
+        for entity, key, other, back, cardinality in (
+            (source, field, target, reverse, "one"),
+            (target, reverse, source, field, "many"),
+        ):
+            entities[entity]["fields"].append(
+                {
+                    "key": key,
+                    "label": key,
+                    "type": "relation",
+                    "relation": {"entity": other, "field": back, "cardinality": cardinality},
+                }
+            )
+    model["entities"] = list(entities.values())
+    rules = [
+        json.loads(
+            (Path(__file__).parents[2] / "contracts" / f"plugin-{name}-rule.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for name in ("allocation", "settlement", "evidence")
+    ]
+    scope = rules[1]["settlement"]
+    for entry in ("capacity", "request", "actual"):
+        path = scope[entry]["direction"]["path"]
+        scope[entry]["currency"] = {"path": path, "field": "currency"}
+        for field in ("unit", "material"):
+            scope[entry][field] = {"path": path[:1], "field": field}
+    manifest["permissions"]["transactions"] = {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "decimals": invoice_guard_decimals(),
+        "rules": rules,
+    }
+    return manifest
+
+
+def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:
+    manifest = invoice_guard_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for patch in ("owner", "currency", "unit", "material", "evidence-fact", "relation"):
+        invalid = copy.deepcopy(manifest)
+        rules = declaration(invalid)["rules"]
+        if patch == "owner":
+            rules[0]["allocation"]["owner"] = "missing"
+        elif patch in ("currency", "unit", "material"):
+            rules[1]["settlement"]["capacity"][patch]["field"] = "missing"
+        elif patch == "evidence-fact":
+            rules[2]["evidence"]["evidence"]["fields"].append("missing")
+        else:
+            rules[1]["settlement"]["actual"]["request"] = "line"
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    # A scope dimension cannot be declared on only two roles.
+    for field in ("currency", "unit", "material"):
+        invalid = copy.deepcopy(manifest)
+        del declaration(invalid)["rules"][1]["settlement"]["capacity"][field]
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
 
 
 def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:

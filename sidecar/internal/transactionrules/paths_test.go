@@ -141,13 +141,14 @@ func TestTransactionDecimalSignIsOptInAndExact(t *testing.T) {
 
 func TestDecimalBudgetIndependentOfRuleCapacity(t *testing.T) {
 	d := Declaration{Contract: Contract, Version: 1, ModelID: "m", Rules: []Rule{{ID: "unique", Kind: "unique", Entity: "e", Fields: []string{"a"}}}}
-	for i := 0; i < 65; i++ {
+	for i := 0; i < 66; i++ {
 		d.Decimals = append(d.Decimals, Decimal{Entity: "e", Field: fmt.Sprint(i), Format: exactdecimal.Format{Storage: "decimalText", Digits: 2}})
 	}
 	if err := d.Validate(); err == nil {
-		t.Fatal("65 decimal mappings accepted")
+		t.Fatal("66 decimal mappings accepted")
 	}
-	d.Decimals = d.Decimals[:64]
+	// The 65th mapping registers legally and keeps every earlier declaration.
+	d.Decimals = d.Decimals[:65]
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}

@@ -100,6 +100,102 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 			}
 		}
 	}
+	if spec := r.Allocation; spec != nil {
+		visit(r.Entity, RelationStep{spec.Owner, spec.Parent.Entity})
+		for _, ref := range []AuthorityRef{spec.State, spec.Purpose} {
+			entity := r.Entity
+			for _, step := range ref.Path {
+				visit(entity, step)
+				entity = step.Target
+			}
+		}
+		if dir := spec.Parent.Direction; dir != nil {
+			entity := spec.Parent.Entity
+			for _, step := range dir.Path {
+				visit(entity, step)
+				entity = step.Target
+			}
+		}
+	}
+	if spec := r.Settlement; spec != nil {
+		visit(spec.Request.Entity, RelationStep{spec.Request.Capacity, spec.Capacity.Entity})
+		visit(spec.Actual.Entity, RelationStep{spec.Actual.Request, spec.Request.Entity})
+		visit(spec.Actual.Entity, RelationStep{spec.Actual.Capacity, spec.Capacity.Entity})
+		refs := []struct {
+			entity string
+			ref    AuthorityRef
+		}{{spec.Request.Entity, spec.Request.State}, {spec.Request.Entity, spec.Request.Direction},
+			{spec.Actual.Entity, spec.Actual.State}, {spec.Actual.Entity, spec.Actual.Direction}}
+		for _, pair := range []struct {
+			entity string
+			ref    AuthorityRef
+		}{{spec.Capacity.Entity, spec.Capacity.Currency}, {spec.Request.Entity, spec.Request.Currency}, {spec.Actual.Entity, spec.Actual.Currency}, {spec.Capacity.Entity, spec.Capacity.Unit}, {spec.Request.Entity, spec.Request.Unit}, {spec.Actual.Entity, spec.Actual.Unit}, {spec.Capacity.Entity, spec.Capacity.Material}, {spec.Request.Entity, spec.Request.Material}, {spec.Actual.Entity, spec.Actual.Material}} {
+			if pair.ref.Field != "" {
+				refs = append(refs, pair)
+			}
+		}
+		if spec.Capacity.Direction.Field != "" {
+			refs = append(refs, struct {
+				entity string
+				ref    AuthorityRef
+			}{spec.Capacity.Entity, spec.Capacity.Direction})
+		}
+		if spec.Request.Basis.Field != "" {
+			refs = append(refs, struct {
+				entity string
+				ref    AuthorityRef
+			}{spec.Request.Entity, spec.Request.Basis})
+		}
+		if len(spec.Request.Purposes) > 0 {
+			refs = append(refs, struct {
+				entity string
+				ref    AuthorityRef
+			}{spec.Request.Entity, spec.Request.Purpose})
+		}
+		if len(spec.Actual.Purposes) > 0 {
+			refs = append(refs, struct {
+				entity string
+				ref    AuthorityRef
+			}{spec.Actual.Entity, spec.Actual.Purpose})
+		}
+		if adj := spec.Adjustment; adj != nil {
+			visit(adj.Entity, RelationStep{adj.Target, spec.Request.Entity})
+			if adj.Allocation != "" {
+				visit(adj.Entity, RelationStep{adj.Allocation, spec.Actual.Entity})
+			}
+		}
+		if plans := spec.Plans; plans != nil {
+			visit(spec.Request.Entity, RelationStep{spec.Request.PlanItem, plans.Entity})
+			if spec.Actual.PlanItem != "" {
+				visit(spec.Actual.Entity, RelationStep{spec.Actual.PlanItem, plans.Entity})
+			}
+			visit(plans.Entity, RelationStep{plans.Scope, spec.Capacity.Entity})
+			visit(plans.Entity, RelationStep{plans.LogicalItem.Field, plans.LogicalItem.Target})
+			for _, path := range [][]RelationStep{plans.CurrentWhen.Left, plans.CurrentWhen.Right} {
+				entity := plans.Entity
+				for _, step := range path {
+					visit(entity, step)
+					entity = step.Target
+				}
+			}
+		}
+		for _, pair := range refs {
+			entity := pair.entity
+			for _, step := range pair.ref.Path {
+				visit(entity, step)
+				entity = step.Target
+			}
+		}
+	}
+	if spec := r.Evidence; spec != nil {
+		entity := r.Entity
+		for _, step := range spec.OwnerPath {
+			visit(entity, step)
+			entity = step.Target
+		}
+		visit(entity, RelationStep{spec.LatestEvidence, spec.Evidence.Entity})
+		visit(spec.Evidence.Entity, RelationStep{spec.Evidence.Owner, entity})
+	}
 }
 
 // ValidatePaths binds new path declarations at installation. Existing rule kinds retain their
@@ -182,7 +278,129 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 				}
 			}
 		}
-		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.Kind != "reversalBalance" && rule.CurrentWhen == nil {
+		if spec := rule.Allocation; spec != nil {
+			for _, key := range []string{spec.Owner, spec.Quantity, spec.Net, spec.Tax, spec.Gross} {
+				if !scalars[[2]string{rule.Entity, key}] {
+					return failure("rules_invalid")
+				}
+			}
+			for _, key := range []string{spec.Parent.Quantity, spec.Parent.Net, spec.Parent.Tax, spec.Parent.Gross} {
+				if !scalars[[2]string{spec.Parent.Entity, key}] {
+					return failure("rules_invalid")
+				}
+			}
+			for _, ref := range []AuthorityRef{spec.State, spec.Purpose} {
+				entity := rule.Entity
+				for _, step := range ref.Path {
+					entity = step.Target
+				}
+				if !scalars[[2]string{entity, ref.Field}] {
+					return failure("rules_invalid")
+				}
+			}
+			if dir := spec.Parent.Direction; dir != nil {
+				entity := spec.Parent.Entity
+				for _, step := range dir.Path {
+					entity = step.Target
+				}
+				for _, field := range []string{dir.ConventionField, dir.DirectionField} {
+					if !scalars[[2]string{entity, field}] {
+						return failure("rules_invalid")
+					}
+				}
+			}
+		}
+		if spec := rule.Settlement; spec != nil {
+			for _, field := range []string{spec.Capacity.Quantity, spec.Capacity.Net, spec.Capacity.Tax, spec.Capacity.Gross} {
+				if field != "" && !scalars[[2]string{spec.Capacity.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+			for _, field := range []string{spec.Request.Capacity, spec.Request.PlanItem, spec.Request.Quantity, spec.Request.Net, spec.Request.Tax, spec.Request.Gross} {
+				if field != "" && !scalars[[2]string{spec.Request.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+			for _, field := range []string{spec.Actual.Request, spec.Actual.Capacity, spec.Actual.PlanItem, spec.Actual.Quantity, spec.Actual.Net, spec.Actual.Tax, spec.Actual.Gross} {
+				if field != "" && !scalars[[2]string{spec.Actual.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+			refs := []struct {
+				entity string
+				ref    AuthorityRef
+			}{{spec.Request.Entity, spec.Request.State}, {spec.Request.Entity, spec.Request.Direction},
+				{spec.Actual.Entity, spec.Actual.State}, {spec.Actual.Entity, spec.Actual.Direction}}
+			for _, pair := range []struct {
+				entity string
+				ref    AuthorityRef
+			}{{spec.Capacity.Entity, spec.Capacity.Currency}, {spec.Request.Entity, spec.Request.Currency}, {spec.Actual.Entity, spec.Actual.Currency}, {spec.Capacity.Entity, spec.Capacity.Unit}, {spec.Request.Entity, spec.Request.Unit}, {spec.Actual.Entity, spec.Actual.Unit}, {spec.Capacity.Entity, spec.Capacity.Material}, {spec.Request.Entity, spec.Request.Material}, {spec.Actual.Entity, spec.Actual.Material}} {
+				if pair.ref.Field != "" {
+					refs = append(refs, pair)
+				}
+			}
+			if spec.Capacity.Direction.Field != "" {
+				refs = append(refs, struct {
+					entity string
+					ref    AuthorityRef
+				}{spec.Capacity.Entity, spec.Capacity.Direction})
+			}
+			if spec.Request.Basis.Field != "" {
+				refs = append(refs, struct {
+					entity string
+					ref    AuthorityRef
+				}{spec.Request.Entity, spec.Request.Basis})
+			}
+			if len(spec.Request.Purposes) > 0 {
+				refs = append(refs, struct {
+					entity string
+					ref    AuthorityRef
+				}{spec.Request.Entity, spec.Request.Purpose})
+			}
+			if len(spec.Actual.Purposes) > 0 {
+				refs = append(refs, struct {
+					entity string
+					ref    AuthorityRef
+				}{spec.Actual.Entity, spec.Actual.Purpose})
+			}
+			if adj := spec.Adjustment; adj != nil {
+				for _, field := range []string{adj.Kind, adj.Target, adj.Allocation, adj.CloseRemaining, adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
+					if field != "" && !scalars[[2]string{adj.Entity, field}] {
+						return failure("rules_invalid")
+					}
+				}
+			}
+			for _, pair := range refs {
+				entity := pair.entity
+				for _, step := range pair.ref.Path {
+					entity = step.Target
+				}
+				if !scalars[[2]string{entity, pair.ref.Field}] {
+					return failure("rules_invalid")
+				}
+			}
+		}
+		if spec := rule.Evidence; spec != nil {
+			for _, field := range spec.Fields {
+				if !scalars[[2]string{rule.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+			owner := rule.Entity
+			for _, step := range spec.OwnerPath {
+				owner = step.Target
+			}
+			if !scalars[[2]string{owner, spec.LatestEvidence}] {
+				return failure("rules_invalid")
+			}
+			for _, field := range append([]string{spec.Evidence.Owner, spec.Evidence.Type, spec.Evidence.Note}, spec.Evidence.Fields...) {
+				if !scalars[[2]string{spec.Evidence.Entity, field}] {
+					return failure("rules_invalid")
+				}
+			}
+		}
+		if rule.Kind != "sameTarget" && rule.Kind != "parentFreeze" && rule.Kind != "reservationBalance" && rule.Kind != "reversalBalance" &&
+			rule.Kind != "allocationBalance" && rule.Kind != "settlementBalance" && rule.Kind != "changeEvidence" && rule.CurrentWhen == nil {
 			continue
 		}
 		valid := true
