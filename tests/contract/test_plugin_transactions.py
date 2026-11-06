@@ -18,7 +18,11 @@ from pydantic import ValidationError
 
 from backend._version import __version__
 from backend.contracts.plugin import PluginManifest
-from backend.contracts.plugin_transactions import MAX_RULES, PluginTransactionsDeclaration
+from backend.contracts.plugin_transactions import (
+    MAX_RULES,
+    PluginTransactionsDeclaration,
+    TransactionRule,
+)
 from backend.infrastructure.plugin_package import (
     InspectedPluginPackage,
     PluginPackageError,
@@ -743,6 +747,56 @@ def test_delivery_guard_rules_form_a_closed_shape() -> None:
         with pytest.raises(PluginPackageError):
             validate_plugin_manifest(package_entries(invalid))
 
+
+def test_delivery_guard_kind_fields_shared_with_go() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-kind-fields.json").read_text()
+    )
+    rules = copy.deepcopy(declaration(transactions_manifest())["rules"])
+    rules.extend(
+        [
+            {"id": "one", "kind": "atMostOne", "entity": "sources", "fields": ["a", "b"]},
+            {
+                "id": "balance",
+                "kind": "balance",
+                "entity": "sources",
+                "relation": "scope",
+                "amount": "quantity",
+                "target": "obligations",
+                "limit": "quantity",
+            },
+            {
+                "id": "same",
+                "kind": "sameTarget",
+                "entity": "sources",
+                "left": [{"field": "scope", "target": "obligations"}],
+                "right": [{"field": "scope", "target": "obligations"}],
+            },
+            declaration(delivery_manifest())["rules"][0],
+        ]
+    )
+    for rule in rules:
+        assert TransactionRule.model_validate(rule)
+        patches = corpus["parentFreeze" if rule["kind"] == "parentFreeze" else "legacy"]
+        for patch in patches:
+            with pytest.raises(ValidationError):
+                TransactionRule.model_validate(rule | patch)
+
+    for factory, index, patches in (
+        (transactions_manifest, 0, corpus["legacy"]),
+        (delivery_manifest, 0, corpus["parentFreeze"]),
+    ):
+        for patch in patches:
+            manifest = factory()
+            declaration(manifest)["rules"][index].update(patch)
+            with pytest.raises(ValidationError):
+                PluginManifest.model_validate(manifest)
+            with pytest.raises(PluginPackageError):
+                validate_plugin_manifest(package_entries(manifest))
+
+
+def test_delivery_guard_quantity_and_purpose_validation() -> None:
+    manifest = delivery_manifest()
     for section, index, patch in (
         ("decimals", 0, {"nullable": True}),
         ("decimals", 1, {"sign": None}),

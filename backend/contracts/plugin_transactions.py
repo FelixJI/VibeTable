@@ -195,6 +195,19 @@ class TransactionRule(TransactionContract):
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> TransactionRule:
+        allowed = {
+            "unique": {"fields"},
+            "atMostOne": {"fields"},
+            "reference": {"field", "target"},
+            "conservation": {"target", "relation", "amount", "limit"},
+            "balance": {"target", "relation", "amount", "limit", "current_when"},
+            "state": {"field", "fields", "transitions", "frozen_states"},
+            "sameTarget": {"left", "right", "when_present", "skip_empty_left_end"},
+            "parentFreeze": {"parent_path", "parent_state_field", "frozen_states", "fields"},
+            "reservationBalance": {"reservation"},
+        }
+        if self.model_fields_set - {"id", "kind", "entity"} - allowed[self.kind]:
+            raise ValueError("rule fields must belong to the declared kind, even when empty")
         scalar_clear = (
             self.field == ""
             and self.target == ""
@@ -277,6 +290,7 @@ class TransactionRule(TransactionContract):
                 or not scalar_clear
                 or not path_clear
                 or self.reservation is not None
+                or self.transitions
             ):
                 raise ValueError(
                     "parentFreeze requires a parent path, state field and frozen states"

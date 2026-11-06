@@ -127,6 +127,10 @@ func TestDeliveryGuardsNativeReservationAdmissionAndConcurrency(t *testing.T) {
 		{Entity: "lines", Kind: "create", TempID: "l2", Values: map[string]any{"purpose": "normal", "real_qty": 0.0, "document": ref("documents", "di2")}},
 		{Entity: "sources", Kind: "create", TempID: "t", Values: map[string]any{"quantity": "2", "scope": obligation, "owner_line": ref("lines", "l2"), "transferred_from": instruction}},
 	}}
+	closedTransfer := transfer
+	closedTransfer.Operations = append([]transactionOperation(nil), transfer.Operations...)
+	closedTransfer.Operations[1].Values = map[string]any{"phase": "instruction_closed"}
+	regressionReject(t, f, closedTransfer, "transaction.reservation_transfer_invalid")
 	moved := f.submit(t, transfer)
 	reopened := moved.NewIDs["sources"]["t"]
 	finalWindow := f.submit(t, window(reopened, "2", "normal"))

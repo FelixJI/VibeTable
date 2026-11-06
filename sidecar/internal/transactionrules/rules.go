@@ -63,6 +63,25 @@ type Decimal struct {
 	Sign decimalSign `json:"sign,omitempty"`
 }
 
+func (d *Decimal) UnmarshalJSON(raw []byte) error {
+	type wireDecimal Decimal
+	var options map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &options); err != nil {
+		return err
+	}
+	if flag, supplied := options["nullable"]; supplied && string(flag) != "true" && string(flag) != "false" {
+		return failure("decimal_invalid")
+	}
+	var decoded wireDecimal
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*d = Decimal(decoded)
+	return nil
+}
+
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
 type Rule struct {
 	PathMatch
@@ -83,6 +102,47 @@ type Rule struct {
 	ParentPath       []RelationStep      `json:"parentPath,omitempty"`
 	ParentStateField string              `json:"parentStateField,omitempty"`
 	Reservation      *ReservationSpec    `json:"reservation,omitempty"`
+}
+
+// Presence matters even when a foreign field decodes to its zero value.
+func (r *Rule) UnmarshalJSON(raw []byte) error {
+	type wireRule Rule
+	var decoded wireRule
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	allowed := " id kind entity "
+	switch decoded.Kind {
+	case "unique", "atMostOne":
+		allowed += "fields "
+	case "reference":
+		allowed += "field target "
+	case "conservation":
+		allowed += "target relation amount limit "
+	case "balance":
+		allowed += "target relation amount limit currentWhen "
+	case "state":
+		allowed += "field fields transitions frozenStates "
+	case "sameTarget":
+		allowed += "left right whenPresent skipEmptyLeftEnd "
+	case "parentFreeze":
+		allowed += "parentPath parentStateField frozenStates fields "
+	case "reservationBalance":
+		allowed += "reservation "
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		if !strings.Contains(allowed, " "+field+" ") {
+			return failure("rules_invalid")
+		}
+	}
+	*r = Rule(decoded)
+	return nil
 }
 
 type Declaration struct {
@@ -137,7 +197,8 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
-		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) {
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) ||
+			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" {
 			return failure("rules_invalid")
 		}
 		valid := false
@@ -460,7 +521,8 @@ func (r Registration) Validate(before, after Images) error {
 	for _, d := range r.Declaration.Decimals {
 		formats[d.Entity+"\x00"+d.Field] = d.Format
 		for _, row := range after[d.Entity] {
-			if d.Nullable && row[d.Field] == nil {
+			value, present := row[d.Field]
+			if d.Nullable && present && value == nil {
 				continue
 			}
 			n, err := d.Parse(row[d.Field])
@@ -772,22 +834,23 @@ type Guard struct {
 	Before       Images
 }
 
-// IntegerInputs is read before normalization can turn an inexact wire value into a float.
-func IntegerInputs(ctx context.Context, app core.App, table string) (map[string][]exactdecimal.Format, error) {
+// DecimalInputs retains nullability and input presence before schema defaults
+// or normalization can erase the distinction from null or inexact numbers.
+func DecimalInputs(ctx context.Context, app core.App, table string) (map[string][]Decimal, error) {
 	registrations, err := Load(ctx, app)
 	if err != nil {
 		return nil, err
 	}
-	formats := map[string][]exactdecimal.Format{}
+	formats := map[string][]Decimal{}
 	for _, registration := range registrations {
 		for _, decimal := range registration.Declaration.Decimals {
 			binding := registration.Bindings[decimal.Entity]
-			if binding.TableID == table && decimal.Storage == "integerUnits" {
+			if binding.TableID == table {
 				field := binding.Fields[decimal.Field]
 				if field == "" {
 					return nil, failure("binding_stale")
 				}
-				formats[field] = append(formats[field], decimal.Format)
+				formats[field] = append(formats[field], decimal)
 			}
 		}
 	}

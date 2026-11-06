@@ -3,6 +3,7 @@ package transactionrules
 import (
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
@@ -130,39 +131,44 @@ func (rule Rule) validateParentFreeze(before, after Images) error {
 		state, ok := parent[rule.ParentStateField].(string)
 		return ok && contains(rule.FrozenStates, state)
 	}
+	identities := func(images Images, row map[string]any) ([]string, error) {
+		ids := make([]string, 0, len(rule.ParentPath))
+		for _, step := range rule.ParentPath {
+			id, err := relationRef(images, row, step.Field, step.Target)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+			row = images[step.Target][id]
+		}
+		return ids, nil
+	}
 	for id, old := range before[rule.Entity] {
-		oldParent, err := resolvePath(before, old, rule.ParentPath, false)
+		oldPath, err := identities(before, old)
 		if err != nil {
 			return err
 		}
+		oldFrozen := frozenIn(before, oldPath[len(oldPath)-1])
 		next := after[rule.Entity][id]
-		if frozenIn(before, oldParent) {
-			if next == nil {
+		if next == nil {
+			if oldFrozen {
 				return failure("parent_frozen")
 			}
-			newParent, err := resolvePath(after, next, rule.ParentPath, false)
-			if err != nil {
-				return err
-			}
-			if newParent != oldParent {
-				return failure("parent_frozen")
-			}
+			continue
+		}
+		newPath, err := identities(after, next)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(oldPath, newPath) && (oldFrozen || frozenIn(before, newPath[len(newPath)-1])) {
+			return failure("parent_frozen")
+		}
+		if oldFrozen {
 			for _, field := range rule.Fields {
 				if !reflect.DeepEqual(old[field], next[field]) {
 					return failure("parent_frozen")
 				}
 			}
-			continue
-		}
-		if next == nil {
-			continue
-		}
-		newParent, err := resolvePath(after, next, rule.ParentPath, false)
-		if err != nil {
-			return err
-		}
-		if newParent != oldParent && frozenIn(before, newParent) {
-			return failure("parent_frozen")
 		}
 	}
 	for id, row := range after[rule.Entity] {
@@ -203,7 +209,15 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 	res := rule.Reservation
 	quantityFormat := decimals[rule.Entity+"\x00"+res.Quantity]
 	parse := func(value any) (*big.Int, error) { return quantityFormat.Parse(value) }
-	classify := func(images Images) (map[string]*reservationRow, error) {
+	beforeBuckets, err := rule.planBuckets(before, decimals)
+	if err != nil {
+		return err
+	}
+	buckets, err := rule.planBuckets(after, decimals)
+	if err != nil {
+		return err
+	}
+	classify := func(images Images, plans reservationPlanIndex) (map[string]*reservationRow, error) {
 		rows := map[string]*reservationRow{}
 		phaseEntity := rule.Entity
 		for _, step := range res.Phase.Path {
@@ -262,6 +276,9 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 					return nil, err
 				}
 				next.planItem = item
+				if item != "" && plans.items[item].scope != scope {
+					return nil, failure("reservation_invalid")
+				}
 			}
 			if res.InstructionSource != "" {
 				target, err := optionalRef(images, row, res.InstructionSource, rule.Entity)
@@ -281,11 +298,11 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 		}
 		return rows, nil
 	}
-	beforeRows, err := classify(before)
+	beforeRows, err := classify(before, beforeBuckets)
 	if err != nil {
 		return err
 	}
-	afterRows, err := classify(after)
+	afterRows, err := classify(after, buckets)
 	if err != nil {
 		return err
 	}
@@ -300,6 +317,13 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 	// normal occupation (E) can never be released by edits or deletion.
 	for id, old := range beforeRows {
 		next := afterRows[id]
+		// A source ID alone cannot preserve history if its referenced plan's
+		// canonical scope/logical item/share is rewritten underneath it.
+		if old.planItem != "" && (old.role == "instruction" && old.state != "draft" || old.role == "actual" && old.state == "confirmed") {
+			if beforeBuckets.items[old.planItem] != buckets.items[old.planItem] {
+				return failure("reservation_frozen")
+			}
+		}
 		if next == nil {
 			if old.role == "instruction" && old.state != "draft" {
 				return failure("reservation_frozen")
@@ -495,7 +519,7 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 				return failure("reservation_transfer_invalid")
 			}
 			if newlyTransferred {
-				if beforeRows[target.id] != nil {
+				if beforeRows[target.id] != nil || target.state != "open" {
 					return failure("reservation_transfer_invalid")
 				}
 				if prior != nil && prior.state != "open" {
@@ -505,10 +529,6 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 		}
 	}
 	// Stable plan buckets and the combined obligation capacity.
-	buckets, err := rule.planBuckets(after, decimals)
-	if err != nil {
-		return err
-	}
 	bucketOf := func(row *reservationRow) (reservationBucket, bool) {
 		item := row.planItem
 		if item == "" && row.instruction != "" {

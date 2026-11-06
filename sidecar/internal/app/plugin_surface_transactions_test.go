@@ -90,6 +90,8 @@ func TestTransactionCalculatesOnlyAfterAllInputClocksAdvance(t *testing.T) {
 func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture {
 	t.Helper()
 	integerUnits := len(storage) > 0 && storage[0] == "integerUnits"
+	delivery := len(storage) > 0 && strings.HasPrefix(storage[0], "delivery")
+	nullable := len(storage) > 0 && strings.HasPrefix(storage[0], "nullable-")
 	pb, workspace, input, domain := modelFixture(t)
 	input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
 		m.Entities = []pluginmodel.Entity{
@@ -100,7 +102,7 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		if len(storage) > 0 && storage[0] == "scoped" {
 			addVersionModel(m)
 		}
-		if len(storage) > 0 && storage[0] == "delivery" {
+		if delivery {
 			all := []string{"read", "query", "create", "update", "delete"}
 			m.Entities = []pluginmodel.Entity{
 				{Key: "obligations", Label: "交付义务", Operations: all, Fields: []pluginmodel.Field{
@@ -129,6 +131,16 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 				}},
 			}
 		}
+		if delivery && storage[0] == "delivery-plans" {
+			addDeliveryPlanModel(m)
+		}
+		if nullable {
+			price := pluginmodel.Field{Key: "price", Label: "未知价格", Type: v2.LogicalText}
+			if storage[0] == "nullable-integer" {
+				price.Type, price.Precision = v2.LogicalNumber, "integer"
+			}
+			m.Entities[0].Fields = append(m.Entities[0].Fields, price)
+		}
 		if len(storage) > 0 && storage[0] == "receipt-repair" {
 			m.Entities = append(m.Entities, pluginmodel.Entity{Key: "notes", Label: "合成独立备注", Operations: []string{"read", "query"}, Fields: []pluginmodel.Field{{Key: "name", Label: "名称", Type: v2.LogicalText}}})
 		}
@@ -156,7 +168,7 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		}
 	})
 	d := transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{}, Rules: []transactionrules.Rule{{ID: "code", Kind: "unique", Entity: "headers", Fields: []string{"code"}}, {ID: "total", Kind: "conservation", Entity: "lines", Target: "headers", Relation: "header", Amount: "amount", Limit: "amount"}, {ID: "allocation", Kind: "balance", Entity: "allocations", Target: "lines", Relation: "line", Amount: "amount", Limit: "amount"}}}
-	if len(storage) > 0 && storage[0] == "delivery" {
+	if delivery {
 		d = transactionrules.Declaration{Contract: transactionrules.Contract, ModelID: "synthetic", Version: 1, Decimals: []transactionrules.Decimal{
 			{Entity: "sources", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
 			{Entity: "obligations", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
@@ -176,6 +188,19 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 				InstructionSource: "instruction_source", TransferredFrom: "transferred_from",
 			}},
 		}}
+		if storage[0] == "delivery-plans" {
+			res := d.Rules[2].Reservation
+			res.PlanItem = "plan_item"
+			res.Plans = &transactionrules.ReservationPlans{
+				Entity: "plan_items", Quantity: "quantity", Scope: "scope",
+				LogicalItem: transactionrules.ReservationLogical{Field: "logical_item", Target: "logical_items"}, Share: "share",
+				CurrentWhen: transactionrules.PathMatch{
+					Left:  []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}},
+					Right: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}, {Field: "series", Target: "series"}, {Field: "current_version", Target: "plan_versions"}},
+				},
+			}
+			d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "plan_items", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"})
+		}
 	}
 	if len(storage) > 0 && storage[0] == "state" {
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "posted", Kind: "state", Entity: "headers", Field: "status", Fields: []string{"code"}, Transitions: map[string][]string{"draft": {"posted"}, "posted": {}}, FrozenStates: []string{"posted"}})
@@ -186,7 +211,7 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		d.Rules = append(d.Rules, transactionrules.Rule{ID: "scope", Kind: "sameTarget", Entity: "allocations", PathMatch: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "line", Target: "lines"}}, Right: []transactionrules.RelationStep{{Field: "version", Target: "versions"}, {Field: "owner", Target: "lines"}}}})
 	}
 	for _, entity := range []string{"headers", "lines", "allocations"} {
-		if len(storage) > 0 && storage[0] == "delivery" {
+		if delivery {
 			break
 		}
 		format := "decimalText"
@@ -194,6 +219,13 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 			format = "integerUnits"
 		}
 		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: entity, Field: "amount", Format: exactdecimal.Format{Storage: format, Scale: 2, Digits: 38}})
+	}
+	if nullable {
+		format := "decimalText"
+		if storage[0] == "nullable-integer" {
+			format = "integerUnits"
+		}
+		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "headers", Field: "price", Nullable: true, Format: exactdecimal.Format{Storage: format, Scale: 2, Digits: 38}})
 	}
 	if len(storage) > 0 && storage[0] == "one-to-one" {
 		d.Decimals = []transactionrules.Decimal{}
