@@ -140,6 +140,8 @@ RACE_SPLIT_PACKAGES = frozenset(
 RACE_LONG_TEST_WEIGHT = 10.0
 RACE_LONG_TESTS = frozenset(
     {
+        # Seven independent PocketBase schema fixtures exceed 5m under race instrumentation.
+        "TestDeliveryGuardNativePlanIdentityAndScope",
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
         "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
         "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
