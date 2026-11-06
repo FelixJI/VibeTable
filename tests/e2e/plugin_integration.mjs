@@ -269,10 +269,9 @@ export async function runPluginIntegration(page, recorder, runtime, helpers) {
   const submitting = frame.locator("#concurrent-submit").click();
   await page.waitForFunction(() => document.querySelectorAll(".host-confirmation").length === 2, null, { timeout: 30000 });
   const pending = await observePendingConfirmations(runtime, 2);
-  // Pending evidence is the passive per-window UIA read above (texts, exact
-  // effects, approve button). The two owned popups cannot each hold the
-  // single foreground right, so the driver takes no per-window screenshot and
-  // none is copied or fabricated here.
+  // The two owned popups cannot each hold the single foreground right, so the
+  // real complete passive observation replaces the retired per-window PNGs.
+  await fs.writeFile(path.join(runtime.evidenceDir, "58-native-pending.json"), JSON.stringify(pending));
   const ownerRoots = new Set(pending.windows.map(window => window.win32OwnerRoot));
   recorder.check("two real native Host confirmation windows are simultaneously pending",
     pending.windows.length === 2 && new Set(pending.windows.map(window => window.hwnd)).size === 2

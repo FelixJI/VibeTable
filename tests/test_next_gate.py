@@ -3994,8 +3994,7 @@ SCENARIO_SCREENSHOTS = {
         "58-integration.png",
         "58-rules.png",
         "58-seed-commit.png",
-        "58-native-pending-0.png",
-        "58-native-pending-1.png",
+        "58-native-pending.json",
         "58-native-concurrent.png",
         "58-native-concurrent-second.png",
         "58-archive-confirmation.png",
@@ -4262,6 +4261,17 @@ def test_integration_evidence_rejects_each_missing_current_proof(
     run = _scenario_screenshot_run(tmp_path, "58-plugin-integration-evidence", "passed")
     (run / relative).unlink()
     with pytest.raises(ValueError, match=Path(relative).name):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_integration_evidence_requires_the_real_pending_observation_json(
+    tmp_path: Path,
+) -> None:
+    # The two pending popups cannot each hold the foreground right, so the
+    # passive per-window UIA observation JSON replaces the retired PNG pair.
+    run = _scenario_screenshot_run(tmp_path, "58-plugin-integration-evidence", "passed")
+    (run / "58-plugin-integration-evidence" / "58-native-pending.json").unlink()
+    with pytest.raises(ValueError, match=r"58-native-pending\.json"):
         next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
 
 
