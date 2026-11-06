@@ -218,6 +218,7 @@ type reservationRow struct {
 	id          string
 	role        string // instruction | actual
 	state       string // draft/open/closed/transferred or draft/confirmed
+	phaseOwner  string // identity of the authoritative phase row
 	purpose     string // authoritative purpose read through the owner path
 	normal      bool
 	quantity    *big.Int
@@ -245,12 +246,12 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 	if err != nil {
 		return err
 	}
+	phaseEntity := rule.Entity
+	for _, step := range res.Phase.Path {
+		phaseEntity = step.Target
+	}
 	classify := func(images Images, plans reservationPlanIndex) (map[string]*reservationRow, error) {
 		rows := map[string]*reservationRow{}
-		phaseEntity := rule.Entity
-		for _, step := range res.Phase.Path {
-			phaseEntity = step.Target
-		}
 		for id, row := range images[rule.Entity] {
 			document, err := resolvePath(images, row, res.Phase.Path, false)
 			if err != nil {
@@ -260,7 +261,7 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 			if !ok {
 				return nil, failure("reservation_invalid")
 			}
-			next := &reservationRow{id: id}
+			next := &reservationRow{id: id, phaseOwner: document}
 			switch state {
 			case res.Phase.InstructionDraft:
 				next.role, next.state = "instruction", "draft"
@@ -478,9 +479,16 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 			continue
 		}
 		source := beforeRows[row.instruction]
+		opened := afterRows[row.instruction]
 		if source != nil && source.state != "open" {
-			opened := afterRows[row.instruction]
 			if source.state != "draft" || opened == nil || opened.state != "open" {
+				return failure("reservation_invalid")
+			}
+		}
+		// A new source or owner line can still belong to a previously terminal document.
+		if owner := before[phaseEntity][opened.phaseOwner]; owner != nil {
+			phase, _ := owner[res.Phase.Field].(string)
+			if phase != res.Phase.InstructionOpen && (phase != res.Phase.InstructionDraft || opened.state != "open") {
 				return failure("reservation_invalid")
 			}
 		}
