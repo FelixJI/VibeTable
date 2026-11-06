@@ -467,14 +467,14 @@ func (rule Rule) validateReservation(before, after Images, decimals map[string]e
 			return failure("reservation_released")
 		}
 	}
-	// New confirmed consumption may only target instructions that were open
+	// New or increased confirmed consumption may only target instructions that were open
 	// before this transaction or were opened inside it, for every purpose.
 	for _, row := range afterRows {
 		if row.role != "actual" || row.state != "confirmed" || row.instruction == "" {
 			continue
 		}
 		prior := beforeRows[row.id]
-		if prior != nil && prior.role == "actual" && prior.state == "confirmed" && prior.instruction != "" {
+		if prior != nil && prior.role == "actual" && prior.state == "confirmed" && prior.instruction != "" && row.quantity.Cmp(prior.quantity) <= 0 {
 			continue
 		}
 		source := beforeRows[row.instruction]

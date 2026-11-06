@@ -191,6 +191,9 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 				InstructionSource: "instruction_source", TransferredFrom: "transferred_from",
 			}},
 		}}
+		if storage[0] == "delivery-reservation-only" {
+			d.Rules = d.Rules[2:]
+		}
 		if storage[0] == "delivery-plans" {
 			res := d.Rules[2].Reservation
 			res.PlanItem = "plan_item"
