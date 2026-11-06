@@ -20,7 +20,8 @@ const reproduceLegacyFailure = process.argv.includes("--legacy-red");
 let browser;
 let page;
 const startupAbort = new AbortController();
-const cleanupTimeoutMs = 10_000;
+// Allow Playwright's 30s graceful-close window and 5s to settle before failing.
+const cleanupTimeoutMs = 35_000;
 
 async function closeEdge() {
   const cleanupAbort = new AbortController();

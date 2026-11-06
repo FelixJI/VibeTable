@@ -5058,14 +5058,10 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "grid did not reach a stable expected state" in source
 
 
-# Existing theme hook/body/cleanup budgets; the separate watchdog cannot consume
-# the pure protocol group's unchanged 30s. Job cleanup adds at most 5s + 5s.
-_THEME_NODE_WATCHDOG_SECONDS = 30 + 10 + 10
-# The lookup viewport fixture mirrors the theme probe's bounded Edge budgets:
-# 30s startup + the journey's unchanged 15s + 10s Edge close. Neither browser
-# fixture can consume the pure protocol group's unchanged 30s. Job cleanup
-# adds at most 5s + 5s.
-_LOOKUP_NODE_WATCHDOG_SECONDS = 30 + 15 + 10
+# Edge close may use Playwright's 30s graceful-close window; allow 5s to settle.
+# Browser phases stay separate from the protocol group; Job cleanup adds 5s + 5s.
+_THEME_NODE_WATCHDOG_SECONDS = 30 + 10 + 35
+_LOOKUP_NODE_WATCHDOG_SECONDS = 30 + 15 + 35
 _NODE_JOB_CLEANUP_SECONDS = 5
 
 
@@ -5276,11 +5272,11 @@ def test_node_contract_aggregation_excludes_browser_setup(monkeypatch: pytest.Mo
     assert calls[0][1] == 30
     test_connected_theme_surface_contract_uses_its_independent_phase_budgets()
     assert len(calls) == 2
-    assert calls[1][1] == 30 + 10 + 10
+    assert calls[1][1] == 30 + 10 + 35
     assert [path.name for path in calls[1][0]] == ["theme_surface_probe.test.mjs"]
     test_lookup_sources_viewport_contract_uses_its_independent_phase_budgets()
     assert len(calls) == 3
-    assert calls[2][1] == 30 + 15 + 10
+    assert calls[2][1] == 30 + 15 + 35
     assert [path.name for path in calls[2][0]] == ["lookup_sources_viewport.test.mjs"]
 
 
