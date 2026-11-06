@@ -222,6 +222,10 @@ def test_confirmation_effects_fail_closed_without_exactly_one_details_array() ->
         "disabled",
         "obscured",
         "foreground",
+        "foreground-changed",
+        "owner-changed",
+        "owner-root-changed",
+        "duplicate-button",
     ],
 )
 def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
@@ -232,7 +236,7 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
 
     from tests.e2e import plugin_application_native as native
 
-    sent, focused = [], []
+    sent, focused, observed = [], [], []
 
     def take_foreground(*args):
         focused.append(args)
@@ -245,9 +249,23 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
     host = {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"}
     api = SimpleNamespace(
         windows=lambda: [host] if failure == "missing" else [host, window],
-        owner=lambda hwnd: 99 if failure == "owner" and hwnd == 14 else 12,
+        owner=lambda hwnd: (
+            99
+            if (failure == "owner" and hwnd == 14)
+            or (failure == "owner-changed" and observed and hwnd == 20)
+            else 12
+        ),
         win32_owner=lambda hwnd: (
-            {20: 21, 21: 14, 14: 20}[hwnd] if failure == "cycle" else 14 if hwnd == 20 else 0
+            {20: 21, 21: 14, 14: 20}[hwnd]
+            if failure == "cycle"
+            else 0
+            if failure == "owner-root-changed" and observed
+            else 14
+            if hwnd == 20
+            else 0
+        ),
+        user32=SimpleNamespace(
+            GetForegroundWindow=lambda: 30 if failure == "foreground-changed" and observed else 20
         ),
         foreground=take_foreground,
         foreground_observation={"hostHwnd": 20, "hostPid": 12},
@@ -275,9 +293,14 @@ def test_exact_confirmation_input_requires_owned_complete_matching_chrome(
             }
         ],
     }
-    monkeypatch.setattr(
-        native, "_observe_confirmation_chrome", lambda *_args, **_kwargs: observation
-    )
+    if failure == "duplicate-button":
+        observation["buttons"].append(dict(observation["buttons"][0]))
+
+    def observe(*_args, **_kwargs):
+        observed.append(True)
+        return observation
+
+    monkeypatch.setattr(native, "_observe_confirmation_chrome", observe)
     monkeypatch.setattr(native, "_send_input", lambda _native, **kwargs: sent.append(kwargs))
     request = {
         "requestId": "exact-request",
@@ -328,6 +351,7 @@ def test_pending_confirmation_reads_two_windows_passively_without_foreground(tmp
         windows=lambda: [host, *windows],
         owner=lambda _hwnd: 12,
         win32_owner=lambda hwnd: 14 if hwnd in {20, 30} else 0,
+        user32=SimpleNamespace(GetForegroundWindow=lambda: 30),
         foreground=denied_foreground,
     )
     commands = []
@@ -391,6 +415,7 @@ def test_pending_confirmation_reads_two_windows_passively_without_foreground(tmp
     # No activation was attempted, so the foreground evidence stays empty
     # instead of fabricating an activation fact.
     assert result["foreground"] is None
+    assert result["foregroundHwnd"] == 30
     assert list(tmp_path.glob("*.png")) == []
 
 
@@ -1584,3 +1609,171 @@ def test_native_input_is_rejected_after_request_deadline(tmp_path, monkeypatch):
     assert result["status"] == "failed"
     assert "request budget" in result["error"]
     assert sent == []
+
+
+@pytest.mark.parametrize("foreground_hwnd", [20, 30, 0, 14, 999])
+def test_concurrent_confirmation_file_handshake_approves_foreground_bound_request_first(
+    tmp_path, monkeypatch, foreground_hwnd
+):
+    """Replay #558 through JS file RPC and real Python activation/input guards.
+
+    Win32/UIA are controlled seams here; this is not a packaged WPF run.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    root = Path(__file__).resolve().parents[2]
+    host = {"hwnd": 14, "pid": 12, "visible": True, "title": "VibeTable"}
+    pending_hwnds = [20, 30]
+    active = [foreground_hwnd]
+    sent, activations, checks = [], [], []
+    window = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    window.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: active[0],
+        # Reproduce accepted+synchronized activation which leaves the peer
+        # foreground. The production guard must refuse any input in that case.
+        SetForegroundWindow=lambda hwnd: activations.append(hwnd) or True,
+        SendMessageTimeoutW=lambda *args: True,
+    )
+    window.owner = lambda hwnd: 12 if hwnd in {14, 20, 30} else 99
+    window.win32_owner = lambda hwnd: 14 if hwnd in pending_hwnds else 0
+    window.windows = lambda: (
+        [host]
+        + [
+            {"hwnd": hwnd, "pid": 12, "visible": True, "title": "VibeTable 插件确认"}
+            for hwnd in pending_hwnds
+        ]
+    )
+    window._root_at = lambda *_args: active[0]
+
+    def observe(_native, _observer, hwnd, _pid, screenshot, **_kwargs):
+        if screenshot is not None:
+            screenshot.write_text("controlled observation seam", encoding="utf-8")
+        return {
+            "pid": 12,
+            "hwnd": hwnd,
+            "texts": [
+                {
+                    "kind": "edit",
+                    "value": json.dumps(
+                        [
+                            {"tableId": "tbl_head", "recordId": "shared", "operation": "update"},
+                            {
+                                "tableId": "tbl_line",
+                                "recordId": f"line{hwnd}",
+                                "operation": "insert",
+                            },
+                        ]
+                    ),
+                }
+            ],
+            "buttons": [
+                {
+                    "id": "plugin-confirm-approve",
+                    "pid": 12,
+                    "enabled": True,
+                    "x": 0,
+                    "y": 0,
+                    "width": 10,
+                    "height": 10,
+                }
+            ],
+        }
+
+    def send(_native, **_kwargs):
+        sent.append(active[0])
+        pending_hwnds.remove(active[0])
+        active[0] = pending_hwnds[0] if pending_hwnds else 14
+
+    monkeypatch.setattr(native, "_observe_confirmation_chrome", observe)
+    monkeypatch.setattr(native, "_send_input", send)
+    pending = native._handle_confirmation_pending(
+        window,
+        tmp_path / "observer",
+        12,
+        {"requestId": "both-pending", "expectCount": 2},
+        tmp_path,
+        deadline=time.monotonic() + 5,
+    )
+    (tmp_path / "pending.json").write_text(json.dumps(pending), encoding="utf-8")
+    script = """
+import fs from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+const { approveConcurrentConfirmations, matchPendingWindowsToRequests } = await import(pathToFileURL(process.argv[1]));
+const evidenceDir = process.argv[2];
+const pending = JSON.parse(await fs.readFile(`${evidenceDir}/pending.json`, 'utf8'));
+const preview = hwnd => ({ effects: [
+  { tableId: 'tbl_head', recordId: 'shared', operation: 'update' },
+  { tableId: 'tbl_line', recordId: `line${hwnd}`, operation: 'insert' },
+] });
+const prepared = { first: preview(20), second: preview(30) };
+const mapping = matchPendingWindowsToRequests(pending.windows, prepared.first, prepared.second);
+const recorder = { check(name, success, evidence) {
+  if (!success) throw new Error(`${name}: ${JSON.stringify(evidence)}`);
+} };
+await approveConcurrentConfirmations({ evidenceDir }, recorder, pending, prepared, mapping);
+"""
+    child = subprocess.Popen(
+        [
+            str(ensure_node(root)),
+            "--input-type=module",
+            "-e",
+            script,
+            str(root / "tests/e2e/plugin_integration.mjs"),
+            str(tmp_path),
+        ],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    deadline = time.monotonic() + 10
+    try:
+        while child.poll() is None and time.monotonic() < deadline:
+            request_file = tmp_path / "plugin-native-request.json"
+            if request_file.exists():
+                request = json.loads(request_file.read_text(encoding="utf-8"))
+                if request["requestId"] not in checks:
+                    checks.append(request["requestId"])
+                    try:
+                        result = native._handle_confirmation_exact(
+                            window,
+                            tmp_path / "observer",
+                            12,
+                            request,
+                            tmp_path,
+                            deadline=time.monotonic() + 5,
+                        )
+                    except (OSError, ValueError) as error:
+                        result = {
+                            "requestId": request["requestId"],
+                            "status": "failed",
+                            "error": str(error),
+                        }
+                    result_file = tmp_path / "plugin-native-result.json"
+                    result_temp = tmp_path / "plugin-native-result.tmp"
+                    result_temp.write_text(json.dumps(result), encoding="utf-8")
+                    result_temp.replace(result_file)
+            time.sleep(0.01)
+        stdout, stderr = child.communicate(timeout=1)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate()
+    if foreground_hwnd in {20, 30}:
+        assert child.returncode == 0, stdout + stderr
+        assert sent == [foreground_hwnd, 30 if foreground_hwnd == 20 else 20]
+        assert len(checks) == 2
+    else:
+        assert child.returncode != 0
+        assert "foreground is not one of the bound pending confirmations" in stderr
+        assert checks == []
+        assert sent == []
+    assert activations == []
+    assert pending["foregroundHwnd"] == foreground_hwnd
+    assert pending["input"] is None
+    assert pending["foreground"] is None

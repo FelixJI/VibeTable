@@ -684,6 +684,8 @@ def _handle_confirmation_pending(
             "status": "completed",
             "action": "confirm-pending",
             "windows": observations,
+            # Read-only selection evidence, never an activation claim.
+            "foregroundHwnd": int(native.user32.GetForegroundWindow() or 0),
             "input": None,
             # No activation was attempted, so the foreground evidence stays
             # empty rather than fabricating an activation fact.
@@ -719,6 +721,14 @@ def _handle_confirmation_exact(
     button = _enabled_button(observation, request["buttonId"], host_pid)
     x = button["x"] + button["width"] / 2
     y = button["y"] + button["height"] / 2
+    # UIA capture crosses a process boundary; recheck ownership and input
+    # identity after observing the complete effects, immediately before input.
+    if not any(item["hwnd"] == hwnd for item in _confirmation_windows(native, host_pid)):
+        raise OSError("exact confirmation window is no longer pending")
+    if _owned_confirmation_root(native, hwnd, host_pid) != owner_root:
+        raise ValueError("exact confirmation owner root changed before input")
+    if native.user32.GetForegroundWindow() != hwnd:
+        raise OSError("exact confirmation lost its foreground input owner")
     if native._root_at(x, y) != hwnd:
         raise OSError("exact confirmation button is obscured")
     _send_input(native, x=x, y=y)
