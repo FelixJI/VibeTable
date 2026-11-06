@@ -7,6 +7,7 @@ import math
 import os
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +129,10 @@ def handle_file_dialog(
 
     native = None
     cleanup = None
+    # Observer-subprocess clock alone: a timeout delta must exclude the
+    # preceding window search.
+    started_utc: str | None = None
+    started_monotonic: float | None = None
     try:
         target = validate_file_request(request, controls)
         pid = host_scope.root.pid
@@ -162,7 +167,10 @@ def handle_file_dialog(
         )
 
         def observe() -> dict[str, Any]:
+            nonlocal started_utc, started_monotonic
             job_owned()
+            started_utc = datetime.now(UTC).isoformat()
+            started_monotonic = time.monotonic()
             result = subprocess.run(
                 [
                     str(runner.NATIVE_UIA_OBSERVER_EXE),
@@ -254,6 +262,27 @@ def handle_file_dialog(
         return result
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         result = {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            # str(error) drops the observer's fixed stderr stages; stdout stays
+            # excluded because a partial dialog JSON is never success evidence.
+            stderr = error.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            uia_failure: dict[str, str | int | float | None] = {
+                "startedAtUtc": started_utc,
+                "elapsedMs": (
+                    round((time.monotonic() - started_monotonic) * 1000)
+                    if started_monotonic is not None
+                    else None
+                ),
+                "returnCode": error.returncode
+                if isinstance(error, subprocess.CalledProcessError)
+                else None,
+                "stderr": stderr[:4096],
+            }
+            if isinstance(error, subprocess.TimeoutExpired):
+                uia_failure["timeoutSeconds"] = error.timeout
+            result["uiaFailure"] = uia_failure
         if cleanup is not None:
             try:
                 cleanup("cancel")

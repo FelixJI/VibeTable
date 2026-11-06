@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -213,6 +215,83 @@ def test_picker_rechecks_retirement_after_finding_the_owned_dialog(
     assert result["status"] == "failed"
     assert "Job-owned" in result["error"]
     assert closed == [True]
+
+
+@pytest.mark.parametrize("as_bytes", [True, False])
+@pytest.mark.parametrize("failure", ["timeout", "nonzero"])
+def test_picker_observer_failure_keeps_bounded_stage_evidence_without_input(
+    tmp_path: Path, monkeypatch, failure: str, as_bytes: bool
+) -> None:
+    """First file-dialog observe failure: bounded stderr stages, never input.
+
+    bytes stderr must decode with replacement; stdout must never leak because
+    a partial dialog JSON cannot rescue the failed run, and without a trusted
+    first observation no cleanup click is possible.
+    """
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_file_dialog as picker
+    from tests.e2e import product_e2e_runner as runner
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    (tmp_path / "52-input.csv").write_text("synthetic", encoding="utf-8")
+    sent: list[str] = []
+    stages = "UIA_STAGE file-dispatch begin elapsedMs=1\nUIA_STAGE file-tree begin elapsedMs=120\n"
+    filler = "x" * 5000
+    if as_bytes:
+        # A lone invalid byte must decode with replacement, never raise.
+        payload = stages.encode("utf-8") + b"\xff" + filler.encode("ascii")
+        expected = stages + "\ufffd" + filler
+    else:
+        payload = stages + filler
+        expected = stages + filler
+    command = ["NativeUiaObserver.exe", "--file-dialog", "10", "7"]
+
+    def observe(*_args, **_kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                command, 5, output=b'{"secret": "PRIVATE_DIALOG_STDOUT"}', stderr=payload
+            )
+        raise subprocess.CalledProcessError(
+            1, command, output=b'{"secret": "PRIVATE_DIALOG_STDOUT"}', stderr=payload
+        )
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=7),
+        snapshot=lambda: SimpleNamespace(members=[SimpleNamespace(pid=7, identity_verified=True)]),
+    )
+    native = SimpleNamespace(
+        windows=lambda: [{"pid": 7, "visible": True, "title": "Replace attachment", "hwnd": 10}],
+        foreground=lambda *_: None,
+        close=lambda: None,
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+    monkeypatch.setattr(picker.subprocess, "run", observe)
+    monkeypatch.setattr(picker, "_send_input", lambda *_args, **_kwargs: sent.append("input"))
+    result = picker.handle_file_dialog(
+        {"requestId": "observer-failure", "kind": "read", "action": "select"},
+        host_scope=scope,
+        controls=tmp_path,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["requestId"] == "observer-failure"
+    uia_failure = result["uiaFailure"]
+    if failure == "timeout":
+        assert uia_failure["returnCode"] is None
+        assert uia_failure["timeoutSeconds"] == 5
+        assert "timed out after 5 seconds" in result["error"]
+    else:
+        assert uia_failure["returnCode"] == 1
+        assert "timeoutSeconds" not in uia_failure
+    assert uia_failure["stderr"] == expected[:4096]
+    datetime.fromisoformat(uia_failure["startedAtUtc"])
+    assert isinstance(uia_failure["elapsedMs"], int)
+    assert uia_failure["elapsedMs"] >= 0
+    assert sent == []
+    assert "cleanup" not in result
+    assert "PRIVATE_DIALOG_STDOUT" not in json.dumps(result)
 
 
 @pytest.mark.parametrize(
