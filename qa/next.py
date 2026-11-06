@@ -145,6 +145,8 @@ RACE_LONG_TESTS = frozenset(
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
         "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
         "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
+        # Ten isolated reversal fixtures also exceed 5m on Windows race runners.
+        "TestReversalNativeSnapshotsDraftsAndSameTransaction",
     }
 )
 TIMEOUT_RETURNCODE = 124

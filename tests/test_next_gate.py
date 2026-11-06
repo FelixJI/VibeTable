@@ -568,6 +568,7 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
         "TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit",
         "TestMutationKernelOneThousandOperationsCommitOrFullyRollback",
         "TestQueryPortPagesFiltersAndSortsTwentyFiveThousandRows",
+        "TestReversalNativeSnapshotsDraftsAndSameTransaction",
     ]
     assert set(slow) == next_gate.RACE_LONG_TESTS
     package_dir = tmp_path / "integration"
