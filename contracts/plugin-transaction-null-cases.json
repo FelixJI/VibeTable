@@ -1,0 +1,47 @@
+{
+  "rules": {
+    "reservation": {
+      "id": "capacity", "kind": "reservationBalance", "entity": "sources",
+      "reservation": {
+        "obligation": {"entity": "obligations", "quantity": "quantity"},
+        "scope": "scope", "quantity": "quantity", "normalPurpose": "normal",
+        "purpose": {"path": [{"field": "owner_line", "target": "lines"}], "field": "purpose"},
+        "phase": {
+          "path": [{"field": "owner_line", "target": "lines"}, {"field": "document", "target": "documents"}],
+          "field": "phase", "instructionDraft": "instruction_draft", "instructionOpen": "instruction_open",
+          "instructionClosed": "instruction_closed", "instructionTransferred": "instruction_transferred",
+          "deliveryDraft": "delivery_draft", "deliveryConfirmed": "delivery_confirmed"
+        }
+      }
+    },
+    "parent": {
+      "id": "freeze", "kind": "parentFreeze", "entity": "sources", "fields": ["quantity"],
+      "parentPath": [{"field": "owner_line", "target": "lines"}, {"field": "document", "target": "documents"}],
+      "parentStateField": "phase", "frozenStates": ["delivery_confirmed"]
+    }
+  },
+  "invalid": [
+    {"base": "reservation", "path": ["reservation", "instructionSource"]},
+    {"base": "reservation", "path": ["reservation", "planItem"]},
+    {"base": "reservation", "path": ["reservation", "transferredFrom"]},
+    {"base": "reservation", "path": ["reservation", "purpose", "path", "0"]},
+    {"base": "reservation", "path": ["reservation", "phase", "path", "0", "field"]},
+    {"base": "parent", "path": ["fields"]},
+    {"base": "parent", "path": ["fields", "0"]},
+    {"base": "parent", "path": ["parentPath"]},
+    {"base": "parent", "path": ["parentPath", "0"]},
+    {"base": "parent", "path": ["parentPath", "0", "field"]},
+    {"base": "parent", "path": ["parentPath", "0", "target"]},
+    {"base": "parent", "path": ["parentStateField"]},
+    {"base": "parent", "path": ["frozenStates"]},
+    {"base": "parent", "path": ["frozenStates", "0"]}
+  ],
+  "valid": [
+    {"base": "reservation", "path": ["reservation", "plans"], "value": null},
+    {"base": "reservation", "path": ["reservation", "instructionSource"], "value": ""},
+    {"base": "reservation", "path": ["reservation", "planItem"], "value": ""},
+    {"base": "reservation", "path": ["reservation", "transferredFrom"], "value": ""},
+    {"base": "parent", "path": ["fields"], "value": []},
+    {"base": "parent", "path": ["fields"], "omit": true}
+  ]
+}

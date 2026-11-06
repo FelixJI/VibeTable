@@ -908,6 +908,59 @@ def reversal_manifest() -> dict:
     return manifest
 
 
+def test_new_rule_null_shapes_match_go() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text()
+    )
+
+    def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
+        rule = copy.deepcopy(corpus["rules"][base])
+        node = rule
+        for index, key in enumerate(path):
+            key = int(key) if isinstance(node, list) else key
+            if index == len(path) - 1:
+                if omit:
+                    del node[key]
+                else:
+                    node[key] = value
+            else:
+                node = node[key]
+        PluginTransactionsDeclaration.model_validate(
+            {
+                "contract": "vibetable.plugin-transactions.v1",
+                "modelId": "m",
+                "version": 1,
+                "rules": [rule],
+                "decimals": [
+                    {
+                        "entity": "sources",
+                        "field": "quantity",
+                        "storage": "decimalText",
+                        "scale": 0,
+                        "digits": 38,
+                        "sign": "nonnegative",
+                    },
+                    {
+                        "entity": "obligations",
+                        "field": "quantity",
+                        "storage": "decimalText",
+                        "scale": 0,
+                        "digits": 38,
+                        "sign": "nonnegative",
+                    },
+                ],
+            }
+        )
+
+    for base in corpus["rules"]:
+        validate(base, [])
+    for case in corpus["invalid"]:
+        with pytest.raises(ValidationError):
+            validate(case["base"], case["path"])
+    for case in corpus["valid"]:
+        validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+
+
 def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:
     manifest = reversal_manifest()
     assert PluginManifest.model_validate(manifest)

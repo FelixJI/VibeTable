@@ -1,6 +1,8 @@
 package transactionrules
 
 import (
+	"bytes"
+	"encoding/json"
 	"math/big"
 	"reflect"
 	"slices"
@@ -65,6 +67,32 @@ type ReservationSpec struct {
 	InstructionSource string                `json:"instructionSource,omitempty"`
 	TransferredFrom   string                `json:"transferredFrom,omitempty"`
 	Plans             *ReservationPlans     `json:"plans,omitempty"`
+}
+
+func (s *ReservationSpec) UnmarshalJSON(raw []byte) error {
+	type wireReservation ReservationSpec
+	var decoded wireReservation
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return failure("rules_invalid")
+	}
+	// plans is nullable in the Python contract; optional string fields are not.
+	if fields["plans"] == nil {
+		delete(fields, "plans")
+	}
+	if containsJSONNull(fields) {
+		return failure("rules_invalid")
+	}
+	*s = ReservationSpec(decoded)
+	return nil
 }
 
 func (s *ReservationSpec) valid() bool {

@@ -135,7 +135,7 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 	case "reversalBalance":
 		allowed += "reversal "
 	}
-	var fields map[string]json.RawMessage
+	var fields map[string]any
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
@@ -144,8 +144,32 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			return failure("rules_invalid")
 		}
 	}
+	if decoded.Kind == "parentFreeze" && containsJSONNull(fields) {
+		return failure("rules_invalid")
+	}
 	*r = Rule(decoded)
 	return nil
+}
+
+// Only new non-nullable declaration shapes call this; legacy kinds keep their policy.
+func containsJSONNull(value any) bool {
+	switch node := value.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		for _, child := range node {
+			if containsJSONNull(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if containsJSONNull(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type Declaration struct {
