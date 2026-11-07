@@ -319,9 +319,24 @@ def _verify_results(events: str, expected: tuple[str, ...], label: str) -> None:
     print(f"Go {label}: verified {len(expected)} top-level results", flush=True)
 
 
-def _coverage_environment(directory: Path) -> dict[str, str]:
+def _app_environment(go: str, app_cwd: Path, directory: Path) -> dict[str, str]:
+    goroot = Path(
+        run_command((go, "env", "GOROOT"), app_cwd, directory, "app-go-root", echo=False).strip()
+    )
+    go_bin = goroot / "bin"
+    if not goroot.is_absolute() or not go_bin.is_dir():
+        raise ValueError("Go did not report a valid GOROOT for app tests")
+    # Match cmd/go's runtime environment for the test binary.
+    environment = dict(os.environ)
+    inherited_path = environment.get("PATH")
+    environment["PATH"] = f"{go_bin}{os.pathsep}{inherited_path}" if inherited_path else str(go_bin)
+    environment["PWD"] = str(app_cwd)
+    return environment
+
+
+def _coverage_environment(environment: dict[str, str], directory: Path) -> dict[str, str]:
     directory.mkdir()
-    return {**os.environ, "GOCOVERDIR": str(directory)}
+    return {**environment, "GOCOVERDIR": str(directory)}
 
 
 def _run_app(
@@ -334,6 +349,8 @@ def _run_app(
     for name in _DIAGNOSTIC_ENV:
         if name in os.environ:
             raise ValueError(f"Go app worker scheduling rejects the diagnostic environment {name}")
+    app_cwd = (cwd / "internal" / "app").absolute()
+    app_environment = _app_environment(go, app_cwd, directory)
     with tempfile.TemporaryDirectory(dir=directory, prefix="app-") as scratch:
         build_dir = Path(scratch)
         executable = build_dir / "app.test.exe"
@@ -348,14 +365,17 @@ def _run_app(
         finally:
             _show_output(build.stdout)
         _require_default_test_main(build_dir)
-        app_cwd = cwd / "internal" / "app"
         listing = run_command(
             (str(executable), "-test.list=^(Test|Example|Fuzz)"),
             app_cwd,
             directory,
             "app-inventory",
             echo=False,
-            environment=_coverage_environment(build_dir / "cover-list") if profiles else None,
+            environment=(
+                _coverage_environment(app_environment, build_dir / "cover-list")
+                if profiles
+                else app_environment
+            ),
         )
         inventory = _app_inventory(listing)
         partitions = tuple(part for part in (inventory[::2], inventory[1::2]) if part)
@@ -365,10 +385,10 @@ def _run_app(
             label = f"app-worker-{index + 1}"
             pattern = "^(" + "|".join(map(re.escape, part)) + ")$"
             cover: tuple[str, ...] = ()
-            environment = None
+            environment = app_environment
             if parts:
                 counters = build_dir / f"cover-{index + 1}"
-                environment = _coverage_environment(counters)
+                environment = _coverage_environment(app_environment, counters)
                 cover = (f"-test.coverprofile={parts[index]}", f"-test.gocoverdir={counters}")
             commands.append(
                 Command(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -33,14 +34,30 @@ def test_rejects_invalid_binary_inventory(listing: str) -> None:
         schedule._app_inventory(listing)
 
 
+@pytest.mark.parametrize("inherited_path", ["inherited-first;inherited-second", ""])
 def test_schedule_builds_once_and_completes_app_before_remaining(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, inherited_path: str
 ) -> None:
     inventory = ("TestA", "Example", "FuzzSeed", "TestSkip", "TestLast")
     observed: list[str] = []
     coverage = tmp_path / "coverage"
     coverage.mkdir()
     sidecar = tmp_path / "sidecar"
+    app_cwd = sidecar / "internal" / "app"
+    goroot = tmp_path / "go root"
+    go_bin = goroot / "bin"
+    go_bin.mkdir(parents=True)
+    monkeypatch.setenv("PATH", inherited_path)
+    monkeypatch.setenv("PWD", "old-working-directory")
+    monkeypatch.setenv("APP_TEST_SENTINEL", "keep")
+    runtime_path = os.pathsep.join(filter(None, (str(go_bin), inherited_path)))
+
+    def assert_environment(command: schedule.Command, counters: str) -> None:
+        assert command.environment is not None
+        assert command.environment["PATH"] == runtime_path
+        assert command.environment["PWD"] == str(app_cwd)
+        assert command.environment["APP_TEST_SENTINEL"] == "keep"
+        assert Path(command.environment["GOCOVERDIR"]).name == counters
 
     def supervise(
         commands: tuple[schedule.Command, ...], cwd: Path, *, timeout: int | None = None
@@ -49,6 +66,11 @@ def test_schedule_builds_once_and_completes_app_before_remaining(
         command = commands[0]
         if command.label == "packages":
             command.stdout.write_text(f"{PEER}\n{APP}\n", encoding="utf-8")
+        elif command.label == "app-go-root":
+            assert cwd == app_cwd
+            assert command.args == ("go", "env", "GOROOT")
+            assert command.environment is None
+            command.stdout.write_text(f"{goroot}\n", encoding="utf-8")
         elif command.label == "app-build":
             assert command.environment is not None
             build = Path(command.environment["GOTMPDIR"]) / "go-build1" / "b001"
@@ -71,6 +93,7 @@ def test_schedule_builds_once_and_completes_app_before_remaining(
         elif command.label == "app-inventory":
             assert cwd == sidecar / "internal/app"
             assert command.args[1:] == ("-test.list=^(Test|Example|Fuzz)",)
+            assert_environment(command, "cover-list")
             command.stdout.write_text("\n".join(inventory) + "\n", encoding="utf-8")
         elif command.label == "app-worker-1":
             assert cwd == sidecar / "internal/app"
@@ -86,6 +109,7 @@ def test_schedule_builds_once_and_completes_app_before_remaining(
                 )
                 assert worker.args[5] == f"-test.run=^({'|'.join(inventory[index::2])})$"
                 assert worker.args[6] == f"-test.coverprofile={coverage / f'app-{index + 1}.out'}"
+                assert_environment(worker, f"cover-{index + 1}")
                 assert worker.environment is not None
                 assert worker.args[7] == f"-test.gocoverdir={worker.environment['GOCOVERDIR']}"
             assert commands[0].environment != commands[1].environment
@@ -116,6 +140,7 @@ def test_schedule_builds_once_and_completes_app_before_remaining(
 
     assert observed == [
         "packages",
+        "app-go-root",
         "app-build",
         "app-inventory",
         "app-worker-1",
