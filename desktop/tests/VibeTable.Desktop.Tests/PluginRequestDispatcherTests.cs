@@ -340,6 +340,46 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task DispatchForwardsAuditSummaryPageToTheBoundedSharedMethod()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var picker = new FakePluginPackageSourcePicker(null);
+        string? forwarded = null;
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, picker, resources,
+            projectContext: ReadyContext,
+            sharedRpc: (method, _, _) =>
+            {
+                forwarded = method;
+                return Task.FromResult(JsonSerializer.SerializeToElement(new
+                {
+                    events = new object[]
+                    {
+                        new { eventId = "audit-1", startedAt = "2026-11-07T19:05:58Z", eventType = "install",
+                              outcome = "succeeded", runId = (string?)null, packageHash = "sha256:0", durationMs = (int?)0 },
+                    },
+                    nextCursor = (string?)null,
+                }));
+            });
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.audit.page",
+            "audit-page-1",
+            "{\"projectKey\":\"project-1\",\"pluginId\":\"com.acme.clean\",\"cursor\":null}"));
+
+        Assert.AreEqual("plugin.listAuditPage", forwarded);
+        Assert.AreEqual("plugin.audit.page", reply.ResponseType);
+        Assert.AreEqual("audit-page-1", reply.RequestId);
+        Assert.IsNull(reply.FailureCode);
+        using var payload = JsonDocument.Parse(JsonSerializer.Serialize(reply.Payload));
+        var events = payload.RootElement.GetProperty("events");
+        Assert.AreEqual(1, events.GetArrayLength());
+        Assert.AreEqual("audit-1", events[0].GetProperty("eventId").GetString());
+        Assert.AreEqual(JsonValueKind.Null, payload.RootElement.GetProperty("nextCursor").ValueKind);
+    }
+
+    [TestMethod]
     [DataRow(false), DataRow(true)]
     public async Task PackageInspectionWaitsForLazyGatewayButCatalogAndHostTasksDoNotStartIt(bool switchContext)
     {

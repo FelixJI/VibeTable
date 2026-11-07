@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
-import type { PluginAuditEvent, PluginSnapshot } from "@/contracts";
+import type { PluginAuditSummaryEvent, PluginSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginService } from "@/services/pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
@@ -48,26 +48,17 @@ const blockedPlugin: PluginSnapshot = {
   revision: 7,
 };
 
-const auditEvent: PluginAuditEvent = {
-  eventId: "audit-1",
-  projectKey: blockedPlugin.projectKey,
-  pluginId: blockedPlugin.pluginId,
-  pluginVersion: blockedPlugin.version,
-  packageHash: blockedPlugin.packageHash,
-  eventType: "install",
-  outcome: "succeeded",
-  actionId: null,
-  runId: null,
-  actor: "local-user",
-  risk: null,
-  targetCollection: null,
-  targetCount: null,
-  startedAt: "2026-07-22T08:00:00Z",
-  finishedAt: "2026-07-22T08:00:00Z",
-  durationMs: 0,
-  errorCode: null,
-  details: {},
-};
+function auditSummary(eventId: string, eventType = "install"): PluginAuditSummaryEvent {
+  return {
+    eventId,
+    startedAt: "2026-07-22T08:00:00Z",
+    eventType,
+    outcome: "succeeded",
+    runId: null,
+    packageHash: blockedPlugin.packageHash,
+    durationMs: 12,
+  };
+}
 
 function replyingBridge(response: (type: string) => unknown) {
   const posted: { type: string; requestId: string; payload: Record<string, unknown> }[] = [];
@@ -186,7 +177,7 @@ describe("PluginCenterView", () => {
           queueMicrotask(() => listener?.({ data: {
             type: request.type,
             requestId: request.requestId,
-            payload: [auditEvent],
+            payload: { events: [auditSummary("audit-1")], nextCursor: null },
           } }));
         },
         addEventListener: (_type, handler) => { listener = handler; },
@@ -209,6 +200,206 @@ describe("PluginCenterView", () => {
     } finally {
       wrapper.unmount();
       process.env.TZ = previousTimeZone;
+    }
+  });
+
+  it("loads audit summaries page by page and reaches the explicit end state", async () => {
+    const posted: { type: string; requestId: string; payload: Record<string, unknown> }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-page-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as (typeof posted)[number];
+          posted.push(request);
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload: request.payload.cursor === null
+              ? { events: [auditSummary("page-1-a"), auditSummary("page-1-b", "model.progress")], nextCursor: "cursor-2" }
+              : { events: [auditSummary("page-2-a", "transaction.preview")], nextCursor: null },
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      const first = posted.find(request => request.type === "plugin.audit.page");
+      expect(first?.payload).toEqual({ projectKey: "local:default", pluginId: blockedPlugin.pluginId, cursor: null });
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(2);
+      expect(wrapper.get('[data-testid="plugin-audit-more"]').text()).toContain("加载更多");
+
+      await wrapper.get('[data-testid="plugin-audit-more"]').trigger("click");
+      await flushPromises();
+      const second = posted.filter(request => request.type === "plugin.audit.page").at(-1);
+      expect(second?.payload).toEqual({ projectKey: "local:default", pluginId: blockedPlugin.pluginId, cursor: "cursor-2" });
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(3);
+      expect(wrapper.text()).toContain("已加载全部审计记录。");
+      expect(wrapper.find('[data-testid="plugin-audit-more"]').exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("shows a retryable audit error instead of silently clearing the list", async () => {
+    const posted: { type: string; requestId: string; payload: Record<string, unknown> }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    let fail = true;
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-page-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as (typeof posted)[number];
+          posted.push(request);
+          queueMicrotask(() => listener?.({ data: fail
+            ? { type: "operation.failed", requestId: request.requestId,
+                payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" } }
+            : { type: request.type, requestId: request.requestId,
+                payload: { events: [auditSummary("retry-1")], nextCursor: null } } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="plugin-audit-retry"]').text()).toContain("重试");
+      expect(wrapper.text()).toContain("audit unavailable");
+      expect(wrapper.text()).not.toContain("暂无审计记录");
+
+      fail = false;
+      await wrapper.get('[data-testid="plugin-audit-retry"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.text()).toContain("已加载全部审计记录。");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("never accepts a late audit reply from a previously selected plugin", async () => {
+    const other: PluginSnapshot = { ...blockedPlugin, pluginId: "com.acme.other", revision: 3 };
+    usePluginStore().applyPlugin(other);
+    const releasers = new Map<string, (payload: unknown) => void>();
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-race-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string; payload: { pluginId: string } };
+          if (request.type !== "plugin.audit.page") {
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type, requestId: request.requestId,
+              payload: request.type === "plugin.catalog.list" ? [] : { events: [], nextCursor: null },
+            } }));
+            return;
+          }
+          releasers.set(request.payload.pluginId, payload => queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId, payload,
+          } })));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click"); // com.acme.clean, reply withheld.
+      const rows = wrapper.findAll(".plugin-row");
+      await rows[rows.length - 1].trigger("click"); // com.acme.other, resolves first.
+      releasers.get(other.pluginId)?.({ events: [auditSummary("other-1")], nextCursor: null });
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.get(".audit-log article code").text()).toContain(other.packageHash);
+
+      // The late first-plugin reply arrives after the switch and must be dropped.
+      releasers.get(blockedPlugin.pluginId)?.({ events: [auditSummary("stale-1"), auditSummary("stale-2")], nextCursor: null });
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.text()).not.toContain("stale-1");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("issues exactly one audit page request per selection gesture without double firing", async () => {
+    const { posted } = replyingBridge(type => type === "plugin.audit.page"
+      ? { events: [auditSummary("single-1")], nextCursor: null }
+      : null);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(posted.filter(request => request.type === "plugin.audit.page")).toHaveLength(1);
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+
+      await wrapper.get(".plugin-row").trigger("click"); // Same plugin, explicit gesture.
+      await flushPromises();
+      expect(posted.filter(request => request.type === "plugin.audit.page")).toHaveLength(2);
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1); // Reopened, not appended.
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("discards the previous workspace's late audit reply after a project switch", async () => {
+    const releasers = new Map<string, (payload: unknown) => void>();
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-ws-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string; payload: Record<string, unknown> };
+          if (request.type !== "plugin.audit.page") {
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type, requestId: request.requestId,
+              payload: request.type === "plugin.catalog.list" ? [] : { available: true, reasons: [] },
+            } }));
+            return;
+          }
+          releasers.set(`${request.payload.projectKey}:${request.payload.cursor ?? ""}`, payload =>
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type, requestId: request.requestId, payload,
+            } })));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click"); // local:default request, reply withheld.
+      usePluginStore().setProjectContext("local:switched", "r3");
+      usePluginStore().applyPlugin({ ...blockedPlugin, projectKey: "local:switched" }); // Workspace catalog rebuild.
+      await flushPromises();
+      releasers.get("local:switched:")?.({ events: [auditSummary("fresh-1")], nextCursor: null });
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+
+      releasers.get("local:default:")?.({ events: [auditSummary("stale-1")], nextCursor: null });
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.text()).not.toContain("stale-1");
+    } finally {
+      wrapper.unmount();
     }
   });
 
@@ -432,7 +623,7 @@ describe("PluginCenterView", () => {
     expect(posted).toHaveLength(3);
     await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
     await flushPromises();
-    expect(posted.filter(message => (message as { type: string }).type !== "plugin.catalog.list")).toHaveLength(4);
+    expect(posted.filter(message => !["plugin.catalog.list", "plugin.audit.page"].includes((message as { type: string }).type))).toHaveLength(4);
     expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
       { payload: { projectKey: "local:default" } },
     ]);
@@ -858,7 +1049,9 @@ describe("PluginCenterView", () => {
     usePluginStore().replaceCatalog("local:default", [{ ...blockedPlugin, installationId: "reinstalled-record" }]);
     await flushPromises();
     expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
-    expect(posted).toEqual([]);
+    // The catalog swap legitimately reopens the audit summary page; the
+    // check's intent is that no lifecycle side effect was issued.
+    expect(posted.filter(message => (message as { type: string }).type !== "plugin.audit.page")).toEqual([]);
     await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
     expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
     wrapper.unmount();

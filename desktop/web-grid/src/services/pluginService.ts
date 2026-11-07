@@ -2,6 +2,7 @@ import type {
   PluginAction,
   PluginActionAvailability,
   PluginAuditEvent,
+  PluginAuditSummaryPage,
   PluginCommandContext,
   PluginEventEnvelope,
   PluginInstallPlan,
@@ -43,6 +44,7 @@ export interface PluginService {
   updateProjectRevision(projectRevision: string): void;
   list(): Promise<readonly PluginSnapshot[]>;
   listAudit(pluginId: string): Promise<readonly PluginAuditEvent[]>;
+  auditPage(pluginId: string, cursor?: string | null): Promise<PluginAuditSummaryPage>;
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
   retryCleanup(event: PluginAuditEvent): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
@@ -508,6 +510,11 @@ export function usePluginService(): PluginService {
     listAudit: (pluginId) => call(
       "plugin.audit.list",
       { projectKey: store.projectKey, pluginId },
+      { errorPolicy: "background" },
+    ),
+    auditPage: (pluginId, cursor = null) => call(
+      "plugin.audit.page",
+      { projectKey: store.projectKey, pluginId, cursor },
       { errorPolicy: "background" },
     ),
     listPendingCleanup: () => call(

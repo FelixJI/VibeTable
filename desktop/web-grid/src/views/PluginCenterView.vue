@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NIcon } from "naive-ui";
 import { Box, GitBranch, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "@lucide/vue";
-import type { PluginAction, PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
+import type { PluginAction, PluginAuditEvent, PluginAuditSummaryEvent, PluginRisk, PluginSnapshot } from "@/contracts";
 import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
@@ -28,8 +28,51 @@ const plannedUpgradePluginId = ref<string | null>(null);
 const cleanupPrivateSettings = ref(false);
 const uninstallTarget = ref<{ pluginId: string; installationId: string | null | undefined; revision: number; projectKey: string } | null>(null);
 const uninstalling = computed(() => uninstallTarget.value !== null);
-const auditEvents = ref<readonly PluginAuditEvent[]>([]);
+const auditEvents = ref<readonly PluginAuditSummaryEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
+// Audit summary pagination state. The generation counter retires late
+// replies: switching plugin or workspace context must never accept a
+// response issued for the previous scope.
+const auditNextCursor = ref<string | null>(null);
+const auditLoading = ref(false);
+const auditError = ref("");
+let auditGeneration = 0;
+function resetAuditPage(): void {
+  ++auditGeneration;
+  auditEvents.value = [];
+  auditNextCursor.value = null;
+  auditLoading.value = false;
+  auditError.value = "";
+}
+async function loadAuditPage(pluginId: string, cursor: string | null): Promise<void> {
+  const generation = ++auditGeneration;
+  auditLoading.value = true;
+  auditError.value = "";
+  try {
+    const page = await service.auditPage(pluginId, cursor);
+    if (generation !== auditGeneration) return;
+    // A malformed success payload surfaces as a local load failure instead
+    // of crashing the audit list; the contract page always carries an array.
+    if (!page || !Array.isArray(page.events)
+      || (page.nextCursor !== null && typeof page.nextCursor !== "string"))
+      throw new Error("审计记录加载失败");
+    auditEvents.value = cursor === null ? page.events : [...auditEvents.value, ...page.events];
+    auditNextCursor.value = page.nextCursor;
+  } catch (error) {
+    if (generation !== auditGeneration) return;
+    auditError.value = error instanceof Error ? error.message : "审计记录加载失败";
+  } finally {
+    if (generation === auditGeneration) auditLoading.value = false;
+  }
+}
+function loadMoreAudit(): void {
+  if (auditLoading.value || auditNextCursor.value === null || !plugin.value) return;
+  void loadAuditPage(plugin.value.pluginId, auditNextCursor.value);
+}
+function retryAuditLoad(): void {
+  if (!plugin.value) return;
+  void loadAuditPage(plugin.value.pluginId, auditEvents.value.length ? auditNextCursor.value : null);
+}
 const githubRepository = ref("");
 const bridge = useHostBridge();
 const pluginPreservationBusy = ref(false);
@@ -76,6 +119,18 @@ watch(() => [store.selectedPlugin?.installationId, store.selectedPlugin?.revisio
   workspaceSession.sessionEpoch, workspaceSession.sessionState], () => {
   cancelPluginPreservation();
   pluginPreservationStatus.value = "";
+}, { flush: "sync" });
+// Audit pages reopen only on scope identity changes (stable primitive
+// sources); catalog refreshes keep the already loaded pages, and the
+// generation guard retires any in-flight reply from the previous scope.
+watch([
+  () => store.selectedPlugin?.pluginId ?? "",
+  () => store.projectKey,
+  () => workspaceSession.sessionEpoch,
+  () => workspaceSession.sessionState,
+], () => {
+  resetAuditPage();
+  if (store.selectedPlugin) void loadAuditPage(store.selectedPlugin.pluginId, null);
 }, { flush: "sync" });
 const plugin = computed(() => store.selectedPlugin);
 function cancelUninstall(): void {
@@ -251,9 +306,16 @@ async function openAction(pluginId: string, actionId: string): Promise<void> {
   if (!plugin || !action || !canRunAction(plugin, action)) return;
   await safely(() => service.describeAction(pluginId, actionId, commandContext()));
 }
-async function selectPlugin(pluginId: string): Promise<void> {
+function selectPlugin(pluginId: string): void {
+  // Each row click reopens that plugin's first page exactly once: a changed
+  // selection is owned by the scope watch; a repeated click of the same
+  // plugin reloads explicitly, so neither path double-fires.
+  const previous = store.selectedPlugin?.pluginId ?? null;
   store.selectPlugin(pluginId);
-  auditEvents.value = await service.listAudit(pluginId);
+  if (previous === pluginId) {
+    resetAuditPage();
+    void loadAuditPage(pluginId, null);
+  }
 }
 async function retryCleanup(event: PluginAuditEvent): Promise<void> {
   await safely(async () => {
@@ -266,9 +328,12 @@ onMounted(() => {
   service.init();
 
   if (props.autoLoad) void safely(async () => {
+    // A pre-existing selection would not retrigger the audit watch.
+    const preselected = store.selectedPlugin?.pluginId ?? null;
     await service.list();
     pendingCleanup.value = await service.listPendingCleanup();
-    if (store.selectedPlugin) auditEvents.value = await service.listAudit(store.selectedPlugin.pluginId);
+    if (preselected !== null && store.selectedPlugin?.pluginId === preselected)
+      await loadAuditPage(preselected, null);
   });
 });
 onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
@@ -416,7 +481,11 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
           <article v-for="event in auditEvents" :key="event.eventId">
             <time>{{ formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
           </article>
-          <p v-if="!auditEvents.length" class="empty-line">暂无审计记录。</p>
+          <p v-if="!auditEvents.length && !auditLoading && !auditError" class="empty-line">暂无审计记录。</p>
+          <p v-if="auditError" class="audit-state audit-error" role="alert">{{ auditError }}<button data-testid="plugin-audit-retry" type="button" :disabled="auditLoading" @click="retryAuditLoad">重试</button></p>
+          <p v-else-if="auditLoading" class="audit-state">正在加载审计记录…</p>
+          <p v-else-if="auditNextCursor !== null" class="audit-state"><button data-testid="plugin-audit-more" type="button" :disabled="auditLoading" @click="loadMoreAudit">加载更多</button></p>
+          <p v-else-if="auditEvents.length" class="audit-state">已加载全部审计记录。</p>
         </section>
 
         <section class="detail-section">
@@ -474,6 +543,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 .plugin-preservation > p { flex: 1 1 160px; min-width: 0; margin: 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }.blockers header { display: flex; gap: 7px; align-items: center; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger) 18%, var(--vt-border)); }.blockers header span { margin-left: auto; font-size: 10px; }.blockers ul { display: grid; gap: 4px; margin: 8px 10px 9px; padding-left: 19px; }
 .detail-section { margin-top: 14px; border: 1px solid var(--vt-border); background: var(--vt-bg); }.detail-section > header { display: flex; align-items: baseline; gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--vt-border); }.detail-section h3 { margin: 0; font-size: 13px; }.package-facts dl { margin: 0; }.package-facts dl > div { display: grid; grid-template-columns: 115px minmax(0, 1fr); padding: 8px 11px; border-bottom: 1px solid var(--vt-border); }.package-facts dt { color: var(--vt-fg-muted); }.package-facts dd { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; margin: 0; }.package-facts dd code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }.permission-chip, .risk-chip { max-width: 100%; padding: 2px 6px; overflow-wrap: anywhere; color: var(--vt-fg-secondary); border: 1px solid var(--vt-border); border-radius: 999px; font: 550 10px ui-monospace, monospace; background: var(--vt-bg-subtle); }
 .audit-log article, .task-summary { display: grid; grid-template-columns: 145px 1fr 100px minmax(180px, 1fr) auto; gap: 10px; align-items: center; padding: 7px 11px; border-bottom: 1px solid var(--vt-border); }.audit-log time, .audit-log code, .audit-log small { color: var(--vt-fg-muted); font-size: 9px; }.audit-log span[data-outcome="failed"], .audit-log span[data-outcome="pending-cleanup"] { color: var(--vt-color-danger); }.task-summary { background: var(--vt-bg-subtle); }
+.audit-state { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 10px; color: var(--vt-fg-muted); font-size: 11px; }.audit-error { color: var(--vt-color-danger); }.audit-state button { min-height: 26px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.audit-state button:disabled { opacity: .45; cursor: default; }
 .action-row { display: grid; grid-template-columns: minmax(140px, .7fr) 60px 1fr auto; gap: 10px; align-items: center; min-height: 50px; padding: 7px 10px; border-bottom: 1px solid var(--vt-border); }.action-row > div { display: grid; }.action-row p { margin: 0; color: var(--vt-fg-muted); }.risk-chip[data-risk="write"] { color: var(--vt-color-warning); }.risk-chip[data-risk="destructive"] { color: var(--vt-color-danger); }.run-button, .quiet-button, .danger-text-button { display: inline-flex; min-height: 29px; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.run-button:disabled, .quiet-button:disabled { opacity: .45; cursor: default; }.empty-line { margin: 0; padding: 13px; color: var(--vt-fg-muted); }
 .lifecycle-actions { display: flex; gap: 7px; margin-top: 14px; }.danger-text-button { margin-left: auto; color: var(--vt-color-danger); border-color: color-mix(in srgb, var(--vt-color-danger) 30%, var(--vt-border)); }.uninstall-confirm { display: flex; gap: 6px; align-items: center; margin-left: auto; color: var(--vt-color-danger); }.uninstall-confirm button { min-height: 27px; border: 1px solid var(--vt-border); background: var(--vt-bg); }
 .action-overlay { position: absolute; z-index: 50; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }.action-overlay > :deep(*) { height: 100%; }.action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }

@@ -186,6 +186,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 "plugin.catalog.list" => "plugin.listCatalog",
                 "plugin.audit.list" => "plugin.listAudit",
+                "plugin.audit.page" => "plugin.listAuditPage",
                 "plugin.cleanup.listPending" => "plugin.listPendingCleanup",
                 _ => null,
             };

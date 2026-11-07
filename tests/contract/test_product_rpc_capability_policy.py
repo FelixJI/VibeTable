@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 118
+    assert len(manifest["rpcMethods"]) == 119
     assert len(manifest["eventTopics"]) == 6
     preservation = next(
         item for item in manifest["rpcMethods"] if item["method"] == "pluginPreservation.snapshot"
@@ -131,6 +131,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "plugin.uninstall",
         "plugin.upgrade",
         "plugin.listAudit",
+        "plugin.listAuditPage",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",
@@ -329,6 +330,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "mutation.apply",
         "mutation.preview",
         "plugin.listAudit",
+        "plugin.listAuditPage",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",

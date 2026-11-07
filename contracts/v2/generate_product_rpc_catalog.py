@@ -80,6 +80,7 @@ from backend.contracts.paste import (
 from backend.contracts.plugin import (
     InstallPlan,
     PluginAuditEvent,
+    PluginAuditSummaryPage,
     PluginEventEnvelope,
     PluginSnapshot,
     UninstallResult,
@@ -88,6 +89,7 @@ from backend.contracts.plugin_rpc import (
     CancelInstallParams,
     CommitInstallParams,
     InspectInstallParams,
+    PluginAuditPageParams,
     PluginIdentityParams,
     PluginProjectParams,
     PluginPreservationPageParams,
@@ -402,6 +404,7 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "table.previewPaste": PreviewPasteParams,
             "table.applyPaste": ApplyPasteParams,
             "plugin.listAudit": PluginIdentityParams,
+            "plugin.listAuditPage": PluginAuditPageParams,
             "plugin.listCatalog": PluginProjectParams,
             "plugin.listPendingCleanup": PluginProjectParams,
             "plugin.setEnabled": SetPluginEnabledParams,
@@ -807,6 +810,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "plugin.describeAction": _manual("RetiredPluginResult", {}),
         "plugin.inspectInstall": _typed(InstallPlan),
         "plugin.listAudit": _typed(list[PluginAuditEvent], "PluginAuditEventList"),
+        "plugin.listAuditPage": _typed(PluginAuditSummaryPage),
         "plugin.listCatalog": _typed(list[PluginSnapshot], "PluginSnapshotList"),
         "plugin.listPendingCleanup": _typed(
             list[PluginAuditEvent],

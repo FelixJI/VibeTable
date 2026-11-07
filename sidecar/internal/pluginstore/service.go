@@ -34,6 +34,13 @@ const (
 	maxPayloadBytes    = 4 << 20
 	listPageSize       = 1_000
 	PluginCatalogTable = "plugin:catalog"
+	// AuditSummaryPageSize is the fixed small page of plugin center audit
+	// summaries. The page plus the byte budget below keeps every summary
+	// response far below the 4 MiB Product envelope cap.
+	AuditSummaryPageSize = 50
+	// AuditSummaryPageBudgetBytes bounds the serialized events array of one
+	// summary page, leaving framing margin for the JSON-RPC envelope.
+	AuditSummaryPageBudgetBytes = 512 << 10
 	// ConflictItemID projects the whole plugin shared catalog as one
 	// synchronized workspace settings item, mirroring metadata namespaces.
 	ConflictItemID = "plugin:shared-state"
@@ -451,6 +458,120 @@ func (service *Service) listAudit(
 		result = append(result, row.Payload)
 	}
 	return result, nil
+}
+
+// AuditSummaryPageTooLargeCode is the dedicated failure for one audit
+// record whose serialized summary alone exceeds the page byte budget.
+const AuditSummaryPageTooLargeCode = "plugin.audit_page_too_large"
+
+func auditSummaryPageTooLarge() *Error {
+	return &Error{
+		Code:    AuditSummaryPageTooLargeCode,
+		Message: "one audit summary event exceeds the bounded page budget",
+	}
+}
+
+// AuditSummaryItem is the bounded metadata projection of one immutable audit
+// event for the plugin center. Only the fields the audit list renders cross
+// this projection; the details document and every other payload field stay
+// in storage and remain reachable through the frozen full-history reads.
+type AuditSummaryItem struct {
+	EventID     string  `json:"eventId"`
+	StartedAt   string  `json:"startedAt"`
+	EventType   string  `json:"eventType"`
+	Outcome     string  `json:"outcome"`
+	RunID       *string `json:"runId"`
+	PackageHash string  `json:"packageHash"`
+	DurationMs  *int64  `json:"durationMs"`
+}
+
+// ListAuditSummaryPage reads one bounded page of audit summary metadata in
+// the stable (seq, id) keyset order. afterSeq <= 0 starts at the oldest
+// event; otherwise the page continues strictly after that seq, so chained
+// reads cover every event of the scope exactly once without duplicates or
+// gaps. nextAfterSeq is the last returned item's seq (0 for an empty page)
+// and hasMore reports whether at least one further event exists in scope.
+func (service *Service) ListAuditSummaryPage(
+	ctx context.Context,
+	projectKey string,
+	pluginID string,
+	afterSeq int64,
+	limit int,
+	byteBudget int,
+) ([]AuditSummaryItem, int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, 0, false, err
+	}
+	if pluginID == "" || limit < 1 || byteBudget < 1 {
+		return nil, 0, false, requestError(
+			"plugin.request_invalid", "audit summary page request is invalid", nil,
+		)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(recordsCollection)
+	if err != nil {
+		return nil, 0, false, storageError()
+	}
+	filter := "kind={:kind} && project_key={:project} && plugin_id={:plugin} && seq>{:after}"
+	params := dbx.Params{"kind": KindAudit, "project": projectKey, "plugin": pluginID, "after": afterSeq}
+	// Fetch one row beyond the fixed page: its presence is the only hasMore
+	// signal, mirroring the keyset discipline of the query surfaces.
+	page, pageErr := service.app.FindRecordsByFilter(
+		collection, filter, "+seq, +id", limit+1, 0, params,
+	)
+	if pageErr != nil {
+		return nil, 0, false, storageError()
+	}
+	items := make([]AuditSummaryItem, 0, len(page))
+	budget := 2 // JSON array brackets.
+	var lastSeq int64
+	for _, stored := range page {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, false, err
+		}
+		row, decodeErr := recordFromStored(stored)
+		if decodeErr != nil {
+			return nil, 0, false, decodeErr
+		}
+		if err := service.validateLegacyRow(row); err != nil {
+			return nil, 0, false, storageError()
+		}
+		var item AuditSummaryItem
+		if err := json.Unmarshal(row.Payload, &item); err != nil {
+			return nil, 0, false, storageError()
+		}
+		if item.EventID == "" || item.StartedAt == "" || item.EventType == "" || item.Outcome == "" {
+			return nil, 0, false, storageError()
+		}
+		// The budget counts serialized JSON bytes — escaping included — plus
+		// the array separators, never the raw field lengths.
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return nil, 0, false, storageError()
+		}
+		separator := 0
+		if len(items) > 0 {
+			separator = 1
+		}
+		if len(items) == 0 && budget+len(encoded) > byteBudget {
+			// A record whose summary alone exceeds the page budget can never
+			// fit any bounded page; fail closed with the dedicated code instead
+			// of answering an unbounded envelope or skipping the record.
+			return nil, 0, false, auditSummaryPageTooLarge()
+		}
+		if len(items) >= limit || budget+separator+len(encoded) > byteBudget {
+			// The row beyond the fixed page or the byte budget closes the
+			// page; it remains the next page's first event.
+			return items, lastSeq, true, nil
+		}
+		items = append(items, item)
+		budget += separator + len(encoded)
+		lastSeq = row.Seq
+	}
+	hasMore := len(page) > limit
+	return items, lastSeq, hasMore, nil
 }
 
 func (service *Service) list(

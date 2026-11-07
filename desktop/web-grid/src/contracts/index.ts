@@ -1148,6 +1148,27 @@ export interface PluginAuditEvent {
   readonly details: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Bounded metadata projection of one plugin audit event for the plugin
+ * center list. The details document never crosses this projection; the
+ * full payload stays on the frozen full-history reads.
+ */
+export interface PluginAuditSummaryEvent {
+  readonly eventId: string;
+  readonly startedAt: string;
+  readonly eventType: string;
+  readonly outcome: string;
+  readonly runId: string | null;
+  readonly packageHash: string;
+  readonly durationMs: number | null;
+}
+
+/** One fixed-size page of plugin center audit summaries. */
+export interface PluginAuditSummaryPage {
+  readonly events: readonly PluginAuditSummaryEvent[];
+  readonly nextCursor: string | null;
+}
+
 export interface PluginActionAvailability {
   readonly available: boolean;
   readonly reasons: readonly string[];
@@ -1566,6 +1587,7 @@ export type WebMessageType =
   | "tableAdmin.deleteRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
+  | "plugin.audit.page"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.github.inspect"
@@ -1704,6 +1726,7 @@ export type HostMessageType =
   // Fixed request replies echo their use-case type and requestId.
   | "plugin.catalog.list"
   | "plugin.audit.list"
+  | "plugin.audit.page"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.github.inspect"
@@ -2032,6 +2055,7 @@ export interface HostPayloadMap {
   "plugin.surface.message": PluginSurfaceHostMessage;
   "plugin.catalog.list": readonly PluginSnapshot[];
   "plugin.audit.list": readonly PluginAuditEvent[];
+  "plugin.audit.page": PluginAuditSummaryPage;
   "plugin.cleanup.listPending": readonly PluginAuditEvent[];
   "plugin.install.inspect": PluginInstallPlan;
   "plugin.install.github.inspect": PluginInstallPlan;
@@ -2253,6 +2277,7 @@ export interface WebPayloadMap {
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
+  "plugin.audit.page": { readonly projectKey: string; readonly pluginId: string; readonly cursor: string | null };
   "plugin.cleanup.listPending": { readonly projectKey: string };
   "plugin.install.inspect": {
     readonly projectKey: string;
