@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
@@ -23,6 +25,11 @@ import (
 // The seven invoice entities use one signed allocation carrier for both
 // allocationBalance and the original-blue settlement capacity.
 func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFixture {
+	t.Helper()
+	return newInvoiceAuthorityFixtureWithWire(t, nil, withPlans...)
+}
+
+func newInvoiceAuthorityFixtureWithWire(t *testing.T, wire func(transactionrules.Declaration) any, withPlans ...bool) *transactionFixture {
 	t.Helper()
 	normal := len(withPlans) > 0 && withPlans[0]
 	scoped := len(withPlans) > 1 && withPlans[1]
@@ -306,7 +313,11 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 	if err = json.Unmarshal(raw, &obj); err != nil {
 		t.Fatal(err)
 	}
-	obj["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = d
+	var declaration any = d
+	if wire != nil {
+		declaration = wire(d)
+	}
+	obj["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = declaration
 	previous := input.InstallationRevision
 	input.InstallationRevision++
 	obj["revision"] = input.InstallationRevision
@@ -323,7 +334,7 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 		t.Fatal(err)
 	}
 	f := &transactionFixture{pb: pb, workspace: workspace, input: input, model: completed.(pluginmodel.State), domain: domain, kernel: mutation.New(pb, mutation.MetadataSchemaSource{}), epoch: 1, declaration: d}
-	if _, err = f.call("transaction.configure", map[string]any{"declaration": d}); err != nil {
+	if _, err = f.call("transaction.configure", map[string]any{"declaration": declaration}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -531,6 +542,102 @@ func TestInvoiceAuthorityNativeCorrectionAndHistory(t *testing.T) {
 	_, eventDigest := regressionRow(t, f, "adjustments", eventID)
 	response = reversalNative(t, f, "native-evidence-edit", "adjustments", map[string]any{"kind": "update", "primaryKey": eventID, "expectedDigest": eventDigest, "values": map[string]any{"note": "改写旧依据"}})
 	requireHTTPNotCommitted(t, response, "transaction.evidence_frozen")
+}
+
+func TestInvoiceAuthorityExplicitSelfOwnerPath(t *testing.T) {
+	var declaration map[string]any
+	f := newInvoiceAuthorityFixtureWithWire(t, func(typed transactionrules.Declaration) any {
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &declaration); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range declaration["rules"].([]any) {
+			rule := item.(map[string]any)
+			if rule["id"] == "header_evidence" {
+				// The installed manifest and SDK request keep the explicit empty array.
+				rule["evidence"].(map[string]any)["ownerPath"] = []any{}
+				return declaration
+			}
+		}
+		t.Fatal("missing self-owned evidence rule")
+		return nil
+	})
+	store := pluginstore.New(f.pb, f.workspace)
+	installed, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
+	if err != nil || !strings.Contains(string(installed), `"ownerPath":[]`) {
+		t.Fatalf("installation lost the explicit empty owner path: %v", err)
+	}
+	eventID := fmt.Sprintf("transaction:rules:%s:%s:%d", f.input.InstallationID, f.declaration.ModelID, f.declaration.Version)
+	registration := func() json.RawMessage {
+		t.Helper()
+		event, err := store.GetAudit(t.Context(), f.input.ProjectKey, f.input.PluginID, eventID)
+		if err != nil || len(event) == 0 || strings.Contains(string(event), `"ownerPath":[]`) {
+			t.Fatalf("expected the existing audit format with the self-owner path omitted: %v", err)
+		}
+		return event
+	}
+	before := registration()
+
+	plan := invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, false)
+	result, err := f.call("transaction.preview", map[string]any{"plan": plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := result.(transactionPreview)
+	result, err = f.call("transaction.commit", map[string]any{"requestId": preview.RequestID})
+	applied, ok := result.(transactionResult)
+	if err != nil || !ok || !validTransactionResult(applied, f.workspace, f.input.InstallationID, preview.RequestID) {
+		t.Fatalf("invoice did not produce an applied receipt: %v", err)
+	}
+	row, _ := regressionRow(t, f, "invoices", applied.NewIDs["invoices"]["blue"])
+	if row["number"] != "blue" {
+		t.Fatalf("invoice number readback: %v", row["number"])
+	}
+	recovered, err := f.call("transaction.status", map[string]any{"requestId": applied.RequestID})
+	if err != nil || !reflect.DeepEqual(recovered, applied) {
+		t.Fatalf("status must return the original receipt: %v", err)
+	}
+	f.input.RequestID = "repeat-configure"
+	configured, err := f.call("transaction.configure", map[string]any{"declaration": declaration})
+	if result, ok := configured.(map[string]any); err != nil || !ok || result["status"] != "configured" {
+		t.Fatalf("repeat configure must use the existing registration: %v", err)
+	}
+	history, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil || len(history) != 1 || string(registration()) != string(before) {
+		t.Fatalf("configure changed the existing immutable registration: %v", err)
+	}
+
+	// Use the genuine preview to exercise matching failures that the public
+	// route normally stops before it constructs a preview.
+	for _, tc := range []struct {
+		name   string
+		change func(*transactionPreview, *pluginSurfaceAPIRequest)
+	}{
+		{"workspace", func(p *transactionPreview, _ *pluginSurfaceAPIRequest) { p.WorkspaceID = "different-workspace" }},
+		{"installation", func(p *transactionPreview, _ *pluginSurfaceAPIRequest) { p.InstallationID = "different-installation" }},
+		{"plugin", func(_ *transactionPreview, input *pluginSurfaceAPIRequest) { input.PluginID = "com.example.other" }},
+		{"declaration", func(p *transactionPreview, _ *pluginSurfaceAPIRequest) { p.Declaration.Version++ }},
+		{"binding", func(p *transactionPreview, _ *pluginSurfaceAPIRequest) {
+			p.Model.Bindings = maps.Clone(p.Model.Bindings)
+			binding := p.Model.Bindings["invoices"]
+			binding.Fields = maps.Clone(binding.Fields)
+			binding.Fields["number"] = "different-field"
+			p.Model.Bindings["invoices"] = binding
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, candidate := f.input, preview
+			tc.change(&candidate, &input)
+			_, err := transactionRequests(t.Context(), f.pb, input, pluginSurfaceInstallation{}, candidate)
+			var denied *query.ProductError
+			if !errors.As(err, &denied) || denied.Code != "transaction.configuration_required" {
+				t.Fatalf("mismatched registration must be rejected: %v", err)
+			}
+		})
+	}
 }
 
 func TestInvoiceAuthorityDecimalBudgetRetainsRegistration(t *testing.T) {
