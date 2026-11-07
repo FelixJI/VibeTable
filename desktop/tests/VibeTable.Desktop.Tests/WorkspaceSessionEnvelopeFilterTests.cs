@@ -470,7 +470,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             using CancellationTokenRegistration registration = token.Register(
                 () => cancelled.TrySetResult());
             started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            // The observer also wakes the forwarder so it cannot be disposed before it signals.
+            await cancelled.Task;
+            token.ThrowIfCancellationRequested();
             return new ProductSidecarSuccess(
                 call.Wire.Clone(),
                 JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() }));
@@ -483,15 +485,20 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         controller.SetProductSidecarForwarder(sidecar);
         Task dispatch = controller.DispatchAsync(
             GoReadRequest(method, "go-cancel", ScopeFor(opened, 1)));
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
-        await dispatch;
-        await switching;
+        Task switching = Task.CompletedTask;
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            switching = fixture.Manager.SwitchAsync(
+                second.WorkspaceId,
+                WorkspaceOpenMode.Writable);
+            await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            cancelled.TrySetCanceled();
+            await Task.WhenAll(dispatch, switching);
+        }
 
         Assert.AreEqual(1, sidecar.CallCount);
         AssertRetiredReply(sink, "go-cancel");
