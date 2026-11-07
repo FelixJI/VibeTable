@@ -12,8 +12,9 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 	var corpus struct {
 		Rules   map[string]json.RawMessage `json:"rules"`
 		Invalid []struct {
-			Base string
-			Path []string
+			Base  string
+			Path  []string
+			Value any
 		} `json:"invalid"`
 		Valid []struct {
 			Base  string
@@ -63,6 +64,30 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 		declaration := map[string]any{"contract": Contract, "modelId": "m", "version": 1, "rules": []any{rule}, "decimals": []any{
 			map[string]any{"entity": "sources", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "sign": "nonnegative"},
 			map[string]any{"entity": "obligations", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "sign": "nonnegative"},
+			map[string]any{"entity": "allocations", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "nullable": true},
+			map[string]any{"entity": "allocations", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "allocations", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "allocations", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "invoice_lines", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "nullable": true},
+			map[string]any{"entity": "invoice_lines", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "invoice_lines", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "invoice_lines", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "blueprint_lines", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "sign": "nonnegative"},
+			map[string]any{"entity": "blueprint_lines", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38},
+			map[string]any{"entity": "blueprint_lines", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38},
+			map[string]any{"entity": "blueprint_lines", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38},
+			map[string]any{"entity": "request_sources", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "sign": "nonnegative", "nullable": true},
+			map[string]any{"entity": "request_sources", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "request_sources", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "request_sources", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "actual_lines", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "nullable": true},
+			map[string]any{"entity": "actual_lines", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "actual_lines", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "actual_lines", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "nullable": true},
+			map[string]any{"entity": "adjustments", "field": "quantity", "storage": "decimalText", "scale": 0, "digits": 38, "sign": "nonnegative", "nullable": true},
+			map[string]any{"entity": "adjustments", "field": "net", "storage": "decimalText", "scale": 2, "digits": 38, "sign": "nonnegative", "nullable": true},
+			map[string]any{"entity": "adjustments", "field": "tax", "storage": "decimalText", "scale": 2, "digits": 38, "sign": "nonnegative", "nullable": true},
+			map[string]any{"entity": "adjustments", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "sign": "nonnegative", "nullable": true},
 		}}
 		encoded, _ := json.Marshal(declaration)
 		_, err := Decode(encoded)
@@ -74,7 +99,7 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 		t.Run(base+"/omitted-options", func(t *testing.T) { check(t, base, nil, nil, false, true) })
 	}
 	for _, tc := range corpus.Invalid {
-		t.Run(tc.Base+"/null/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, nil, false, false) })
+		t.Run(tc.Base+"/invalid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, false, false) })
 	}
 	for _, tc := range corpus.Valid {
 		t.Run(tc.Base+"/valid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, tc.Omit, true) })

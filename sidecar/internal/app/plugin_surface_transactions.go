@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -194,33 +195,50 @@ func authorizeReceiptTables(installed pluginSurfaceInstallation, active string, 
 	return nil
 }
 
-func transactionModel(ctx context.Context, app core.App, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation) (pluginmodel.State, error) {
-	d := installed.Manifest.Permissions.Transactions
-	m := installed.Manifest.Permissions.Model
-	if d == nil || d.Validate() != nil || m == nil || d.ModelID != m.ModelID {
-		return pluginmodel.State{}, pluginDataError("transaction.declaration_invalid")
-	}
-	states, err := pluginmodel.States(ctx, app, input.ProjectKey, input.PluginID)
+func transactionModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation) (pluginmodel.State, error) {
+	reads, err := transactionAuthority(ctx, app, workspace, input)
 	if err != nil {
 		return pluginmodel.State{}, err
 	}
-	for i := len(states) - 1; i >= 0; i-- {
-		s := states[i]
-		if s.Status == "completed" && s.InstallationID == input.InstallationID && s.InstallationRevision == input.InstallationRevision && pluginmodel.Equal(s.Model, *m) {
-			if err := modelValidateBindings(ctx, app, s); err != nil {
-				return s, err
+	if reads != nil && reads.model != nil {
+		return *reads.model, nil
+	}
+	if _, err := transactionDeclaration(installed); err != nil {
+		return pluginmodel.State{}, err
+	}
+	var state *pluginmodel.State
+	var revisions map[string]string
+	if reads != nil && reads.installed != nil {
+		state, revisions = reads.grantModel, reads.schemaRevisions
+	} else {
+		state, err = loadCompletedModel(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation, nil)
+		if err != nil {
+			if state != nil {
+				return *state, err
 			}
-			for _, binding := range s.Bindings {
-				table, err := schemaexecution.Describe(ctx, app, binding.TableID)
-				if err != nil {
-					return s, err
-				}
-				s.Revisions[binding.TableID] = table.Snapshot.SchemaRevision
-			}
-			return s, nil
+			return pluginmodel.State{}, err
 		}
 	}
-	return pluginmodel.State{}, pluginDataError("transaction.model_required")
+	if state == nil || state.Revisions == nil {
+		return pluginmodel.State{}, pluginDataError("transaction.model_required")
+	}
+	model := *state
+	model.Revisions = maps.Clone(state.Revisions)
+	for _, binding := range model.Bindings {
+		revision, found := revisions[binding.TableID]
+		if !found {
+			table, err := schemaexecution.Describe(ctx, app, binding.TableID)
+			if err != nil {
+				return model, err
+			}
+			revision = table.Snapshot.SchemaRevision
+		}
+		model.Revisions[binding.TableID] = revision
+	}
+	if reads != nil {
+		reads.model = &model
+	}
+	return model, nil
 }
 
 func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate, ports *pluginSurfaceIO) (output any, returnedErr error) {
@@ -231,22 +249,22 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 			returnedErr = pluginDataError(returnedErr.Error())
 		}
 	}()
-	if len(input.Request) > maxMutationRequestBytes {
-		return nil, pluginDataError("transaction.budget_exceeded")
-	}
-	if ports == nil || ports.transactionEpoch == nil || ports.transactionEpoch() == 0 {
-		return nil, pluginDataError("transaction.authority_unavailable")
-	}
-	installed, err := surfaceInstallation(ctx, app, workspace, input)
-	if err != nil {
-		return nil, err
-	}
-	if d := installed.Manifest.Permissions.Transactions; d == nil || d.Validate() != nil || installed.Manifest.Permissions.Model == nil || d.ModelID != installed.Manifest.Permissions.Model.ModelID {
-		return nil, pluginDataError("transaction.declaration_invalid")
-	}
-	declaration := *installed.Manifest.Permissions.Transactions
 	if input.Method == "transaction.configure" {
-		model, err := transactionModel(ctx, app, input, installed)
+		if len(input.Request) > maxMutationRequestBytes {
+			return nil, pluginDataError("transaction.budget_exceeded")
+		}
+		if ports == nil || ports.transactionEpoch == nil || ports.transactionEpoch() == 0 {
+			return nil, pluginDataError("transaction.authority_unavailable")
+		}
+		installed, err := surfaceInstallation(ctx, app, workspace, input)
+		if err != nil {
+			return nil, err
+		}
+		declaration, err := transactionDeclaration(installed)
+		if err != nil {
+			return nil, err
+		}
+		model, err := transactionModel(ctx, app, workspace, input, installed)
 		if err != nil {
 			return nil, err
 		}
@@ -267,7 +285,7 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 				if !reflect.DeepEqual(current.Manifest.Permissions.Transactions, &declaration) {
 					return pluginDataError("transaction.plan_stale")
 				}
-				currentModel, err := transactionModel(ctx, tx, input, current)
+				currentModel, err := transactionModel(ctx, tx, workspace, input, current)
 				if err != nil {
 					return err
 				}
@@ -303,6 +321,203 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 			})
 		})
 		return map[string]any{"contract": transactionrules.Contract, "status": "configured", "modelId": declaration.ModelID, "version": declaration.Version}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var prepared transactionPreflight
+	var response any
+	err := app.RunInTransaction(func(tx core.App) error {
+		readCtx := withTransactionAuthority(ctx, workspace, input)
+		if err := beginTransactionAuthority(readCtx, tx); err != nil {
+			return err
+		}
+		var err error
+		response, err = prepareSurfaceTransaction(readCtx, tx, workspace, input, ports, &prepared)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if response != nil {
+		return response, nil
+	}
+	preview, requests := prepared.preview, prepared.requests
+	authorize := transactionAuthorize(input, workspace)
+	authorizeCurrent := func(ctx context.Context, tx core.App, table, kind string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if preview.Epoch != ports.transactionEpoch() {
+			if input.Method == "transaction.preview" {
+				return pluginDataError("transaction.plan_stale")
+			}
+			return pluginDataError("transaction.unknown")
+		}
+		return authorize(ctx, tx, table, kind)
+	}
+	if input.Method == "transaction.preview" {
+		inspectionContext := withTransactionAuthority(ctx, workspace, input)
+		inspection, err := kernel.InspectPlan(inspectionContext, requests, func(ctx context.Context, tx core.App, table, kind string) error {
+			if err := beginTransactionAuthority(ctx, tx); err != nil {
+				return err
+			}
+			return authorizeCurrent(ctx, tx, table, kind)
+		})
+		if err != nil {
+			return nil, err
+		}
+		preview.Effects, preview.DataRevisions = inspection.Effects, inspection.BaseRevisions
+		if preview.PreviewRevision >= 1<<31-1 {
+			return nil, pluginDataError("transaction.budget_exceeded")
+		}
+		preview.PreviewRevision++
+		if raw, err := json.Marshal(preview); err != nil || len(raw) > maxMutationRequestBytes {
+			return nil, pluginDataError("transaction.budget_exceeded")
+		}
+		previewEventID := "transaction:preview:" + preview.RequestID + ":" + security.RandomString(12)
+		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.transaction.preview", previewEventID, func(ctx context.Context) error {
+			ctx = withTransactionAuthority(ctx, workspace, input)
+			return app.RunInTransaction(func(tx core.App) error {
+				if err := beginTransactionAuthority(ctx, tx); err != nil {
+					return err
+				}
+				if _, err := surfaceInstallation(ctx, tx, workspace, input); err != nil {
+					return err
+				}
+				if preview.Epoch != ports.transactionEpoch() {
+					return pluginDataError("transaction.plan_stale")
+				}
+				var result transactionResult
+				if found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "result", &result); err != nil {
+					return err
+				} else if found {
+					return pluginDataError("transaction.plan_stale")
+				}
+				var previous transactionPreview
+				if found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "preview", &previous); err != nil {
+					return err
+				} else if found && previous.PreviewRevision != preview.PreviewRevision-1 {
+					return pluginDataError("transaction.plan_stale")
+				}
+				_, err := pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, prepared.auditInstallation, previewEventID, "transaction.preview", preview))
+				if err != nil {
+					return err
+				}
+				return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
+			})
+		})
+		return preview, err
+	}
+	var result transactionResult
+	for i := range requests {
+		requests[i].Authorize = func(ctx context.Context, tx core.App) error {
+			if err := beginTransactionAuthority(ctx, tx); err != nil {
+				return err
+			}
+			current, err := surfaceInstallation(ctx, tx, workspace, input)
+			if err != nil {
+				return err
+			}
+			currentModel, err := transactionModel(ctx, tx, workspace, input, current)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(currentModel.Bindings, preview.Model.Bindings) {
+				return pluginDataError("transaction.plan_stale")
+			}
+			if preview.Epoch != ports.transactionEpoch() {
+				return pluginDataError("transaction.unknown")
+			}
+			found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "result", &result)
+			if err != nil {
+				return err
+			}
+			if found {
+				if !validTransactionResult(result, workspace, input.InstallationID, preview.RequestID) {
+					return pluginDataError("transaction.unknown")
+				}
+				if replay := writecoordinator.ReplayedBusinessWrite(ctx, "plugin.transaction.commit", preview.RequestID); replay != nil {
+					return replay
+				}
+				return errTransactionReplay
+			}
+			return nil
+		}
+	}
+	err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.transaction.commit", preview.RequestID, func(ctx context.Context) error {
+		ctx = withTransactionAuthority(ctx, workspace, input)
+		_, err := kernel.ApplyPlan(ctx, requests, authorizeCurrent, func(tx core.App, receipt mutation.PlanReceipt) error {
+			if preview.Epoch != ports.transactionEpoch() {
+				return pluginDataError("transaction.unknown")
+			}
+			var current transactionPreview
+			found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "preview", &current)
+			if err != nil {
+				return err
+			}
+			if !found || current.PreviewRevision != preview.PreviewRevision || !reflect.DeepEqual(receipt.Effects, preview.Effects) || !reflect.DeepEqual(receipt.BaseRevisions, preview.DataRevisions) {
+				return pluginDataError("transaction.plan_stale")
+			}
+			receipt.Effects, receipt.BaseRevisions = nil, nil
+			result = transactionResult{Contract: transactionrules.Contract, WorkspaceID: workspace, InstallationID: input.InstallationID, RequestID: preview.RequestID, Status: "applied", NewIDs: preview.NewIDs, Receipt: receipt}
+			raw, err := json.Marshal(result)
+			if err != nil || len(raw) > maxMutationRequestBytes {
+				return pluginDataError("transaction.result_budget_exceeded")
+			}
+			_, err = pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, prepared.auditInstallation, "transaction:result:"+preview.RequestID, "transaction.result", result))
+			return err
+		})
+		return err
+	})
+	if errors.Is(err, errTransactionReplay) {
+		return result, nil
+	}
+	if err != nil {
+		// Acknowledgement and notification failures cannot erase an already committed result.
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, authErr := surfaceInstallation(recovery, app, workspace, input); authErr == nil {
+			var persisted transactionResult
+			if found, readErr := loadTransactionEvent(recovery, app, workspace, input, preview.RequestID, "result", &persisted); readErr == nil && found && validTransactionResult(persisted, workspace, input.InstallationID, preview.RequestID) {
+				return persisted, nil
+			}
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+type transactionPreflight struct {
+	// Used for audit attribution only. The write transactions authorize again.
+	auditInstallation pluginSurfaceInstallation
+	preview           transactionPreview
+	requests          []mutation.Request
+}
+
+func transactionDeclaration(installed pluginSurfaceInstallation) (transactionrules.Declaration, error) {
+	d := installed.Manifest.Permissions.Transactions
+	m := installed.Manifest.Permissions.Model
+	if d == nil || d.Validate() != nil || m == nil || d.ModelID != m.ModelID {
+		return transactionrules.Declaration{}, pluginDataError("transaction.declaration_invalid")
+	}
+	return *d, nil
+}
+
+func prepareSurfaceTransaction(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, ports *pluginSurfaceIO, prepared *transactionPreflight) (any, error) {
+	installed, err := surfaceInstallation(ctx, app, workspace, input)
+	if err != nil {
+		return nil, err
+	}
+	if len(input.Request) > maxMutationRequestBytes {
+		return nil, pluginDataError("transaction.budget_exceeded")
+	}
+	if ports == nil || ports.transactionEpoch == nil || ports.transactionEpoch() == 0 {
+		return nil, pluginDataError("transaction.authority_unavailable")
+	}
+	declaration, err := transactionDeclaration(installed)
+	if err != nil {
+		return nil, err
 	}
 	var request struct {
 		Refresh         bool             `json:"refresh,omitempty"`
@@ -372,7 +587,7 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 	if input.Method == "transaction.preview" && request.Plan == nil {
 		return nil, pluginDataError("transaction.request_invalid")
 	}
-	model, err := transactionModel(ctx, app, input, installed)
+	model, err := transactionModel(ctx, app, workspace, input, installed)
 	if err != nil {
 		return nil, err
 	}
@@ -407,138 +622,31 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 			return nil, pluginDataError("plugin_write_denied")
 		}
 		preview = transactionPreview{Contract: transactionrules.Contract, WorkspaceID: workspace, InstallationID: input.InstallationID, InstallationRevision: input.InstallationRevision, RequestID: security.RandomString(24), Epoch: ports.transactionEpoch(), Status: "prepared", Plan: *request.Plan, Model: model, Declaration: declaration, NewIDs: map[string]map[string]string{}}
-		if err := prepareTransactionPlan(ctx, app, input, installed, &preview); err != nil {
+		if err := prepareTransactionPlan(&preview); err != nil {
 			return nil, err
 		}
 	}
 	if input.Method == "transaction.preview" {
 		preview.Model = model
-		requests, err := transactionRequests(ctx, app, input, installed, preview)
-		if err != nil {
-			return nil, err
-		}
-		inspection, err := kernel.InspectPlan(ctx, requests, transactionAuthorize(input, workspace))
-		if err != nil {
-			return nil, err
-		}
-		preview.Effects, preview.DataRevisions = inspection.Effects, inspection.BaseRevisions
-		if preview.PreviewRevision >= 1<<31-1 {
-			return nil, pluginDataError("transaction.budget_exceeded")
-		}
-		preview.PreviewRevision++
-		if raw, err := json.Marshal(preview); err != nil || len(raw) > maxMutationRequestBytes {
-			return nil, pluginDataError("transaction.budget_exceeded")
-		}
-		previewEventID := "transaction:preview:" + preview.RequestID + ":" + security.RandomString(12)
-		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.transaction.preview", previewEventID, func(ctx context.Context) error {
-			return app.RunInTransaction(func(tx core.App) error {
-				if _, err := surfaceInstallation(ctx, tx, workspace, input); err != nil {
-					return err
-				}
-				if preview.Epoch != ports.transactionEpoch() {
-					return pluginDataError("transaction.plan_stale")
-				}
-				var result transactionResult
-				if found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "result", &result); err != nil {
-					return err
-				} else if found {
-					return pluginDataError("transaction.plan_stale")
-				}
-				var previous transactionPreview
-				if found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "preview", &previous); err != nil {
-					return err
-				} else if found && previous.PreviewRevision != preview.PreviewRevision-1 {
-					return pluginDataError("transaction.plan_stale")
-				}
-				_, err := pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, installed, previewEventID, "transaction.preview", preview))
-				if err != nil {
-					return err
-				}
-				return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
-			})
-		})
-		return preview, err
-	}
-	if input.Method != "transaction.commit" || installed.ActionRisk == "read" {
+	} else if input.Method != "transaction.commit" || installed.ActionRisk == "read" {
 		return nil, pluginDataError("plugin_write_denied")
 	}
 	requests, err := transactionRequests(ctx, app, input, installed, preview)
 	if err != nil {
 		return nil, err
 	}
-	var result transactionResult
-	for i := range requests {
-		requests[i].Authorize = func(ctx context.Context, tx core.App) error {
-			current, err := surfaceInstallation(ctx, tx, workspace, input)
-			if err != nil {
-				return err
-			}
-			currentModel, err := transactionModel(ctx, tx, input, current)
-			if err != nil {
-				return err
-			}
-			if !reflect.DeepEqual(currentModel.Bindings, preview.Model.Bindings) {
-				return pluginDataError("transaction.plan_stale")
-			}
-			if preview.Epoch != ports.transactionEpoch() {
-				return pluginDataError("transaction.unknown")
-			}
-			found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "result", &result)
-			if err != nil {
-				return err
-			}
-			if found {
-				if !validTransactionResult(result, workspace, input.InstallationID, preview.RequestID) {
-					return pluginDataError("transaction.unknown")
-				}
-				if replay := writecoordinator.ReplayedBusinessWrite(ctx, "plugin.transaction.commit", preview.RequestID); replay != nil {
-					return replay
-				}
-				return errTransactionReplay
-			}
-			return nil
-		}
+	*prepared = transactionPreflight{
+		auditInstallation: pluginSurfaceInstallation{
+			Version:            installed.Version,
+			pluginInstallation: pluginInstallation{PackageHash: installed.PackageHash},
+		},
+		preview:  preview,
+		requests: requests,
 	}
-	err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.transaction.commit", preview.RequestID, func(ctx context.Context) error {
-		_, err := kernel.ApplyPlan(ctx, requests, transactionAuthorize(input, workspace), func(tx core.App, receipt mutation.PlanReceipt) error {
-			var current transactionPreview
-			found, err := loadTransactionEvent(ctx, tx, workspace, input, preview.RequestID, "preview", &current)
-			if err != nil {
-				return err
-			}
-			if !found || current.PreviewRevision != preview.PreviewRevision || !reflect.DeepEqual(receipt.Effects, preview.Effects) || !reflect.DeepEqual(receipt.BaseRevisions, preview.DataRevisions) {
-				return pluginDataError("transaction.plan_stale")
-			}
-			receipt.Effects, receipt.BaseRevisions = nil, nil
-			result = transactionResult{Contract: transactionrules.Contract, WorkspaceID: workspace, InstallationID: input.InstallationID, RequestID: preview.RequestID, Status: "applied", NewIDs: preview.NewIDs, Receipt: receipt}
-			raw, err := json.Marshal(result)
-			if err != nil || len(raw) > maxMutationRequestBytes {
-				return pluginDataError("transaction.result_budget_exceeded")
-			}
-			_, err = pluginstore.New(tx, workspace).RecordAuditInTransaction(ctx, modelAudit(input, installed, "transaction:result:"+preview.RequestID, "transaction.result", result))
-			return err
-		})
-		return err
-	})
-	if errors.Is(err, errTransactionReplay) {
-		return result, nil
-	}
-	if err != nil {
-		// Acknowledgement and notification failures cannot erase an already committed result.
-		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if _, authErr := surfaceInstallation(recovery, app, workspace, input); authErr == nil {
-			var persisted transactionResult
-			if found, readErr := loadTransactionEvent(recovery, app, workspace, input, preview.RequestID, "result", &persisted); readErr == nil && found && validTransactionResult(persisted, workspace, input.InstallationID, preview.RequestID) {
-				return persisted, nil
-			}
-		}
-		return nil, err
-	}
-	return result, nil
+	return nil, nil
 }
 
-func prepareTransactionPlan(ctx context.Context, app core.App, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, p *transactionPreview) error {
+func prepareTransactionPlan(p *transactionPreview) error {
 	if p.Plan.Contract != "vibetable.transaction-plan.v1" || p.Plan.ModelID != p.Model.Model.ModelID || len(p.Plan.Operations) == 0 || len(p.Plan.Operations) > 1000 {
 		return pluginDataError("transaction.plan_invalid")
 	}
@@ -572,8 +680,7 @@ func prepareTransactionPlan(ctx context.Context, app core.App, input pluginSurfa
 			return pluginDataError("transaction.operation_invalid")
 		}
 	}
-	_, err := transactionRequests(ctx, app, input, installed, *p)
-	return err
+	return nil
 }
 
 func transactionRequests(ctx context.Context, app core.App, input pluginSurfaceAPIRequest, installed pluginSurfaceInstallation, p transactionPreview) ([]mutation.Request, error) {

@@ -141,13 +141,14 @@ func TestTransactionDecimalSignIsOptInAndExact(t *testing.T) {
 
 func TestDecimalBudgetIndependentOfRuleCapacity(t *testing.T) {
 	d := Declaration{Contract: Contract, Version: 1, ModelID: "m", Rules: []Rule{{ID: "unique", Kind: "unique", Entity: "e", Fields: []string{"a"}}}}
-	for i := 0; i < 65; i++ {
+	for i := 0; i < 66; i++ {
 		d.Decimals = append(d.Decimals, Decimal{Entity: "e", Field: fmt.Sprint(i), Format: exactdecimal.Format{Storage: "decimalText", Digits: 2}})
 	}
 	if err := d.Validate(); err == nil {
-		t.Fatal("65 decimal mappings accepted")
+		t.Fatal("66 decimal mappings accepted")
 	}
-	d.Decimals = d.Decimals[:64]
+	// The 65th mapping registers legally and keeps every earlier declaration.
+	d.Decimals = d.Decimals[:65]
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -170,5 +171,24 @@ func TestGuardCoverageRequiresExactCanonicalSuperset(t *testing.T) {
 	next.Bindings = map[string]pluginmodel.Binding{"e": {TableID: "other", Fields: old.Bindings["e"].Fields}}
 	if got := activeGuards([]Registration{old, next}); len(got) != 2 {
 		t.Fatal("physical binding replaced old guard")
+	}
+}
+
+func TestSameTargetSymmetricOptionalEndsRemainStrictInsidePaths(t *testing.T) {
+	rule := Rule{ID: "optional", Kind: "sameTarget", Entity: "rows", SkipEmptyLeftEnd: true, SkipEmptyRightEnd: true, PathMatch: PathMatch{Left: []RelationStep{{Field: "left", Target: "holders"}, {Field: "agreement", Target: "agreements"}}, Right: []RelationStep{{Field: "right", Target: "holders"}, {Field: "agreement", Target: "agreements"}}}}
+	for _, tc := range []struct {
+		name        string
+		left, right any
+		want        bool
+	}{{"both-unknown", nil, nil, true}, {"left-unknown", nil, "a", true}, {"right-unknown", "a", nil, true}, {"same", "a", "a", true}, {"conflict", "a", "b", false}, {"wrong-type", 42, nil, false}} {
+		images := Images{"rows": {"r": {"left": "l", "right": "r"}}, "holders": {"l": {"agreement": tc.left}, "r": {"agreement": tc.right}}, "agreements": {"a": {}, "b": {}}}
+		err := (Registration{Declaration: Declaration{Rules: []Rule{rule}}}).Validate(nil, images)
+		if (err == nil) != tc.want {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+	}
+	broken := Images{"rows": {"r": {"left": "l", "right": nil}}, "holders": {"l": {"agreement": nil}}, "agreements": {}}
+	if err := (Registration{Declaration: Declaration{Rules: []Rule{rule}}}).Validate(nil, broken); err == nil {
+		t.Fatal("empty terminal masked a broken intermediate path")
 	}
 }

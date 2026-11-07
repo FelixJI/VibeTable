@@ -22,7 +22,11 @@ internal static class Program
         Console.Error.WriteLine($"UIA_STAGE observer begin elapsedMs=0 apartment={Thread.CurrentThread.GetApartmentState()} utc={DateTime.UtcNow:o}");
         try
         {
-            if (args.Length == 4 && args[0] == "--file-dialog") return ObserveFileDialog(args);
+            if (args.Length == 4 && args[0] == "--file-dialog")
+            {
+                Stage("file-dispatch begin");
+                return ObserveFileDialog(args);
+            }
             if (args.Length is 2 or 3 && args[0] is "--buttons" or "--screenshot")
             {
                 Stage("plugin-dispatch begin");
@@ -286,18 +290,29 @@ internal static class Program
         return element.Current.Name ?? "";
     }
 
+    // Read-only QA of the real Shell file dialog: ownership, UIA control
+    // bounds and an onscreen screenshot. No InvokePattern, no path/content
+    // logging; stages carry fixed names, elapsedMs and bounded counts only.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static int ObserveFileDialog(string[] args)
     {
+        Stage("file-method entered");
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("CI") != "true"
             || !long.TryParse(args[1], out long value) || value <= 0 || !uint.TryParse(args[2], out uint pid)
             || !Path.IsPathFullyQualified(args[3])) return Reject("UIA_FILE_DIALOG_SCOPE_INVALID");
+        Stage("file-scope validated");
         SetProcessDpiAwarenessContext(new IntPtr(-4));
         var hwnd = new IntPtr(value);
+        Stage("file-owner begin");
         if (!OwnedFileDialog(hwnd, pid)) return Reject("UIA_FILE_DIALOG_OWNER_INVALID");
+        Stage("file-owner end");
+        Stage("file-root begin");
         var root = AutomationElement.FromHandle(hwnd);
+        Stage("file-root end");
         var controls = new List<object>();
         var queue = new Queue<AutomationElement>(); queue.Enqueue(root);
         int count = 0;
+        Stage("file-tree begin");
         while (queue.TryDequeue(out var item))
         {
             if (++count > 512) return Reject("UIA_FILE_DIALOG_TREE_LIMIT");
@@ -317,10 +332,14 @@ internal static class Program
             controls.Add(new { role, id, enabled = item.Current.IsEnabled, focused = item.Current.HasKeyboardFocus, pid = item.Current.ProcessId,
                 x = b.X, y = b.Y, width = b.Width, height = b.Height });
         }
+        Stage("file-tree end", $"count={count}");
+        Stage("file-owner recheck begin");
         if (!OwnedFileDialog(hwnd, pid)) return Reject("UIA_FILE_DIALOG_OWNER_CHANGED");
+        Stage("file-owner recheck end");
         var bounds = root.Current.BoundingRectangle;
         int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
         if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
+        Stage("file-capture begin");
         IntPtr source = GetDC(IntPtr.Zero), destination = CreateCompatibleDC(source);
         IntPtr bitmap = CreateCompatibleBitmap(source, width, height);
         if (source == IntPtr.Zero || destination == IntPtr.Zero || bitmap == IntPtr.Zero) return Reject("UIA_CAPTURE_FAILED");
@@ -333,7 +352,12 @@ internal static class Program
             using var output = File.Create(args[3]); encoder.Save(output);
         }
         finally { SelectObject(destination, prior); DeleteObject(bitmap); DeleteDC(destination); ReleaseDC(IntPtr.Zero, source); }
-        Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid, title = root.Current.Name, controls }));
+        Stage("file-capture end");
+        Stage("file-serialize begin");
+        var payload = JsonSerializer.Serialize(new { hwnd = value, pid, title = root.Current.Name, controls });
+        Stage("file-serialize end");
+        Console.Out.Write(payload);
+        Stage("file-output end");
         return 0;
     }
 

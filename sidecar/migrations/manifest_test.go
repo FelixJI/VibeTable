@@ -9,23 +9,23 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-const expectedMigrationManifestHash = "886c34a67c77beff469c25bddcb16716a90e7c8ea44be942380097c5016003a9"
+const expectedMigrationManifestHash = "5659167fd6dec64f431bbcd5d03af32f89e2df8c7b8fc729157787834dab830a"
 
 func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	manifest, err := LoadManifest()
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 18 || len(manifest.Migrations) != 17 {
+	if manifest.SchemaVersion != 19 || len(manifest.Migrations) != 18 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if hash := Hash(); hash != expectedMigrationManifestHash {
 		t.Fatalf("manifest hash = %q, want %q", hash, expectedMigrationManifestHash)
 	}
 	last := manifest.Migrations[len(manifest.Migrations)-1]
-	if last.ID != 2026102001 ||
-		last.Source != "2026102001_plugin_preservation_revision.go" ||
-		last.SHA256 != "945df0e5fd4022eb0b708f95380d13c0d88bfb453bcfec5cd3174570b0afdd15" {
+	if last.ID != 2026110701 ||
+		last.Source != "2026110701_plugin_event_index.go" ||
+		last.SHA256 != "4bcbacc164fd1eca7622a6fb96f268981a0f0f973cc56f2c5da80d25de5db168" {
 		t.Fatalf("unexpected pinned latest migration entry: %#v", last)
 	}
 }

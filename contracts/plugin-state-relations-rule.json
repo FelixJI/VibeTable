@@ -1,0 +1,175 @@
+{
+  "id": "source_relations_by_kind",
+  "kind": "state",
+  "entity": "request_sources",
+  "field": "source_kind",
+  "transitions": {
+    "project": [
+      "project",
+      "planItem",
+      "delivery",
+      "actual",
+      "application"
+    ],
+    "planItem": [
+      "project",
+      "planItem",
+      "delivery",
+      "actual",
+      "application"
+    ],
+    "delivery": [
+      "project",
+      "planItem",
+      "delivery",
+      "actual",
+      "application"
+    ],
+    "actual": [
+      "project",
+      "planItem",
+      "delivery",
+      "actual",
+      "application"
+    ],
+    "application": [
+      "project",
+      "planItem",
+      "delivery",
+      "actual",
+      "application"
+    ]
+  },
+  "relationCases": {
+    "project": {
+      "required": [
+        {
+          "field": "project",
+          "target": "projects"
+        }
+      ],
+      "optional": [
+        {
+          "field": "package",
+          "target": "packages"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        },
+        {
+          "field": "obligation",
+          "target": "obligations"
+        }
+      ]
+    },
+    "planItem": {
+      "required": [
+        {
+          "field": "plan_item",
+          "target": "plan_items"
+        },
+        {
+          "field": "version",
+          "target": "source_versions"
+        }
+      ],
+      "optional": [
+        {
+          "field": "project",
+          "target": "projects"
+        },
+        {
+          "field": "package",
+          "target": "packages"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        },
+        {
+          "field": "obligation",
+          "target": "obligations"
+        }
+      ]
+    },
+    "delivery": {
+      "required": [
+        {
+          "field": "delivery_line",
+          "target": "delivery_lines"
+        }
+      ],
+      "optional": [
+        {
+          "field": "project",
+          "target": "projects"
+        },
+        {
+          "field": "package",
+          "target": "packages"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        },
+        {
+          "field": "obligation",
+          "target": "obligations"
+        }
+      ]
+    },
+    "actual": {
+      "required": [
+        {
+          "field": "actual_line",
+          "target": "actual_lines"
+        }
+      ],
+      "optional": [
+        {
+          "field": "project",
+          "target": "projects"
+        },
+        {
+          "field": "package",
+          "target": "packages"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        },
+        {
+          "field": "obligation",
+          "target": "obligations"
+        }
+      ]
+    },
+    "application": {
+      "required": [
+        {
+          "field": "application_source",
+          "target": "request_sources"
+        }
+      ],
+      "optional": [
+        {
+          "field": "project",
+          "target": "projects"
+        },
+        {
+          "field": "package",
+          "target": "packages"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        },
+        {
+          "field": "obligation",
+          "target": "obligations"
+        }
+      ]
+    }
+  }
+}

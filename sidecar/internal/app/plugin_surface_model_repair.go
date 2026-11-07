@@ -105,7 +105,7 @@ func modelFieldCode(ctx context.Context, app core.App, tableID string, collectio
 	return "", nil
 }
 
-func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([]v2.Diagnostic, error) {
+func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State, revisions map[string]string) ([]v2.Diagnostic, error) {
 	var diagnostics []v2.Diagnostic
 	tables := modelTableIDs(s)
 	checkedPairs := map[[2]string]bool{}
@@ -118,6 +118,9 @@ func modelDiagnostics(ctx context.Context, app core.App, s pluginmodel.State) ([
 		if collection == nil {
 			diagnostics = append(diagnostics, modelDiagnostic("plugin_model_table_missing", entity.Key))
 			continue
+		}
+		if revisions != nil {
+			revisions[binding.TableID] = table.Snapshot.SchemaRevision
 		}
 		for _, f := range entity.Fields {
 			actual, ok := table.Field(binding.Fields[f.Key])

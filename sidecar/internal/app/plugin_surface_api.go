@@ -59,6 +59,13 @@ type pluginSurfaceInstallation struct {
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
 	var installed pluginSurfaceInstallation
+	reads, err := transactionAuthority(ctx, app, workspace, input)
+	if err != nil {
+		return installed, err
+	}
+	if reads != nil && reads.installed != nil {
+		return *reads.installed, nil
+	}
 	raw, err := pluginstore.New(app, workspace).GetInstallation(ctx, input.ProjectKey, input.PluginID)
 	if err != nil || json.Unmarshal(raw, &installed) != nil || installed.Status != "enabled" || strings.TrimPrefix(installed.PackageHash, "sha256:") != input.PackageHash {
 		return installed, pluginDataError("plugin_read_denied")
@@ -109,8 +116,16 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 		}
 		if bound && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
 			installed.ActionRisk = action.Risk
-			if err := resolveModelGrants(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation); err != nil {
+			var revisions map[string]string
+			if reads != nil {
+				revisions = map[string]string{}
+			}
+			state, err := resolveModelGrantState(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation, revisions)
+			if err != nil {
 				return installed, err
+			}
+			if reads != nil {
+				reads.installed, reads.grantModel, reads.schemaRevisions = &installed, state, revisions
 			}
 			return installed, nil
 		}
@@ -254,6 +269,14 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			return surfaceAuditFinish(ctx, app, workspace, input, terminal.Outcome, terminal.ErrorCode)
 		})
 	}
+	switch input.Method {
+	case "transaction.preview", "transaction.status", "transaction.commit":
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return executeSurfaceTransaction(ctx, app, kernel, workspace, input, gate, ports)
+	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	switch input.Method {
 	case "model.catalog", "model.preview", "model.commit", "model.read", "model.status":
@@ -267,7 +290,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		return nil, err
 	}
 	switch input.Method {
-	case "transaction.configure", "transaction.preview", "transaction.status", "transaction.commit":
+	case "transaction.configure":
 		var ports *pluginSurfaceIO
 		if len(ioPorts) > 0 {
 			ports = ioPorts[0]

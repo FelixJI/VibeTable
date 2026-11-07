@@ -40,7 +40,7 @@ internal sealed partial class PluginSurfaceApi
             var rules = declaration.GetProperty("rules");
             var decimals = declaration.TryGetProperty("decimals", out var decimalFields)
                 ? decimalFields.EnumerateArray().ToArray() : [];
-            if (rules.GetArrayLength() is < 1 or > 192 || decimals.Length > 64) throw Error("transaction.rules_invalid");
+            if (rules.GetArrayLength() is < 1 or > 192 || decimals.Length > 65) throw Error("transaction.rules_invalid");
             var bindings = model.GetProperty("bindings");
             var operations = rules.EnumerateArray()
                 .Concat(decimals).Select(value =>
