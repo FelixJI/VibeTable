@@ -819,9 +819,16 @@ func TestInvoiceAuthorityReviewSharedAdjustmentRoles(t *testing.T) {
 }
 
 func TestInvoiceAuthorityReviewSequentialQuantityClose(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t)
+	type partialSnapshot struct {
+		caseName string
+		eventID  string
+		row      map[string]any
+		digest   string
+	}
+	var completed []partialSnapshot
 	for _, tc := range []struct{ name, q, n, tax, g, first, last, rn, rt, rg string }{{"normal", "10", "100.00", "0.00", "100.00", "4", "6", "60.00", "0.00", "60.00"}, {"round-down", "3", "0.01", "0.01", "0.02", "1", "2", "0.01", "0.01", "0.02"}, {"round-up", "3", "0.01", "0.01", "0.02", "2", "1", "0.00", "0.00", "0.00"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newInvoiceAuthorityFixture(t)
 			blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "100.00", "200.00", nil, nil, true)).NewIDs["allocations"]["blue"]
 			source := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", tc.q, tc.n, tc.tax, tc.g, blue)).NewIDs["request_sources"]["request"]
 			partial := map[string]any{"kind": "sourceClose", "source": source, "close_remaining": false, "quantity": tc.first, "net": nil, "tax": nil, "gross": nil, "note": "明确关闭数量"}
@@ -842,6 +849,13 @@ func TestInvoiceAuthorityReviewSequentialQuantityClose(t *testing.T) {
 			if !reflect.DeepEqual(old, kept) || digest != oldDigest {
 				t.Fatal("later close rewrote historical quantity-only fact")
 			}
+			for _, prior := range completed {
+				row, digest := regressionRow(t, f, "adjustments", prior.eventID)
+				if !reflect.DeepEqual(prior.row, row) || prior.digest != digest {
+					t.Fatalf("case %s rewrote historical quantity-only fact from %s", tc.name, prior.caseName)
+				}
+			}
+			completed = append(completed, partialSnapshot{caseName: tc.name, eventID: eventID, row: old, digest: oldDigest})
 		})
 	}
 }
