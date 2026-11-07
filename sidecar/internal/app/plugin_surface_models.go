@@ -45,35 +45,45 @@ type modelPreviewRequest struct {
 }
 
 func resolveModelGrants(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation) error {
+	_, err := resolveModelGrantState(ctx, app, project, plugin, installed, nil)
+	return err
+}
+
+func resolveModelGrantState(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation, revisions map[string]string) (*pluginmodel.State, error) {
 	if installed.Manifest.Permissions.Model == nil {
-		return nil
+		return nil, nil
 	}
 	if err := installed.Manifest.Permissions.Model.Validate(); err != nil {
-		return pluginDataError("plugin_model_invalid")
+		return nil, pluginDataError("plugin_model_invalid")
 	}
+	state, err := loadCompletedModel(ctx, app, project, plugin, installed, revisions)
+	if err != nil || state == nil {
+		return nil, err
+	}
+	for _, e := range state.Model.Entities {
+		b := state.Bindings[e.Key]
+		fields := []string{"id"}
+		for _, f := range e.Fields {
+			fields = append(fields, b.Fields[f.Key])
+		}
+		installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: b.TableID, Fields: fields, Operations: e.Operations})
+	}
+	return state, nil
+}
+
+func loadCompletedModel(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation, revisions map[string]string) (*pluginmodel.State, error) {
 	states, err := pluginmodel.States(ctx, app, project, plugin)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for i := len(states) - 1; i >= 0; i-- {
 		s := states[i]
 		if s.Status != "completed" || s.InstallationID != installed.InstallationID || s.InstallationRevision != installed.Revision || !pluginmodel.Equal(s.Model, *installed.Manifest.Permissions.Model) {
 			continue
 		}
-		if err := modelValidateBindings(ctx, app, s); err != nil {
-			return err
-		}
-		for _, e := range s.Model.Entities {
-			b := s.Bindings[e.Key]
-			fields := []string{"id"}
-			for _, f := range e.Fields {
-				fields = append(fields, b.Fields[f.Key])
-			}
-			installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: b.TableID, Fields: fields, Operations: e.Operations})
-		}
-		break
+		return &s, validateModelBindings(ctx, app, s, revisions)
 	}
-	return nil
+	return nil, nil
 }
 
 func executeSurfaceModel(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, domain *schemaFieldChangeDomain, installed pluginSurfaceInstallation, err error) (any, error) {
@@ -136,7 +146,7 @@ func executeSurfaceModel(ctx context.Context, app core.App, workspace string, in
 				}
 				public := modelPublicState(s)
 				if public.Status == "completed" {
-					diagnostics, err := modelDiagnostics(ctx, app, public)
+					diagnostics, err := modelDiagnostics(ctx, app, public, nil)
 					if err != nil {
 						return nil, err
 					}
@@ -291,7 +301,7 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 				if stale != nil {
 					diagnostics = stale.diagnostics
 				} else if prior.InstallationID != input.InstallationID || prior.InstallationRevision != input.InstallationRevision {
-					diagnostics, err = modelDiagnostics(ctx, tx, prior)
+					diagnostics, err = modelDiagnostics(ctx, tx, prior, nil)
 					if err != nil {
 						return err
 					}
@@ -381,7 +391,7 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 			if s.Status == "completed" {
 				if request.Mode == "create" {
 					plan.State = s
-					plan.Diagnostics, err = modelDiagnostics(ctx, app, s)
+					plan.Diagnostics, err = modelDiagnostics(ctx, app, s, nil)
 					if err != nil {
 						return plan, err
 					}
@@ -550,7 +560,7 @@ func previewSurfaceModel(ctx context.Context, app core.App, workspace string, in
 		diagnose("plugin_model_mapping_required", "model")
 	}
 	if request.Mode != "create" && len(plan.Diagnostics) == 0 {
-		live, err := modelDiagnostics(ctx, app, plan.State)
+		live, err := modelDiagnostics(ctx, app, plan.State, nil)
 		if err != nil {
 			return plan, err
 		}
@@ -665,7 +675,11 @@ func modelValidateRevisions(ctx context.Context, app core.App, s pluginmodel.Sta
 	return nil
 }
 func modelValidateBindings(ctx context.Context, app core.App, s pluginmodel.State) error {
-	diagnostics, err := modelDiagnostics(ctx, app, s)
+	return validateModelBindings(ctx, app, s, nil)
+}
+
+func validateModelBindings(ctx context.Context, app core.App, s pluginmodel.State, revisions map[string]string) error {
+	diagnostics, err := modelDiagnostics(ctx, app, s, revisions)
 	if err != nil {
 		return err
 	}
