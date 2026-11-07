@@ -40,7 +40,10 @@ func newLegacyLayoutFixture(t *testing.T) *legacyLayoutFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := pb.ResetBootstrapState(); err != nil {
+		event := &core.TerminateEvent{App: pb}
+		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -504,5 +507,21 @@ func TestLegacyLayoutDiagnosticPreviewIsExplicitAndExportIsComplete(t *testing.T
 	}
 	if !found {
 		t.Fatal("missing diagnostic fixture")
+	}
+}
+
+func TestLegacyLayoutFixtureTerminatesBeforeReset(t *testing.T) {
+	var terminated, bootstrappedDuringTermination bool
+	var pb *pocketbase.PocketBase
+	t.Run("fixture", func(t *testing.T) {
+		pb = newLegacyLayoutFixture(t).pb
+		pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedDuringTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if pb == nil || !terminated || !bootstrappedDuringTermination || pb.IsBootstrapped() {
+		t.Fatal("fixture must terminate while bootstrapped and then reset")
 	}
 }

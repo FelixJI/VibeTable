@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from qa import go_coverage
+from qa import go_coverage, go_test_schedule
 
 
 def _write_config(path: Path) -> None:
@@ -46,77 +46,166 @@ def _write_config(path: Path) -> None:
     )
 
 
-def test_main_runs_disjoint_core_and_authority_groups_from_project_config(
+def test_main_runs_core_and_reports_the_three_complete_authority_profiles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "project.json"
     _write_config(config)
-    repository_root = tmp_path / "repository"
-    sidecar = repository_root / "sidecar"
-    sidecar.mkdir(parents=True)
-    evidence_root = repository_root / "build/qa/go-coverage"
-    for group in ("core", "authority"):
-        stale = evidence_root / group
-        stale.mkdir(parents=True)
-        (stale / "coverage.out").write_text("stale", encoding="utf-8")
-        (stale / "report.json").write_text("stale", encoding="utf-8")
+    sidecar = tmp_path / "sidecar"
+    output = tmp_path / "build/qa/go-coverage/authority"
+    output.mkdir(parents=True)
+    (output / "coverage.out").write_text("old profile", encoding="utf-8")
+    (output / "report.json").write_text("old report", encoding="utf-8")
+    block = "github.com/vibetable/vibetable/sidecar/internal/query/query.go:1.1,2.1 1"
+    observed: list[str] = []
 
-    observed: list[tuple[list[str], Path]] = []
+    def core(
+        command: tuple[str, ...],
+        cwd: Path,
+        evidence: Path,
+        label: str,
+        *,
+        profile: Path | None = None,
+    ) -> None:
+        observed.append(label)
+        assert cwd == sidecar
+        assert evidence == tmp_path
+        assert command[-2:] == ("./internal/schemacore", "./internal/relatedcomputation")
+        assert command[2:5] == (
+            "-count=1",
+            "-covermode=count",
+            "-coverpkg=./internal/schemacore,./internal/relatedcomputation",
+        )
+        assert profile is not None
+        assert not profile.exists()
+        profile.write_text("mode: count\n", encoding="utf-8")
 
-    def fake_run(command: list[str], *, cwd: Path, check: bool) -> subprocess.CompletedProcess:
-        assert check is True
-        observed.append((command, Path(cwd)))
-        if command[1] == "test":
-            profile = Path(
-                next(
-                    arg.removeprefix("-coverprofile=")
-                    for arg in command
-                    if arg.startswith("-coverprofile=")
-                )
+    def suite(
+        go: str,
+        cwd: Path,
+        evidence: Path,
+        *,
+        cover_options: tuple[str, ...],
+        profile_dir: Path,
+    ) -> tuple[Path, ...]:
+        observed.append("authority-suite")
+        assert go == "go"
+        assert cwd == sidecar
+        assert evidence == tmp_path
+        assert cover_options == (
+            "-covermode=count",
+            "-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation",
+        )
+        assert not (output / "report.json").exists()
+        assert (output / "coverage.out").read_text(encoding="utf-8") == "old profile"
+        parts = tuple(profile_dir / f"{label}.out" for label in ("app-1", "app-2", "remaining"))
+        for index, part in enumerate(parts):
+            assert not part.exists()
+            part.write_text(f"mode: count\n{block} {index + 1}\n", encoding="utf-8")
+        return parts
+
+    def report(command: tuple[str, ...], cwd: Path, evidence: Path, label: str) -> str:
+        observed.append(label)
+        assert cwd == sidecar
+        assert evidence == tmp_path
+        assert command[:3] == ("go", "run", "./cmd/go-coverage-report")
+        group = command[command.index("--group") + 1]
+        profile = Path(command[command.index("--profile") + 1])
+        assert command[command.index("--line-min") + 1] == ("85" if group == "core" else "63")
+        assert command[command.index("--branch-min") + 1] == ("75" if group == "core" else "52")
+        assert command[command.index("--diff-min") + 1] == "90"
+        if group == "authority":
+            assert profile.read_text(encoding="utf-8") == (
+                f"mode: count\n{block} 1\n{block} 2\n{block} 3\n"
             )
-            group_root = profile.parent
-            assert not profile.exists()
-            assert not (group_root / "report.json").exists()
-        return subprocess.CompletedProcess(command, 0)
+            assert [
+                command[index + 1] for index, value in enumerate(command) if value == "--scope"
+            ] == [
+                "sidecar/internal/filehistory",
+                "sidecar/internal/restore",
+                "sidecar/internal/query",
+                "sidecar/internal/mutation",
+            ]
+        Path(command[command.index("--report") + 1]).write_text(group, encoding="utf-8")
+        return ""
 
-    monkeypatch.setattr(go_coverage, "REPO_ROOT", repository_root)
+    monkeypatch.setattr(go_coverage, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(go_coverage, "SIDECAR", sidecar)
-    monkeypatch.setattr(go_coverage.subprocess, "run", fake_run)
+    monkeypatch.setattr(go_test_schedule, "evidence_directory", lambda *_args: tmp_path)
+    monkeypatch.setattr(go_test_schedule, "run_test_command", core)
+    monkeypatch.setattr(go_test_schedule, "run_full_suite", suite)
+    monkeypatch.setattr(go_test_schedule, "run_command", report)
 
     assert go_coverage.main(["--go", "go", "--config", str(config)]) == 0
-
-    assert len(observed) == 4
-    test_commands = [command for command, cwd in observed if command[1] == "test"]
-    report_commands = [command for command, cwd in observed if command[1] == "run"]
-    assert all(cwd == sidecar for _command, cwd in observed)
-    assert len(test_commands) == len(report_commands) == 2
-
-    core_test, authority_test = test_commands
-    assert core_test[-2:] == ["./internal/schemacore", "./internal/relatedcomputation"]
-    assert authority_test[-1:] == ["./..."]
-    assert core_test[4] == ("-coverpkg=./internal/schemacore,./internal/relatedcomputation")
-    assert authority_test[4] == (
-        "-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation"
+    assert observed == ["core-test", "core-report", "authority-suite", "authority-report"]
+    assert (output / "coverage.out").read_text(encoding="utf-8") == (
+        f"mode: count\n{block} 1\n{block} 2\n{block} 3\n"
     )
-    assert core_test[5] != authority_test[5]
+    assert (output / "report.json").read_text(encoding="utf-8") == "authority"
 
-    core_report, authority_report = report_commands
-    assert core_report[core_report.index("--group") + 1] == "core"
-    assert authority_report[authority_report.index("--group") + 1] == "authority"
-    assert core_report[core_report.index("--line-min") + 1] == "85"
-    assert authority_report[authority_report.index("--branch-min") + 1] == "52"
-    assert authority_report[authority_report.index("--diff-min") + 1] == "90"
-    assert [
-        authority_report[index + 1]
-        for index, value in enumerate(authority_report)
-        if value == "--scope"
-    ] == [
-        "sidecar/internal/filehistory",
-        "sidecar/internal/restore",
-        "sidecar/internal/query",
-        "sidecar/internal/mutation",
-    ]
+
+@pytest.mark.parametrize(
+    "failure", ["app", "remaining", "mode", "missing", "report", "report-missing"]
+)
+def test_authority_failure_preserves_old_profile_and_invalidates_old_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    output = tmp_path / "authority"
+    output.mkdir()
+    final = output / "coverage.out"
+    final.write_text("old profile", encoding="utf-8")
+    (output / "report.json").write_text("old report", encoding="utf-8")
+    observed: list[str] = []
+
+    def suite(
+        go: str,
+        cwd: Path,
+        evidence: Path,
+        *,
+        cover_options: tuple[str, ...],
+        profile_dir: Path,
+    ) -> tuple[Path, ...]:
+        profiles = tuple(profile_dir / f"{part}.out" for part in ("app-1", "app-2", "remaining"))
+        for part in profiles:
+            observed.append(part.stem)
+            if (failure == "app" and part.stem == "app-2") or failure == part.stem:
+                raise subprocess.CalledProcessError(1, [go])
+            if part.stem != "remaining" or failure != "missing":
+                mode = "set" if part.stem == "remaining" and failure == "mode" else "count"
+                part.write_text(f"mode: {mode}\n", encoding="utf-8")
+        return profiles
+
+    def report(*_args: object) -> str:
+        observed.append("report")
+        if failure == "report":
+            raise subprocess.CalledProcessError(1, ["go"])
+        return ""
+
+    group = go_coverage.CoverageGroup("authority", ("./internal/query",), ("./...",), 1, 1, 1)
+    monkeypatch.setattr(go_test_schedule, "run_full_suite", suite)
+    monkeypatch.setattr(go_test_schedule, "run_command", report)
+    error = {
+        "app": subprocess.CalledProcessError,
+        "remaining": subprocess.CalledProcessError,
+        "mode": ValueError,
+        "missing": FileNotFoundError,
+        "report": subprocess.CalledProcessError,
+        "report-missing": ValueError,
+    }[failure]
+    with pytest.raises(error):
+        go_coverage._run_group("go", group, output, tmp_path)
+
+    expected = ["app-1", "app-2"]
+    if failure != "app":
+        expected.append("remaining")
+    if failure.startswith("report"):
+        expected.append("report")
+    assert observed == expected
+    assert final.read_text(encoding="utf-8") == "old profile"
+    assert not (output / "report.json").exists()
 
 
 def test_project_inventory_ratchets_authority_as_an_independent_group() -> None:

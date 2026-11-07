@@ -205,6 +205,10 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 	if rawCases, present := fields["relationCases"]; present && rawCases == nil {
 		return failure("rules_invalid")
 	}
+	if decoded.Evidence != nil && len(decoded.Evidence.OwnerPath) == 0 {
+		// Self-owned evidence rules omit the empty path in persisted registrations.
+		decoded.Evidence.OwnerPath = nil
+	}
 	*r = Rule(decoded)
 	return nil
 }

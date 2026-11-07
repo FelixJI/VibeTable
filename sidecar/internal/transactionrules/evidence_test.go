@@ -2,6 +2,7 @@ package transactionrules
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
@@ -38,6 +39,49 @@ func TestChangeEvidenceDeclaration(t *testing.T) {
 		if d.Validate() == nil {
 			t.Fatal("invalid changeEvidence declaration accepted")
 		}
+	}
+}
+
+func TestChangeEvidenceOwnerPathWireCompatibility(t *testing.T) {
+	original := newKindRule(t, "evidence")
+	raw, err := json.Marshal(invoiceGuardsDeclaration(t, original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	spec := wire["rules"].([]any)[0].(map[string]any)["evidence"].(map[string]any)
+	decode := func() (Declaration, error) {
+		raw, err := json.Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Decode(raw)
+	}
+	nonEmpty, err := decode()
+	if err != nil || !reflect.DeepEqual(nonEmpty.Rules[0].Evidence.OwnerPath, original.Evidence.OwnerPath) {
+		t.Fatalf("non-empty owner path changed: %v", err)
+	}
+	delete(spec, "ownerPath")
+	legacy, err := decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec["ownerPath"] = []any{}
+	explicit, err := decode()
+	if err != nil || !explicit.Retains(legacy) || !legacy.Retains(explicit) || explicit.Retains(nonEmpty) {
+		t.Fatalf("only the explicit empty path is equivalent to omission: %v", err)
+	}
+	spec["types"] = []string{"other_correction"}
+	differentRule, err := decode()
+	if err != nil || differentRule.Retains(legacy) {
+		t.Fatalf("a changed evidence type must remain different: %v", err)
+	}
+	spec["ownerPath"] = nil
+	if _, err := decode(); err == nil {
+		t.Fatal("explicit null owner path accepted")
 	}
 }
 

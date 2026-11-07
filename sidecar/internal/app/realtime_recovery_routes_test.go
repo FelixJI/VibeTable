@@ -18,7 +18,7 @@ import (
 )
 
 func TestRealtimeRecoveryHTTPStartsWithAnEmptyAuthoritativeProjection(t *testing.T) {
-	server := newRealtimeRecoveryServer(t)
+	server, _ := newRealtimeRecoveryServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/vibetable/v2/events", nil)
@@ -61,7 +61,7 @@ func TestRealtimeRecoveryHTTPStartsWithAnEmptyAuthoritativeProjection(t *testing
 }
 
 func TestRealtimeRecoveryHTTPRejectsAmbiguousOrMalformedCursors(t *testing.T) {
-	server := newRealtimeRecoveryServer(t)
+	server, _ := newRealtimeRecoveryServer(t)
 	for _, input := range []struct {
 		name, query string
 		headers     []string
@@ -95,7 +95,7 @@ func TestRealtimeRecoveryHTTPRejectsAmbiguousOrMalformedCursors(t *testing.T) {
 	}
 }
 
-func newRealtimeRecoveryServer(t *testing.T) *httptest.Server {
+func newRealtimeRecoveryServer(t *testing.T) (*httptest.Server, *pocketbase.PocketBase) {
 	t.Helper()
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: t.TempDir(), HideStartBanner: true,
@@ -105,7 +105,10 @@ func newRealtimeRecoveryServer(t *testing.T) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := pb.ResetBootstrapState(); err != nil {
+		event := &core.TerminateEvent{App: pb}
+		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -124,5 +127,21 @@ func newRealtimeRecoveryServer(t *testing.T) *httptest.Server {
 	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return server
+	return server, pb
+}
+
+func TestRealtimeRecoveryFixtureTerminatesBeforeReset(t *testing.T) {
+	var terminated, bootstrappedDuringTermination bool
+	var pb *pocketbase.PocketBase
+	t.Run("fixture", func(t *testing.T) {
+		_, pb = newRealtimeRecoveryServer(t)
+		pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedDuringTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if pb == nil || !terminated || !bootstrappedDuringTermination || pb.IsBootstrapped() {
+		t.Fatal("fixture must terminate while bootstrapped and then reset")
+	}
 }

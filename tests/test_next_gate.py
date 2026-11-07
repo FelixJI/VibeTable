@@ -113,6 +113,15 @@ def test_go_commands_target_sidecar_module() -> None:
     assert command[-2:] == ["vet", "./..."]
     assert Path(cwd) == next_gate.SIDECAR_DIR
 
+    command, cwd = next_gate.stage_command("go-test")
+    assert command == [
+        next_gate.sys.executable,
+        str(next_gate.REPO_ROOT / "qa" / "go_test_schedule.py"),
+        "--go",
+        next_gate._resolve("go"),
+    ]
+    assert Path(cwd) == next_gate.SIDECAR_DIR
+
     command, cwd = next_gate.stage_command("go-race")
     assert command[:3] == [next_gate._resolve("go"), "test", "-race"]
     assert "isolated batches" in command[-1]
@@ -133,6 +142,19 @@ def test_go_commands_target_sidecar_module() -> None:
     assert "packaged_sidecar_matrix.py" in " ".join(command)
     assert "--json-report" in command
     assert Path(cwd) == next_gate.REPO_ROOT
+
+
+@pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
+def test_scheduled_go_stage_uses_one_original_process_tree_deadline(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    command, cwd = next_gate.stage_command(stage)
+    monkeypatch.setattr(next_gate, "_stage_environment", lambda *_args: {})
+    run = Mock(return_value=(0, "", ""))
+    monkeypatch.setattr(next_gate, "_run_command", run)
+
+    assert next_gate.run_stage(stage).returncode == 0
+    run.assert_called_once_with(command, cwd=cwd, environment={}, timeout=900)
 
 
 @pytest.mark.parametrize("stage", ["version", "python", "web-test", "go-fmt"])
@@ -1201,43 +1223,23 @@ def test_fault_injection_uses_the_selected_immutable_candidate(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
-def test_go_stage_retries_only_the_narrow_windows_tempdir_cleanup_flake(
-    monkeypatch,
+def test_go_stage_does_not_restart_after_narrow_tempdir_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
     stage: str,
 ) -> None:
-    monkeypatch.setattr(next_gate.os, "name", "nt")
-    monkeypatch.setattr(
-        next_gate,
-        "stage_command",
-        lambda _stage, package_root=None: (["go", "test", "./..."], "repo"),
+    monkeypatch.setattr(next_gate, "_stage_environment", lambda *_args: {})
+    output = (
+        "--- FAIL: TestExample\n"
+        "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
+        "The directory is not empty.\n"
     )
-    monkeypatch.setattr(
-        next_gate,
-        "_stage_environment",
-        lambda _stage, _command, package_root=None: {},
-    )
-    calls = 0
-
-    def run(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls < next_gate.WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS:
-            return (
-                1,
-                "--- FAIL: TestExample\n"
-                "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
-                "The directory is not empty.\n",
-                "",
-            )
-        return 0, "ok\n", ""
-
+    run = Mock(return_value=(1, output, ""))
     monkeypatch.setattr(next_gate, "_run_command", run)
+
     result = next_gate.run_stage(stage)
 
-    assert result.returncode == 0
-    assert calls == next_gate.WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
-    assert "attempt 2/3" in result.stdout
-    assert "attempt 3/3" in result.stdout
+    assert result.returncode == 1
+    run.assert_called_once()
 
 
 def test_run_command_timeout_terminates_process_tree(

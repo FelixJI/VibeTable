@@ -1032,6 +1032,9 @@ async function scenario02(page, recorder, _network, runtime) {
       && tag !== "select"
       && !(active instanceof HTMLElement && active.isContentEditable);
   });
+  const undoCapture = await page.evaluate(installTableMutationReceiptCaptureInPage, {
+    requestType: "table.updateCellRequested",
+  });
   const undoShortcutHandled = await page.evaluate(() => {
     const event = new KeyboardEvent("keydown", {
       key: "z",
@@ -1043,6 +1046,12 @@ async function scenario02(page, recorder, _network, runtime) {
     return event.defaultPrevented;
   });
   recorder.check("Ctrl+Z is accepted by the table shortcut layer", undoShortcutHandled);
+  // Storage can expose the undo before its receipt makes renderer history ready for redo.
+  const undoTerminal = await waitForCapturedBridgeMessage(page, 30_000, undoCapture);
+  recorder.check("Ctrl+Z consumes its correlated native commit",
+    undoTerminal.type === "table.editCommitted"
+      && typeof undoTerminal.requestId === "string",
+    { undoTerminal });
   // A data/relation refresh can briefly rebuild the Tabulator DOM. Waiting
   // for the cell text to disappear first would mistake that transient absence
   // for a committed undo. Poll the authoritative QueryPort boundary first;
@@ -1072,6 +1081,8 @@ async function scenario02(page, recorder, _network, runtime) {
     "Ctrl+Z reverses the data edit but never reverses a committed schema change",
     rowsAfterUndo?.rows?.length === 1
       && rowsAfterUndo.rows[0]?.[titleField.physicalName] !== "undo-this-data-edit"
+      && isDeepStrictEqual(undoTerminal.payload?.storedValue,
+        rowsAfterUndo.rows[0]?.[titleField.physicalName])
       && computedAfterUndo.payload?.definition?.identity?.fieldId === computed[0].fieldId,
     { rowsAfterUndo, computedAfterUndo },
   );
