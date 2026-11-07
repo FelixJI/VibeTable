@@ -554,15 +554,10 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		}
 	}
 	beforeSourceCapacity := map[string]string{}
-	beforeSourceCapacityNull := map[string]bool{}
 	if before != nil {
 		for id, row := range before[request.Entity] {
-			if capacityID, isNull, err := requireCapacity(before, row, request.Capacity, ""); err == nil {
-				if isNull {
-					beforeSourceCapacityNull[id] = true
-				} else {
-					beforeSourceCapacity[id] = capacityID
-				}
+			if capacityID, isNull, err := requireCapacity(before, row, request.Capacity, ""); err == nil && !isNull {
+				beforeSourceCapacity[id] = capacityID
 			}
 		}
 	}
@@ -1114,7 +1109,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				if remaining[2] != nil {
 					gross.Add(gross, remaining[2])
 				}
-				if spec.hasNet() && spec.hasTax() {
+				if spec.requestHasNet() && spec.requestHasTax() {
 					remaining[3] = gross
 				} else {
 					remaining[3] = new(big.Int).Sub(values[3], proportionalHalfAway(values[3], spent, quantity))
@@ -1136,7 +1131,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			}
 		}
 		if closingNow[id] {
-			if !amountType && spec.hasQuantity() {
+			if !amountType && spec.requestHasQuantity() {
 				effect := executed[id]
 				if effect == nil {
 					effect = new(big.Int)
@@ -1184,8 +1179,10 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				if bucketUse[key] == nil {
 					bucketUse[key] = new(big.Int)
 				}
-				if err := quantityFormat.Add(bucketUse[key], remaining[0]); err != nil {
-					return err
+				if remaining[0] != nil {
+					if err := quantityFormat.Add(bucketUse[key], remaining[0]); err != nil {
+						return err
+					}
 				}
 			} else if capacityID != "" {
 				if err := addDirect(capacityID, remaining[0]); err != nil {

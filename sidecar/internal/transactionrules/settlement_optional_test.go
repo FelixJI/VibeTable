@@ -67,7 +67,8 @@ func externalSettlementRegistration(t *testing.T, mutate func(spec map[string]an
 	d := Declaration{Contract: Contract, ModelID: "m", Version: 1, Decimals: invoiceGuardsDecimals(), Rules: []Rule{rule}}
 	d.Decimals = append(d.Decimals,
 		Decimal{Entity: "obligations", Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Scale: 0, Digits: 38}, Sign: "nonnegative"},
-		Decimal{Entity: "obligations", Field: "net", Format: invoiceMoney, Sign: "nonnegative"})
+		Decimal{Entity: "obligations", Field: "net", Format: invoiceMoney, Sign: "nonnegative", Nullable: true},
+		Decimal{Entity: "obligations", Field: "gross", Format: invoiceMoney, Sign: "nonnegative", Nullable: true})
 	return Registration{Declaration: d}
 }
 
@@ -235,7 +236,7 @@ func TestSettlementOptionalAmountFulfillmentBudget(t *testing.T) {
 func TestSettlementOptionalCapacityPairsAndErasure(t *testing.T) {
 	registration := externalSettlementRegistration(t, nil)
 	images := optionalImages()
-	images["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00"}
+	images["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00", "gross": nil}
 	// A known source capacity with a null actual capacity is a mismatch.
 	images["request_sources"]["s1"]["obligation"] = "o1"
 	if err := registration.Validate(nil, images); err == nil {
@@ -243,14 +244,14 @@ func TestSettlementOptionalCapacityPairsAndErasure(t *testing.T) {
 	}
 	// The reverse mismatch is equally rejected.
 	reverse := optionalImages()
-	reverse["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00"}
+	reverse["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00", "gross": nil}
 	reverse["allocations"]["a6"]["obligation"] = "o1"
 	if err := registration.Validate(nil, reverse); err == nil {
 		t.Fatal("null source capacity with known actual capacity accepted")
 	}
 	// Preserved known capacity cannot be erased on either side.
 	before := optionalImages()
-	before["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00"}
+	before["obligations"]["o1"] = map[string]any{"quantity": "10", "net": "10000.00", "gross": nil}
 	before["request_sources"]["s1"]["obligation"] = "o1"
 	before["allocations"]["a6"]["obligation"] = "o1"
 	if err := registration.Validate(nil, before); err != nil {
@@ -315,5 +316,126 @@ func TestSettlementOptionalRealNormalScopeGuards(t *testing.T) {
 	currency["invoices"]["blueInv"]["currency"] = "USD"
 	if err := registration.Validate(nil, currency); err == nil {
 		t.Fatal("currency conflict accepted")
+	}
+}
+
+func TestSettlementOptionalCloseScopeFollowsSourceMeasures(t *testing.T) {
+	// A net-only external capacity subset must not disable the fixed close
+	// capture of a quantity source: Q10/N10000 with E6 fixes Q4/N4000.
+	registration := externalSettlementRegistration(t, func(spec map[string]any) {
+		capacity := spec["capacity"].(map[string]any)
+		delete(capacity, "quantity")
+		capacity["net"] = "net"
+		capacity["optional"] = true
+	})
+	before := optionalImages()
+	after := clone(before)
+	after["adjustments"]["close"] = map[string]any{"kind": "closeRemaining", "source": "s1", "close_remaining": true, "quantity": "4", "net": "3999.00", "tax": "0.00", "gross": "3999.00"}
+	if err := registration.Validate(before, after); err == nil {
+		t.Fatal("closeRemaining below the proportional fixed net accepted")
+	}
+	exact := clone(after)
+	exact["adjustments"]["close"]["net"] = "4000.00"
+	exact["adjustments"]["close"]["gross"] = "4000.00"
+	if err := registration.Validate(before, exact); err != nil {
+		t.Fatalf("proportional fixed close rejected: %v", err)
+	}
+}
+
+func TestSettlementOptionalGrossRemainderUsesSourceMeasures(t *testing.T) {
+	// A gross-only external capacity subset still compares the source's gross
+	// remainder, which is the sum of the rounded net and tax remainders.
+	registration := externalSettlementRegistration(t, func(spec map[string]any) {
+		capacity := spec["capacity"].(map[string]any)
+		delete(capacity, "quantity")
+		capacity["gross"] = "gross"
+		capacity["optional"] = true
+	})
+	images := optionalImages()
+	images["obligations"]["o1"] = map[string]any{"quantity": "10", "gross": "0.01", "net": nil}
+	for _, row := range images["request_sources"] {
+		row["obligation"] = "o1"
+		row["quantity"] = "3"
+		row["net"] = "0.01"
+		row["tax"] = "0.01"
+		row["gross"] = "0.02"
+	}
+	images["requests"]["r1"]["basis"] = "quantity"
+	images["request_lines"]["rl1"]["unit"] = "piece"
+	images["actual_lines"]["blueLine"]["quantity"] = "1"
+	images["actual_lines"]["blueLine"]["net"] = "0.00"
+	images["actual_lines"]["blueLine"]["tax"] = "0.00"
+	images["actual_lines"]["blueLine"]["gross"] = "0.00"
+	images["allocations"]["a6"]["obligation"] = "o1"
+	images["allocations"]["a6"]["quantity"] = "1"
+	images["allocations"]["a6"]["net"] = "0.00"
+	images["allocations"]["a6"]["tax"] = "0.00"
+	images["allocations"]["a6"]["gross"] = "0.00"
+	if err := registration.Validate(nil, images); err == nil || err.Error() != "transaction.settlement_exceeded" {
+		t.Fatalf("gross remainder N+T over a gross-only capacity accepted: %v", err)
+	}
+	wide := clone(images)
+	wide["obligations"]["o1"]["gross"] = "0.02"
+	if err := registration.Validate(nil, wide); err != nil {
+		t.Fatalf("legal gross remainder rejected: %v", err)
+	}
+}
+
+func TestSettlementOptionalPlansCarryAmountSources(t *testing.T) {
+	// An amount source with a legal plan item carries no quantity reservation
+	// into the plan bucket while its money still settles only through events.
+	rule := newKindRule(t, "settlement")
+	s := rule.Settlement
+	s.Capacity = SettlementCapacity{Entity: "obligations", Quantity: "quantity", Optional: true}
+	s.Request.Capacity = "obligation"
+	s.Request.PlanItem = "plan_item"
+	s.Request.Directions = []string{"blue"}
+	s.Request.Purpose = AuthorityRef{}
+	s.Request.Purposes = nil
+	s.Actual.Capacity = "obligation"
+	s.Actual.PlanItem = "plan_item"
+	s.Actual.Directions = []string{"blue"}
+	s.Actual.Purpose = AuthorityRef{}
+	s.Actual.Purposes = nil
+	s.Actual.ZeroQuantityPurposes = nil
+	s.Plans = reservationPlanRule().Reservation.Plans
+	d := Declaration{Contract: Contract, ModelID: "m", Version: 1, Decimals: invoiceGuardsDecimals(), Rules: []Rule{rule}}
+	for _, entity := range []string{"obligations", "plan_items"} {
+		d.Decimals = append(d.Decimals, Decimal{Entity: entity, Field: "quantity", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Sign: "nonnegative"})
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	registration := Registration{Declaration: d}
+	images := settlementImages()
+	delete(images["allocations"], "red")
+	images["requests"]["r1"]["direction"] = "blue"
+	images["requests"]["r1"]["basis"] = "amount"
+	images["request_sources"]["s1"]["obligation"] = "o1"
+	images["request_sources"]["s1"]["plan_item"] = "p1"
+	images["request_sources"]["s1"]["quantity"] = "0"
+	images["actual_lines"]["blueLine"]["quantity"] = "0"
+	images["allocations"]["orig"]["application_source"] = "s1"
+	images["allocations"]["orig"]["obligation"] = "o1"
+	images["allocations"]["orig"]["quantity"] = "0"
+	for _, entity := range []string{"series", "plan_versions", "logical_items", "plan_items"} {
+		images[entity] = reservationPlanImages()[entity]
+	}
+	images["obligations"] = map[string]map[string]any{"o1": {"quantity": "16"}}
+	images["plan_items"]["p1"]["quantity"] = "8"
+	if err := registration.Validate(nil, images); err != nil {
+		t.Fatalf("amount source with plan item rejected: %v", err)
+	}
+	// The money still settles only through explicit events within the budget.
+	over := clone(images)
+	over["adjustments"]["fulfill"] = map[string]any{"kind": "fulfillAmount", "source": "s1", "close_remaining": false, "allocation": "orig", "quantity": nil, "net": "100.01", "tax": "0.00", "gross": "100.01"}
+	if err := registration.Validate(images, over); err == nil || err.Error() != "transaction.settlement_exceeded" {
+		t.Fatalf("fulfill over the actual attribution accepted: %v", err)
+	}
+	exact := clone(images)
+	exact["adjustments"]["fulfill"] = map[string]any{"kind": "fulfillAmount", "source": "s1", "close_remaining": false, "allocation": "orig", "quantity": nil, "net": "100.00", "tax": "0.00", "gross": "100.00"}
+	exact["adjustments"]["close"] = map[string]any{"kind": "closeRemaining", "source": "s1", "close_remaining": true, "quantity": "0", "net": "0.00", "tax": "0.00", "gross": "0.00"}
+	if err := registration.Validate(images, exact); err != nil {
+		t.Fatalf("fulfill plus close rejected: %v", err)
 	}
 }

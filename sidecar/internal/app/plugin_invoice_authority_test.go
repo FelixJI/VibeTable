@@ -647,6 +647,41 @@ func TestInvoiceAuthorityOptionalCapacitySettlesWithoutExternalBudget(t *testing
 	settled := discount
 	settled.Operations = append(settled.Operations, invoiceCreate("adjustments", "fulfilled", exactEvent), invoiceCreate("adjustments", "rest", rest))
 	f.submit(t, settled)
+
+	// An amount source legally carries a plan item without consuming its
+	// quantity budget; its money still settles only through explicit events.
+	seeded := f.submit(t, invoicePlan(
+		invoiceCreate("obligations", "o2", map[string]any{"quantity": "10", "currency": "CNY", "unit": "piece"}),
+		invoiceCreate("series", "series2", map[string]any{"label": "s2", "current_version": regressionRef("plan_versions", "v2")}),
+		invoiceCreate("plan_versions", "v2", map[string]any{"label": "v2", "series": regressionRef("series", "series2")}),
+		invoiceCreate("logical_items", "logical2", map[string]any{"label": "l2"}),
+		invoiceCreate("plan_items", "p2", map[string]any{"quantity": "8", "share": 0, "plan_version": regressionRef("plan_versions", "v2"), "logical_item": regressionRef("logical_items", "logical2"), "scope": regressionRef("obligations", "o2")}),
+	)).NewIDs
+	planned := invoiceRequest("planned", "normal", "amount", "0", "100.00", "0.00", "100.00", nil)
+	planned.Operations[0].Values["direction"] = "blue"
+	planned.Operations[2].Values["obligation"] = seeded["obligations"]["o2"]
+	planned.Operations[2].Values["plan_item"] = seeded["plan_items"]["p2"]
+	plannedSource := f.submit(t, planned).NewIDs["request_sources"]["planned"]
+	plannedDiscount := invoiceFace("pdiscount", "blue", "", "0", "100.00", "0.00", "100.00", plannedSource, nil, true)
+	plannedDiscount.Operations[2].Values["obligation"] = seeded["obligations"]["o2"]
+	plannedOver := invoiceMeasures("0", "100.01", "0.00", "100.01")
+	plannedOver["kind"] = "fulfillAmount"
+	plannedOver["source"] = plannedSource
+	plannedOver["allocation"] = regressionRef("allocations", "pdiscount")
+	plannedOver["note"] = "超实际兑现"
+	plannedOver["close_remaining"] = false
+	overPlan := plannedDiscount
+	overPlan.Operations = append(overPlan.Operations, invoiceCreate("adjustments", "over", plannedOver))
+	regressionReject(t, f, overPlan, "transaction.settlement_exceeded")
+	plannedExact := invoiceMeasures("0", "100.00", "0.00", "100.00")
+	plannedExact["kind"] = "fulfillAmount"
+	plannedExact["source"] = plannedSource
+	plannedExact["allocation"] = regressionRef("allocations", "pdiscount")
+	plannedExact["note"] = "明确兑现"
+	plannedExact["close_remaining"] = false
+	settlePlan := plannedDiscount
+	settlePlan.Operations = append(settlePlan.Operations, invoiceCreate("adjustments", "fulfilled", plannedExact))
+	f.submit(t, settlePlan)
 }
 
 func TestInvoiceAuthorityTypedScopeAndContractRelations(t *testing.T) {
