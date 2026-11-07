@@ -12,8 +12,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from qa import go_test_schedule, release_eligibility
 from qa import next as next_gate
-from qa import release_eligibility
 
 
 def _candidate_args(tmp_path: Path) -> list[str]:
@@ -113,6 +113,15 @@ def test_go_commands_target_sidecar_module() -> None:
     assert command[-2:] == ["vet", "./..."]
     assert Path(cwd) == next_gate.SIDECAR_DIR
 
+    command, cwd = next_gate.stage_command("go-test")
+    assert command == [
+        next_gate.sys.executable,
+        str(next_gate.REPO_ROOT / "qa" / "go_test_schedule.py"),
+        "--go",
+        next_gate._resolve("go"),
+    ]
+    assert Path(cwd) == next_gate.SIDECAR_DIR
+
     command, cwd = next_gate.stage_command("go-race")
     assert command[:3] == [next_gate._resolve("go"), "test", "-race"]
     assert "isolated batches" in command[-1]
@@ -133,6 +142,90 @@ def test_go_commands_target_sidecar_module() -> None:
     assert "packaged_sidecar_matrix.py" in " ".join(command)
     assert "--json-report" in command
     assert Path(cwd) == next_gate.REPO_ROOT
+
+
+def test_plain_go_gate_schedules_app_then_the_complete_remaining_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = go_test_schedule.APP_PACKAGE
+    first = f"{go_test_schedule.SIDECAR_PACKAGE}/cmd/vibetable-pb"
+    last = f"{go_test_schedule.SIDECAR_PACKAGE}/tests/integration"
+    listing = [first, app, last]
+    calls = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout="\n".join(listing) + "\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0),
+        ]
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
+
+    assert go_test_schedule.main(["--go", "pinned-go"]) == 0
+
+    assert [item.args[0] for item in calls.call_args_list] == [
+        ["pinned-go", "list", "./..."],
+        ["pinned-go", "test", app],
+        ["pinned-go", "test", first, last],
+    ]
+    assert all(
+        item.kwargs["cwd"] == tmp_path and item.kwargs["check"] for item in calls.call_args_list
+    )
+    out = capsys.readouterr().out
+    assert out.index("Go test app started") < out.index("Go test app finished")
+    assert out.index("Go test app finished") < out.index("Go test remaining started")
+    assert "Go test remaining finished" in out
+
+
+@pytest.mark.parametrize("failure", ["list", "app", "remaining"])
+def test_plain_go_schedule_stops_at_a_failed_command(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    app = go_test_schedule.APP_PACKAGE
+    peer = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
+    result = subprocess.CompletedProcess([], 0, stdout=f"{app}\n{peer}\n")
+    steps = ["list", "app", "remaining"]
+    calls = Mock(
+        side_effect=[
+            subprocess.CalledProcessError(9, []) if step == failure else result for step in steps
+        ]
+    )
+    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
+
+    assert go_test_schedule.main(["--go", "pinned-go"]) == 9
+    assert calls.call_count == steps.index(failure) + 1
+
+
+@pytest.mark.parametrize("inventory", ["missing-app", "duplicate", "foreign", "wildcard"])
+def test_plain_go_schedule_rejects_an_incomplete_or_ambiguous_inventory(
+    monkeypatch: pytest.MonkeyPatch, inventory: str
+) -> None:
+    app = go_test_schedule.APP_PACKAGE
+    peer = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
+    listings = {
+        "missing-app": f"{peer}\n",
+        "duplicate": f"{app}\n{peer}\n{peer}\n",
+        "foreign": f"{app}\n../outside\n",
+        "wildcard": f"{app}\n{go_test_schedule.SIDECAR_PACKAGE}/...\n",
+    }
+    calls = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=listings[inventory]))
+    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
+
+    assert go_test_schedule.main(["--go", "pinned-go"]) == 1
+    calls.assert_called_once()
+
+
+@pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
+def test_scheduled_go_stage_uses_one_original_process_tree_deadline(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    command, cwd = next_gate.stage_command(stage)
+    monkeypatch.setattr(next_gate, "_stage_environment", lambda *_args: {})
+    run = Mock(return_value=(0, "", ""))
+    monkeypatch.setattr(next_gate, "_run_command", run)
+
+    assert next_gate.run_stage(stage).returncode == 0
+    run.assert_called_once_with(command, cwd=cwd, environment={}, timeout=900)
 
 
 @pytest.mark.parametrize("stage", ["version", "python", "web-test", "go-fmt"])

@@ -376,7 +376,12 @@ def stage_command(
     if stage == "go-vet":
         return [_resolve("go"), "vet", "./..."], str(SIDECAR_DIR)
     if stage == "go-test":
-        return [_resolve("go"), "test", "./..."], str(SIDECAR_DIR)
+        return [
+            sys.executable,
+            str(REPO_ROOT / "qa" / "go_test_schedule.py"),
+            "--go",
+            _resolve("go"),
+        ], str(SIDECAR_DIR)
     if stage == "go-coverage":
         return [
             sys.executable,

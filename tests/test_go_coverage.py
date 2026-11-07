@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from qa import go_coverage
+from qa import go_coverage, go_test_schedule
 
 
 def _write_config(path: Path) -> None:
@@ -46,6 +46,16 @@ def _write_config(path: Path) -> None:
     )
 
 
+def _coverage_path(command: list[str]) -> Path:
+    return Path(
+        next(
+            arg.removeprefix("-coverprofile=")
+            for arg in command
+            if arg.startswith("-coverprofile=")
+        )
+    )
+
+
 def test_main_runs_disjoint_core_and_authority_groups_from_project_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -62,22 +72,47 @@ def test_main_runs_disjoint_core_and_authority_groups_from_project_config(
         (stale / "coverage.out").write_text("stale", encoding="utf-8")
         (stale / "report.json").write_text("stale", encoding="utf-8")
 
+    app = go_test_schedule.APP_PACKAGE
+    migrations = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
+    integration = f"{go_test_schedule.SIDECAR_PACKAGE}/tests/integration"
+    covered_block = "github.com/vibetable/vibetable/sidecar/internal/query/query.go:1.1,2.1 1"
     observed: list[tuple[list[str], Path]] = []
 
-    def fake_run(command: list[str], *, cwd: Path, check: bool) -> subprocess.CompletedProcess:
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        check: bool,
+        stdout: int | None = None,
+        encoding: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         assert check is True
         observed.append((command, Path(cwd)))
-        if command[1] == "test":
-            profile = Path(
-                next(
-                    arg.removeprefix("-coverprofile=")
-                    for arg in command
-                    if arg.startswith("-coverprofile=")
-                )
+        if command[1] == "list":
+            assert command == ["go", "list", "./..."]
+            assert stdout == subprocess.PIPE
+            assert encoding == "utf-8"
+            return subprocess.CompletedProcess(
+                command, 0, stdout=f"{app}\n{migrations}\n{integration}\n"
             )
-            group_root = profile.parent
+        if command[1] == "test":
+            profile = _coverage_path(command)
             assert not profile.exists()
-            assert not (group_root / "report.json").exists()
+            if profile.name == "coverage.out":
+                assert not (profile.parent / "report.json").exists()
+                profile.write_text("mode: count\n", encoding="utf-8")
+            else:
+                group_root = profile.parent.parent
+                assert not (group_root / "coverage.out").exists()
+                assert not (group_root / "report.json").exists()
+                count = 2 if profile.name == "app.out" else 3
+                profile.write_text(f"mode: count\n{covered_block} {count}\n", encoding="utf-8")
+        if command[1] == "run" and "authority" in command:
+            profile = Path(command[command.index("--profile") + 1])
+            assert (
+                profile.read_text(encoding="utf-8")
+                == f"mode: count\n{covered_block} 2\n{covered_block} 3\n"
+            )
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(go_coverage, "REPO_ROOT", repository_root)
@@ -86,20 +121,30 @@ def test_main_runs_disjoint_core_and_authority_groups_from_project_config(
 
     assert go_coverage.main(["--go", "go", "--config", str(config)]) == 0
 
-    assert len(observed) == 4
-    test_commands = [command for command, cwd in observed if command[1] == "test"]
-    report_commands = [command for command, cwd in observed if command[1] == "run"]
+    assert [command[1] for command, _cwd in observed] == [
+        "test",
+        "run",
+        "list",
+        "test",
+        "test",
+        "run",
+    ]
+    test_commands = [command for command, _cwd in observed if command[1] == "test"]
+    report_commands = [command for command, _cwd in observed if command[1] == "run"]
     assert all(cwd == sidecar for _command, cwd in observed)
-    assert len(test_commands) == len(report_commands) == 2
 
-    core_test, authority_test = test_commands
+    core_test, app_test, remaining_test = test_commands
     assert core_test[-2:] == ["./internal/schemacore", "./internal/relatedcomputation"]
-    assert authority_test[-1:] == ["./..."]
+    assert app_test[6:] == [app]
+    assert remaining_test[6:] == [migrations, integration]
     assert core_test[4] == ("-coverpkg=./internal/schemacore,./internal/relatedcomputation")
-    assert authority_test[4] == (
-        "-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation"
-    )
-    assert core_test[5] != authority_test[5]
+    expected_options = [
+        "-count=1",
+        "-covermode=count",
+        "-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation",
+    ]
+    assert app_test[2:5] == remaining_test[2:5] == expected_options
+    assert len({_coverage_path(command) for command in test_commands}) == 3
 
     core_report, authority_report = report_commands
     assert core_report[core_report.index("--group") + 1] == "core"
@@ -117,6 +162,47 @@ def test_main_runs_disjoint_core_and_authority_groups_from_project_config(
         "sidecar/internal/query",
         "sidecar/internal/mutation",
     ]
+
+
+@pytest.mark.parametrize("failure", ["app", "remaining", "mode", "missing"])
+def test_full_coverage_rejects_failed_batches_and_invalid_profiles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    app = go_test_schedule.APP_PACKAGE
+    peer = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
+    final = tmp_path / "coverage.out"
+    observed: list[str] = []
+
+    def fake_run(
+        command: list[str], *, cwd: Path, check: bool, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert cwd == tmp_path
+        assert check
+        if command[1] == "list":
+            return subprocess.CompletedProcess(command, 0, stdout=f"{app}\n{peer}\n")
+        part = _coverage_path(command)
+        observed.append(part.stem)
+        if part.stem == failure:
+            raise subprocess.CalledProcessError(1, command)
+        if part.stem != "remaining" or failure != "missing":
+            mode = "set" if part.stem == "remaining" and failure == "mode" else "count"
+            part.write_text(f"mode: {mode}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(go_coverage, "SIDECAR", tmp_path)
+    monkeypatch.setattr(go_coverage.subprocess, "run", fake_run)
+    error = {
+        "app": subprocess.CalledProcessError,
+        "remaining": subprocess.CalledProcessError,
+        "mode": ValueError,
+        "missing": FileNotFoundError,
+    }[failure]
+
+    with pytest.raises(error):
+        go_coverage._run_full_coverage("go", ("-covermode=count",), final)
+
+    assert observed == (["app"] if failure == "app" else ["app", "remaining"])
+    assert not final.exists()
 
 
 def test_project_inventory_ratchets_authority_as_an_independent_group() -> None:

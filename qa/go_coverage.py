@@ -7,9 +7,15 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:
+    from qa import go_test_schedule
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import go_test_schedule  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR = REPO_ROOT / "sidecar"
@@ -135,6 +141,29 @@ def _base_ref() -> str:
     return os.environ.get("VIBETABLE_GO_COVERAGE_BASE_REF", "GitHub/main")
 
 
+def _run_full_coverage(go: str, options: tuple[str, ...], profile: Path) -> None:
+    with tempfile.TemporaryDirectory(dir=profile.parent, prefix="batches-") as temporary:
+        directory = Path(temporary)
+        parts = []
+        for name, packages in go_test_schedule.package_batches(go, SIDECAR):
+            part = directory / f"{name}.out"
+            go_test_schedule.run_test_batch(
+                go, SIDECAR, name, packages, (*options, f"-coverprofile={part}")
+            )
+            parts.append(part)
+
+        bodies = []
+        for part in parts:
+            header, separator, body = part.read_text(encoding="utf-8").partition("\n")
+            if not separator or header != "mode: count":
+                raise ValueError(f"invalid count-mode coverage profile: {part.name}")
+            if body:
+                bodies.append(body if body.endswith("\n") else f"{body}\n")
+        merged = directory / "coverage.out"
+        merged.write_text("mode: count\n" + "".join(bodies), encoding="utf-8", newline="\n")
+        merged.replace(profile)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--go", default="go", help="Go executable")
@@ -147,19 +176,19 @@ def main(argv: list[str] | None = None) -> int:
         report = output / "report.json"
         profile.unlink(missing_ok=True)
         report.unlink(missing_ok=True)
-        subprocess.run(
-            [
-                args.go,
-                "test",
-                "-count=1",
-                "-covermode=count",
-                f"-coverpkg={','.join(group.cover_packages)}",
-                f"-coverprofile={profile}",
-                *group.test_packages,
-            ],
-            cwd=SIDECAR,
-            check=True,
+        options = (
+            "-count=1",
+            "-covermode=count",
+            f"-coverpkg={','.join(group.cover_packages)}",
         )
+        if group.test_packages == ("./...",):
+            _run_full_coverage(args.go, options, profile)
+        else:
+            subprocess.run(
+                [args.go, "test", *options, f"-coverprofile={profile}", *group.test_packages],
+                cwd=SIDECAR,
+                check=True,
+            )
         command = [
             args.go,
             "run",
