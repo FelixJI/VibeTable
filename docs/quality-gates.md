@@ -44,8 +44,13 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   constraints，不把 `!windows` 源码计入分母。authority 组覆盖 `filehistory`、`restore`、
   `query`、`mutation` 与 Go `productrpc` adapter，并用 `./...` 汇集自测、跨包接口测试和
   integration 对这些包的覆盖。普通 Go 门禁与 authority 覆盖均从 `go list ./...` 发现完整包集，
-  先独立运行 app，再按 Go 默认包并行运行其余包。authority 两批均成功后合并 count profile，
-  由原报告器计算阈值。每个测试包仍使用默认 10 分钟，两个完整阶段各有 15 分钟预算。
+  app 每阶段构建一次测试二进制，按实际发现的 Test、Example 和 Fuzz 默认 seed 分成至多两个
+  Windows Job worker，保留默认包内并发，核对每项恰好一次开始及通过或明确跳过。自定义 TestMain
+  或诊断环境变量会拒绝调度。两个 worker 共用一个从首次启动前开始的 10 分钟截止时间，
+  并须证明各自 Job 为空。随后才按 Go 默认包并行运行其余包。余包和覆盖 core 的命令仅对既有
+  Windows TempDir 清理失败判据重试一次。authority 在所有部分通过后合并 count profile，由原报告器
+  计算阈值。两个进程分别初始化，覆盖计数可与单进程不同。每个测试包仍使用默认 10 分钟，
+  两个完整阶段各有 15 分钟预算，包含发现、构建、所有测试及适用的报告。
   产品 E2E 仍由独立门禁执行。差异覆盖率以所选基线与当前 HEAD 的 Git merge-base 提交为准，
   报告记录该固定提交；保留工作区及未跟踪 Go 文件的差异，不计入仅在后续 main 上出现的改动。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。

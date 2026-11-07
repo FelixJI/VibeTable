@@ -12,8 +12,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from qa import go_test_schedule, release_eligibility
 from qa import next as next_gate
+from qa import release_eligibility
 
 
 def _candidate_args(tmp_path: Path) -> list[str]:
@@ -142,77 +142,6 @@ def test_go_commands_target_sidecar_module() -> None:
     assert "packaged_sidecar_matrix.py" in " ".join(command)
     assert "--json-report" in command
     assert Path(cwd) == next_gate.REPO_ROOT
-
-
-def test_plain_go_gate_schedules_app_then_the_complete_remaining_inventory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    app = go_test_schedule.APP_PACKAGE
-    first = f"{go_test_schedule.SIDECAR_PACKAGE}/cmd/vibetable-pb"
-    last = f"{go_test_schedule.SIDECAR_PACKAGE}/tests/integration"
-    listing = [first, app, last]
-    calls = Mock(
-        side_effect=[
-            subprocess.CompletedProcess([], 0, stdout="\n".join(listing) + "\n"),
-            subprocess.CompletedProcess([], 0),
-            subprocess.CompletedProcess([], 0),
-        ]
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
-
-    assert go_test_schedule.main(["--go", "pinned-go"]) == 0
-
-    assert [item.args[0] for item in calls.call_args_list] == [
-        ["pinned-go", "list", "./..."],
-        ["pinned-go", "test", app],
-        ["pinned-go", "test", first, last],
-    ]
-    assert all(
-        item.kwargs["cwd"] == tmp_path and item.kwargs["check"] for item in calls.call_args_list
-    )
-    out = capsys.readouterr().out
-    assert out.index("Go test app started") < out.index("Go test app finished")
-    assert out.index("Go test app finished") < out.index("Go test remaining started")
-    assert "Go test remaining finished" in out
-
-
-@pytest.mark.parametrize("failure", ["list", "app", "remaining"])
-def test_plain_go_schedule_stops_at_a_failed_command(
-    monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    app = go_test_schedule.APP_PACKAGE
-    peer = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
-    result = subprocess.CompletedProcess([], 0, stdout=f"{app}\n{peer}\n")
-    steps = ["list", "app", "remaining"]
-    calls = Mock(
-        side_effect=[
-            subprocess.CalledProcessError(9, []) if step == failure else result for step in steps
-        ]
-    )
-    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
-
-    assert go_test_schedule.main(["--go", "pinned-go"]) == 9
-    assert calls.call_count == steps.index(failure) + 1
-
-
-@pytest.mark.parametrize("inventory", ["missing-app", "duplicate", "foreign", "wildcard"])
-def test_plain_go_schedule_rejects_an_incomplete_or_ambiguous_inventory(
-    monkeypatch: pytest.MonkeyPatch, inventory: str
-) -> None:
-    app = go_test_schedule.APP_PACKAGE
-    peer = f"{go_test_schedule.SIDECAR_PACKAGE}/migrations"
-    listings = {
-        "missing-app": f"{peer}\n",
-        "duplicate": f"{app}\n{peer}\n{peer}\n",
-        "foreign": f"{app}\n../outside\n",
-        "wildcard": f"{app}\n{go_test_schedule.SIDECAR_PACKAGE}/...\n",
-    }
-    calls = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=listings[inventory]))
-    monkeypatch.setattr(go_test_schedule.subprocess, "run", calls)
-
-    assert go_test_schedule.main(["--go", "pinned-go"]) == 1
-    calls.assert_called_once()
 
 
 @pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
@@ -1294,43 +1223,23 @@ def test_fault_injection_uses_the_selected_immutable_candidate(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
-def test_go_stage_retries_only_the_narrow_windows_tempdir_cleanup_flake(
-    monkeypatch,
+def test_go_stage_does_not_restart_after_narrow_tempdir_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
     stage: str,
 ) -> None:
-    monkeypatch.setattr(next_gate.os, "name", "nt")
-    monkeypatch.setattr(
-        next_gate,
-        "stage_command",
-        lambda _stage, package_root=None: (["go", "test", "./..."], "repo"),
+    monkeypatch.setattr(next_gate, "_stage_environment", lambda *_args: {})
+    output = (
+        "--- FAIL: TestExample\n"
+        "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
+        "The directory is not empty.\n"
     )
-    monkeypatch.setattr(
-        next_gate,
-        "_stage_environment",
-        lambda _stage, _command, package_root=None: {},
-    )
-    calls = 0
-
-    def run(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls < next_gate.WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS:
-            return (
-                1,
-                "--- FAIL: TestExample\n"
-                "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
-                "The directory is not empty.\n",
-                "",
-            )
-        return 0, "ok\n", ""
-
+    run = Mock(return_value=(1, output, ""))
     monkeypatch.setattr(next_gate, "_run_command", run)
+
     result = next_gate.run_stage(stage)
 
-    assert result.returncode == 0
-    assert calls == next_gate.WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
-    assert "attempt 2/3" in result.stdout
-    assert "attempt 3/3" in result.stdout
+    assert result.returncode == 1
+    run.assert_called_once()
 
 
 def test_run_command_timeout_terminates_process_tree(

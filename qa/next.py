@@ -40,6 +40,9 @@ except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
         product_e2e_partition,
     )
 
+from qa.go_test_schedule import (
+    is_windows_tempdir_cleanup_flake as _is_windows_tempdir_cleanup_flake,
+)
 from qa.product_scenario_manifest import load_scenarios
 from scripts.build_next import resolve_go
 
@@ -1128,30 +1131,6 @@ def _run_go_race(
     return returncode, "\n".join(output), "\n".join(errors)
 
 
-def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
-    """Recognize only the narrow Windows TempDir cleanup race, never Go races."""
-
-    if os.name != "nt":
-        return False
-    if "WARNING: DATA RACE" in output or "panic:" in output:
-        return False
-    if any(
-        marker in output
-        for marker in ("fatal error:", "[build failed]", "fork/exec", "paging file")
-    ):
-        # Mixed output also carries a toolchain failure (out-of-memory
-        # abort, failed build, or a paging-file spawn error). Those are never
-        # the cleanup race and must fail closed instead of consuming the
-        # bounded cleanup retries.
-        return False
-    if "TempDir RemoveAll cleanup:" not in output:
-        return False
-    if "The directory is not empty" not in output:
-        return False
-    diagnostics = re.findall(r"^\s+([^:\r\n]+\.go):\d+:", output, flags=re.MULTILINE)
-    return bool(diagnostics) and all(Path(source).name == "testing.go" for source in diagnostics)
-
-
 def run_stage(
     stage: str,
     package_root: Path | None = None,
@@ -1192,35 +1171,6 @@ def run_stage(
                 DEFAULT_STAGE_TIMEOUT_SECONDS,
             ),
         )
-        attempt = 1
-        while (
-            stage in {"go-test", "go-coverage"}
-            and returncode
-            and attempt < WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS
-            and _is_windows_tempdir_cleanup_flake(stdout + "\n" + stderr)
-        ):
-            attempt += 1
-            previous_stdout, previous_stderr = stdout, stderr
-            returncode, stdout, stderr = _run_command(
-                command,
-                cwd=cwd,
-                environment=environment,
-                timeout=STAGE_TIMEOUT_SECONDS.get(
-                    stage,
-                    DEFAULT_STAGE_TIMEOUT_SECONDS,
-                ),
-            )
-            stdout = "\n".join(
-                (
-                    previous_stdout,
-                    "known Windows TempDir watcher cleanup flake; "
-                    "retried the exact Go stage command in a fresh process "
-                    f"(attempt {attempt}/"
-                    f"{WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS})",
-                    stdout,
-                )
-            )
-            stderr = "\n".join((previous_stderr, stderr))
     return StageResult(
         stage=stage,
         command=command,

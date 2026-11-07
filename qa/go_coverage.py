@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,27 +140,78 @@ def _base_ref() -> str:
     return os.environ.get("VIBETABLE_GO_COVERAGE_BASE_REF", "GitHub/main")
 
 
-def _run_full_coverage(go: str, options: tuple[str, ...], profile: Path) -> None:
-    with tempfile.TemporaryDirectory(dir=profile.parent, prefix="batches-") as temporary:
-        directory = Path(temporary)
-        parts = []
-        for name, packages in go_test_schedule.package_batches(go, SIDECAR):
-            part = directory / f"{name}.out"
-            go_test_schedule.run_test_batch(
-                go, SIDECAR, name, packages, (*options, f"-coverprofile={part}")
-            )
-            parts.append(part)
+def _merge_profiles(parts: tuple[Path, ...], destination: Path) -> None:
+    bodies = []
+    for part in parts:
+        header, separator, body = part.read_text(encoding="utf-8").partition("\n")
+        if not separator or header != "mode: count":
+            raise ValueError(f"invalid count-mode coverage profile: {part.name}")
+        if body:
+            bodies.append(body if body.endswith("\n") else f"{body}\n")
+    destination.write_text("mode: count\n" + "".join(bodies), encoding="utf-8", newline="\n")
 
-        bodies = []
-        for part in parts:
-            header, separator, body = part.read_text(encoding="utf-8").partition("\n")
-            if not separator or header != "mode: count":
-                raise ValueError(f"invalid count-mode coverage profile: {part.name}")
-            if body:
-                bodies.append(body if body.endswith("\n") else f"{body}\n")
-        merged = directory / "coverage.out"
-        merged.write_text("mode: count\n" + "".join(bodies), encoding="utf-8", newline="\n")
-        merged.replace(profile)
+
+def _report(go: str, group: CoverageGroup, profile: Path, report: Path, evidence: Path) -> None:
+    command = [
+        go,
+        "run",
+        "./cmd/go-coverage-report",
+        "--group",
+        group.name,
+        "--profile",
+        str(profile),
+        "--repository-root",
+        str(REPO_ROOT),
+        "--base-ref",
+        _base_ref(),
+        "--report",
+        str(report),
+        "--line-min",
+        str(group.line_minimum),
+        "--branch-min",
+        str(group.branch_minimum),
+        "--diff-min",
+        str(group.diff_minimum),
+    ]
+    for scope in group.scopes:
+        command.extend(("--scope", scope))
+    go_test_schedule.run_command(tuple(command), SIDECAR, evidence, f"{group.name}-report")
+    if not report.is_file():
+        raise ValueError(f"Go coverage reporter did not create {group.name} report")
+
+
+def _run_group(go: str, group: CoverageGroup, output: Path, evidence: Path) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    report = output / "report.json"
+    report.unlink(missing_ok=True)
+    options = ("-covermode=count", f"-coverpkg={','.join(group.cover_packages)}")
+    with tempfile.TemporaryDirectory(dir=output, prefix="parts-") as scratch:
+        directory = Path(scratch)
+        profile = directory / "coverage.out"
+        if group.test_packages == ("./...",):
+            parts = go_test_schedule.run_full_suite(
+                go, SIDECAR, evidence, cover_options=options, profile_dir=directory
+            )
+            _merge_profiles(parts, profile)
+        else:
+            go_test_schedule.run_test_command(
+                (
+                    go,
+                    "test",
+                    "-count=1",
+                    *options,
+                    f"-coverprofile={profile}",
+                    *group.test_packages,
+                ),
+                SIDECAR,
+                evidence,
+                f"{group.name}-test",
+                profile=profile,
+            )
+        pending_report = directory / report.name
+        _report(go, group, profile, pending_report, evidence)
+        profile.replace(output / profile.name)
+        pending_report.replace(report)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -169,50 +219,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--go", default="go", help="Go executable")
     parser.add_argument("--config", type=Path, default=PROJECT_CONFIG, help="project config")
     args = parser.parse_args(argv)
+    evidence = go_test_schedule.evidence_directory(SIDECAR, "coverage")
     for group in load_groups(args.config):
         output = REPO_ROOT / "build" / "qa" / "go-coverage" / group.name
-        output.mkdir(parents=True, exist_ok=True)
-        profile = output / "coverage.out"
-        report = output / "report.json"
-        profile.unlink(missing_ok=True)
-        report.unlink(missing_ok=True)
-        options = (
-            "-count=1",
-            "-covermode=count",
-            f"-coverpkg={','.join(group.cover_packages)}",
-        )
-        if group.test_packages == ("./...",):
-            _run_full_coverage(args.go, options, profile)
-        else:
-            subprocess.run(
-                [args.go, "test", *options, f"-coverprofile={profile}", *group.test_packages],
-                cwd=SIDECAR,
-                check=True,
-            )
-        command = [
-            args.go,
-            "run",
-            "./cmd/go-coverage-report",
-            "--group",
-            group.name,
-            "--profile",
-            str(profile),
-            "--repository-root",
-            str(REPO_ROOT),
-            "--base-ref",
-            _base_ref(),
-            "--report",
-            str(report),
-            "--line-min",
-            str(group.line_minimum),
-            "--branch-min",
-            str(group.branch_minimum),
-            "--diff-min",
-            str(group.diff_minimum),
-        ]
-        for scope in group.scopes:
-            command.extend(("--scope", scope))
-        subprocess.run(command, cwd=SIDECAR, check=True)
+        _run_group(args.go, group, output, evidence)
     return 0
 
 
