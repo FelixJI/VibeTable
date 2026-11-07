@@ -14,7 +14,9 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -464,5 +466,42 @@ func TestTransactionAuthorityPreflightStatusAndReplayCheckCurrentInstallation(t 
 		if _, err := call(); err == nil || !strings.Contains(err.Error(), "plugin_read_denied") {
 			t.Fatalf("%s reused authority across calls: %v", method, err)
 		}
+	}
+}
+
+func TestTransactionAuthorityProgressRetainsOldBindingsAndRejectsOldCorruption(t *testing.T) {
+	f := newTransactionFixture(t)
+	original := f.model.Bindings["headers"]
+	later := f.model
+	later.RequestID = "later-synthetic-model"
+	later.Bindings = map[string]pluginmodel.Binding{"unrelated": {TableID: "synthetic-unrelated", Fields: map[string]string{"name": "synthetic-field"}}}
+	installed, err := surfaceInstallation(t.Context(), f.pb, f.workspace, f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProgress := func(id string, detail any) {
+		t.Helper()
+		err := f.pb.RunInTransaction(func(tx core.App) error {
+			_, err := pluginstore.New(tx, f.workspace).RecordAuditInTransaction(t.Context(), modelAudit(f.input, installed, id, "model.progress", detail))
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendProgress("later-valid-synthetic-progress", later)
+	if _, err := pluginmodel.States(t.Context(), f.pb, f.input.ProjectKey, f.input.PluginID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginmodel.ProtectTable(t.Context(), f.pb, original.TableID); err == nil || !strings.Contains(err.Error(), "plugin.model.core_protected") {
+		t.Fatalf("later history removed old table protection: %v", err)
+	}
+	if err := pluginmodel.ProtectField(t.Context(), f.pb, original.TableID, original.Fields["code"], &v2.FieldDefinition{}, nil); err == nil || !strings.Contains(err.Error(), "plugin.model.core_protected") {
+		t.Fatalf("later history removed old field protection: %v", err)
+	}
+	appendProgress("bad-synthetic-progress", map[string]any{"contract": "invalid"})
+	appendProgress("newest-valid-synthetic-progress", later)
+	if states, err := pluginmodel.States(t.Context(), f.pb, f.input.ProjectKey, f.input.PluginID); err == nil || states != nil {
+		t.Fatal("newest valid progress hid old corrupt history")
 	}
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"reflect"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/types"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 )
@@ -64,25 +66,41 @@ func States(ctx context.Context, app core.App, project, plugin string) ([]State,
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			raw, err := json.Marshal(row.GetRaw("payload_json"))
+			state, err := decodeProgress(row.GetRaw("payload_json"))
 			if err != nil {
 				return nil, err
 			}
-			var event struct {
-				Details State `json:"details"`
-			}
-			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, err
-			}
-			if event.Details.Contract != Contract {
+			if state.Contract != Contract {
 				return nil, errors.New("plugin model progress contract is invalid")
 			}
-			result = append(result, event.Details)
+			result = append(result, state)
 		}
 		if len(rows) < 256 {
 			return result, nil
 		}
 	}
+}
+
+func decodeProgress(payload any) (State, error) {
+	var event struct {
+		Details State `json:"details"`
+	}
+	if stored, ok := payload.(types.JSONRaw); ok {
+		raw, err := stored.MarshalJSON()
+		if err == nil && jsonv2.Unmarshal(raw, &event, json.DefaultOptionsV1(), json.ReportErrorsWithLegacySemantics(false)) == nil {
+			return event.Details, nil
+		}
+		event.Details = State{}
+	}
+	// Preserve legacy errors and accepted values for rejected or non-PocketBase payloads.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return State{}, err
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return State{}, err
+	}
+	return event.Details, nil
 }
 
 func ProtectTable(ctx context.Context, app core.App, table string) error {
