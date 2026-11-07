@@ -302,10 +302,19 @@ class SettlementCapacity(TransactionContract):
     entity: str = Field(min_length=1)
     direction: AuthorityRef | None = None
     directions: list[str] = Field(default_factory=list, max_length=MAX_STATES)
+    # Only literal true registers; an omitted field keeps the required real
+    # capacity while explicit false/null or a wrong type stays closed.
+    optional: bool = False
     quantity: str = ""
     net: str = ""
     tax: str = ""
     gross: str = ""
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> SettlementCapacity:
+        if "optional" in self.model_fields_set and not self.optional:
+            raise ValueError("optional capacity must be true when supplied")
+        return self
 
 
 class SettlementRequest(TransactionContract):
@@ -427,18 +436,25 @@ class SettlementSpec(TransactionContract):
             (self.capacity.tax, self.request.tax, self.actual.tax),
             (self.capacity.gross, self.request.gross, self.actual.gross),
         ]
-        if not any(bool(triple[0]) for triple in declared):
+        if not any(bool(pair[1]) for pair in declared):
             raise ValueError("settlement needs at least one measure")
-        for triple in declared:
-            if bool(triple[0]) != bool(triple[1]) or bool(triple[0]) != bool(triple[2]):
-                raise ValueError("settlement measures must be declared together")
+        shared = self.capacity.entity == self.actual.entity
+        if shared and self.capacity.optional:
+            raise ValueError("the shared original-blue bucket cannot be optional")
+        for capacity_field, request_field, actual_field in declared:
+            if bool(request_field) != bool(actual_field):
+                raise ValueError("request and actual measures must be declared together")
+            if bool(capacity_field) != bool(request_field) and (shared or capacity_field):
+                raise ValueError("capacity measures must stay inside the source set")
+        if not any(bool(triple[0]) for triple in declared):
+            raise ValueError("settlement needs at least one capacity measure")
         if self.adjustment is not None:
-            if bool(self.capacity.quantity) != bool(self.adjustment.close_quantity):
+            if bool(self.request.quantity) != bool(self.adjustment.close_quantity):
                 raise ValueError("close quantity must match the declared measure")
             for declared_field, close_field in (
-                (self.capacity.net, self.adjustment.close_net),
-                (self.capacity.tax, self.adjustment.close_tax),
-                (self.capacity.gross, self.adjustment.close_gross),
+                (self.request.net, self.adjustment.close_net),
+                (self.request.tax, self.adjustment.close_tax),
+                (self.request.gross, self.adjustment.close_gross),
             ):
                 if close_field and not declared_field:
                     raise ValueError("close amounts require the corresponding measure")
@@ -460,8 +476,13 @@ class SettlementSpec(TransactionContract):
             (self.capacity.unit, self.request.unit, self.actual.unit),
             (self.capacity.material, self.request.material, self.actual.material),
         ):
-            if any((ref is None) != (refs[0] is None) for ref in refs):
-                raise ValueError("capacity, request and actual scope must be declared together")
+            # request and actual declare a scope dimension as a pair; the
+            # capacity keeps its own ref optional and never widens an
+            # undeclared pair.
+            if (refs[1] is None) != (refs[2] is None):
+                raise ValueError("request and actual scope must be declared together")
+            if refs[0] is not None and refs[1] is None:
+                raise ValueError("capacity scope requires the paired source scope")
         if self.capacity.directions and self.capacity.direction is None:
             raise ValueError("capacity directions require a direction ref")
         return self

@@ -912,7 +912,9 @@ def reversal_manifest() -> dict:
 
 def test_new_rule_null_shapes_match_go() -> None:
     corpus = json.loads(
-        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text()
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
@@ -1127,6 +1129,123 @@ def test_settlement_plan_shape_rejects_money_measures() -> None:
         TransactionRule.model_validate(rule)
 
 
+def external_optional_settlement_rule() -> dict:
+    rule = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "plugin-settlement-rule.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    spec = rule["settlement"]
+    spec["capacity"] = {"entity": "obligations", "quantity": "quantity", "optional": True}
+    spec["request"]["directions"] = ["blue"]
+    spec["request"].pop("purpose", None)
+    spec["request"].pop("purposes", None)
+    spec["request"]["capacity"] = "obligation"
+    spec["actual"]["directions"] = ["blue"]
+    spec["actual"].pop("purpose", None)
+    spec["actual"].pop("purposes", None)
+    spec["actual"].pop("zeroQuantityPurposes", None)
+    spec["actual"]["capacity"] = "obligation"
+    # The real normal blue path pairs request/actual scope refs and omits the
+    # capacity refs (the candidate shape has no capacity.currency).
+    spec["request"]["currency"] = {
+        "path": [
+            {"field": "line", "target": "request_lines"},
+            {"field": "request", "target": "requests"},
+        ],
+        "field": "currency",
+    }
+    spec["actual"]["currency"] = {
+        "path": [
+            {"field": "line", "target": "actual_lines"},
+            {"field": "invoice", "target": "invoices"},
+        ],
+        "field": "currency",
+    }
+    for role, line in (("request", "request_lines"), ("actual", "actual_lines")):
+        spec[role]["unit"] = {"path": [{"field": "line", "target": line}], "field": "unit"}
+        spec[role]["material"] = {
+            "path": [{"field": "line", "target": line}],
+            "field": "material",
+        }
+    return rule
+
+
+def external_optional_declaration(rule: dict) -> dict:
+    return {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "m",
+        "version": 1,
+        "rules": [rule],
+        "decimals": [
+            {
+                "entity": "obligations",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "nonnegative",
+            },
+            *invoice_guard_decimals(),
+        ],
+    }
+
+
+def test_settlement_optional_external_capacity_subset() -> None:
+    """optional:true separates the source's full measures from the capacity subset."""
+    parsed = PluginTransactionsDeclaration.model_validate(
+        external_optional_declaration(external_optional_settlement_rule())
+    )
+    capacity = parsed.rules[0].settlement.capacity
+    assert capacity.optional is True
+    assert capacity.quantity
+    assert not capacity.net
+    # Only literal true registers; false, null and wrong types stay closed.
+    for value in (False, None, "true", 1):
+        rule = external_optional_settlement_rule()
+        rule["settlement"]["capacity"]["optional"] = value
+        with pytest.raises(ValidationError):
+            PluginTransactionsDeclaration.model_validate(external_optional_declaration(rule))
+    # The shared original-blue bucket never enables optional.
+    red = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "plugin-settlement-rule.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    red["settlement"]["capacity"]["optional"] = True
+    with pytest.raises(ValidationError):
+        TransactionRule.model_validate(red)
+    # A capacity measure outside the identical request/actual set is rejected.
+    drift = external_optional_settlement_rule()
+    drift["settlement"]["capacity"]["net"] = "net"
+    drift["settlement"]["request"].pop("net")
+    drift["settlement"]["actual"].pop("net")
+    drift["settlement"]["adjustment"]["closeNet"] = ""
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(drift))
+    mismatch = external_optional_settlement_rule()
+    mismatch["settlement"]["actual"].pop("gross")
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(mismatch))
+    # Close facts follow the source measure set, not the capacity subset.
+    partial = external_optional_settlement_rule()
+    partial["settlement"]["adjustment"].pop("closeQuantity")
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(partial))
+    # A capacity scope ref without the paired request/actual ref is rejected.
+    orphan = external_optional_settlement_rule()
+    orphan["settlement"]["capacity"]["currency"] = {"field": "currency"}
+    del orphan["settlement"]["request"]["currency"]
+    del orphan["settlement"]["actual"]["currency"]
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(orphan))
+    # Request/actual scope must stay paired.
+    unpaired = external_optional_settlement_rule()
+    del unpaired["settlement"]["actual"]["unit"]
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(unpaired))
+
+
 def test_state_cases_and_group_contracts_bind_all_declared_relations() -> None:
     manifest = invoice_guard_manifest()
     model = manifest["permissions"]["model"]
@@ -1222,12 +1341,18 @@ def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:
             PluginManifest.model_validate(invalid)
         with pytest.raises(PluginPackageError):
             validate_plugin_manifest(package_entries(invalid))
-    # A scope dimension cannot be declared on only two roles.
+    # A scope dimension cannot break the request/actual pair; the capacity
+    # ref is optional and may be omitted while the pair stays declared.
     for field in ("currency", "unit", "material"):
         invalid = copy.deepcopy(manifest)
-        del declaration(invalid)["rules"][1]["settlement"]["capacity"][field]
+        rules = declaration(invalid)["rules"]
+        del rules[1]["settlement"]["request"][field]
+        del rules[1]["settlement"]["actual"][field]
         with pytest.raises(ValidationError):
             PluginManifest.model_validate(invalid)
+        paired = copy.deepcopy(manifest)
+        del declaration(paired)["rules"][1]["settlement"]["capacity"][field]
+        assert PluginManifest.model_validate(paired)
 
 
 def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:

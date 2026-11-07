@@ -14,6 +14,9 @@ const actual: SettlementSpec["actual"] = {
   directions: ["red"], settledStates: ["issued"], request: "application_source", capacity: "original",
   net: "net", tax: "tax", gross: "gross"
 };
+const capacity: SettlementSpec["capacity"] = {
+  entity: "obligations", optional: true, quantity: "quantity"
+};
 const policy: Pick<ChangeEvidenceSpec, "allowInsert"> = { allowInsert: true };
 void actual;
 const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated"> = { requireCompleteWhenAllocated: true };
@@ -21,6 +24,7 @@ const optional: import(${JSON.stringify(entry)}).TransactionRule = { id: "option
 void policy;
 void complete;
 void optional;
+void capacity;
 `);
   execFileSync(process.execPath, [fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
     "--ignoreConfig", "--noEmit", "--allowImportingTsExtensions", "--strict", "--target", "ES2022", "--module", "ESNext",

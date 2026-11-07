@@ -88,6 +88,9 @@ export interface SettlementCapacity {
   readonly entity: string;
   readonly direction?: AuthorityRef;
   readonly directions?: readonly string[];
+  /** Only literal true: a present null capacity on rows means unknown and skips
+   * the external aggregation; the shared original-blue bucket never sets it. */
+  readonly optional?: true;
   readonly quantity?: string;
   readonly net?: string;
   readonly tax?: string;

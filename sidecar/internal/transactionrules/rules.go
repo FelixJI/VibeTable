@@ -394,16 +394,18 @@ func (d Declaration) Validate() error {
 		if spec := r.Settlement; r.Kind == "settlementBalance" && spec != nil {
 			quantityKeys := [][2]string{}
 			magnitudeKeys := [][2]string{}
-			if spec.hasQuantity() {
+			if spec.requestHasQuantity() {
 				// The actual keeps the one-shot signed quantity that allocation
 				// rules read on the same rows; only the request, capacity and
 				// explicit close quantities are declared magnitudes.
 				quantityKeys = append(quantityKeys,
 					[2]string{spec.Request.Entity, spec.Request.Quantity},
-					[2]string{spec.Actual.Entity, spec.Actual.Quantity},
-					[2]string{spec.Capacity.Entity, spec.Capacity.Quantity})
+					[2]string{spec.Actual.Entity, spec.Actual.Quantity})
 				magnitudeKeys = append(magnitudeKeys,
 					[2]string{spec.Request.Entity, spec.Request.Quantity})
+				if spec.Capacity.Quantity != "" {
+					quantityKeys = append(quantityKeys, [2]string{spec.Capacity.Entity, spec.Capacity.Quantity})
+				}
 				if spec.Adjustment != nil && spec.Adjustment.CloseQuantity != "" {
 					quantityKeys = append(quantityKeys, [2]string{spec.Adjustment.Entity, spec.Adjustment.CloseQuantity})
 					magnitudeKeys = append(magnitudeKeys, [2]string{spec.Adjustment.Entity, spec.Adjustment.CloseQuantity})

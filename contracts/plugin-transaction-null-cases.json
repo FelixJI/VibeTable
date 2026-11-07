@@ -305,6 +305,62 @@
         }
       }
     },
+    "settlementOptional": {
+      "id": "optional_external_capacity",
+      "kind": "settlementBalance",
+      "entity": "allocations",
+      "settlement": {
+        "capacity": {
+          "entity": "obligations",
+          "quantity": "quantity",
+          "optional": true
+        },
+        "request": {
+          "entity": "request_sources",
+          "state": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "status"},
+          "direction": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "direction"},
+          "directions": ["blue"],
+          "basis": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "basis"},
+          "draftStates": ["draft"],
+          "openStates": ["open"],
+          "capacity": "obligation",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross"
+        },
+        "actual": {
+          "entity": "allocations",
+          "state": {"path": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}], "field": "status"},
+          "direction": {"path": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}], "field": "direction"},
+          "directions": ["blue"],
+          "purposes": ["physicalReturn", "priceDiscount"],
+          "purpose": {"path": [{"field": "line", "target": "actual_lines"}], "field": "purpose"},
+          "draftStates": ["draft"],
+          "settledStates": ["issued"],
+          "request": "application_source",
+          "capacity": "obligation",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross",
+          "zeroQuantityPurposes": ["priceDiscount"]
+        },
+        "adjustment": {
+          "entity": "adjustments",
+          "kind": "kind",
+          "closeKinds": ["sourceClose", "closeRemaining"],
+          "fulfillKinds": ["fulfillAmount"],
+          "target": "source",
+          "allocation": "allocation",
+          "closeRemaining": "close_remaining",
+          "closeQuantity": "quantity",
+          "closeNet": "net",
+          "closeTax": "tax",
+          "closeGross": "gross"
+        }
+      }
+    },
     "evidence": {
       "id": "allocation_correction_evidence",
       "kind": "changeEvidence",
@@ -668,6 +724,15 @@
     }
   },
   "invalid": [
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": true},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": false},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": null},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": "true"},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": 1},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "optional"], "value": false},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "optional"], "value": null},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "quantity"], "value": ""},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "entity"], "value": "allocations"},
     {"base": "reservation", "path": ["reservation", "instructionSource"]},
     {"base": "reservation", "path": ["reservation", "planItem"]},
     {"base": "reservation", "path": ["reservation", "transferredFrom"]},

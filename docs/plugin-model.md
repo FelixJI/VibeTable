@@ -71,12 +71,12 @@
 负数量蓝归属及正金额红归属拒绝；signed 蓝负金额可保留同向份额，但不能充当红预算的非负原蓝容量。
 原始票头/票面尚未归属、缺原蓝或含异常时可以单独登记，归属失败不截断原始事实。
 
-`settlementBalance` 的 `capacity/request/actual` 共享一至四个精确 measure。普通蓝桶用真实义务数量，
-红桶用原蓝 allocation 的同一组四个 signed 字段，不另建蓝容量或可写效果副本。
+`settlementBalance` 的 `request`/`actual` 声明同一非空 measure 集合，`capacity` 声明其非空子集；
+普通蓝桶用真实义务数量，红桶用原蓝 allocation 的同一组四个 signed 字段，不另建蓝容量或可写效果副本。
 先按权威 direction 选角色，再检查用途、原蓝资格、容量与 application source；正式红份额不得缺原蓝，
 原蓝必须真实 blue、达到 actual.settledStates、非自身且容量非负；同事务确认后可引用，已有红占用时不得降回草稿。不同红原因共用原蓝桶。原始未归属票面不参与预算。
-可选 `currency`、`unit`、`material` 都必须在三方同时声明为 AuthorityRef；币种三方明确一致，
-quantity 路径单位明确一致，已知物料 FK 三方不得冲突。物料显式 null 表示未映射，用户选定具体容量/来源
+可选 `currency`、`unit`、`material` 必须由 request/actual 成对声明为 AuthorityRef；capacity 可省略对应 ref，声明时追加容量侧一致性检查。币种在已声明的对应方明确一致，
+quantity 路径单位明确一致，已知物料 FK 在已声明的对应方不得冲突。物料显式 null 表示未映射，用户选定具体容量/来源
 构成该份额的匹配依据；缺字段、错误类型和断裂路径仍拒绝。amount 路径跳过物料/单位数量匹配。
 合同等真实 FK 通过既有 `sameTarget` 组合校验，不复制票面或引入拼接键。
 
@@ -92,10 +92,22 @@ amount 来源数量必须明确为零，只通过 `fulfillKinds` 的明确金额
 历史执行保留。归属与兑现可在一个事务中创建，按最终图验算，不要求先经过非法中间图。
 原先开放或本事务从草稿确认的 source 才能承接新增消费。
 
-`plans` 仅支持 quantity-only 声明，不允许同时声明金额 measure 后静默跳过金额检查。
+`plans` 仅要求容量声明 quantity（容量子集），不允许静默跳过金额检查；
+来源/实际继续携带完整四量结清，不因计划而丢弃。
 普通桶的 `plans` 直接复用 ReservationPlans 的 currentWhen、版本、logicalItem、share、义务及真实 planItem，
 占用为当前计划容量加直接申请剩余和直接执行；计划内申请/执行共同受该计划桶约束。
 义务10、当前计划8、直接申请6会因合占14拒绝，不复制计划余额。
+
+来源完整结清量与外部容量子集分离：`request`/`actual` 声明同一非空四维集合，`capacity`
+可声明其非空子集；每个容量维度必须对应声明的来源维度，已声明容量不得忽略。
+带 `plans` 的普通桶外部容量仅 quantity，来源/实际/adjustment 可继续携带完整四维；
+红桶继续四维原蓝共桶，不启用 optional。adjustment 的 close 字段随 request/actual 维度集合配对。
+外部容量可声明 `optional:true`（仅字面 true；false/null/错型拒绝）：行上容量引用仅在字段存在且为 null 时
+视为未知，缺字段/空串/错型/悬空仍拒。null 只跳过外部容量聚合与该容量额外 scope 检查，
+不跳过整行、不把多个 null 聚为共同预算；来源与其 actual 的容量 null-aware 精确一致（null/null 合法，
+已知/null、null/已知、不同已知拒绝），明确计划项时容量必须等于真实 planItems[item].scope（含关闭历史）。
+既有已知容量不可擦空为 null，删除归属仍走更正规则。amount 来源无 fulfill 不自动抵销待结，
+累计兑现不得超过实际归属与来源预期。
 
 `changeEvidence` 的 `fields` 保护核心事实，`ownerPath:[]` 可保护票头自身；既存归属的修改、删除、重绑均属于更正。`allowInsert` 省略时仍要求既有 owner 下新增子行有新依据；
 自然 invoice_allocations 可声明 `allowInsert:true`，允许原始票先登记后正常新增归属，无须伪造更正事件。

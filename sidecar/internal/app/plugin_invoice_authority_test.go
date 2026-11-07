@@ -30,6 +30,13 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 	optionalContracts := len(withPlans) > 3 && withPlans[3]
 	relationCases := len(withPlans) > 4 && withPlans[4]
 	groupContracts := len(withPlans) > 5 && withPlans[5]
+	// Only the decimal-budget tests carry the 45 filler fields/mappings; every
+	// other scenario registers just the mappings it really needs (PR565 race
+	// builders: the filler weight multiplied every States/audit step).
+	budget := len(withPlans) > 6 && withPlans[6]
+	// unscoped keeps the complete four measures on request/actual and marks the
+	// external obligation capacity optional (Task564 N8).
+	unscoped := len(withPlans) > 7 && withPlans[7]
 	pb, workspace, input, domain := modelFixture(t)
 	input = changeInstalledModel(t, pb, workspace, input, func(m *pluginmodel.Declaration) {
 		m.Entities = nil
@@ -52,7 +59,7 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 			if entry.key == "adjustments" {
 				entity.Fields = append(entity.Fields, pluginmodel.Field{Key: "close_remaining", Label: "close remaining", Type: v2.LogicalBool})
 			}
-			if entry.key == "invoices" {
+			if budget && entry.key == "invoices" {
 				for i := 0; i < 45; i++ {
 					key := fmt.Sprintf("budget_%d", i)
 					entity.Fields = append(entity.Fields, pluginmodel.Field{Key: key, Label: key, Type: v2.LogicalText})
@@ -152,12 +159,15 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 			d.Decimals = append(d.Decimals, decimal)
 		}
 	}
-	fillerCount := 45
-	if legacy {
-		fillerCount = 44
-	}
-	if normal {
-		fillerCount = 43
+	fillerCount := 0
+	if budget {
+		fillerCount = 45
+		if legacy {
+			fillerCount = 44
+		}
+		if normal {
+			fillerCount = 43
+		}
 	}
 	for i := 0; i < fillerCount; i++ {
 		d.Decimals = append(d.Decimals, transactionrules.Decimal{Entity: "invoices", Field: fmt.Sprintf("budget_%d", i), Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
@@ -231,27 +241,43 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 		}
 		rule.ID = "normal_invoice_capacity"
 		spec := rule.Settlement
-		spec.Capacity = transactionrules.SettlementCapacity{Entity: "obligations", Quantity: "quantity", Currency: transactionrules.AuthorityRef{Field: "currency"}, Unit: transactionrules.AuthorityRef{Field: "unit"}}
+		capacity := transactionrules.SettlementCapacity{Entity: "obligations", Quantity: "quantity", Currency: transactionrules.AuthorityRef{Field: "currency"}, Unit: transactionrules.AuthorityRef{Field: "unit"}}
+		if unscoped {
+			// The optional capacity omits its own refs; the paired request/actual
+			// scope refs stay authoritative (Task564 N8 real normal shape).
+			capacity.Currency = transactionrules.AuthorityRef{}
+			capacity.Unit = transactionrules.AuthorityRef{}
+			capacity.Optional = true
+			spec.Request.Currency = transactionrules.AuthorityRef{Path: spec.Request.State.Path, Field: "currency"}
+			spec.Actual.Currency = transactionrules.AuthorityRef{Path: spec.Actual.State.Path, Field: "currency"}
+			spec.Request.Unit = transactionrules.AuthorityRef{Path: spec.Request.State.Path[:1], Field: "unit"}
+			spec.Actual.Unit = transactionrules.AuthorityRef{Path: spec.Actual.State.Path[:1], Field: "unit"}
+		}
+		spec.Capacity = capacity
 		spec.Request.Directions = []string{"blue"}
 		spec.Request.Purposes = nil
 		spec.Request.Purpose = transactionrules.AuthorityRef{}
 		spec.Request.Capacity = "obligation"
 		spec.Request.PlanItem = "plan_item"
-		spec.Request.Net = ""
-		spec.Request.Tax = ""
-		spec.Request.Gross = ""
+		if !unscoped {
+			spec.Request.Net = ""
+			spec.Request.Tax = ""
+			spec.Request.Gross = ""
+		}
 		spec.Actual.Directions = []string{"blue"}
 		spec.Actual.Purposes = nil
 		spec.Actual.Purpose = transactionrules.AuthorityRef{}
 		spec.Actual.ZeroQuantityPurposes = nil
 		spec.Actual.Capacity = "obligation"
 		spec.Actual.PlanItem = "plan_item"
-		spec.Actual.Net = ""
-		spec.Actual.Tax = ""
-		spec.Actual.Gross = ""
-		spec.Adjustment.CloseNet = ""
-		spec.Adjustment.CloseTax = ""
-		spec.Adjustment.CloseGross = ""
+		if !unscoped {
+			spec.Actual.Net = ""
+			spec.Actual.Tax = ""
+			spec.Actual.Gross = ""
+			spec.Adjustment.CloseNet = ""
+			spec.Adjustment.CloseTax = ""
+			spec.Adjustment.CloseGross = ""
+		}
 		spec.Plans = &transactionrules.ReservationPlans{Entity: "plan_items", Quantity: "quantity", Scope: "scope", LogicalItem: transactionrules.ReservationLogical{Field: "logical_item", Target: "logical_items"}, Share: "share", CurrentWhen: transactionrules.PathMatch{Left: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}}, Right: []transactionrules.RelationStep{{Field: "plan_version", Target: "plan_versions"}, {Field: "series", Target: "series"}, {Field: "current_version", Target: "plan_versions"}}}}
 		d.Rules = append(d.Rules, rule)
 	}
@@ -304,11 +330,6 @@ func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFix
 }
 
 func invoiceCreate(entity, id string, values map[string]any) transactionOperation {
-	if entity == "invoices" {
-		for i := 0; i < 45; i++ {
-			values[fmt.Sprintf("budget_%d", i)] = nil
-		}
-	}
 	if entity == "adjustments" {
 		for _, field := range []string{"quantity", "net", "tax", "gross"} {
 			if _, present := values[field]; !present {
@@ -320,6 +341,16 @@ func invoiceCreate(entity, id string, values map[string]any) transactionOperatio
 }
 func invoicePlan(ops ...transactionOperation) transactionPlan {
 	return transactionPlan{Contract: "vibetable.transaction-plan.v1", ModelID: "synthetic", Operations: ops}
+}
+
+// budgetFillerPlan writes the 45 declared filler fields on the one invoice a
+// decimal-budget fixture keeps, so field admission stays real for the budget
+// scenarios without taxing every other fixture's audit and States passes.
+func budgetFillerPlan(plan transactionPlan) transactionPlan {
+	for i := 0; i < 45; i++ {
+		plan.Operations[0].Values[fmt.Sprintf("budget_%d", i)] = nil
+	}
+	return plan
 }
 func invoiceMeasures(q, n, t, g string) map[string]any {
 	return map[string]any{"quantity": q, "net": n, "tax": t, "gross": g}
@@ -503,8 +534,8 @@ func TestInvoiceAuthorityNativeCorrectionAndHistory(t *testing.T) {
 }
 
 func TestInvoiceAuthorityDecimalBudgetRetainsRegistration(t *testing.T) {
-	f := newInvoiceAuthorityFixture(t)
-	f.submit(t, invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true))
+	f := newInvoiceAuthorityFixture(t, false, false, false, false, false, false, true)
+	f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)))
 	before := transactionBusinessSnapshot(t, f)
 	previousRules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil {
@@ -559,6 +590,63 @@ func TestInvoiceAuthorityNormalPlansShareObligationCapacity(t *testing.T) {
 	actual.Operations[2].Values["obligation"] = obligation
 	f.submit(t, actual)
 	regressionReject(t, f, request("extra", "1", nil), "transaction.settlement_exceeded")
+}
+
+// Task564 N8: an optional external capacity accepts a present null as an
+// unknown capacity. The source keeps its complete Q/N/T/G settlement math,
+// closes through explicit events, and amount sources settle only through
+// fulfill/close facts; rejections leave rows and history untouched.
+func TestInvoiceAuthorityOptionalCapacitySettlesWithoutExternalBudget(t *testing.T) {
+	f := newInvoiceAuthorityFixture(t, true, false, false, false, false, false, false, true)
+	quantity := invoiceRequest("quantity", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", nil)
+	quantity.Operations[0].Values["direction"] = "blue"
+	quantity.Operations[2].Values["obligation"] = nil
+	source := f.submit(t, quantity).NewIDs["request_sources"]["quantity"]
+	execute := invoiceFace("execute", "blue", "", "6", "60.00", "0.00", "60.00", source, nil, true)
+	execute.Operations[2].Values["obligation"] = nil
+	f.submit(t, execute)
+	overClose := invoiceMeasures("5", "50.00", "0.00", "50.00")
+	overClose["kind"] = "closeRemaining"
+	overClose["source"] = source
+	overClose["note"] = "超额关闭"
+	overClose["close_remaining"] = true
+	regressionReject(t, f, invoicePlan(invoiceCreate("adjustments", "over", overClose)), "transaction.settlement_exceeded")
+	close := invoiceMeasures("4", "40.00", "0.00", "40.00")
+	close["kind"] = "closeRemaining"
+	close["source"] = source
+	close["note"] = "固定剩余范围"
+	close["close_remaining"] = true
+	f.submit(t, invoicePlan(invoiceCreate("adjustments", "closed", close)))
+
+	amount := invoiceRequest("amount", "priceDiscount", "amount", "0", "100.00", "0.00", "100.00", nil)
+	amount.Operations[0].Values["direction"] = "blue"
+	amount.Operations[2].Values["obligation"] = nil
+	amountSource := f.submit(t, amount).NewIDs["request_sources"]["amount"]
+	discount := invoiceFace("discount", "blue", "", "0", "60.00", "0.00", "60.00", amountSource, nil, true)
+	discount.Operations[2].Values["obligation"] = nil
+	overEvent := invoiceMeasures("0", "61.00", "0.00", "61.00")
+	overEvent["kind"] = "fulfillAmount"
+	overEvent["source"] = amountSource
+	overEvent["allocation"] = regressionRef("allocations", "discount")
+	overEvent["note"] = "超实际兑现"
+	overEvent["close_remaining"] = false
+	over := discount
+	over.Operations = append(over.Operations, invoiceCreate("adjustments", "over", overEvent))
+	regressionReject(t, f, over, "transaction.settlement_exceeded")
+	exactEvent := invoiceMeasures("0", "60.00", "0.00", "60.00")
+	exactEvent["kind"] = "fulfillAmount"
+	exactEvent["source"] = amountSource
+	exactEvent["allocation"] = regressionRef("allocations", "discount")
+	exactEvent["note"] = "明确兑现"
+	exactEvent["close_remaining"] = false
+	rest := invoiceMeasures("0", "40.00", "0.00", "40.00")
+	rest["kind"] = "closeRemaining"
+	rest["source"] = amountSource
+	rest["note"] = "剩余金额范围"
+	rest["close_remaining"] = true
+	settled := discount
+	settled.Operations = append(settled.Operations, invoiceCreate("adjustments", "fulfilled", exactEvent), invoiceCreate("adjustments", "rest", rest))
+	f.submit(t, settled)
 }
 
 func TestInvoiceAuthorityTypedScopeAndContractRelations(t *testing.T) {
@@ -766,11 +854,11 @@ func TestInvoiceAuthorityReviewPurposeProjection(t *testing.T) {
 }
 
 func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
-	f := newInvoiceAuthorityFixture(t, false, false, true)
+	f := newInvoiceAuthorityFixture(t, false, false, true, false, false, false, true)
 	if len(f.declaration.Decimals) != 64 {
 		t.Fatal("legacy fixture must have 64 mappings")
 	}
-	id := f.submit(t, invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["invoices"]["kept"]
+	id := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true))).NewIDs["invoices"]["kept"]
 	oldRow, oldDigest := regressionRow(t, f, "invoices", id)
 	oldRules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil {
@@ -1253,117 +1341,129 @@ func TestInvoiceAuthoritySettlementPlanManifestFields(t *testing.T) {
 	}
 }
 
-func TestInvoiceAuthorityAdmissionPreservesClosedHistory(t *testing.T) {
-	for _, mode := range []string{"full", "partial", "corrected"} {
-		t.Run(mode, func(t *testing.T) {
-			partial := mode != "full"
-			corrected := mode == "corrected"
-			f := newInvoiceAuthorityFixture(t)
-			blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
-			requested := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs
-			source, request := requested["request_sources"]["request"], requested["requests"]["request"]
-			actual := invoiceFace("red", "red", "physicalReturn", "-10", "-100.00", "0.00", "-100.00", source, blue, true)
-			if partial {
-				measures := invoiceMeasures("-4", "-40.00", "0.00", "-40.00")
-				if corrected {
-					measures = invoiceMeasures("-6", "-90.00", "0.00", "-90.00")
-				}
-				for key, value := range measures {
-					actual.Operations[2].Values[key] = value
-				}
-			}
-			if corrected {
-				_, digest := regressionRow(t, f, "requests", request)
-				close := invoiceMeasures("4", "40.00", "0.00", "40.00")
-				close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "按当时执行事实固定关闭", true
-				actual.Operations = append(actual.Operations,
-					invoiceCreate("adjustments", "close", close),
-					transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &digest, Values: map[string]any{"status": "closed"}},
-				)
-			}
-			actualIDs := f.submit(t, actual).NewIDs
-			allocation := actualIDs["allocations"]["red"]
-			_, requestDigest := regressionRow(t, f, "requests", request)
-			closePlan := invoicePlan(transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &requestDigest, Values: map[string]any{"status": "closed"}})
-			if partial {
-				close := invoiceMeasures("6", "60.00", "0.00", "60.00")
-				if corrected {
-					close = invoiceMeasures("4", "40.00", "0.00", "40.00")
-				}
-				close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "固定关闭剩余", true
-				closePlan.Operations = append(closePlan.Operations, invoiceCreate("adjustments", "close", close))
-			}
-			if !corrected {
-				f.submit(t, closePlan)
-			}
-			if corrected {
-				head := actualIDs["invoices"]["red"]
-				_, headDigest := regressionRow(t, f, "invoices", head)
-				_, allocationDigest := regressionRow(t, f, "allocations", allocation)
-				f.submit(t, invoicePlan(
-					invoiceCreate("adjustments", "correction", map[string]any{"invoice": head, "kind": "correction", "note": "核实后减少内部归属，保留原关闭事实"}),
-					transactionOperation{Entity: "invoices", Kind: "update", RecordID: head, ExpectedDigest: &headDigest, Values: map[string]any{"latest_evidence": regressionRef("adjustments", "correction")}},
-					transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &allocationDigest, Values: map[string]any{"quantity": "-5", "net": "-80.00", "gross": "-80.00"}},
-				))
-			}
-			history, err := transactionrules.Load(t.Context(), f.pb)
-			if err != nil {
-				t.Fatal(err)
-			}
-			before, err := history[len(history)-1].Read(t.Context(), f.pb)
-			if err != nil {
-				t.Fatal(err)
-			}
-			store := pluginstore.New(f.pb, f.workspace)
-			installed, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var object map[string]any
-			if err = json.Unmarshal(installed, &object); err != nil {
-				t.Fatal(err)
-			}
-			upgraded := f.declaration
-			upgraded.Version++
-			object["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = upgraded
-			previous := f.input.InstallationRevision
-			f.input.InstallationRevision++
-			object["revision"] = f.input.InstallationRevision
-			raw, _ := json.Marshal(object)
-			if _, err = store.SaveInstallation(t.Context(), raw, &previous); err != nil {
-				t.Fatal(err)
-			}
-			preview, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]any{"requestId": preview.(modelPreview).RequestID}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = f.call("transaction.configure", map[string]any{"declaration": upgraded}); err != nil {
-				t.Fatalf("register closed historical source: %v", err)
-			}
-			registered, err := transactionrules.Load(t.Context(), f.pb)
-			if err != nil || len(registered) != len(history)+1 {
-				t.Fatalf("new registration not persisted: %v", err)
-			}
-			after, err := registered[len(registered)-1].Read(t.Context(), f.pb)
-			if err != nil || !reflect.DeepEqual(before, after) {
-				t.Fatalf("registration changed business facts: %v", err)
-			}
-			if !reflect.DeepEqual(history, registered[:len(history)]) {
-				t.Fatal("registration replaced historical guards")
-			}
-			f.declaration = upgraded
-			regressionReject(t, f, invoiceFace("late", "red", "physicalReturn", "-1", "-1.00", "0.00", "-1.00", source, blue, true), "transaction.settlement_invalid")
-			if partial {
-				_, digest := regressionRow(t, f, "allocations", allocation)
-				increased := "-41.00"
-				if corrected {
-					increased = "-81.00"
-				}
-				regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"net": increased, "gross": increased}}), "transaction.settlement_invalid")
-			}
-		})
+// Each closed-history admission variant keeps its own top-level test: the
+// fixture, upgrade and read-back path is heavy under the race detector and a
+// single combined 5m budget does not fit three independent scenarios (PR565
+// race-c job 128200691244: the first subcase alone consumed the budget).
+func invoiceAuthorityAdmissionPreservesClosedHistory(t *testing.T, mode string) {
+	partial := mode != "full"
+	corrected := mode == "corrected"
+	f := newInvoiceAuthorityFixture(t)
+	blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
+	requested := f.submit(t, invoiceRequest("request", "physicalReturn", "quantity", "10", "100.00", "0.00", "100.00", blue)).NewIDs
+	source, request := requested["request_sources"]["request"], requested["requests"]["request"]
+	actual := invoiceFace("red", "red", "physicalReturn", "-10", "-100.00", "0.00", "-100.00", source, blue, true)
+	if partial {
+		measures := invoiceMeasures("-4", "-40.00", "0.00", "-40.00")
+		if corrected {
+			measures = invoiceMeasures("-6", "-90.00", "0.00", "-90.00")
+		}
+		for key, value := range measures {
+			actual.Operations[2].Values[key] = value
+		}
 	}
+	if corrected {
+		_, digest := regressionRow(t, f, "requests", request)
+		close := invoiceMeasures("4", "40.00", "0.00", "40.00")
+		close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "按当时执行事实固定关闭", true
+		actual.Operations = append(actual.Operations,
+			invoiceCreate("adjustments", "close", close),
+			transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &digest, Values: map[string]any{"status": "closed"}},
+		)
+	}
+	actualIDs := f.submit(t, actual).NewIDs
+	allocation := actualIDs["allocations"]["red"]
+	_, requestDigest := regressionRow(t, f, "requests", request)
+	closePlan := invoicePlan(transactionOperation{Entity: "requests", Kind: "update", RecordID: request, ExpectedDigest: &requestDigest, Values: map[string]any{"status": "closed"}})
+	if partial {
+		close := invoiceMeasures("6", "60.00", "0.00", "60.00")
+		if corrected {
+			close = invoiceMeasures("4", "40.00", "0.00", "40.00")
+		}
+		close["kind"], close["source"], close["note"], close["close_remaining"] = "closeRemaining", source, "固定关闭剩余", true
+		closePlan.Operations = append(closePlan.Operations, invoiceCreate("adjustments", "close", close))
+	}
+	if !corrected {
+		f.submit(t, closePlan)
+	}
+	if corrected {
+		head := actualIDs["invoices"]["red"]
+		_, headDigest := regressionRow(t, f, "invoices", head)
+		_, allocationDigest := regressionRow(t, f, "allocations", allocation)
+		f.submit(t, invoicePlan(
+			invoiceCreate("adjustments", "correction", map[string]any{"invoice": head, "kind": "correction", "note": "核实后减少内部归属，保留原关闭事实"}),
+			transactionOperation{Entity: "invoices", Kind: "update", RecordID: head, ExpectedDigest: &headDigest, Values: map[string]any{"latest_evidence": regressionRef("adjustments", "correction")}},
+			transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &allocationDigest, Values: map[string]any{"quantity": "-5", "net": "-80.00", "gross": "-80.00"}},
+		))
+	}
+	history, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := history[len(history)-1].Read(t.Context(), f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := pluginstore.New(f.pb, f.workspace)
+	installed, err := store.GetInstallation(t.Context(), f.input.ProjectKey, f.input.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err = json.Unmarshal(installed, &object); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := f.declaration
+	upgraded.Version++
+	object["manifest"].(map[string]any)["permissions"].(map[string]any)["transactions"] = upgraded
+	previous := f.input.InstallationRevision
+	f.input.InstallationRevision++
+	object["revision"] = f.input.InstallationRevision
+	raw, _ := json.Marshal(object)
+	if _, err = store.SaveInstallation(t.Context(), raw, &previous); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.preview", modelPreviewRequest{Mode: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = modelCall(t, f.pb, f.workspace, f.input, f.domain, "model.commit", map[string]any{"requestId": preview.(modelPreview).RequestID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.call("transaction.configure", map[string]any{"declaration": upgraded}); err != nil {
+		t.Fatalf("register closed historical source: %v", err)
+	}
+	registered, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil || len(registered) != len(history)+1 {
+		t.Fatalf("new registration not persisted: %v", err)
+	}
+	after, err := registered[len(registered)-1].Read(t.Context(), f.pb)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("registration changed business facts: %v", err)
+	}
+	if !reflect.DeepEqual(history, registered[:len(history)]) {
+		t.Fatal("registration replaced historical guards")
+	}
+	f.declaration = upgraded
+	regressionReject(t, f, invoiceFace("late", "red", "physicalReturn", "-1", "-1.00", "0.00", "-1.00", source, blue, true), "transaction.settlement_invalid")
+	if partial {
+		_, digest := regressionRow(t, f, "allocations", allocation)
+		increased := "-41.00"
+		if corrected {
+			increased = "-81.00"
+		}
+		regressionReject(t, f, invoicePlan(transactionOperation{Entity: "allocations", Kind: "update", RecordID: allocation, ExpectedDigest: &digest, Values: map[string]any{"net": increased, "gross": increased}}), "transaction.settlement_invalid")
+	}
+}
+
+func TestInvoiceAuthorityAdmissionPreservesFullClosedHistory(t *testing.T) {
+	invoiceAuthorityAdmissionPreservesClosedHistory(t, "full")
+}
+
+func TestInvoiceAuthorityAdmissionPreservesPartialClosedHistory(t *testing.T) {
+	invoiceAuthorityAdmissionPreservesClosedHistory(t, "partial")
+}
+
+func TestInvoiceAuthorityAdmissionPreservesCorrectedClosedHistory(t *testing.T) {
+	invoiceAuthorityAdmissionPreservesClosedHistory(t, "corrected")
 }

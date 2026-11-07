@@ -24,6 +24,12 @@ type SettlementCapacity struct {
 	Net        string       `json:"net,omitempty"`
 	Tax        string       `json:"tax,omitempty"`
 	Gross      string       `json:"gross,omitempty"`
+	// Optional marks the row-level capacity reference as nullable on an
+	// external capacity: only a present null means an unknown capacity and
+	// skips that row's external aggregation and capacity-only scope checks;
+	// missing, empty, mistyped and dangling references still fail closed. The
+	// red bucket sharing one entity never opts in.
+	Optional enabledOption `json:"optional,omitempty"`
 }
 
 // SettlementRequest names the notification request source rows. The
@@ -121,7 +127,7 @@ type SettlementSpec struct {
 func (s *SettlementSpec) valid() bool {
 	if s == nil || s.Capacity.Entity == "" || s.Request.Entity == "" || s.Actual.Entity == "" ||
 		!s.Request.State.valid() || !s.Request.Direction.valid() || !s.Actual.State.valid() || !s.Actual.Direction.valid() ||
-		s.Request.Capacity == "" || s.Actual.Request == "" || s.Actual.Capacity == "" || s.hasQuantity() && s.Actual.Quantity == "" ||
+		s.Request.Capacity == "" || s.Actual.Request == "" || s.Actual.Capacity == "" || s.Request.Quantity != "" && s.Actual.Quantity == "" ||
 		len(s.Capacity.Directions) > MaxFrozenStates || len(s.Request.Directions) < 1 || len(s.Request.Directions) > MaxFrozenStates || len(s.Actual.Directions) < 1 || len(s.Actual.Directions) > MaxFrozenStates ||
 		len(s.Request.Purposes) > MaxFrozenStates || len(s.Actual.Purposes) > MaxFrozenStates ||
 		len(s.Request.DraftStates) > MaxFrozenStates || len(s.Request.OpenStates) > MaxFrozenStates ||
@@ -135,8 +141,13 @@ func (s *SettlementSpec) valid() bool {
 		return false
 	}
 	for _, refs := range [][3]AuthorityRef{{s.Capacity.Currency, s.Request.Currency, s.Actual.Currency}, {s.Capacity.Unit, s.Request.Unit, s.Actual.Unit}, {s.Capacity.Material, s.Request.Material, s.Actual.Material}} {
+		// request and actual declare a scope dimension as a pair; the capacity
+		// keeps its own ref optional and never widens an undeclared pair.
+		if (refs[1].Field != "") != (refs[2].Field != "") || refs[0].Field != "" && refs[1].Field == "" {
+			return false
+		}
 		for _, ref := range refs {
-			if (ref.Field != "") != (refs[0].Field != "") || ref.Field != "" && !ref.valid() {
+			if ref.Field != "" && !ref.valid() {
 				return false
 			}
 		}
@@ -183,10 +194,10 @@ func (s *SettlementSpec) valid() bool {
 		return false
 	}
 	if adj := s.Adjustment; adj != nil {
-		if s.hasQuantity() && adj.CloseQuantity == "" || !s.hasQuantity() && adj.CloseQuantity != "" {
+		if s.requestHasQuantity() && adj.CloseQuantity == "" || !s.requestHasQuantity() && adj.CloseQuantity != "" {
 			return false
 		}
-		for _, pair := range [][2]bool{{s.hasNet(), adj.CloseNet != ""}, {s.hasTax(), adj.CloseTax != ""}, {s.hasGross(), adj.CloseGross != ""}} {
+		for _, pair := range [][2]bool{{s.requestHasNet(), adj.CloseNet != ""}, {s.requestHasTax(), adj.CloseTax != ""}, {s.requestHasGross(), adj.CloseGross != ""}} {
 			if !pair[0] && pair[1] {
 				return false
 			}
@@ -200,11 +211,33 @@ func (s SettlementSpec) hasNet() bool      { return s.Capacity.Net != "" }
 func (s SettlementSpec) hasTax() bool      { return s.Capacity.Tax != "" }
 func (s SettlementSpec) hasGross() bool    { return s.Capacity.Gross != "" }
 
-// sameMeasures keeps capacity, request and actual on one identical measure
-// subset of the fixed four names, so one exact format family covers a bucket.
+func (s SettlementSpec) requestHasQuantity() bool { return s.Request.Quantity != "" }
+func (s SettlementSpec) requestHasNet() bool      { return s.Request.Net != "" }
+func (s SettlementSpec) requestHasTax() bool      { return s.Request.Tax != "" }
+func (s SettlementSpec) requestHasGross() bool    { return s.Request.Gross != "" }
+
+// requestMeasure reports a measure of the source's complete settlement set.
+func requestMeasure(spec SettlementSpec, index int) bool {
+	switch index {
+	case 0:
+		return spec.requestHasQuantity()
+	case 1:
+		return spec.requestHasNet()
+	case 2:
+		return spec.requestHasTax()
+	default:
+		return spec.requestHasGross()
+	}
+}
+
+// sameMeasures keeps request and actual on one identical non-empty subset of
+// the fixed four names while the capacity declares any non-empty subset of
+// that source set, so the external budget never forces the sources to drop
+// their complete settlement measures. The red bucket keeps the identical
+// four-measure shared original-blue bucket and never enables optional.
 func (s SettlementSpec) sameMeasures() bool {
 	count := 0
-	for _, declared := range []bool{s.hasQuantity(), s.hasNet(), s.hasTax(), s.hasGross()} {
+	for _, declared := range []bool{s.requestHasQuantity(), s.requestHasNet(), s.requestHasTax(), s.requestHasGross()} {
 		if declared {
 			count++
 		}
@@ -212,28 +245,34 @@ func (s SettlementSpec) sameMeasures() bool {
 	if count < 1 {
 		return false
 	}
-	pairs := [][4]string{
-		{s.Capacity.Quantity, s.Request.Quantity, s.Actual.Quantity, ""},
-		{s.Capacity.Net, s.Request.Net, s.Actual.Net, ""},
-		{s.Capacity.Tax, s.Request.Tax, s.Actual.Tax, ""},
-		{s.Capacity.Gross, s.Request.Gross, s.Actual.Gross, ""},
-	}
-	for i, pair := range pairs {
-		quantityMeasure := i == 0
-		requestField := pair[1]
-		actualField := pair[2]
-		if pair[0] == "" {
-			if requestField != "" || actualField != "" {
-				return false
-			}
-			continue
+	capacityCount := 0
+	for _, declared := range []bool{s.hasQuantity(), s.hasNet(), s.hasTax(), s.hasGross()} {
+		if declared {
+			capacityCount++
 		}
-		if requestField == "" || actualField == "" {
+	}
+	if capacityCount < 1 {
+		return false
+	}
+	shared := s.Capacity.Entity == s.Actual.Entity
+	if shared && bool(s.Capacity.Optional) {
+		return false
+	}
+	for _, pair := range [][3]string{
+		{s.Request.Quantity, s.Actual.Quantity, s.Capacity.Quantity},
+		{s.Request.Net, s.Actual.Net, s.Capacity.Net},
+		{s.Request.Tax, s.Actual.Tax, s.Capacity.Tax},
+		{s.Request.Gross, s.Actual.Gross, s.Capacity.Gross},
+	} {
+		requestField, actualField, capacityField := pair[0], pair[1], pair[2]
+		if (requestField != "") != (actualField != "") {
 			return false
 		}
-		if quantityMeasure {
-			// The quantity entry is the explicit magnitude field by contract.
-			continue
+		if capacityField != "" && requestField == "" {
+			return false
+		}
+		if shared && (capacityField != "") != (requestField != "") {
+			return false
 		}
 	}
 	return true
@@ -267,7 +306,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	spec := *rule.Settlement
 	capacity, request, actual := spec.Capacity, spec.Request, spec.Actual
 	quantityFormat := exactdecimal.Format{}
-	if spec.hasQuantity() {
+	if spec.requestHasQuantity() {
 		quantityFormat = decimals[request.Entity+"\x00"+request.Quantity]
 	}
 	moneyFormat := exactdecimal.Format{}
@@ -279,7 +318,9 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	}
 	measureFormats := [4]exactdecimal.Format{quantityFormat, moneyFormat, moneyFormat, moneyFormat}
 	sameScope := func(row map[string]any, ref AuthorityRef, capacityID string, capacityRef AuthorityRef) error {
-		if ref.Field == "" {
+		// A capacity-side ref is optional: an omitted ref simply skips the
+		// transitive capacity comparison while the direct pair checks remain.
+		if ref.Field == "" || capacityRef.Field == "" {
 			return nil
 		}
 		value, err := authorityValue(after, row, ref)
@@ -302,6 +343,9 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	}
 	matchCapacityMaterial := func(row map[string]any, ref AuthorityRef, capacityID string) error {
 		original := after[capacity.Entity][capacityID]
+		if capacity.Material.Field == "" {
+			return nil
+		}
 		if err := sameMaterial(row, ref, original, capacity.Material); err != nil {
 			return err
 		}
@@ -365,13 +409,25 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		verifiedCapacity[id] = true
 		return nil
 	}
-	// A selected formal row must name a real, foreign, role-valid capacity.
-	requireCapacity := func(images Images, row map[string]any, field, selfID string) (string, error) {
-		id, err := relationRef(images, row, field, capacity.Entity)
-		if err != nil || id == selfID && selfID != "" {
-			return "", failure("settlement_invalid")
+	// A selected formal row must name a real, foreign, role-valid capacity;
+	// an optional external capacity additionally accepts a present null as an
+	// explicitly unknown capacity while every other shape stays closed.
+	requireCapacity := func(images Images, row map[string]any, field, selfID string) (string, bool, error) {
+		value, present := row[field]
+		if !present {
+			return "", false, failure("settlement_invalid")
 		}
-		return id, nil
+		if value == nil {
+			if capacity.Optional {
+				return "", true, nil
+			}
+			return "", false, failure("settlement_invalid")
+		}
+		id, ok := value.(string)
+		if !ok || id == "" || images[capacity.Entity][id] == nil || id == selfID && selfID != "" {
+			return "", false, failure("settlement_invalid")
+		}
+		return id, false, nil
 	}
 	type actualFacts struct {
 		effect     *big.Int
@@ -406,7 +462,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 				purpose = value
 			}
-			if spec.hasQuantity() {
+			if spec.requestHasQuantity() {
 				parsed, err := parseRequired(quantityFormat, row[actual.Quantity], "settlement_invalid")
 				if err != nil {
 					return nil, err
@@ -444,8 +500,10 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 				entry.money[i] = new(big.Int).Abs(parsed)
 			}
-			if id2, err := requireCapacity(images, row, actual.Capacity, id); err == nil {
-				entry.capacityID = id2
+			if id2, isNull, err := requireCapacity(images, row, actual.Capacity, id); err == nil {
+				if !isNull {
+					entry.capacityID = id2
+				}
 			} else if enforce {
 				return nil, err
 			}
@@ -485,19 +543,63 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		return err == nil && contains(request.OpenStates, state)
 	}
 	sourceCapacity := map[string]string{}
+	sourceCapacityNull := map[string]bool{}
 	for id, row := range after[request.Entity] {
-		if capacityID, err := requireCapacity(after, row, request.Capacity, ""); err == nil {
-			sourceCapacity[id] = capacityID
+		if capacityID, isNull, err := requireCapacity(after, row, request.Capacity, ""); err == nil {
+			if isNull {
+				sourceCapacityNull[id] = true
+			} else {
+				sourceCapacity[id] = capacityID
+			}
+		}
+	}
+	beforeSourceCapacity := map[string]string{}
+	beforeSourceCapacityNull := map[string]bool{}
+	if before != nil {
+		for id, row := range before[request.Entity] {
+			if capacityID, isNull, err := requireCapacity(before, row, request.Capacity, ""); err == nil {
+				if isNull {
+					beforeSourceCapacityNull[id] = true
+				} else {
+					beforeSourceCapacity[id] = capacityID
+				}
+			}
+		}
+	}
+	// A preserved known capacity attribution on governed sources or settled
+	// actuals can never be erased to an unknown null; deleting the row itself
+	// keeps its correction rules.
+	if capacity.Optional && before != nil {
+		for id, row := range before[request.Entity] {
+			if after[request.Entity][id] == nil {
+				continue
+			}
+			state, stateErr := authorityValue(before, row, request.State)
+			direction, directionErr := authorityValue(before, row, request.Direction)
+			if stateErr != nil || directionErr != nil || !contains(request.Directions, direction) || contains(request.DraftStates, state) {
+				continue
+			}
+			if beforeSourceCapacity[id] != "" && sourceCapacityNull[id] {
+				return failure("settlement_invalid")
+			}
+		}
+		for id, entry := range beforeFacts {
+			current, ok := afterFacts[id]
+			if ok && entry.capacityID != "" && current.capacityID == "" {
+				return failure("settlement_invalid")
+			}
 		}
 	}
 	executed := map[string]*big.Int{}
 	planBucketOfActual := map[string]string{}
 	for id, entry := range afterFacts {
-		if err := verifyCapacity(entry.capacityID); err != nil {
-			return err
-		}
-		if err := sameScope(after[actual.Entity][id], actual.Currency, entry.capacityID, capacity.Currency); err != nil {
-			return err
+		if entry.capacityID != "" {
+			if err := verifyCapacity(entry.capacityID); err != nil {
+				return err
+			}
+			if err := sameScope(after[actual.Entity][id], actual.Currency, entry.capacityID, capacity.Currency); err != nil {
+				return err
+			}
 		}
 		quantityActual := true
 		if len(actual.ZeroQuantityPurposes) > 0 {
@@ -507,15 +609,35 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			}
 			quantityActual = !contains(actual.ZeroQuantityPurposes, purpose)
 		}
-		if quantityActual {
-			if err := sameScope(after[actual.Entity][id], actual.Unit, entry.capacityID, capacity.Unit); err != nil {
-				return err
+		// The source basis decides the carrier policy without any red purpose:
+		// an amount-basis source carries an explicit zero quantity and skips the
+		// quantity scope, while a quantity source keeps it even at Q0. A
+		// source-less zero-quantity actual consumes no quantity scope at all.
+		if entry.requestID != "" && request.Basis.Field != "" {
+			basis, err := authorityValue(after, after[request.Entity][entry.requestID], request.Basis)
+			if err != nil {
+				return failure("settlement_invalid")
 			}
-			if err := matchCapacityMaterial(after[actual.Entity][id], actual.Material, entry.capacityID); err != nil {
-				return err
+			if basis == "amount" {
+				quantityActual = false
+				if entry.effect != nil && entry.effect.Sign() != 0 {
+					return failure("settlement_invalid")
+				}
+			}
+		} else if entry.requestID == "" && entry.effect != nil && entry.effect.Sign() == 0 {
+			quantityActual = false
+		}
+		if quantityActual {
+			if entry.capacityID != "" {
+				if err := sameScope(after[actual.Entity][id], actual.Unit, entry.capacityID, capacity.Unit); err != nil {
+					return err
+				}
+				if err := matchCapacityMaterial(after[actual.Entity][id], actual.Material, entry.capacityID); err != nil {
+					return err
+				}
 			}
 		}
-		if spec.Plans == nil {
+		if spec.Plans == nil && entry.capacityID != "" {
 			bucket := consumed[entry.capacityID]
 			if bucket == nil {
 				bucket = newSettlementBucket()
@@ -542,12 +664,22 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			if err != nil || sourceState == "" || contains(request.DraftStates, sourceState) {
 				return failure("settlement_invalid")
 			}
-			if sourceCapacity[entry.requestID] != entry.capacityID {
+			if sourceCapacity[entry.requestID] != entry.capacityID || sourceCapacityNull[entry.requestID] != (entry.capacityID == "") {
 				return failure("settlement_invalid")
 			}
 			if quantityActual {
 				if err := sameMaterial(sourceRow, request.Material, after[actual.Entity][id], actual.Material); err != nil {
 					return err
+				}
+				// The unit pair is checked directly and non-empty, so a null
+				// capacity cannot silently drop the quantity scope; a known
+				// capacity adds its own transitive check on top.
+				if request.Unit.Field != "" {
+					sourceUnit, err := authorityValue(after, sourceRow, request.Unit)
+					actualUnit, actualErr := authorityValue(after, after[actual.Entity][id], actual.Unit)
+					if err != nil || actualErr != nil || sourceUnit == "" || sourceUnit != actualUnit {
+						return failure("settlement_invalid")
+					}
 				}
 			}
 			sourceDirection, err := authorityValue(after, sourceRow, request.Direction)
@@ -651,7 +783,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 				allocation, ok := afterFacts[allocationID]
 				if !ok || allocation.requestID != target ||
-					sourceCapacity[target] != "" && sourceCapacity[target] != allocation.capacityID {
+					sourceCapacity[target] != allocation.capacityID || sourceCapacityNull[target] != (allocation.capacityID == "") {
 					return failure("settlement_invalid")
 				}
 			}
@@ -846,15 +978,17 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		if contains(request.DraftStates, state) {
 			continue
 		}
-		capacityID, err := requireCapacity(after, row, request.Capacity, "")
+		capacityID, isNull, err := requireCapacity(after, row, request.Capacity, "")
 		if err != nil {
 			return err
 		}
-		if err := verifyCapacity(capacityID); err != nil {
-			return err
-		}
-		if err := sameScope(row, request.Currency, capacityID, capacity.Currency); err != nil {
-			return err
+		if !isNull {
+			if err := verifyCapacity(capacityID); err != nil {
+				return err
+			}
+			if err := sameScope(row, request.Currency, capacityID, capacity.Currency); err != nil {
+				return err
+			}
 		}
 		values, err := parseRequest(row)
 		if err != nil {
@@ -885,7 +1019,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				return failure("settlement_invalid")
 			}
 		}
-		if !amountType {
+		if !amountType && !isNull {
 			if err := sameScope(row, request.Unit, capacityID, capacity.Unit); err != nil {
 				return err
 			}
@@ -894,8 +1028,24 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			}
 		}
 		var remaining [4]*big.Int
+		planItem := ""
+		if spec.Plans != nil {
+			item, err := optionalRef(after, row, request.PlanItem, spec.Plans.Entity)
+			if err != nil {
+				return failure("settlement_invalid")
+			}
+			// An explicit plan item fixes the real bucket scope on every formal
+			// source, including closed history; a null capacity cannot drift.
+			if item != "" {
+				key, ok := planItems[item]
+				if !ok || key.scope != capacityID {
+					return failure("settlement_invalid")
+				}
+			}
+			planItem = item
+		}
 		if amountType {
-			if spec.hasQuantity() {
+			if spec.requestHasQuantity() {
 				if row[request.Quantity] == nil {
 					return failure("settlement_invalid")
 				}
@@ -919,7 +1069,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				amounts = newSettlementBucket()
 			}
 			for i := 1; i < 4; i++ {
-				if !measureDeclared(spec, i) {
+				if !requestMeasure(spec, i) {
 					continue
 				}
 				remaining[i] = new(big.Int).Sub(values[i], amounts.measures[i])
@@ -927,7 +1077,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 					return failure("settlement_exceeded")
 				}
 			}
-		} else if spec.hasQuantity() {
+		} else if spec.requestHasQuantity() {
 			quantity := values[0]
 			if quantity.Sign() <= 0 {
 				return failure("settlement_invalid")
@@ -951,12 +1101,12 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			spent := new(big.Int).Add(effect, closeBucket.measures[0])
 			remaining[0] = new(big.Int).Sub(quantity, spent)
 			for i := 1; i < 3; i++ {
-				if !measureDeclared(spec, i) {
+				if !requestMeasure(spec, i) {
 					continue
 				}
 				remaining[i] = new(big.Int).Sub(values[i], proportionalHalfAway(values[i], spent, quantity))
 			}
-			if measureDeclared(spec, 3) {
+			if requestMeasure(spec, 3) {
 				gross := new(big.Int)
 				if remaining[1] != nil {
 					gross.Add(gross, remaining[1])
@@ -976,7 +1126,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				amounts = newSettlementBucket()
 			}
 			for i := 1; i < 4; i++ {
-				if !measureDeclared(spec, i) {
+				if !requestMeasure(spec, i) {
 					continue
 				}
 				remaining[i] = new(big.Int).Sub(values[i], amounts.measures[i])
@@ -1026,12 +1176,8 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 			continue
 		}
 		if spec.Plans != nil {
-			item, err := optionalRef(after, row, request.PlanItem, spec.Plans.Entity)
-			if err != nil {
-				return failure("settlement_invalid")
-			}
-			if item != "" {
-				key, ok := planItems[item]
+			if planItem != "" {
+				key, ok := planItems[planItem]
 				if !ok || key.scope != capacityID {
 					return failure("settlement_invalid")
 				}
@@ -1041,9 +1187,14 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				if err := quantityFormat.Add(bucketUse[key], remaining[0]); err != nil {
 					return err
 				}
-			} else if err := addDirect(capacityID, remaining[0]); err != nil {
-				return err
+			} else if capacityID != "" {
+				if err := addDirect(capacityID, remaining[0]); err != nil {
+					return err
+				}
 			}
+			continue
+		}
+		if capacityID == "" {
 			continue
 		}
 		bucket := consumed[capacityID]
@@ -1088,8 +1239,10 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 				continue
 			}
-			if err := addDirect(entry.capacityID, entry.effect); err != nil {
-				return err
+			if entry.capacityID != "" {
+				if err := addDirect(entry.capacityID, entry.effect); err != nil {
+					return err
+				}
 			}
 		}
 		for key, planned := range planCurrent {
