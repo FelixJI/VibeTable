@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -91,16 +92,81 @@ func pluginAuditPageParamsJSON(store *pluginstore.Service, extra string) string 
 }
 
 type pluginAuditPageReply struct {
-	Events []struct {
-		EventID     string  `json:"eventId"`
-		StartedAt   string  `json:"startedAt"`
-		EventType   string  `json:"eventType"`
-		Outcome     string  `json:"outcome"`
-		RunID       *string `json:"runId"`
-		PackageHash string  `json:"packageHash"`
-		DurationMs  *int64  `json:"durationMs"`
-	} `json:"events"`
-	NextCursor *string `json:"nextCursor"`
+	Events     []pluginstore.AuditSummaryItem `json:"events"`
+	NextCursor *string                        `json:"nextCursor"`
+}
+
+// walkAuditSummaryPages drives the real Product HTTP chain to its terminal
+// page and returns every delivered item in order together with the page count.
+func walkAuditSummaryPages(t *testing.T, mux http.Handler, store *pluginstore.Service, ctx context.Context) ([]pluginstore.AuditSummaryItem, int) {
+	t.Helper()
+	seen := make([]pluginstore.AuditSummaryItem, 0)
+	cursor := ""
+	pages := 0
+	for {
+		envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
+			pluginAuditPageParamsJSON(store, `,"cursor":"`+cursor+`"`), schemaListWire)
+		if envelope.Error != nil {
+			t.Fatalf("audit summary page failed: %+v", envelope.Error)
+		}
+		if len(envelope.Result) >= maxProductRPCResponseBytes {
+			t.Fatalf("audit summary page envelope is unbounded: %d bytes", len(envelope.Result))
+		}
+		var page pluginAuditPageReply
+		if err := json.Unmarshal(envelope.Result, &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Events) == 0 {
+			t.Fatal("summary page is empty before the cursor chain ends")
+		}
+		if len(page.Events) > pluginstore.AuditSummaryPageSize {
+			t.Fatalf("summary page returned %d events over the fixed page size", len(page.Events))
+		}
+		seen = append(seen, page.Events...)
+		pages++
+		if page.NextCursor == nil {
+			return seen, pages
+		}
+		cursor = *page.NextCursor
+	}
+}
+
+// captureAuditRaw snapshots every stored payload through GetAudit before
+// the summary pages are read, so the projection can be proven not to touch
+// the frozen full-history document.
+func captureAuditRaw(t *testing.T, store *pluginstore.Service, ids []string) map[string]json.RawMessage {
+	t.Helper()
+	ctx := context.Background()
+	raws := make(map[string]json.RawMessage, len(ids))
+	for _, id := range ids {
+		raw, err := store.GetAudit(ctx, store.ProjectKey(), "pmvt.project-manager", id)
+		if err != nil || len(raw) == 0 {
+			t.Fatalf("GetAudit(%s) = %d bytes, %v", id, len(raw), err)
+		}
+		var original map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &original); err != nil {
+			t.Fatalf("GetAudit(%s) is not one JSON object: %v", id, err)
+		}
+		raws[id] = raw
+	}
+	return raws
+}
+
+// assertAuditRawPreserved pins the frozen boundary of the projection: every
+// stored payload must stay byte-for-byte reachable through GetAudit after the
+// bounded pages were served.
+func assertAuditRawPreserved(t *testing.T, store *pluginstore.Service, before map[string]json.RawMessage) {
+	t.Helper()
+	ctx := context.Background()
+	for id, want := range before {
+		after, err := store.GetAudit(ctx, store.ProjectKey(), "pmvt.project-manager", id)
+		if err != nil {
+			t.Fatalf("GetAudit(%s) failed after the pages: %v", id, err)
+		}
+		if string(after) != string(want) {
+			t.Fatalf("GetAudit(%s) payload changed across the bounded pages", id)
+		}
+	}
 }
 
 // TestPluginListAuditOversizedHistoryStillFailsClosedAtTheWriter is the #572
@@ -130,176 +196,382 @@ func TestPluginListAuditOversizedHistoryStillFailsClosedAtTheWriter(t *testing.T
 func TestPluginListAuditPageBoundsOversizedHistory(t *testing.T) {
 	mux, store, ctx := pluginAuditPageFixture(t)
 	all := seedAuditEvents(t, store, 70, 70<<10) // > 4 MiB total payload.
-	seen := make([]string, 0, len(all))
-	cursor := ""
-	pages := 0
-	for {
-		envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
-			pluginAuditPageParamsJSON(store, `,"cursor":"`+cursor+`"`), schemaListWire)
-		if envelope.Error != nil {
-			t.Fatalf("audit summary page failed: %+v", envelope.Error)
-		}
-		if len(envelope.Result) >= maxProductRPCResponseBytes {
-			t.Fatalf("audit summary page envelope is unbounded: %d bytes", len(envelope.Result))
-		}
-		var page pluginAuditPageReply
-		if err := json.Unmarshal(envelope.Result, &page); err != nil {
-			t.Fatal(err)
-		}
-		if len(page.Events) == 0 {
-			t.Fatal("summary page is empty before the cursor chain ends")
-		}
-		if len(page.Events) > pluginstore.AuditSummaryPageSize {
-			t.Fatalf("summary page returned %d events over the fixed page size", len(page.Events))
-		}
-		for _, event := range page.Events {
-			seen = append(seen, event.EventID)
-		}
-		// Raw keys, not a decoded struct: proving the projection carries only
-		// the summary metadata and never a details document.
-		var rawEvents []map[string]json.RawMessage
-		if err := json.Unmarshal(envelope.Result, &struct{ Events *[]map[string]json.RawMessage }{&rawEvents}); err != nil {
-			t.Fatal(err)
-		}
-		for index, raw := range rawEvents {
-			if len(raw) != 7 {
-				t.Fatalf("summary event %d carries %d keys (%v), want exactly the 7 metadata fields", index, len(raw), rawKeys(raw))
-			}
-		}
-		pages++
-		if page.NextCursor == nil {
-			break
-		}
-		cursor = *page.NextCursor
-	}
+	before := captureAuditRaw(t, store, all)
+	seen, pages := walkAuditSummaryPages(t, mux, store, ctx)
 	if pages < 2 {
 		t.Fatalf("expected the fixed small page to split %d events across pages, got %d", len(all), pages)
 	}
-	if strings.Join(seen, ",") != strings.Join(all, ",") {
-		t.Fatalf("cursor chain lost, duplicated or reordered events: got %d of %d", len(seen), len(all))
+	ids := make([]string, 0, len(seen))
+	for _, event := range seen {
+		ids = append(ids, event.EventID)
 	}
+	if strings.Join(ids, ",") != strings.Join(all, ",") {
+		t.Fatalf("cursor chain lost, duplicated or reordered events: got %d of %d", len(ids), len(all))
+	}
+	for _, event := range seen {
+		if event.MetadataLimited {
+			t.Fatalf("bounded legacy metadata of seeded events must not raise metadataLimited: %+v", event)
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
 }
 
-func rawKeys(raw map[string]json.RawMessage) []string {
-	keys := make([]string, 0, len(raw))
-	for key := range raw {
-		keys = append(keys, key)
+// TestPluginListAuditPageCountsArrayFraming pins the actual json.Marshal
+// accounting on worst-case sized items: a page closes exactly when the array
+// brackets plus separators plus escaped item bytes would exceed the budget,
+// and the internal paging contract rejects budgets that can never fit one
+// bounded item.
+func TestPluginListAuditPageCountsArrayFraming(t *testing.T) {
+	_, store, ctx := pluginAuditPageFixture(t)
+	// Two maximally escaped items: each is far over the internal item ceiling
+	// so exact framing boundaries also sit above the request guard.
+	controlRunes := strings.Repeat("\u0001", pluginstore.AuditSummaryPreviewRunes+4096)
+	for _, id := range []string{"array-first", "array-second"} {
+		seedRawAuditEvent(t, store, customAuditEvent(store, id, func(event map[string]any) {
+			event["eventType"] = controlRunes
+			event["outcome"] = controlRunes
+			event["packageHash"] = controlRunes
+			event["runId"] = controlRunes
+		}))
 	}
-	sort.Strings(keys)
-	return keys
+	both, _, _, err := store.ListAuditSummaryPage(ctx, store.ProjectKey(), "pmvt.project-manager", 0, 50, pluginstore.AuditSummaryPageBudgetBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(both) != 2 {
+		t.Fatalf("framing fixture page = %d items, want 2", len(both))
+	}
+	encodedFirst, err := json.Marshal(both[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedSecond, err := json.Marshal(both[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encodedFirst) < pluginstore.AuditSummaryItemBudgetBytes/2 {
+		t.Fatalf("framing fixture item = %d bytes, too small to straddle the ceiling guard", len(encodedFirst))
+	}
+	exact := 2 + len(encodedFirst) + 1 + len(encodedSecond)
+	for _, budget := range []int{exact, exact - 1} {
+		page, next, more, pageErr := store.ListAuditSummaryPage(ctx, store.ProjectKey(), "pmvt.project-manager", 0, 50, budget)
+		if pageErr != nil {
+			t.Fatalf("budget %d: %v", budget, pageErr)
+		}
+		if budget == exact {
+			if len(page) != 2 || more {
+				t.Fatalf("exact two-item budget: count=%d more=%v", len(page), more)
+			}
+			continue
+		}
+		// One separator byte short: the second bounded item closes the page
+		// and stays the next page's first event — nothing is skipped.
+		if len(page) != 1 || !more || next == 0 {
+			t.Fatalf("separator boundary: count=%d more=%v next=%d", len(page), more, next)
+		}
+	}
+	if _, _, _, err := store.ListAuditSummaryPage(ctx, store.ProjectKey(), "pmvt.project-manager", 0, 50, pluginstore.AuditSummaryItemBudgetBytes-1); err == nil {
+		t.Fatal("budget below the bounded item ceiling was accepted")
+	} else if failure, ok := err.(*pluginstore.Error); !ok || failure.Code != "plugin.request_invalid" {
+		t.Fatalf("budget below the ceiling must be request invalid: %v", err)
+	}
 }
 
 // seedCustomAuditEvent writes one legal audit event with caller-chosen
 // metadata strings; validateAuditPayload limits none of their lengths.
 func seedCustomAuditEvent(t *testing.T, store *pluginstore.Service, eventID, runID string) {
 	t.Helper()
-	event, err := json.Marshal(map[string]any{
+	seedRawAuditEvent(t, store, map[string]any{
 		"eventId":    eventID,
 		"projectKey": store.ProjectKey(), "pluginId": "pmvt.project-manager",
 		"pluginVersion": "0.5.0", "packageHash": "sha256:custom",
 		"eventType": "model.progress", "outcome": "succeeded", "actor": "local-user",
 		"startedAt": "2026-11-07T19:05:58Z", "runId": runID, "details": map[string]any{},
 	})
+}
+
+// seedRawAuditEvent writes one legal audit payload verbatim. The frozen write
+// validation never type-checks runId/durationMs and limits no metadata text
+// length, so legacy shapes stay legal here exactly as in production.
+func seedRawAuditEvent(t *testing.T, store *pluginstore.Service, event map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordAudit(context.Background(), event); err != nil {
-		t.Fatal("custom audit write failed", err)
+	if _, err := store.RecordAudit(context.Background(), raw); err != nil {
+		t.Fatalf("synthetic audit write failed for %v: %v", event["eventId"], err)
 	}
 }
 
-// The byte limit includes array framing even for a one-item page.
-func TestPluginListAuditPageCountsArrayFraming(t *testing.T) {
-	_, store, ctx := pluginAuditPageFixture(t)
-	seedCustomAuditEvent(t, store, "array-boundary", "sample")
-	items, _, _, err := store.ListAuditSummaryPage(ctx, store.ProjectKey(), "pmvt.project-manager", 0, 50, 4096)
-	if err != nil {
-		t.Fatal(err)
+func customAuditEvent(store *pluginstore.Service, eventID string, mutate func(map[string]any)) map[string]any {
+	event := map[string]any{
+		"eventId":    eventID,
+		"projectKey": store.ProjectKey(), "pluginId": "pmvt.project-manager",
+		"pluginVersion": "0.5.0", "packageHash": "sha256:custom",
+		"eventType": "model.progress", "outcome": "succeeded", "actor": "local-user",
+		"startedAt": "2026-11-07T19:05:58Z", "runId": nil, "details": map[string]any{},
 	}
-	encoded, err := json.Marshal(items)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, budget := range []int{len(encoded), len(encoded) - 1} {
-		page, _, more, err := store.ListAuditSummaryPage(ctx, store.ProjectKey(), "pmvt.project-manager", 0, 50, budget)
-		if budget == len(encoded) {
-			if err != nil || more || len(page) != 1 {
-				t.Fatalf("exact array budget: count=%d more=%v error=%v", len(page), more, err)
-			}
-		} else if failure, ok := err.(*pluginstore.Error); !ok || failure.Code != pluginstore.AuditSummaryPageTooLargeCode {
-			t.Fatalf("array framing exceeded budget without explicit failure: %v", err)
-		}
-	}
+	mutate(event)
+	return event
 }
 
+// TestPluginListAuditPageCountsEscapedJsonBytes pins the escaped-byte budget:
+// quote-heavy legacy runIds serialize to several times their raw length, so
+// the projection previews them and the page bytes stay bounded while the
+// cursor chain still covers the scope exactly once.
 func TestPluginListAuditPageCountsEscapedJsonBytes(t *testing.T) {
 	mux, store, ctx := pluginAuditPageFixture(t)
-	// 100k quote characters: ~100k raw but ~200k serialized, under budget.
+	// 100k quote characters each: ~100k raw but ~200k serialized unbounded.
 	for index := 0; index < 3; index++ {
 		seedCustomAuditEvent(t, store, fmt.Sprintf("escape-%04d", index), strings.Repeat(`"`, 100_000))
 	}
-	seen := []string{}
-	cursor := ""
-	for {
-		envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
-			pluginAuditPageParamsJSON(store, `,"cursor":"`+cursor+`"`), schemaListWire)
-		if envelope.Error != nil {
-			t.Fatalf("escaped audit summary page failed: %+v", envelope.Error)
+	before := captureAuditRaw(t, store, []string{"escape-0000", "escape-0001", "escape-0002"})
+	seen, pages := walkAuditSummaryPages(t, mux, store, ctx)
+	ids := make([]string, 0, len(seen))
+	for _, event := range seen {
+		ids = append(ids, event.EventID)
+		if !event.MetadataLimited {
+			t.Fatalf("escaped runId preview must raise metadataLimited: %+v", event)
 		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(envelope.Result, &fields); err != nil {
-			t.Fatal(err)
+		if runID := derefString(event.RunID); utf8.RuneCountInString(runID) > pluginstore.AuditSummaryPreviewRunes {
+			t.Fatalf("escaped runId preview exceeds the preview limit: %d runes", utf8.RuneCountInString(runID))
 		}
-		if len(fields["events"]) > pluginstore.AuditSummaryPageBudgetBytes {
-			t.Fatalf("escaped JSON array exceeds page budget: %d", len(fields["events"]))
-		}
-		var page pluginAuditPageReply
-		if err := json.Unmarshal(envelope.Result, &page); err != nil {
-			t.Fatal(err)
-		}
-		for _, event := range page.Events {
-			seen = append(seen, event.EventID)
-		}
-		if page.NextCursor == nil {
-			break
-		}
-		cursor = *page.NextCursor
 	}
-	if strings.Join(seen, ",") != "escape-0000,escape-0001,escape-0002" {
-		t.Fatalf("escaped chain did not cover the scope exactly once: %v", seen)
+	if strings.Join(ids, ",") != "escape-0000,escape-0001,escape-0002" {
+		t.Fatalf("escaped chain did not cover the scope exactly once: %v", ids)
 	}
+	if pages != 1 {
+		t.Fatalf("three previewed events must fit one page, got %d", pages)
+	}
+	assertAuditRawPreserved(t, store, before)
 }
 
-// TestPluginListAuditPageFailsClosedWhenOneEventExceedsBudget pins the
-// pathological record whose serialized summary alone exceeds the page byte
-// budget: the page must reject with its own distinguishable error instead of
-// answering an unbounded envelope, while the frozen single-event read keeps
-// returning the identical original payload.
-func TestPluginListAuditPageFailsClosedWhenOneEventExceedsBudget(t *testing.T) {
+// TestPluginListAuditPageProjectsUnboundedMetadataBetweenNormalEvents is the
+// core #572 remediation contract: an overlong legacy record sitting between
+// normal records no longer fails the whole page. The real HTTP chain delivers
+// every eventId complete and in order, overlong display metadata becomes a
+// rune-safe preview with the explicit omission marker plus metadataLimited,
+// normal rows stay unflagged, and every original payload survives untouched
+// on the frozen reads.
+func TestPluginListAuditPageProjectsUnboundedMetadataBetweenNormalEvents(t *testing.T) {
 	mux, store, ctx := pluginAuditPageFixture(t)
-	// ~263k raw characters stay under the 512 KiB raw-length estimate but
-	// escape to over 512 KiB of JSON: the old estimator would have returned
-	// this page as a bounded success.
-	seedCustomAuditEvent(t, store, "oversized-run", strings.Repeat(`"`, 263_000))
-	project := store.ProjectKey()
-	before, err := store.GetAudit(ctx, project, "pmvt.project-manager", "oversized-run")
-	if err != nil || len(before) == 0 {
-		t.Fatalf("GetAudit before = %d bytes, %v", len(before), err)
+	overlong := strings.Repeat("模", 40_000) // 40k multibyte runes, far over the preview limit.
+	seedCustomAuditEvent(t, store, "between-first", "run-normal")
+	seedRawAuditEvent(t, store, customAuditEvent(store, "between-huge", func(event map[string]any) {
+		event["eventType"] = overlong
+		event["outcome"] = overlong
+		event["packageHash"] = overlong
+		event["runId"] = overlong
+	}))
+	seedCustomAuditEvent(t, store, "between-last", "run-normal")
+	before := captureAuditRaw(t, store, []string{"between-first", "between-huge", "between-last"})
+	seen, pages := walkAuditSummaryPages(t, mux, store, ctx)
+	if pages != 1 {
+		t.Fatalf("three bounded events must fit one page, got %d", pages)
 	}
-	envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
-		pluginAuditPageParamsJSON(store, ""), schemaListWire)
-	if envelope.Error == nil {
-		t.Fatalf("over-budget single summary event was answered: %s", envelope.Result)
+	ids := make([]string, 0, len(seen))
+	for _, event := range seen {
+		ids = append(ids, event.EventID)
 	}
-	encoded, encodeErr := json.Marshal(envelope)
-	if encodeErr != nil || !strings.Contains(string(encoded), "plugin.audit_page_too_large") {
-		t.Fatalf("over-budget failure is not distinguishable: %s (%v)", encoded, encodeErr)
+	if strings.Join(ids, ",") != "between-first,between-huge,between-last" {
+		t.Fatalf("chain lost or reordered events around the overlong record: %v", ids)
 	}
-	after, err := store.GetAudit(ctx, project, "pmvt.project-manager", "oversized-run")
-	if err != nil || string(after) != string(before) {
-		t.Fatal("GetAudit payload changed across the rejected summary page")
+	huge := seen[1]
+	if !huge.MetadataLimited {
+		t.Fatal("overlong metadata must raise metadataLimited")
 	}
+	for name, value := range map[string]string{
+		"eventType": huge.EventType, "outcome": huge.Outcome,
+		"packageHash": huge.PackageHash, "runId": derefString(huge.RunID),
+	} {
+		if runes := utf8.RuneCountInString(value); runes != pluginstore.AuditSummaryPreviewRunes {
+			t.Fatalf("%s preview = %d runes, want exactly the bounded limit", name, runes)
+		}
+		if !strings.HasSuffix(value, "…") {
+			t.Fatalf("%s preview lacks the explicit omission marker", name)
+		}
+	}
+	for _, index := range []int{0, 2} {
+		if seen[index].MetadataLimited {
+			t.Fatalf("normal neighbor must stay unflagged: %+v", seen[index])
+		}
+		if seen[index].EventType != "model.progress" || derefString(seen[index].RunID) != "run-normal" {
+			t.Fatalf("normal neighbor metadata changed: %+v", seen[index])
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
 }
+
+// TestPluginListAuditPageProjectsNonStandardOptionalLegacyValues pins the
+// tolerant optional handling: legacy records with non-standard runId or
+// durationMs values the frozen writes accepted must never fail their page —
+// they project to null with metadataLimited, while normal null/absent values
+// stay null without a false flag and exact integers are kept verbatim.
+func TestPluginListAuditPageProjectsNonStandardOptionalLegacyValues(t *testing.T) {
+	mux, store, ctx := pluginAuditPageFixture(t)
+	cases := []struct {
+		id       string
+		mutate   func(map[string]any)
+		limited  bool
+		runID    *string
+		duration *int64
+	}{
+		{"opt-null", func(e map[string]any) { e["runId"] = nil; e["durationMs"] = nil }, false, nil, nil},
+		{"opt-absent", func(e map[string]any) { delete(e, "runId"); delete(e, "durationMs") }, false, nil, nil},
+		{"opt-values", func(e map[string]any) {
+			e["runId"] = "run-42"
+			e["durationMs"] = 1500
+		}, false, ptr("run-42"), i64(1500)},
+		{"opt-run-number", func(e map[string]any) { e["runId"] = 12345 }, true, nil, nil},
+		{"opt-run-object", func(e map[string]any) { e["runId"] = map[string]any{"nested": true} }, true, nil, nil},
+		{"opt-run-array", func(e map[string]any) { e["runId"] = []any{"a"} }, true, nil, nil},
+		{"opt-duration-float", func(e map[string]any) { e["durationMs"] = 12.5 }, true, nil, nil},
+		{"opt-duration-float-zero", func(e map[string]any) { e["durationMs"] = json.RawMessage("1000.0") }, true, nil, nil},
+		{"opt-duration-string", func(e map[string]any) { e["durationMs"] = "fast" }, true, nil, nil},
+		{"opt-duration-numeric-string", func(e map[string]any) { e["durationMs"] = "42" }, true, nil, nil},
+		{"opt-duration-exponent", func(e map[string]any) { e["durationMs"] = json.RawMessage("1e3") }, true, nil, nil},
+		{"opt-duration-bool", func(e map[string]any) { e["durationMs"] = false }, true, nil, nil},
+		{"opt-duration-negative", func(e map[string]any) { e["durationMs"] = -1 }, true, nil, nil},
+		{"opt-duration-zero", func(e map[string]any) { e["durationMs"] = 0 }, false, nil, i64(0)},
+		{"opt-duration-safe-max", func(e map[string]any) { e["durationMs"] = int64(9007199254740991) }, false, nil, i64(9007199254740991)},
+		{"opt-duration-unsafe", func(e map[string]any) { e["durationMs"] = int64(9007199254740992) }, true, nil, nil},
+	}
+	ids := make([]string, 0, len(cases))
+	for _, testCase := range cases {
+		seedRawAuditEvent(t, store, customAuditEvent(store, testCase.id, testCase.mutate))
+		ids = append(ids, testCase.id)
+	}
+	before := captureAuditRaw(t, store, ids)
+	seen, _ := walkAuditSummaryPages(t, mux, store, ctx)
+	if len(seen) != len(cases) {
+		t.Fatalf("chain delivered %d of %d events", len(seen), len(cases))
+	}
+	for index, testCase := range cases {
+		event := seen[index]
+		if event.EventID != testCase.id {
+			t.Fatalf("chain reordered events: got %+v", seen)
+		}
+		if event.MetadataLimited != testCase.limited {
+			t.Fatalf("%s metadataLimited = %v, want %v", testCase.id, event.MetadataLimited, testCase.limited)
+		}
+		if event.RunID == nil != (testCase.runID == nil) || (event.RunID != nil && *event.RunID != *testCase.runID) {
+			t.Fatalf("%s runId = %v, want %v", testCase.id, event.RunID, testCase.runID)
+		}
+		if event.DurationMs == nil != (testCase.duration == nil) || (event.DurationMs != nil && *event.DurationMs != *testCase.duration) {
+			t.Fatalf("%s durationMs = %v, want %v", testCase.id, event.DurationMs, testCase.duration)
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
+}
+
+// TestPluginListAuditPageNormalizesLongFractionStartedAt pins the timestamp
+// contract: legal RFC3339 fractions of any length stay valid dates under the
+// existing time semantics. Fractions beyond nanosecond precision normalize
+// bounded and raise metadataLimited; zero-padding and offsets are cosmetic
+// and never flagged; the stored original stays untouched.
+func TestPluginListAuditPageNormalizesLongFractionStartedAt(t *testing.T) {
+	mux, store, ctx := pluginAuditPageFixture(t)
+	cases := []struct {
+		id         string
+		startedAt  string
+		limited    bool
+		normalized string
+	}{
+		{"ts-plain", "2026-11-07T19:05:58Z", false, "2026-11-07T19:05:58Z"},
+		{"ts-nanos", "2026-11-07T19:05:58.123456789Z", false, "2026-11-07T19:05:58.123456789Z"},
+		{"ts-padded", "2026-11-07T19:05:58.1000000000000Z", false, "2026-11-07T19:05:58.1Z"},
+		{"ts-offset", "2026-11-08T03:05:58.500+08:00", false, "2026-11-08T03:05:58.5+08:00"},
+		{"ts-overlong", "2026-11-07T19:05:58.123456789123456789Z", true, "2026-11-07T19:05:58.123456789Z"},
+		// Go's RFC3339 parser (and therefore the frozen write validation)
+		// accepts ',' as the fraction separator; both separators must count.
+		{"ts-comma-nanos", "2026-11-07T19:05:58,123456789Z", false, "2026-11-07T19:05:58.123456789Z"},
+		{"ts-comma-padded", "2026-11-07T19:05:58,1000000000000Z", false, "2026-11-07T19:05:58.1Z"},
+		{"ts-comma-overlong", "2026-11-07T19:05:58,123456789123456789Z", true, "2026-11-07T19:05:58.123456789Z"},
+	}
+	ids := make([]string, 0, len(cases))
+	for _, testCase := range cases {
+		seedRawAuditEvent(t, store, customAuditEvent(store, testCase.id, func(event map[string]any) {
+			event["startedAt"] = testCase.startedAt
+		}))
+		ids = append(ids, testCase.id)
+	}
+	before := captureAuditRaw(t, store, ids)
+	seen, _ := walkAuditSummaryPages(t, mux, store, ctx)
+	for index, testCase := range cases {
+		event := seen[index]
+		if event.MetadataLimited != testCase.limited {
+			t.Fatalf("%s metadataLimited = %v, want %v", testCase.id, event.MetadataLimited, testCase.limited)
+		}
+		if event.StartedAt != testCase.normalized {
+			t.Fatalf("%s startedAt = %q, want %q", testCase.id, event.StartedAt, testCase.normalized)
+		}
+		if event.StartedAt == "" {
+			t.Fatalf("%s normalized into an empty date", testCase.id)
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
+}
+
+// TestPluginListAuditPageBoundedItemAlwaysFitsPageBudget proves the
+// construction bound: even worst-case escaped previews (control runes that
+// serialize to six bytes each) keep every item far below both the internal
+// ceiling and the fixed 512 KiB page budget, so a history consisting only of
+// pathological records still pages through the real HTTP chain to its end
+// without skipping a single eventId.
+func TestPluginListAuditPageBoundedItemAlwaysFitsPageBudget(t *testing.T) {
+	mux, store, ctx := pluginAuditPageFixture(t)
+	const count = 60
+	controlRunes := strings.Repeat("\u0001", pluginstore.AuditSummaryPreviewRunes+4096)
+	ids := make([]string, 0, count)
+	for index := 0; index < count; index++ {
+		id := worstCaseEventID(index)
+		seedRawAuditEvent(t, store, customAuditEvent(store, id, func(event map[string]any) {
+			event["eventType"] = controlRunes
+			event["outcome"] = controlRunes
+			event["packageHash"] = controlRunes
+			event["runId"] = controlRunes
+		}))
+		ids = append(ids, id)
+	}
+	before := captureAuditRaw(t, store, ids)
+	seen, pages := walkAuditSummaryPages(t, mux, store, ctx)
+	if len(seen) != count {
+		t.Fatalf("worst-case chain delivered %d of %d events", len(seen), count)
+	}
+	if pages < 2 {
+		t.Fatalf("worst-case events must split across pages, got %d", pages)
+	}
+	for index, event := range seen {
+		if event.EventID != ids[index] {
+			t.Fatalf("worst-case chain reordered events: got %s, want %s", event.EventID, ids[index])
+		}
+		if !event.MetadataLimited {
+			t.Fatalf("worst-case preview must raise metadataLimited: %+v", event)
+		}
+		if encoded, err := json.Marshal(event); err != nil || len(encoded) > pluginstore.AuditSummaryItemBudgetBytes {
+			t.Fatalf("bounded item %d exceeds the construction ceiling: %d bytes (%v)", index, len(encoded), err)
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
+}
+
+// worstCaseEventID keeps the full item_key budget (512 chars) of the shared
+// state migration while staying distinct per seeded index.
+func worstCaseEventID(index int) string {
+	return strings.Repeat("e", 508) + fmt.Sprintf("%04d", index)
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func ptr(value string) *string { return &value }
+
+func i64(value int64) *int64 { return &value }
 
 // TestPluginListAuditPageScopeAndCursorGuards pins request validation: an
 // unknown plugin yields a clean empty first page, forged or cross-scope
@@ -369,4 +641,52 @@ func TestPluginListAuditPageScopeAndCursorGuards(t *testing.T) {
 			t.Fatalf("%s cursor accepted: %+v", name, envelope.Error)
 		}
 	}
+}
+
+func rawKeys(raw map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestPluginListAuditPageProjectionKeySet pins the frozen projection shape:
+// exactly the eight summary metadata fields cross the wire, the details
+// document never appears, and the raw keys stay stable across pages.
+func TestPluginListAuditPageProjectionKeySet(t *testing.T) {
+	mux, store, ctx := pluginAuditPageFixture(t)
+	all := seedAuditEvents(t, store, 55, 512)
+	cursor := ""
+	for {
+		envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
+			pluginAuditPageParamsJSON(store, `,"cursor":"`+cursor+`"`), schemaListWire)
+		if envelope.Error != nil {
+			t.Fatalf("audit summary page failed: %+v", envelope.Error)
+		}
+		var raw struct {
+			Events []map[string]json.RawMessage `json:"events"`
+		}
+		if err := json.Unmarshal(envelope.Result, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for index, event := range raw.Events {
+			if len(event) != 8 {
+				t.Fatalf("summary event %d carries %d keys (%v), want exactly the 8 metadata fields", index, len(event), rawKeys(event))
+			}
+			if _, leaked := event["details"]; leaked {
+				t.Fatalf("summary event %d leaked the details document", index)
+			}
+		}
+		var page pluginAuditPageReply
+		if err := json.Unmarshal(envelope.Result, &page); err != nil {
+			t.Fatal(err)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	_ = all
 }

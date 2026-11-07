@@ -137,7 +137,7 @@ export function usePluginService(): PluginService {
     initialized = false;
   }
 
-  type RequestErrorPolicy = "foreground" | "background";
+  type RequestErrorPolicy = "foreground" | "background" | "local";
 
   async function call<K extends WebMessageType, T>(
     type: K,
@@ -149,6 +149,10 @@ export function usePluginService(): PluginService {
       && store.projectContextGeneration === context.generation && (options.isCurrent?.() ?? true);
     const errorPolicy = options.errorPolicy ?? "foreground";
     // Background refreshes must not toggle buttons or release a foreground operation.
+    // The "local" policy additionally never touches the store's global
+    // error surface: the owning view renders the failure in its own section,
+    // so a late or retried audit page can neither pollute the global error
+    // of a different plugin selection nor leave a stale banner behind.
     if (errorPolicy === "foreground") store.startBusy();
     try {
       const result = await bridge.request(type, payload);
@@ -172,7 +176,7 @@ export function usePluginService(): PluginService {
       if (contextCurrent) {
         if (errorPolicy === "foreground") {
           store.fail(error);
-        } else {
+        } else if (errorPolicy === "background") {
           store.failIfNoError(error);
         }
         options.onErrorClassified?.("visible");
@@ -515,7 +519,7 @@ export function usePluginService(): PluginService {
     auditPage: (pluginId, cursor = null) => call(
       "plugin.audit.page",
       { projectKey: store.projectKey, pluginId, cursor },
-      { errorPolicy: "background" },
+      { errorPolicy: "local" },
     ),
     listPendingCleanup: () => call(
       "plugin.cleanup.listPending",

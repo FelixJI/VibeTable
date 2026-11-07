@@ -7,6 +7,7 @@ import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginService } from "@/services/pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
 const blockedPlugin: PluginSnapshot = {
@@ -48,7 +49,7 @@ const blockedPlugin: PluginSnapshot = {
   revision: 7,
 };
 
-function auditSummary(eventId: string, eventType = "install"): PluginAuditSummaryEvent {
+function auditSummary(eventId: string, eventType = "install", metadataLimited = false): PluginAuditSummaryEvent {
   return {
     eventId,
     startedAt: "2026-07-22T08:00:00Z",
@@ -57,7 +58,37 @@ function auditSummary(eventId: string, eventType = "install"): PluginAuditSummar
     runId: null,
     packageHash: blockedPlugin.packageHash,
     durationMs: 12,
+    metadataLimited,
   };
+}
+
+function openWorkspaceSession(session: ReturnType<typeof useWorkspaceSessionStore>): void {
+  session.configureCapabilities(["workspace.session.v2"]);
+  session.setWorkspaces([{
+    contractVersion: "2.0",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    displayName: "E2E",
+    selectedRoot: "D:\\E2E",
+    activityRoot: null,
+    storageKind: "fixed",
+    coordinationStrength: "strong",
+    lastOpenedAt: null,
+    lastKnownHealth: "healthy",
+    lastSnapshotAt: null,
+    lastSyncAt: null,
+    pendingSync: false,
+  }]);
+  session.applySession({
+    contractVersion: "2.0",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    sessionEpoch: 7,
+    state: "openedWritable",
+    openMode: "writable",
+    writable: true,
+    provisional: false,
+    phase: "idle",
+    errorCode: null,
+  });
 }
 
 function replyingBridge(response: (type: string) => unknown) {
@@ -1055,6 +1086,194 @@ describe("PluginCenterView", () => {
     await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
     expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
     wrapper.unmount();
+  });
+
+  it("keeps the audit pages a user expanded while the mounted catalog bootstrap finishes", async () => {
+    const releasers = new Map<string, (payload: unknown) => void>();
+    const posted: { type: string; payload: Record<string, unknown> }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `mount-race-${++sequence}`,
+      webview: {
+        postMessage: message => {
+          const request = message as (typeof posted)[number] & { requestId: string; payload: { cursor: string | null } };
+          if (request.type === "plugin.audit.page") {
+            posted.push(request);
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type, requestId: request.requestId,
+              payload: request.payload.cursor === null
+                ? { events: [auditSummary("race-1"), auditSummary("race-2", "model.progress")], nextCursor: "cursor-2" }
+                : { events: [auditSummary("race-3", "transaction.preview")], nextCursor: null },
+            } }));
+            return;
+          }
+          // The bootstrap catalog and cleanup reads stay pending while the
+          // user interacts with the already selected plugin.
+          releasers.set(request.type, payload => queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId, payload,
+          } })));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    usePluginStore().selectPlugin(blockedPlugin.pluginId);
+    const wrapper = mount(PluginCenterView); // autoLoad: the mount bootstrap runs.
+    try {
+      await flushPromises();
+      await wrapper.get(".plugin-row").trigger("click"); // Same plugin, explicit gesture during the bootstrap.
+      await flushPromises();
+      await wrapper.get('[data-testid="plugin-audit-more"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(3);
+      expect(posted.map(request => request.payload.cursor)).toEqual([null, "cursor-2"]);
+
+      // The bootstrap replies settle late; the accumulated pages must win and
+      // the mount continuation must not re-request the first page.
+      releasers.get("plugin.catalog.list")?.([blockedPlugin]);
+      releasers.get("plugin.cleanup.listPending")?.([]);
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(3);
+      expect(posted.map(request => request.payload.cursor)).toEqual([null, "cursor-2"]);
+      expect(wrapper.find(".global-error").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      bridge.stop();
+    }
+  });
+
+  it("annotates bounded previews only when a summary reports metadataLimited", async () => {
+    replyingBridge(type => type === "plugin.audit.page"
+      ? { events: [auditSummary("full-1"), auditSummary("limited-1", "install", true)], nextCursor: null }
+      : null);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(2);
+      expect(wrapper.get('[data-testid="plugin-audit-limited"]').text()).toBe("部分信息已简化");
+      expect(wrapper.find(".global-error").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+    replyingBridge(type => type === "plugin.audit.page"
+      ? { events: [auditSummary("plain-1")], nextCursor: null }
+      : null);
+    const normal = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await normal.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(normal.findAll(".audit-log article")).toHaveLength(1);
+      expect(normal.find('[data-testid="plugin-audit-limited"]').exists()).toBe(false);
+    } finally {
+      normal.unmount();
+    }
+  });
+
+  it("clears the audit section on a phase-only workspace close and reopens when readable", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSession(session);
+    const posted: { type: string; payload: Record<string, unknown> }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `drain-${++sequence}`,
+      webview: {
+        postMessage: message => {
+          const request = message as (typeof posted)[number] & { requestId: string };
+          if (request.type === "plugin.audit.page") posted.push(request);
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId,
+            payload: request.type === "plugin.audit.page"
+              ? { events: [auditSummary("drain-1")], nextCursor: null }
+              : request.type === "plugin.catalog.list" ? [] : [],
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click");
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+
+      // beginClose flips only the phase; no state or epoch changes. The old
+      // scope's records must disappear immediately and no new scoped audit
+      // read may be issued while the session is draining.
+      expect(session.beginClose()).toBe(true);
+      await wrapper.vm.$nextTick();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(0);
+      expect(wrapper.text()).toContain("暂无审计记录");
+      const requestsBeforeReopen = posted.length;
+
+      // The failed close restores the same session; the section reopens by itself.
+      session.failSwitch("close failed");
+      await flushPromises();
+      expect(posted.length).toBeGreaterThan(requestsBeforeReopen);
+      expect(posted.at(-1)?.payload.cursor).toBeNull();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.text()).toContain("已加载全部审计记录。");
+    } finally {
+      wrapper.unmount();
+      bridge.stop();
+    }
+  });
+
+  it("renders a locally retired audit read as a scope transition, not a failure", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSession(session);
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    let withhold = true;
+    const bridge = createHostBridge({
+      generateRequestId: () => `retire-${++sequence}`,
+      webview: {
+        postMessage: message => {
+          const request = message as { type: string; requestId: string };
+          if (request.type === "plugin.audit.page" && withhold) return; // Reply withheld.
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId,
+            payload: request.type === "plugin.audit.page" ? { events: [auditSummary("reopen-1")], nextCursor: null }
+              : request.type === "plugin.catalog.list" ? [] : [],
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".plugin-row").trigger("click"); // First page request goes out; reply withheld.
+      await flushPromises();
+      expect(wrapper.text()).toContain("正在加载审计记录…");
+
+      // The phase-only close retires the pending scoped request locally: the
+      // rejection is not a user failure and the section settles empty.
+      expect(session.beginClose()).toBe(true);
+      await flushPromises();
+      expect(wrapper.find("[data-testid='plugin-audit-retry']").exists()).toBe(false);
+      expect(wrapper.find(".global-error").exists()).toBe(false);
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(0);
+
+      // Lifting the withhold first: the sync scope watch reopens during failSwitch.
+      withhold = false;
+      session.failSwitch("close failed");
+      await flushPromises();
+      expect(wrapper.findAll(".audit-log article")).toHaveLength(1);
+      expect(wrapper.text()).toContain("已加载全部审计记录。");
+    } finally {
+      wrapper.unmount();
+      bridge.stop();
+    }
   });
 
 });

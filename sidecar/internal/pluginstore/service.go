@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -460,29 +461,41 @@ func (service *Service) listAudit(
 	return result, nil
 }
 
-// AuditSummaryPageTooLargeCode is the dedicated failure for one audit
-// record whose serialized summary alone exceeds the page byte budget.
-const AuditSummaryPageTooLargeCode = "plugin.audit_page_too_large"
+// AuditSummaryPreviewRunes bounds every display metadata string of one
+// summary item (eventType, outcome, runId, packageHash) to at most 512
+// runes, including the single explicit "…" omission marker appended when the
+// stored value is longer. eventId is never bounded by this projection: it is
+// the storage item_key, capped at 512 by the existing shared-state
+// migration, and stays complete so every event remains exactly identifiable.
+const AuditSummaryPreviewRunes = 512
 
-func auditSummaryPageTooLarge() *Error {
-	return &Error{
-		Code:    AuditSummaryPageTooLargeCode,
-		Message: "one audit summary event exceeds the bounded page budget",
-	}
-}
+// AuditSummaryItemBudgetBytes is the construction bound of one fully bounded
+// summary item: the four preview strings at the worst case of 512 control
+// runes (six escaped bytes each), the complete escaped eventId, the
+// normalized RFC3339 timestamp, the numeric, boolean and key punctuation.
+// Every projected item therefore always fits any page budget at or above
+// this ceiling, so a page never skips a record and never stalls without
+// progress.
+const AuditSummaryItemBudgetBytes = 24 << 10
 
 // AuditSummaryItem is the bounded metadata projection of one immutable audit
 // event for the plugin center. Only the fields the audit list renders cross
 // this projection; the details document and every other payload field stay
 // in storage and remain reachable through the frozen full-history reads.
+// MetadataLimited is true exactly when at least one displayed value is a
+// bounded preview or an old, write-accepted optional value the projection
+// cannot represent (non-standard runId/durationMs types, sub-nanosecond
+// timestamp fractions); normal rows stay false. The complete original
+// document is always available through GetAudit and preservation.
 type AuditSummaryItem struct {
-	EventID     string  `json:"eventId"`
-	StartedAt   string  `json:"startedAt"`
-	EventType   string  `json:"eventType"`
-	Outcome     string  `json:"outcome"`
-	RunID       *string `json:"runId"`
-	PackageHash string  `json:"packageHash"`
-	DurationMs  *int64  `json:"durationMs"`
+	EventID         string  `json:"eventId"`
+	StartedAt       string  `json:"startedAt"`
+	EventType       string  `json:"eventType"`
+	Outcome         string  `json:"outcome"`
+	RunID           *string `json:"runId"`
+	PackageHash     string  `json:"packageHash"`
+	DurationMs      *int64  `json:"durationMs"`
+	MetadataLimited bool    `json:"metadataLimited"`
 }
 
 // ListAuditSummaryPage reads one bounded page of audit summary metadata in
@@ -491,6 +504,10 @@ type AuditSummaryItem struct {
 // reads cover every event of the scope exactly once without duplicates or
 // gaps. nextAfterSeq is the last returned item's seq (0 for an empty page)
 // and hasMore reports whether at least one further event exists in scope.
+// Unbounded legacy metadata never blocks the chain: every item is projected
+// to a bounded preview first, so each serialized item always fits the byte
+// budget and no stored record is skipped or able to strand the pages behind
+// it. The stored payload itself is never rewritten.
 func (service *Service) ListAuditSummaryPage(
 	ctx context.Context,
 	projectKey string,
@@ -505,7 +522,9 @@ func (service *Service) ListAuditSummaryPage(
 	if err := service.ValidateProject(projectKey); err != nil {
 		return nil, 0, false, err
 	}
-	if pluginID == "" || limit < 1 || byteBudget < 1 {
+	// A budget below the construction bound of one bounded item could never
+	// make progress; the caller misused the internal paging contract.
+	if pluginID == "" || limit < 1 || byteBudget < AuditSummaryItemBudgetBytes {
 		return nil, 0, false, requestError(
 			"plugin.request_invalid", "audit summary page request is invalid", nil,
 		)
@@ -538,15 +557,14 @@ func (service *Service) ListAuditSummaryPage(
 		if err := service.validateLegacyRow(row); err != nil {
 			return nil, 0, false, storageError()
 		}
-		var item AuditSummaryItem
-		if err := json.Unmarshal(row.Payload, &item); err != nil {
-			return nil, 0, false, storageError()
-		}
-		if item.EventID == "" || item.StartedAt == "" || item.EventType == "" || item.Outcome == "" {
-			return nil, 0, false, storageError()
+		item, projectErr := projectAuditSummaryItem(row.Payload)
+		if projectErr != nil {
+			return nil, 0, false, projectErr
 		}
 		// The budget counts serialized JSON bytes — escaping included — plus
-		// the array separators, never the raw field lengths.
+		// the array separators, never the raw field lengths. Projections are
+		// bounded before this point, so a single item always fits and the
+		// page merely closes early when the accumulated bytes would overflow.
 		encoded, err := json.Marshal(item)
 		if err != nil {
 			return nil, 0, false, storageError()
@@ -554,12 +572,6 @@ func (service *Service) ListAuditSummaryPage(
 		separator := 0
 		if len(items) > 0 {
 			separator = 1
-		}
-		if len(items) == 0 && budget+len(encoded) > byteBudget {
-			// A record whose summary alone exceeds the page budget can never
-			// fit any bounded page; fail closed with the dedicated code instead
-			// of answering an unbounded envelope or skipping the record.
-			return nil, 0, false, auditSummaryPageTooLarge()
 		}
 		if len(items) >= limit || budget+separator+len(encoded) > byteBudget {
 			// The row beyond the fixed page or the byte budget closes the
@@ -572,6 +584,152 @@ func (service *Service) ListAuditSummaryPage(
 	}
 	hasMore := len(page) > limit
 	return items, lastSeq, hasMore, nil
+}
+
+// auditSummaryProjection decodes one stored audit payload tolerantly. The
+// frozen write validation (validateAuditPayload) guarantees the required
+// text fields and the RFC3339 startedAt, but never type-checked the optional
+// runId/durationMs: those decode as raw JSON and are projected below, so a
+// legal legacy record can never fail the whole page.
+type auditSummaryProjection struct {
+	EventID     string          `json:"eventId"`
+	StartedAt   string          `json:"startedAt"`
+	EventType   string          `json:"eventType"`
+	Outcome     string          `json:"outcome"`
+	RunID       json.RawMessage `json:"runId"`
+	PackageHash string          `json:"packageHash"`
+	DurationMs  json.RawMessage `json:"durationMs"`
+}
+
+// projectAuditSummaryItem builds the bounded display projection of one
+// stored audit payload. eventId stays the complete storage identity; every
+// unbounded display string becomes a rune-safe preview with the explicit
+// omission marker; startedAt is normalized under the existing RFC3339 time
+// semantics (never cut into an invalid date); optional values the old writes
+// accepted but the projection cannot represent safely become null. Any of
+// those losses raises metadataLimited — normal rows stay false.
+func projectAuditSummaryItem(payload json.RawMessage) (AuditSummaryItem, error) {
+	var projection auditSummaryProjection
+	if err := json.Unmarshal(payload, &projection); err != nil {
+		return AuditSummaryItem{}, storageError()
+	}
+	if projection.EventID == "" || projection.StartedAt == "" ||
+		projection.EventType == "" || projection.Outcome == "" {
+		// Unreachable after validateLegacyRow; corrupt storage never fakes data.
+		return AuditSummaryItem{}, storageError()
+	}
+	startedAt, err := auditStartedAtSummary(projection.StartedAt)
+	if err != nil {
+		return AuditSummaryItem{}, err
+	}
+	eventType, eventTypeLimited := auditSummaryPreview(projection.EventType)
+	outcome, outcomeLimited := auditSummaryPreview(projection.Outcome)
+	packageHash, packageHashLimited := auditSummaryPreview(projection.PackageHash)
+	runID, runIDLimited := auditSummaryOptionalText(projection.RunID)
+	duration, durationLimited := auditSummaryOptionalInt(projection.DurationMs)
+	limited := startedAt.limited || eventTypeLimited || outcomeLimited ||
+		packageHashLimited || runIDLimited || durationLimited
+	return AuditSummaryItem{
+		EventID:         projection.EventID,
+		StartedAt:       startedAt.normalized,
+		EventType:       eventType,
+		Outcome:         outcome,
+		RunID:           runID,
+		PackageHash:     packageHash,
+		DurationMs:      duration,
+		MetadataLimited: limited,
+	}, nil
+}
+
+// auditSummaryPreview bounds one display string to at most
+// AuditSummaryPreviewRunes runes. The cut is rune-aligned (never splits a
+// UTF-8 sequence) and appends the explicit "…" omission marker; the second
+// return reports whether the value was truncated.
+func auditSummaryPreview(value string) (string, bool) {
+	if utf8.RuneCountInString(value) <= AuditSummaryPreviewRunes {
+		return value, false
+	}
+	runes := []rune(value)
+	return string(runes[:AuditSummaryPreviewRunes-1]) + "…", true
+}
+
+type auditSummaryTimestamp struct {
+	normalized string
+	limited    bool
+}
+
+// auditStartedAtSummary normalizes one RFC3339 startedAt under the existing
+// time semantics: the exact string already passed time.Parse(RFC3339) at
+// write time, so it parses here too, and RFC3339Nano formatting bounds the
+// fraction to nanosecond precision without ever producing an invalid date.
+// A fraction with more than nine significant digits is not fully
+// representable and raises the limited flag instead of being silently cut;
+// cosmetic zero-trimming keeps the same instant and is not a loss.
+func auditStartedAtSummary(value string) (auditSummaryTimestamp, error) {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		// Unreachable after validateLegacyRow; corrupt storage never fakes data.
+		return auditSummaryTimestamp{}, storageError()
+	}
+	return auditSummaryTimestamp{
+		normalized: parsed.Format(time.RFC3339Nano),
+		limited:    auditFractionPrecisionLost(value),
+	}, nil
+}
+
+// auditFractionPrecisionLost reports whether the fractional seconds of a
+// RFC3339 string carry more than nine significant digits (trailing zeros do
+// not count). Go accepts both '.' and ',' separators, so both count here:
+// those nanosecond-overflow digits cannot survive the normalized projection.
+func auditFractionPrecisionLost(value string) bool {
+	dot := strings.LastIndexAny(value, ".,")
+	if dot < 0 {
+		return false
+	}
+	rest := value[dot+1:]
+	// The fraction is the leading digit run; the timezone terminator is not
+	// part of it.
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	fraction := strings.TrimRight(rest[:end], "0")
+	return len(fraction) > 9
+}
+
+// auditSummaryOptionalText projects one optional string field whose stored
+// value the frozen write validation never type-checked: null or absence
+// stays nil without a flag, a string gets the bounded preview, and any other
+// legal legacy JSON value projects to null with the limited flag instead of
+// failing the page.
+func auditSummaryOptionalText(raw json.RawMessage) (*string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, true
+	}
+	preview, limited := auditSummaryPreview(value)
+	return &preview, limited
+}
+
+// auditSummaryOptionalInt projects one optional integer field the frozen
+// write validation never type-checked: null or absence stays nil without a
+// flag and an exact int64 JSON number is kept verbatim. Anything else the old
+// writes could store (string — including numeric strings, float, exponent,
+// out-of-range…) projects to null with the limited flag: the direct int64
+// decode rejects exactly those, and a duration is never fabricated.
+func auditSummaryOptionalInt(raw json.RawMessage) (*int64, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var value int64
+	// The Web consumer needs a nonnegative, exactly representable JSON number.
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > 9007199254740991 {
+		return nil, true
+	}
+	return &value, false
 }
 
 func (service *Service) list(

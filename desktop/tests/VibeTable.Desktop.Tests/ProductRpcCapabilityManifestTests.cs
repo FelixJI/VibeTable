@@ -87,6 +87,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "mutation.apply:workspace",
                 "mutation.preview:workspace",
                 "plugin.listAudit:workspace",
+                "plugin.listAuditPage:workspace",
                 "plugin.listCatalog:workspace",
                 "plugin.listPendingCleanup:workspace",
                 "plugin.setEnabled:workspace",

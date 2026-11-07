@@ -15,6 +15,7 @@ import { permissionDeclarations } from "@/services/pluginPermissionDeclarations"
 import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 import { useHostBridge } from "@/services/bridgeContext";
+import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 
 const props = withDefaults(defineProps<{ autoLoad?: boolean }>(), { autoLoad: true });
 const store = usePluginStore();
@@ -37,6 +38,16 @@ const auditNextCursor = ref<string | null>(null);
 const auditLoading = ref(false);
 const auditError = ref("");
 let auditGeneration = 0;
+// True only when at least one loaded summary carries a bounded preview or
+// an old value the projection cannot show completely; normal pages stay
+// unannotated.
+const auditMetadataLimited = computed(() => auditEvents.value.some(event => event.metadataLimited));
+// Mirrors the bridge's own admission gate: with the workspace session
+// contract active, scoped audit reads are only admissible while a workspace
+// is open and not draining. beginClose flips only the phase, so the
+// transition itself — not just state/epoch changes — must hold new reads.
+const auditSessionAdmitsReads = () => !workspaceSession.enabled
+  || (!workspaceSession.isTransitioning && workspaceSession.hasOpenWorkspace);
 function resetAuditPage(): void {
   ++auditGeneration;
   auditEvents.value = [];
@@ -46,6 +57,10 @@ function resetAuditPage(): void {
 }
 async function loadAuditPage(pluginId: string, cursor: string | null): Promise<void> {
   const generation = ++auditGeneration;
+  // Every entry path shares the bridge's admission gate: a draining or
+  // closing session never starts a scoped audit read. The scope watch
+  // reopens the first page once the session is readable again.
+  if (!auditSessionAdmitsReads()) return;
   auditLoading.value = true;
   auditError.value = "";
   try {
@@ -60,6 +75,10 @@ async function loadAuditPage(pluginId: string, cursor: string | null): Promise<v
     auditNextCursor.value = page.nextCursor;
   } catch (error) {
     if (generation !== auditGeneration) return;
+    // A locally retired scoped read is not a user-visible failure: the
+    // draining workspace retired the request and the scope watch below
+    // reopens the first page as soon as the session is readable again.
+    if (error instanceof BridgeRequestRetiredError) return;
     auditError.value = error instanceof Error ? error.message : "审计记录加载失败";
   } finally {
     if (generation === auditGeneration) auditLoading.value = false;
@@ -122,12 +141,16 @@ watch(() => [store.selectedPlugin?.installationId, store.selectedPlugin?.revisio
 }, { flush: "sync" });
 // Audit pages reopen only on scope identity changes (stable primitive
 // sources); catalog refreshes keep the already loaded pages, and the
-// generation guard retires any in-flight reply from the previous scope.
+// generation guard retires any in-flight reply from the previous scope. A
+// draining or closing session (beginClose flips only the phase) clears the
+// old scope's records immediately and holds new reads; the same watch
+// reopens the first page once the session is readable again.
 watch([
   () => store.selectedPlugin?.pluginId ?? "",
   () => store.projectKey,
   () => workspaceSession.sessionEpoch,
   () => workspaceSession.sessionState,
+  () => workspaceSession.isTransitioning,
 ], () => {
   resetAuditPage();
   if (store.selectedPlugin) void loadAuditPage(store.selectedPlugin.pluginId, null);
@@ -330,9 +353,16 @@ onMounted(() => {
   if (props.autoLoad) void safely(async () => {
     // A pre-existing selection would not retrigger the audit watch.
     const preselected = store.selectedPlugin?.pluginId ?? null;
+    const auditGenerationAtMount = auditGeneration;
     await service.list();
     pendingCleanup.value = await service.listPendingCleanup();
-    if (preselected !== null && store.selectedPlugin?.pluginId === preselected)
+    // Backfill only a first page that was never started meanwhile: any user
+    // gesture or scope transition advanced the generation and may already
+    // hold accumulated pages.
+    if (preselected !== null && store.selectedPlugin?.pluginId === preselected
+      && auditGeneration === auditGenerationAtMount
+      && !auditLoading.value && !auditEvents.value.length
+      && auditNextCursor.value === null && !auditError.value)
       await loadAuditPage(preselected, null);
   });
 });
@@ -478,7 +508,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
         <section class="detail-section audit-log">
           <header><h3>任务摘要与审计</h3></header>
           <div v-if="store.activeTask?.pluginId === plugin.pluginId" class="task-summary"><strong>{{ store.activeTask.actionId }}</strong><span>{{ store.activeTask.state }}</span><code>{{ store.activeTask.runId }}</code></div>
-          <article v-for="event in auditEvents" :key="event.eventId">
+          <article v-for="event in auditEvents" :key="event.eventId" :data-audit-event-id="event.eventId">
             <time>{{ formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
           </article>
           <p v-if="!auditEvents.length && !auditLoading && !auditError" class="empty-line">暂无审计记录。</p>
@@ -486,6 +516,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
           <p v-else-if="auditLoading" class="audit-state">正在加载审计记录…</p>
           <p v-else-if="auditNextCursor !== null" class="audit-state"><button data-testid="plugin-audit-more" type="button" :disabled="auditLoading" @click="loadMoreAudit">加载更多</button></p>
           <p v-else-if="auditEvents.length" class="audit-state">已加载全部审计记录。</p>
+          <p v-if="auditMetadataLimited" class="audit-state audit-limited" data-testid="plugin-audit-limited">部分信息已简化</p>
         </section>
 
         <section class="detail-section">
@@ -543,7 +574,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
 .plugin-preservation > p { flex: 1 1 160px; min-width: 0; margin: 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }.blockers header { display: flex; gap: 7px; align-items: center; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger) 18%, var(--vt-border)); }.blockers header span { margin-left: auto; font-size: 10px; }.blockers ul { display: grid; gap: 4px; margin: 8px 10px 9px; padding-left: 19px; }
 .detail-section { margin-top: 14px; border: 1px solid var(--vt-border); background: var(--vt-bg); }.detail-section > header { display: flex; align-items: baseline; gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--vt-border); }.detail-section h3 { margin: 0; font-size: 13px; }.package-facts dl { margin: 0; }.package-facts dl > div { display: grid; grid-template-columns: 115px minmax(0, 1fr); padding: 8px 11px; border-bottom: 1px solid var(--vt-border); }.package-facts dt { color: var(--vt-fg-muted); }.package-facts dd { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; margin: 0; }.package-facts dd code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }.permission-chip, .risk-chip { max-width: 100%; padding: 2px 6px; overflow-wrap: anywhere; color: var(--vt-fg-secondary); border: 1px solid var(--vt-border); border-radius: 999px; font: 550 10px ui-monospace, monospace; background: var(--vt-bg-subtle); }
 .audit-log article, .task-summary { display: grid; grid-template-columns: 145px 1fr 100px minmax(180px, 1fr) auto; gap: 10px; align-items: center; padding: 7px 11px; border-bottom: 1px solid var(--vt-border); }.audit-log time, .audit-log code, .audit-log small { color: var(--vt-fg-muted); font-size: 9px; }.audit-log span[data-outcome="failed"], .audit-log span[data-outcome="pending-cleanup"] { color: var(--vt-color-danger); }.task-summary { background: var(--vt-bg-subtle); }
-.audit-state { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 10px; color: var(--vt-fg-muted); font-size: 11px; }.audit-error { color: var(--vt-color-danger); }.audit-state button { min-height: 26px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.audit-state button:disabled { opacity: .45; cursor: default; }
+.audit-state { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 10px; color: var(--vt-fg-muted); font-size: 11px; }.audit-error { color: var(--vt-color-danger); }.audit-limited { padding-top: 0; }.audit-state button { min-height: 26px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.audit-state button:disabled { opacity: .45; cursor: default; }
 .action-row { display: grid; grid-template-columns: minmax(140px, .7fr) 60px 1fr auto; gap: 10px; align-items: center; min-height: 50px; padding: 7px 10px; border-bottom: 1px solid var(--vt-border); }.action-row > div { display: grid; }.action-row p { margin: 0; color: var(--vt-fg-muted); }.risk-chip[data-risk="write"] { color: var(--vt-color-warning); }.risk-chip[data-risk="destructive"] { color: var(--vt-color-danger); }.run-button, .quiet-button, .danger-text-button { display: inline-flex; min-height: 29px; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; color: var(--vt-fg); border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); cursor: pointer; }.run-button:disabled, .quiet-button:disabled { opacity: .45; cursor: default; }.empty-line { margin: 0; padding: 13px; color: var(--vt-fg-muted); }
 .lifecycle-actions { display: flex; gap: 7px; margin-top: 14px; }.danger-text-button { margin-left: auto; color: var(--vt-color-danger); border-color: color-mix(in srgb, var(--vt-color-danger) 30%, var(--vt-border)); }.uninstall-confirm { display: flex; gap: 6px; align-items: center; margin-left: auto; color: var(--vt-color-danger); }.uninstall-confirm button { min-height: 27px; border: 1px solid var(--vt-border); background: var(--vt-bg); }
 .action-overlay { position: absolute; z-index: 50; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }.action-overlay > :deep(*) { height: 100%; }.action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }

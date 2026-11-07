@@ -14752,6 +14752,7 @@
               "durationMs": {
                 "anyOf": [
                   {
+                    "maximum": 9007199254740991,
                     "minimum": 0,
                     "type": "integer"
                   },
@@ -14760,6 +14761,9 @@
                   }
                 ],
                 "default": null
+              },
+              "metadataLimited": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -14767,7 +14771,8 @@
               "startedAt",
               "eventType",
               "outcome",
-              "packageHash"
+              "packageHash",
+              "metadataLimited"
             ],
             "type": "object"
           }
@@ -14788,10 +14793,13 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           }
         },
+        "required": [
+          "events",
+          "nextCursor"
+        ],
         "type": "object"
       },
       "request": {
@@ -14808,8 +14816,19 @@
         "jsonrpc": "2.0",
         "id": "rpc-060",
         "result": {
-          "events": [],
-          "nextCursor": null
+          "events": [
+            {
+              "eventId": "00000000-0000-4000-8000-000000000001",
+              "startedAt": "2026-07-24T08:31:00Z",
+              "eventType": "sample-value",
+              "outcome": "sample-value",
+              "runId": null,
+              "packageHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "durationMs": null,
+              "metadataLimited": false
+            }
+          ],
+          "nextCursor": "sample-value"
         }
       },
       "error": {

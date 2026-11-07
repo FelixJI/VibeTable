@@ -247,14 +247,6 @@ func PluginSharedStateRegistrations(service *pluginstore.Service, gates ...busin
 				pluginstore.AuditSummaryPageSize, pluginstore.AuditSummaryPageBudgetBytes,
 			)
 			if listErr != nil {
-				var tooLarge *pluginstore.Error
-				if errors.As(listErr, &tooLarge) && tooLarge.Code == pluginstore.AuditSummaryPageTooLargeCode {
-					// Distinguishable fail-closed rejection for an unbounded record.
-					return nil, &productrpc.PublicError{
-						Code:    pluginstore.AuditSummaryPageTooLargeCode,
-						Message: "one audit summary event exceeds the bounded page budget",
-					}
-				}
 				return nil, pluginPublicError(listErr)
 			}
 			result := pluginAuditPageResult{Events: items}

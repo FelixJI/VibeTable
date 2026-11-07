@@ -417,7 +417,10 @@ class PluginAuditSummaryEvent(PluginContract):
     """Bounded metadata projection of one audit event for the plugin center.
 
     The details document never crosses this projection; the frozen
-    full-history reads keep owning the complete payload.
+    full-history reads keep owning the complete payload. metadata_limited is
+    true exactly when at least one displayed value is a bounded preview or an
+    old, write-accepted optional value the projection cannot represent; the
+    complete original stays on GetAudit and preservation.
     """
 
     event_id: str
@@ -426,15 +429,16 @@ class PluginAuditSummaryEvent(PluginContract):
     outcome: str
     run_id: str | None = None
     package_hash: str
-    duration_ms: int | None = Field(default=None, ge=0)
+    duration_ms: int | None = Field(default=None, ge=0, le=9007199254740991)
+    metadata_limited: bool
 
 
 class PluginAuditSummaryPage(PluginContract):
     """One fixed-size page of plugin center audit summaries with the
     continuation token of the same project/plugin scope."""
 
-    events: list[PluginAuditSummaryEvent] = Field(default_factory=list)
-    next_cursor: str | None = None
+    events: list[PluginAuditSummaryEvent]
+    next_cursor: str | None
 
 
 class PluginAuditEvent(PluginContract):

@@ -1151,7 +1151,9 @@ export interface PluginAuditEvent {
 /**
  * Bounded metadata projection of one plugin audit event for the plugin
  * center list. The details document never crosses this projection; the
- * full payload stays on the frozen full-history reads.
+ * full payload stays on the frozen full-history reads. metadataLimited is
+ * true exactly when at least one displayed value is a bounded preview or an
+ * old, write-accepted optional value the projection cannot represent.
  */
 export interface PluginAuditSummaryEvent {
   readonly eventId: string;
@@ -1161,6 +1163,7 @@ export interface PluginAuditSummaryEvent {
   readonly runId: string | null;
   readonly packageHash: string;
   readonly durationMs: number | null;
+  readonly metadataLimited: boolean;
 }
 
 /** One fixed-size page of plugin center audit summaries. */
