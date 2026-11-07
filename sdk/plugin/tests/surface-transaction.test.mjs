@@ -1,7 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sdk } from "./load-sdk.mjs";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+
+test("public amount-only settlement type permits an omitted quantity", () => {
+  const source = new URL(`../../../build/plugin-sdk/${process.pid}/amount-only.typecheck.ts`, import.meta.url);
+  const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url)).replaceAll("\\", "/");
+  writeFileSync(source, `import type { SettlementSpec, ChangeEvidenceSpec, AllocationSpec } from ${JSON.stringify(entry)};
+const actual: SettlementSpec["actual"] = {
+  entity: "allocations", state: { path: [], field: "status" }, direction: { path: [], field: "direction" },
+  directions: ["red"], settledStates: ["issued"], request: "application_source", capacity: "original",
+  net: "net", tax: "tax", gross: "gross"
+};
+const capacity: SettlementSpec["capacity"] = {
+  entity: "obligations", optional: true, quantity: "quantity"
+};
+const policy: Pick<ChangeEvidenceSpec, "allowInsert"> = { allowInsert: true };
+void actual;
+const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated"> = { requireCompleteWhenAllocated: true };
+const optional: import(${JSON.stringify(entry)}).TransactionRule = { id: "optional", kind: "sameTarget", entity: "rows", left: [{field:"x",target:"rows"}], right: [], skipEmptyRightEnd: true };
+void policy;
+void complete;
+void optional;
+void capacity;
+`);
+  execFileSync(process.execPath, [fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
+    "--ignoreConfig", "--noEmit", "--allowImportingTsExtensions", "--strict", "--target", "ES2022", "--module", "ESNext",
+    "--moduleResolution", "Bundler", "--skipLibCheck", fileURLToPath(source)], { stdio: "inherit" });
+});
 
 function fixture() {
   const calls = [];
@@ -28,6 +56,25 @@ test("reversal declarations preserve owner snapshots and native rejection codes"
   await configuring;
   for (const code of ["transaction.reversal_invalid", "transaction.reversal_mismatch", "transaction.reversal_exceeded"]) {
     const submit = f.client.transaction.submit({ requestId: "original-budget" });
+    f.reply(undefined, { code });
+    await assert.rejects(submit, error => error instanceof sdk.PluginCapabilityError && error.code === code);
+  }
+  f.client.dispose();
+});
+
+test("invoice guard declarations keep the natural closed shapes", async () => {
+  const f = fixture();
+  const allocation = JSON.parse(readFileSync(new URL("../../../contracts/plugin-allocation-rule.json", import.meta.url), "utf8"));
+  const settlement = JSON.parse(readFileSync(new URL("../../../contracts/plugin-settlement-rule.json", import.meta.url), "utf8"));
+  const evidence = JSON.parse(readFileSync(new URL("../../../contracts/plugin-evidence-rule.json", import.meta.url), "utf8"));
+  const declaration = { contract: "vibetable.plugin-transactions.v1", modelId: "synthetic", version: 1,
+    decimals: [], rules: [allocation, settlement, evidence] };
+  const configuring = f.client.transaction.configure({ declaration });
+  assert.deepEqual(f.calls.at(-1).params, { declaration });
+  f.reply(null);
+  await configuring;
+  for (const code of ["transaction.settlement_exceeded", "transaction.allocation_exceeded", "transaction.evidence_required"]) {
+    const submit = f.client.transaction.submit({ requestId: "invoice-guards" });
     f.reply(undefined, { code });
     await assert.rejects(submit, error => error instanceof sdk.PluginCapabilityError && error.code === code);
   }

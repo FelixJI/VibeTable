@@ -8,7 +8,19 @@
     {"reservation": null},
     {"reservation": {}},
     {"reversal": null},
-    {"reversal": {}}
+    {"reversal": {}},
+    {"allocation": null},
+    {"allocation": {}},
+    {"settlement": null},
+    {"settlement": {}},
+    {"evidence": null},
+    {"evidence": {}},
+    {"skipEmptyRightEnd": null},
+    {"group": []},
+    {"targets": []},
+    {"related": null},
+    {"reference": null},
+    {"relationCases": null}
   ],
   "parentFreeze": [
     {"transitions": {}},
@@ -16,6 +28,19 @@
     {"currentWhen": null},
     {"reservation": null},
     {"field": ""},
-    {"reversal": null}
+    {"reversal": null},
+    {"allocation": null},
+    {"settlement": null},
+    {"evidence": null},
+    {"skipEmptyRightEnd": true},
+    {"skipEmptyRightEnd": null},
+    {"group": []},
+    {"targets": []},
+    {"related": null},
+    {"reference": null},
+    {"relationCases": null}
+  ],
+  "sameTargetOnly": [
+    {"skipEmptyRightEnd": true}
   ]
 }

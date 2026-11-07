@@ -396,7 +396,7 @@ def test_package_capacity_and_closed_relation_paths() -> None:
         invalid = copy.deepcopy(manifest)
         dest = (invalid["permissions"]["model"] if key == "entities" else declaration(invalid))[key]
         if key == "decimals":
-            dest.extend({**collection[0], "field": f"n{i}"} for i in range(65 - len(dest)))
+            dest.extend({**collection[0], "field": f"n{i}"} for i in range(66 - len(dest)))
         else:
             dest.append({**collection[-1], ("key" if key == "entities" else "id"): "extra"})
             if key == "entities":
@@ -779,6 +779,8 @@ def test_delivery_guard_kind_fields_shared_with_go() -> None:
     for rule in rules:
         assert TransactionRule.model_validate(rule)
         patches = corpus["parentFreeze" if rule["kind"] == "parentFreeze" else "legacy"]
+        if rule["kind"] != "sameTarget":
+            patches = [*patches, *corpus["sameTargetOnly"]]
         for patch in patches:
             with pytest.raises(ValidationError):
                 TransactionRule.model_validate(rule | patch)
@@ -910,7 +912,9 @@ def reversal_manifest() -> dict:
 
 def test_new_rule_null_shapes_match_go() -> None:
     corpus = json.loads(
-        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text()
+        (Path(__file__).parents[2] / "contracts/plugin-transaction-null-cases.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
@@ -948,6 +952,7 @@ def test_new_rule_null_shapes_match_go() -> None:
                         "digits": 38,
                         "sign": "nonnegative",
                     },
+                    *invoice_guard_decimals(),
                 ],
             }
         )
@@ -956,9 +961,398 @@ def test_new_rule_null_shapes_match_go() -> None:
         validate(base, [])
     for case in corpus["invalid"]:
         with pytest.raises(ValidationError):
-            validate(case["base"], case["path"])
+            validate(case["base"], case["path"], case.get("value"))
     for case in corpus["valid"]:
         validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+
+
+def invoice_guard_decimals() -> list[dict]:
+    """Mirrors the Go null-shape harness decimals for the new rule corpus."""
+
+    def decimal(entity: str, field: str, scale: int, sign: str | None = None) -> dict:
+        entry = {
+            "entity": entity,
+            "field": field,
+            "storage": "decimalText",
+            "scale": scale,
+            "digits": 38,
+            "nullable": True,
+        }
+        if sign:
+            entry["sign"] = sign
+        return entry
+
+    decimals = []
+    for entity in ("allocations", "actual_lines", "request_sources"):
+        decimals.append(
+            decimal(entity, "quantity", 0, "nonnegative" if entity == "request_sources" else None)
+        )
+        decimals += [decimal(entity, field, 2) for field in ("net", "tax", "gross")]
+    for field, scale in (
+        ("quantity", 0),
+        ("net", 2),
+        ("tax", 2),
+        ("gross", 2),
+    ):
+        decimals.append(decimal("adjustments", field, scale, "nonnegative"))
+    return decimals
+
+
+def test_invoice_guard_corpus_rules_form_closed_manifest_declarations() -> None:
+    """The natural seven-entity corpus registers through the manifest seam."""
+    for name in (
+        "plugin-allocation-rule.json",
+        "plugin-settlement-rule.json",
+        "plugin-evidence-rule.json",
+    ):
+        rule = json.loads(
+            (Path(__file__).parents[2] / "contracts" / name).read_text(encoding="utf-8")
+        )
+        parsed = PluginTransactionsDeclaration.model_validate(
+            {
+                "contract": "vibetable.plugin-transactions.v1",
+                "modelId": "m",
+                "version": 1,
+                "rules": [rule],
+                "decimals": invoice_guard_decimals(),
+            }
+        )
+        assert parsed.rules[0].kind in (
+            "allocationBalance",
+            "settlementBalance",
+            "changeEvidence",
+        )
+    # The 65th decimal registers and the 66th is rejected with data intact.
+    manifest = transactions_manifest()
+    decimals = declaration(manifest)["decimals"]
+    decimals.extend({**decimals[0], "field": f"n{index}"} for index in range(65 - len(decimals)))
+    assert len(decimals) == 65
+    assert PluginManifest.model_validate(manifest)
+    decimals.append({**decimals[0], "field": "over"})
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
+
+
+def invoice_guard_manifest() -> dict:
+    manifest = transactions_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {}
+    for entity, names in {
+        "requests": ["status", "direction", "purpose", "basis", "currency"],
+        "request_lines": ["unit", "material"],
+        "request_sources": ["quantity", "net", "tax", "gross"],
+        "invoices": ["status", "direction", "amount_convention", "currency"],
+        "actual_lines": ["purpose", "unit", "material", "quantity", "net", "tax", "gross"],
+        "allocations": ["quantity", "net", "tax", "gross"],
+        "adjustments": [
+            "kind",
+            "note",
+            "date",
+            "close_remaining",
+            "quantity",
+            "net",
+            "tax",
+            "gross",
+        ],
+    }.items():
+        entities[entity] = {
+            "key": entity,
+            "label": entity,
+            "operations": ["read", "query", "create", "update", "delete"],
+            "fields": [{"key": name, "label": name, "type": "text"} for name in names],
+        }
+    for source, field, target, reverse in (
+        ("request_lines", "request", "requests", "lines"),
+        ("request_sources", "line", "request_lines", "sources"),
+        ("actual_lines", "invoice", "invoices", "lines"),
+        ("allocations", "line", "actual_lines", "allocations"),
+        ("request_sources", "original", "allocations", "requests"),
+        ("allocations", "original", "allocations", "reversals"),
+        ("allocations", "application_source", "request_sources", "actuals"),
+        ("adjustments", "source", "request_sources", "adjustments"),
+        ("adjustments", "allocation", "allocations", "adjustments"),
+        ("adjustments", "invoice", "invoices", "evidence"),
+        ("invoices", "latest_evidence", "adjustments", "latest_for"),
+    ):
+        for entity, key, other, back, cardinality in (
+            (source, field, target, reverse, "one"),
+            (target, reverse, source, field, "many"),
+        ):
+            entities[entity]["fields"].append(
+                {
+                    "key": key,
+                    "label": key,
+                    "type": "relation",
+                    "relation": {"entity": other, "field": back, "cardinality": cardinality},
+                }
+            )
+    model["entities"] = list(entities.values())
+    rules = [
+        json.loads(
+            (Path(__file__).parents[2] / "contracts" / f"plugin-{name}-rule.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for name in ("allocation", "settlement", "evidence")
+    ]
+    scope = rules[1]["settlement"]
+    for entry in ("capacity", "request", "actual"):
+        path = scope[entry]["direction"]["path"]
+        scope[entry]["currency"] = {"path": path, "field": "currency"}
+        for field in ("unit", "material"):
+            scope[entry][field] = {"path": path[:1], "field": field}
+    manifest["permissions"]["transactions"] = {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "synthetic",
+        "version": 1,
+        "decimals": invoice_guard_decimals(),
+        "rules": rules,
+    }
+    return manifest
+
+
+def test_settlement_plan_shape_rejects_money_measures() -> None:
+    rule = declaration(invoice_guard_manifest())["rules"][1]
+    rule["settlement"]["request"]["planItem"] = "plan_item"
+    rule["settlement"]["plans"] = {
+        "entity": "plans",
+        "quantity": "quantity",
+        "scope": "scope",
+        "share": "share",
+        "logicalItem": {"field": "logical", "target": "logical_items"},
+        "currentWhen": {
+            "left": [{"field": "version", "target": "versions"}],
+            "right": [{"field": "current", "target": "versions"}],
+        },
+    }
+    with pytest.raises(ValidationError, match="quantity"):
+        TransactionRule.model_validate(rule)
+
+
+def external_optional_settlement_rule() -> dict:
+    rule = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "plugin-settlement-rule.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    spec = rule["settlement"]
+    spec["capacity"] = {"entity": "obligations", "quantity": "quantity", "optional": True}
+    spec["request"]["directions"] = ["blue"]
+    spec["request"].pop("purpose", None)
+    spec["request"].pop("purposes", None)
+    spec["request"]["capacity"] = "obligation"
+    spec["actual"]["directions"] = ["blue"]
+    spec["actual"].pop("purpose", None)
+    spec["actual"].pop("purposes", None)
+    spec["actual"].pop("zeroQuantityPurposes", None)
+    spec["actual"]["capacity"] = "obligation"
+    # The real normal blue path pairs request/actual scope refs and omits the
+    # capacity refs (the candidate shape has no capacity.currency).
+    spec["request"]["currency"] = {
+        "path": [
+            {"field": "line", "target": "request_lines"},
+            {"field": "request", "target": "requests"},
+        ],
+        "field": "currency",
+    }
+    spec["actual"]["currency"] = {
+        "path": [
+            {"field": "line", "target": "actual_lines"},
+            {"field": "invoice", "target": "invoices"},
+        ],
+        "field": "currency",
+    }
+    for role, line in (("request", "request_lines"), ("actual", "actual_lines")):
+        spec[role]["unit"] = {"path": [{"field": "line", "target": line}], "field": "unit"}
+        spec[role]["material"] = {
+            "path": [{"field": "line", "target": line}],
+            "field": "material",
+        }
+    return rule
+
+
+def external_optional_declaration(rule: dict) -> dict:
+    return {
+        "contract": "vibetable.plugin-transactions.v1",
+        "modelId": "m",
+        "version": 1,
+        "rules": [rule],
+        "decimals": [
+            {
+                "entity": "obligations",
+                "field": "quantity",
+                "storage": "decimalText",
+                "scale": 0,
+                "digits": 38,
+                "sign": "nonnegative",
+            },
+            *invoice_guard_decimals(),
+        ],
+    }
+
+
+def test_settlement_optional_external_capacity_subset() -> None:
+    """optional:true separates the source's full measures from the capacity subset."""
+    parsed = PluginTransactionsDeclaration.model_validate(
+        external_optional_declaration(external_optional_settlement_rule())
+    )
+    capacity = parsed.rules[0].settlement.capacity
+    assert capacity.optional is True
+    assert capacity.quantity
+    assert not capacity.net
+    # Only literal true registers; false, null and wrong types stay closed.
+    for value in (False, None, "true", 1):
+        rule = external_optional_settlement_rule()
+        rule["settlement"]["capacity"]["optional"] = value
+        with pytest.raises(ValidationError):
+            PluginTransactionsDeclaration.model_validate(external_optional_declaration(rule))
+    # The shared original-blue bucket never enables optional.
+    red = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "plugin-settlement-rule.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    red["settlement"]["capacity"]["optional"] = True
+    with pytest.raises(ValidationError):
+        TransactionRule.model_validate(red)
+    # A capacity measure outside the identical request/actual set is rejected.
+    drift = external_optional_settlement_rule()
+    drift["settlement"]["capacity"]["net"] = "net"
+    drift["settlement"]["request"].pop("net")
+    drift["settlement"]["actual"].pop("net")
+    drift["settlement"]["adjustment"]["closeNet"] = ""
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(drift))
+    mismatch = external_optional_settlement_rule()
+    mismatch["settlement"]["actual"].pop("gross")
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(mismatch))
+    # Close facts follow the source measure set, not the capacity subset.
+    partial = external_optional_settlement_rule()
+    partial["settlement"]["adjustment"].pop("closeQuantity")
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(partial))
+    # A capacity scope ref without the paired request/actual ref is rejected.
+    orphan = external_optional_settlement_rule()
+    orphan["settlement"]["capacity"]["currency"] = {"field": "currency"}
+    del orphan["settlement"]["request"]["currency"]
+    del orphan["settlement"]["actual"]["currency"]
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(orphan))
+    # Request/actual scope must stay paired.
+    unpaired = external_optional_settlement_rule()
+    del unpaired["settlement"]["actual"]["unit"]
+    with pytest.raises(ValidationError):
+        PluginTransactionsDeclaration.model_validate(external_optional_declaration(unpaired))
+
+
+def test_state_cases_and_group_contracts_bind_all_declared_relations() -> None:
+    manifest = invoice_guard_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {entity["key"]: entity for entity in model["entities"]}
+
+    def ensure_entity(key: str) -> None:
+        if key not in entities:
+            entities[key] = {
+                "key": key,
+                "label": key,
+                "operations": ["read", "query", "create", "update", "delete"],
+                "fields": [{"key": "label", "label": "label", "type": "text"}],
+            }
+
+    def edge(source: str, field: str, target: str) -> None:
+        ensure_entity(source)
+        ensure_entity(target)
+        if any(existing["key"] == field for existing in entities[source]["fields"]):
+            return
+        reverse = f"back_{source}_{field}"
+        entities[source]["fields"].append(
+            {
+                "key": field,
+                "label": field,
+                "type": "relation",
+                "relation": {"entity": target, "field": reverse, "cardinality": "one"},
+            }
+        )
+        entities[target]["fields"].append(
+            {
+                "key": reverse,
+                "label": reverse,
+                "type": "relation",
+                "relation": {"entity": source, "field": field, "cardinality": "many"},
+            }
+        )
+
+    def path(entity: str, steps: list[dict]) -> None:
+        for step in steps:
+            edge(entity, step["field"], step["target"])
+            entity = step["target"]
+
+    root = Path(__file__).parents[2] / "contracts"
+    state = json.loads((root / "plugin-state-relations-rule.json").read_text(encoding="utf-8"))
+    group = json.loads((root / "plugin-group-same-target-rule.json").read_text(encoding="utf-8"))
+    entities[state["entity"]]["fields"].append(
+        {"key": state["field"], "label": state["field"], "type": "text"}
+    )
+    for case in state["relationCases"].values():
+        for step in [*case["required"], *case["optional"]]:
+            edge(state["entity"], step["field"], step["target"])
+    path(group["entity"], group["group"])
+    for selector in group["targets"]:
+        path(group["entity"], selector["path"])
+    edge(group["entity"], group["related"]["field"], group["related"]["target"])
+    reference = group["reference"]
+    path(reference["entity"], reference["group"])
+    for selector in reference["targets"]:
+        path(reference["entity"], selector["path"])
+    model["entities"] = list(entities.values())
+    declaration(manifest)["rules"].extend([state, group])
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for index, edit in ((-2, "case"), (-1, "group")):
+        invalid = copy.deepcopy(manifest)
+        rule = declaration(invalid)["rules"][index]
+        if edit == "case":
+            rule["relationCases"]["delivery"]["required"][0]["field"] = "missing"
+        else:
+            rule["targets"][0]["path"][0]["field"] = "missing"
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:
+    manifest = invoice_guard_manifest()
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for patch in ("owner", "currency", "unit", "material", "evidence-fact", "relation"):
+        invalid = copy.deepcopy(manifest)
+        rules = declaration(invalid)["rules"]
+        if patch == "owner":
+            rules[0]["allocation"]["owner"] = "missing"
+        elif patch in ("currency", "unit", "material"):
+            rules[1]["settlement"]["capacity"][patch]["field"] = "missing"
+        elif patch == "evidence-fact":
+            rules[2]["evidence"]["evidence"]["fields"].append("missing")
+        else:
+            rules[1]["settlement"]["actual"]["request"] = "line"
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+    # A scope dimension cannot break the request/actual pair; the capacity
+    # ref is optional and may be omitted while the pair stays declared.
+    for field in ("currency", "unit", "material"):
+        invalid = copy.deepcopy(manifest)
+        rules = declaration(invalid)["rules"]
+        del rules[1]["settlement"]["request"][field]
+        del rules[1]["settlement"]["actual"][field]
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        paired = copy.deepcopy(manifest)
+        del declaration(paired)["rules"][1]["settlement"]["capacity"][field]
+        assert PluginManifest.model_validate(paired)
 
 
 def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:
@@ -998,6 +1392,90 @@ def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> No
     for patch in ({"reservation": None}, {"fields": []}, {"parentPath": None}, {"reversal": None}):
         invalid = copy.deepcopy(manifest)
         declaration(invalid)["rules"][-1].update(patch)
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(invalid)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(invalid))
+
+
+def test_settlement_plan_model_fields_rejected_at_package_seams() -> None:
+    manifest = invoice_guard_manifest()
+    model = manifest["permissions"]["model"]
+    entities = {entity["key"]: entity for entity in model["entities"]}
+    for key, fields in (
+        ("plans", ("quantity", "share")),
+        ("logical_items", ("label",)),
+        ("versions", ("label",)),
+    ):
+        entities[key] = {
+            "key": key,
+            "label": key,
+            "operations": ["read", "query", "create", "update", "delete"],
+            "fields": [{"key": field, "label": field, "type": "text"} for field in fields],
+        }
+
+    def edge(source: str, field: str, target: str) -> None:
+        reverse = f"back_{source}_{field}"
+        for owner, key, other, inverse, cardinality in (
+            (source, field, target, reverse, "one"),
+            (target, reverse, source, field, "many"),
+        ):
+            entities[owner]["fields"].append(
+                {
+                    "key": key,
+                    "label": key,
+                    "type": "relation",
+                    "relation": {"entity": other, "field": inverse, "cardinality": cardinality},
+                }
+            )
+
+    edge("request_sources", "plan_item", "plans")
+    edge("plans", "scope", "allocations")
+    edge("plans", "logical", "logical_items")
+    edge("plans", "version", "versions")
+    edge("plans", "current", "versions")
+    model["entities"] = list(entities.values())
+    transactions = declaration(manifest)
+    rule = transactions["rules"][1]
+    transactions["rules"] = [rule]
+    spec = rule["settlement"]
+    spec["request"]["planItem"] = "plan_item"
+    for role in ("capacity", "request", "actual"):
+        for field in ("net", "tax", "gross"):
+            spec[role].pop(field)
+    for field in ("closeNet", "closeTax", "closeGross"):
+        spec["adjustment"].pop(field)
+    spec["plans"] = {
+        "entity": "plans",
+        "quantity": "quantity",
+        "scope": "scope",
+        "share": "share",
+        "logicalItem": {"field": "logical", "target": "logical_items"},
+        "currentWhen": {
+            "left": [{"field": "version", "target": "versions"}],
+            "right": [{"field": "current", "target": "versions"}],
+        },
+    }
+    transactions["decimals"].append(
+        {
+            "entity": "plans",
+            "field": "quantity",
+            "storage": "decimalText",
+            "scale": 0,
+            "digits": 38,
+            "sign": "nonnegative",
+        }
+    )
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for field in ("quantity", "share"):
+        invalid = copy.deepcopy(manifest)
+        plans = next(
+            entity
+            for entity in invalid["permissions"]["model"]["entities"]
+            if entity["key"] == "plans"
+        )
+        plans["fields"] = [entry for entry in plans["fields"] if entry["key"] != field]
         with pytest.raises(ValidationError):
             PluginManifest.model_validate(invalid)
         with pytest.raises(PluginPackageError):

@@ -1,26 +1,738 @@
 {
   "rules": {
     "reservation": {
-      "id": "capacity", "kind": "reservationBalance", "entity": "sources",
+      "id": "capacity",
+      "kind": "reservationBalance",
+      "entity": "sources",
       "reservation": {
-        "obligation": {"entity": "obligations", "quantity": "quantity"},
-        "scope": "scope", "quantity": "quantity", "normalPurpose": "normal",
-        "purpose": {"path": [{"field": "owner_line", "target": "lines"}], "field": "purpose"},
+        "obligation": {
+          "entity": "obligations",
+          "quantity": "quantity"
+        },
+        "scope": "scope",
+        "quantity": "quantity",
+        "normalPurpose": "normal",
+        "purpose": {
+          "path": [
+            {
+              "field": "owner_line",
+              "target": "lines"
+            }
+          ],
+          "field": "purpose"
+        },
         "phase": {
-          "path": [{"field": "owner_line", "target": "lines"}, {"field": "document", "target": "documents"}],
-          "field": "phase", "instructionDraft": "instruction_draft", "instructionOpen": "instruction_open",
-          "instructionClosed": "instruction_closed", "instructionTransferred": "instruction_transferred",
-          "deliveryDraft": "delivery_draft", "deliveryConfirmed": "delivery_confirmed"
+          "path": [
+            {
+              "field": "owner_line",
+              "target": "lines"
+            },
+            {
+              "field": "document",
+              "target": "documents"
+            }
+          ],
+          "field": "phase",
+          "instructionDraft": "instruction_draft",
+          "instructionOpen": "instruction_open",
+          "instructionClosed": "instruction_closed",
+          "instructionTransferred": "instruction_transferred",
+          "deliveryDraft": "delivery_draft",
+          "deliveryConfirmed": "delivery_confirmed"
         }
       }
     },
     "parent": {
-      "id": "freeze", "kind": "parentFreeze", "entity": "sources", "fields": ["quantity"],
-      "parentPath": [{"field": "owner_line", "target": "lines"}, {"field": "document", "target": "documents"}],
-      "parentStateField": "phase", "frozenStates": ["delivery_confirmed"]
+      "id": "freeze",
+      "kind": "parentFreeze",
+      "entity": "sources",
+      "fields": [
+        "quantity"
+      ],
+      "parentPath": [
+        {
+          "field": "owner_line",
+          "target": "lines"
+        },
+        {
+          "field": "document",
+          "target": "documents"
+        }
+      ],
+      "parentStateField": "phase",
+      "frozenStates": [
+        "delivery_confirmed"
+      ]
+    },
+    "allocation": {
+      "id": "actual_line_allocation_balance",
+      "kind": "allocationBalance",
+      "entity": "allocations",
+      "allocation": {
+        "owner": "line",
+        "parent": {
+          "entity": "actual_lines",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross",
+          "direction": {
+            "path": [
+              {
+                "field": "invoice",
+                "target": "invoices"
+              }
+            ],
+            "conventionField": "amount_convention",
+            "directionField": "direction",
+            "redDirections": [
+              "red"
+            ]
+          }
+        },
+        "quantity": "quantity",
+        "net": "net",
+        "tax": "tax",
+        "gross": "gross",
+        "state": {
+          "path": [
+            {
+              "field": "line",
+              "target": "actual_lines"
+            },
+            {
+              "field": "invoice",
+              "target": "invoices"
+            }
+          ],
+          "field": "status"
+        },
+        "draftStates": [
+          "draft"
+        ],
+        "purpose": {
+          "path": [
+            {
+              "field": "line",
+              "target": "actual_lines"
+            }
+          ],
+          "field": "purpose"
+        },
+        "zeroQuantityPurposes": [
+          "priceDiscount"
+        ]
+      }
+    },
+    "settlement": {
+      "id": "red_blueprint_budget",
+      "kind": "settlementBalance",
+      "entity": "allocations",
+      "settlement": {
+        "capacity": {
+          "entity": "allocations",
+          "direction": {
+            "path": [
+              {
+                "field": "line",
+                "target": "actual_lines"
+              },
+              {
+                "field": "invoice",
+                "target": "invoices"
+              }
+            ],
+            "field": "direction"
+          },
+          "directions": [
+            "blue"
+          ],
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross"
+        },
+        "request": {
+          "entity": "request_sources",
+          "state": {
+            "path": [
+              {
+                "field": "line",
+                "target": "request_lines"
+              },
+              {
+                "field": "request",
+                "target": "requests"
+              }
+            ],
+            "field": "status"
+          },
+          "direction": {
+            "path": [
+              {
+                "field": "line",
+                "target": "request_lines"
+              },
+              {
+                "field": "request",
+                "target": "requests"
+              }
+            ],
+            "field": "direction"
+          },
+          "directions": [
+            "red"
+          ],
+          "purpose": {
+            "path": [
+              {
+                "field": "line",
+                "target": "request_lines"
+              },
+              {
+                "field": "request",
+                "target": "requests"
+              }
+            ],
+            "field": "purpose"
+          },
+          "purposes": [
+            "physicalReturn",
+            "priceDiscount"
+          ],
+          "basis": {
+            "path": [
+              {
+                "field": "line",
+                "target": "request_lines"
+              },
+              {
+                "field": "request",
+                "target": "requests"
+              }
+            ],
+            "field": "basis"
+          },
+          "draftStates": [
+            "draft"
+          ],
+          "openStates": [
+            "open"
+          ],
+          "capacity": "original",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross"
+        },
+        "actual": {
+          "entity": "allocations",
+          "state": {
+            "path": [
+              {
+                "field": "line",
+                "target": "actual_lines"
+              },
+              {
+                "field": "invoice",
+                "target": "invoices"
+              }
+            ],
+            "field": "status"
+          },
+          "direction": {
+            "path": [
+              {
+                "field": "line",
+                "target": "actual_lines"
+              },
+              {
+                "field": "invoice",
+                "target": "invoices"
+              }
+            ],
+            "field": "direction"
+          },
+          "directions": [
+            "red"
+          ],
+          "purpose": {
+            "path": [
+              {
+                "field": "line",
+                "target": "actual_lines"
+              }
+            ],
+            "field": "purpose"
+          },
+          "purposes": [
+            "physicalReturn",
+            "priceDiscount"
+          ],
+          "draftStates": [
+            "draft"
+          ],
+          "settledStates": [
+            "issued"
+          ],
+          "request": "application_source",
+          "capacity": "original",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross",
+          "zeroQuantityPurposes": [
+            "priceDiscount"
+          ]
+        },
+        "adjustment": {
+          "entity": "adjustments",
+          "kind": "kind",
+          "closeKinds": [
+            "sourceClose",
+            "closeRemaining"
+          ],
+          "fulfillKinds": [
+            "fulfillAmount"
+          ],
+          "target": "source",
+          "allocation": "allocation",
+          "closeRemaining": "close_remaining",
+          "closeQuantity": "quantity",
+          "closeNet": "net",
+          "closeTax": "tax",
+          "closeGross": "gross"
+        }
+      }
+    },
+    "settlementOptional": {
+      "id": "optional_external_capacity",
+      "kind": "settlementBalance",
+      "entity": "allocations",
+      "settlement": {
+        "capacity": {
+          "entity": "obligations",
+          "quantity": "quantity",
+          "optional": true
+        },
+        "request": {
+          "entity": "request_sources",
+          "state": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "status"},
+          "direction": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "direction"},
+          "directions": ["blue"],
+          "basis": {"path": [{"field": "line", "target": "request_lines"}, {"field": "request", "target": "requests"}], "field": "basis"},
+          "draftStates": ["draft"],
+          "openStates": ["open"],
+          "capacity": "obligation",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross"
+        },
+        "actual": {
+          "entity": "allocations",
+          "state": {"path": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}], "field": "status"},
+          "direction": {"path": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}], "field": "direction"},
+          "directions": ["blue"],
+          "purposes": ["physicalReturn", "priceDiscount"],
+          "purpose": {"path": [{"field": "line", "target": "actual_lines"}], "field": "purpose"},
+          "draftStates": ["draft"],
+          "settledStates": ["issued"],
+          "request": "application_source",
+          "capacity": "obligation",
+          "quantity": "quantity",
+          "net": "net",
+          "tax": "tax",
+          "gross": "gross",
+          "zeroQuantityPurposes": ["priceDiscount"]
+        },
+        "adjustment": {
+          "entity": "adjustments",
+          "kind": "kind",
+          "closeKinds": ["sourceClose", "closeRemaining"],
+          "fulfillKinds": ["fulfillAmount"],
+          "target": "source",
+          "allocation": "allocation",
+          "closeRemaining": "close_remaining",
+          "closeQuantity": "quantity",
+          "closeNet": "net",
+          "closeTax": "tax",
+          "closeGross": "gross"
+        }
+      }
+    },
+    "evidence": {
+      "id": "allocation_correction_evidence",
+      "kind": "changeEvidence",
+      "entity": "allocations",
+      "evidence": {
+        "fields": [
+          "quantity",
+          "net",
+          "tax",
+          "gross"
+        ],
+        "ownerPath": [
+          {
+            "field": "invoice",
+            "target": "invoices"
+          }
+        ],
+        "latestEvidence": "latest_evidence",
+        "types": [
+          "correction",
+          "requestClose",
+          "amountFulfillment"
+        ],
+        "evidence": {
+          "entity": "adjustments",
+          "owner": "invoice",
+          "type": "kind",
+          "note": "note",
+          "fields": [
+            "quantity",
+            "net",
+            "tax",
+            "gross",
+            "close_remaining"
+          ]
+        }
+      }
+    },
+    "optionalTarget": {
+      "id": "optional_contract",
+      "kind": "sameTarget",
+      "entity": "rows",
+      "left": [
+        {
+          "field": "left",
+          "target": "holders"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ],
+      "right": [
+        {
+          "field": "right",
+          "target": "holders"
+        },
+        {
+          "field": "agreement",
+          "target": "agreements"
+        }
+      ]
+    },
+    "stateRelations": {
+      "id": "source_relations_by_kind",
+      "kind": "state",
+      "entity": "request_sources",
+      "field": "source_kind",
+      "transitions": {
+        "project": [
+          "project",
+          "planItem",
+          "delivery",
+          "actual",
+          "application"
+        ],
+        "planItem": [
+          "project",
+          "planItem",
+          "delivery",
+          "actual",
+          "application"
+        ],
+        "delivery": [
+          "project",
+          "planItem",
+          "delivery",
+          "actual",
+          "application"
+        ],
+        "actual": [
+          "project",
+          "planItem",
+          "delivery",
+          "actual",
+          "application"
+        ],
+        "application": [
+          "project",
+          "planItem",
+          "delivery",
+          "actual",
+          "application"
+        ]
+      },
+      "relationCases": {
+        "project": {
+          "required": [
+            {
+              "field": "project",
+              "target": "projects"
+            }
+          ],
+          "optional": [
+            {
+              "field": "package",
+              "target": "packages"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            },
+            {
+              "field": "obligation",
+              "target": "obligations"
+            }
+          ]
+        },
+        "planItem": {
+          "required": [
+            {
+              "field": "plan_item",
+              "target": "plan_items"
+            },
+            {
+              "field": "version",
+              "target": "source_versions"
+            }
+          ],
+          "optional": [
+            {
+              "field": "project",
+              "target": "projects"
+            },
+            {
+              "field": "package",
+              "target": "packages"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            },
+            {
+              "field": "obligation",
+              "target": "obligations"
+            }
+          ]
+        },
+        "delivery": {
+          "required": [
+            {
+              "field": "delivery_line",
+              "target": "delivery_lines"
+            }
+          ],
+          "optional": [
+            {
+              "field": "project",
+              "target": "projects"
+            },
+            {
+              "field": "package",
+              "target": "packages"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            },
+            {
+              "field": "obligation",
+              "target": "obligations"
+            }
+          ]
+        },
+        "actual": {
+          "required": [
+            {
+              "field": "actual_line",
+              "target": "actual_lines"
+            }
+          ],
+          "optional": [
+            {
+              "field": "project",
+              "target": "projects"
+            },
+            {
+              "field": "package",
+              "target": "packages"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            },
+            {
+              "field": "obligation",
+              "target": "obligations"
+            }
+          ]
+        },
+        "application": {
+          "required": [
+            {
+              "field": "application_source",
+              "target": "request_sources"
+            }
+          ],
+          "optional": [
+            {
+              "field": "project",
+              "target": "projects"
+            },
+            {
+              "field": "package",
+              "target": "packages"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            },
+            {
+              "field": "obligation",
+              "target": "obligations"
+            }
+          ]
+        }
+      }
+    },
+    "group": {
+      "id": "known_invoice_contract",
+      "kind": "groupSameTarget",
+      "entity": "allocations",
+      "group": [
+        {
+          "field": "line",
+          "target": "actual_lines"
+        },
+        {
+          "field": "invoice",
+          "target": "invoices"
+        }
+      ],
+      "targets": [
+        {
+          "path": [
+            {
+              "field": "agreement",
+              "target": "agreements"
+            }
+          ]
+        },
+        {
+          "path": [
+            {
+              "field": "line",
+              "target": "actual_lines"
+            },
+            {
+              "field": "invoice",
+              "target": "invoices"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            }
+          ]
+        },
+        {
+          "whenPresent": "application_source",
+          "path": [
+            {
+              "field": "application_source",
+              "target": "request_sources"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            }
+          ]
+        },
+        {
+          "whenPresent": "application_source",
+          "path": [
+            {
+              "field": "application_source",
+              "target": "request_sources"
+            },
+            {
+              "field": "line",
+              "target": "request_lines"
+            },
+            {
+              "field": "request",
+              "target": "requests"
+            },
+            {
+              "field": "agreement",
+              "target": "agreements"
+            }
+          ]
+        }
+      ],
+      "related": {
+        "field": "original",
+        "target": "allocations"
+      },
+      "reference": {
+        "entity": "request_sources",
+        "whenPresent": "original",
+        "group": [
+          {
+            "field": "original",
+            "target": "allocations"
+          },
+          {
+            "field": "line",
+            "target": "actual_lines"
+          },
+          {
+            "field": "invoice",
+            "target": "invoices"
+          }
+        ],
+        "targets": [
+          {
+            "path": [
+              {
+                "field": "agreement",
+                "target": "agreements"
+              }
+            ]
+          },
+          {
+            "path": [
+              {
+                "field": "line",
+                "target": "request_lines"
+              },
+              {
+                "field": "request",
+                "target": "requests"
+              },
+              {
+                "field": "agreement",
+                "target": "agreements"
+              }
+            ]
+          }
+        ]
+      }
     }
   },
   "invalid": [
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": true},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": false},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": null},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": "true"},
+    {"base": "settlement", "path": ["settlement", "capacity", "optional"], "value": 1},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "optional"], "value": false},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "optional"], "value": null},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "quantity"], "value": ""},
+    {"base": "settlementOptional", "path": ["settlement", "capacity", "entity"], "value": "allocations"},
     {"base": "reservation", "path": ["reservation", "instructionSource"]},
     {"base": "reservation", "path": ["reservation", "planItem"]},
     {"base": "reservation", "path": ["reservation", "transferredFrom"]},
@@ -34,7 +746,118 @@
     {"base": "parent", "path": ["parentPath", "0", "target"]},
     {"base": "parent", "path": ["parentStateField"]},
     {"base": "parent", "path": ["frozenStates"]},
-    {"base": "parent", "path": ["frozenStates", "0"]}
+    {"base": "parent", "path": ["frozenStates", "0"]},
+    {"base": "allocation", "path": ["allocation", "owner"]},
+    {"base": "allocation", "path": ["allocation", "parent"]},
+    {"base": "allocation", "path": ["allocation", "parent", "entity"]},
+    {"base": "allocation", "path": ["allocation", "parent", "quantity"]},
+    {"base": "allocation", "path": ["allocation", "state", "path", "0"]},
+    {"base": "allocation", "path": ["allocation", "purpose", "field"]},
+    {"base": "allocation", "path": ["allocation", "draftStates", "0"]},
+    {"base": "allocation", "path": ["allocation", "parent", "direction", "conventionField"]},
+    {"base": "allocation", "path": ["allocation", "parent", "direction", "redDirections", "0"]},
+    {"base": "settlement", "path": ["settlement", "capacity"]},
+    {"base": "settlement", "path": ["settlement", "request", "purposes", "0"]},
+    {"base": "settlement", "path": ["settlement", "actual", "quantity"]},
+    {"base": "settlement", "path": ["settlement", "request", "state", "field"]},
+    {"base": "settlement", "path": ["settlement", "actual", "settledStates", "0"]},
+    {"base": "settlement", "path": ["settlement", "request", "directions", "0"]},
+    {"base": "settlement", "path": ["settlement", "adjustment", "target"]},
+    {"base": "evidence", "path": ["evidence", "ownerPath", "0"]},
+    {"base": "evidence", "path": ["evidence", "latestEvidence"]},
+    {"base": "evidence", "path": ["evidence", "types"]},
+    {"base": "evidence", "path": ["evidence", "types", "0"]},
+    {"base": "evidence", "path": ["evidence", "evidence"]},
+    {"base": "evidence", "path": ["evidence", "evidence", "note"]},
+    {"base": "evidence", "path": ["evidence", "fields", "0"]},
+    {"base": "allocation", "path": ["allocation", "draftStates"]},
+    {"base": "allocation", "path": ["allocation", "state", "path"]},
+    {"base": "settlement", "path": ["settlement", "request", "directions"]},
+    {"base": "settlement", "path": ["settlement", "request", "state", "path"]},
+    {"base": "evidence", "path": ["evidence", "ownerPath"]},
+    {"base": "evidence", "path": ["evidence", "fields"]},
+    {"base": "evidence", "path": ["evidence", "evidence", "fields"]},
+    {"base": "settlement", "path": ["settlement", "capacity", "currency"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "capacity", "currency"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "capacity", "currency"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "capacity", "unit"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "capacity", "unit"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "capacity", "unit"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "capacity", "material"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "capacity", "material"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "capacity", "material"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "request", "currency"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "request", "currency"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "request", "currency"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "request", "unit"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "request", "unit"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "request", "unit"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "request", "material"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "request", "material"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "request", "material"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "actual", "currency"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "actual", "currency"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "actual", "currency"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "actual", "unit"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "actual", "unit"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "actual", "unit"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "actual", "material"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "actual", "material"], "value": {"path": []}},
+    {"base": "settlement", "path": ["settlement", "actual", "material"], "value": {"field": ""}},
+    {"base": "settlement", "path": ["settlement", "capacity", "direction"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "request", "purpose"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "request", "basis"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "actual", "purpose"], "value": {}},
+    {"base": "settlement", "path": ["settlement", "capacity", "directions"], "value": ["d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21", "d22", "d23", "d24", "d25", "d26", "d27", "d28", "d29", "d30", "d31", "d32"]},
+    {"base": "allocation", "path": ["allocation", "draftStates"], "value": ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]},
+    {"base": "allocation", "path": ["allocation", "draftStates"], "value": ["中中中中中中中中中中中中中中中中中中中中中中"]},
+    {"base": "allocation", "path": ["allocation", "zeroQuantityPurposes"], "value": ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]},
+    {"base": "allocation", "path": ["allocation", "zeroQuantityPurposes"], "value": ["中中中中中中中中中中中中中中中中中中中中中中"]},
+    {"base": "allocation", "path": ["allocation", "parent", "direction", "redDirections"], "value": ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]},
+    {"base": "allocation", "path": ["allocation", "parent", "direction", "redDirections"], "value": ["中中中中中中中中中中中中中中中中中中中中中中"]},
+    {"base": "evidence", "path": ["evidence", "types"], "value": ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]},
+    {"base": "evidence", "path": ["evidence", "types"], "value": ["中中中中中中中中中中中中中中中中中中中中中中"]},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": null},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": false},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": 0},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": "true"},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": {}},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": []},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": null},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": false},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": 0},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": "true"},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": {}},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": []},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": null},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": false},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": 0},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": "true"},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": {}},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": []},
+    {"base": "stateRelations", "path": ["relationCases"], "value": null},
+    {"base": "stateRelations", "path": ["relationCases"], "value": {}},
+    {"base": "stateRelations", "path": ["relationCases", "project", "required"], "value": null},
+    {"base": "stateRelations", "path": ["relationCases", "project", "optional"], "value": null},
+    {"base": "stateRelations", "path": ["relationCases", "project", "extra"], "value": true},
+    {"base": "stateRelations", "path": ["relationCases", "project", "required"], "value": [{"field": "project", "target": "projects"}, {"field": "project", "target": "projects"}]},
+    {"base": "stateRelations", "path": ["relationCases", "planItem", "optional"], "value": [{"field": "project", "target": "other"}]},
+    {"base": "group", "path": ["group"], "value": null},
+    {"base": "group", "path": ["group"], "value": []},
+    {"base": "group", "path": ["targets"], "value": null},
+    {"base": "group", "path": ["targets"], "value": []},
+    {"base": "group", "path": ["targets", "0", "path"], "value": []},
+    {"base": "group", "path": ["targets", "0", "whenPresent"], "value": "wrong"},
+    {"base": "group", "path": ["related"], "value": {"field": "original", "target": "wrong"}},
+    {"base": "group", "path": ["reference", "group"], "value": [{"field": "original", "target": "wrong"}]},
+    {"base": "group", "path": ["reference", "whenPresent"], "value": "wrong"},
+    {"base": "group", "path": ["reference", "reference"], "value": {}},
+    {"base": "group", "path": ["targets", "0", "extra"], "value": true},
+    {"base": "group", "path": ["reference", "targets", "0", "path"], "value": [{"field": "agreement", "target": "other"}]},
+    {"base": "group", "path": ["targets"], "value": [{"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}]},
+    {"base": "group", "path": ["reference", "targets"], "value": [{"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}, {"path": [{"field": "agreement", "target": "agreements"}]}]},
+    {"base": "group", "path": ["group"], "value": [{"field": "f0", "target": "invoices"}, {"field": "f1", "target": "invoices"}, {"field": "f2", "target": "invoices"}, {"field": "f3", "target": "invoices"}, {"field": "f4", "target": "invoices"}]},
+    {"base": "stateRelations", "path": ["relationCases", "project", "required"], "value": [{"field": "p0", "target": "projects"}, {"field": "p1", "target": "projects"}, {"field": "p2", "target": "projects"}, {"field": "p3", "target": "projects"}, {"field": "p4", "target": "projects"}, {"field": "p5", "target": "projects"}, {"field": "p6", "target": "projects"}, {"field": "p7", "target": "projects"}, {"field": "p8", "target": "projects"}, {"field": "p9", "target": "projects"}, {"field": "p10", "target": "projects"}, {"field": "p11", "target": "projects"}, {"field": "p12", "target": "projects"}, {"field": "p13", "target": "projects"}, {"field": "p14", "target": "projects"}, {"field": "p15", "target": "projects"}, {"field": "p16", "target": "projects"}, {"field": "p17", "target": "projects"}, {"field": "p18", "target": "projects"}, {"field": "p19", "target": "projects"}, {"field": "p20", "target": "projects"}, {"field": "p21", "target": "projects"}, {"field": "p22", "target": "projects"}, {"field": "p23", "target": "projects"}, {"field": "p24", "target": "projects"}, {"field": "p25", "target": "projects"}, {"field": "p26", "target": "projects"}, {"field": "p27", "target": "projects"}, {"field": "p28", "target": "projects"}, {"field": "p29", "target": "projects"}, {"field": "p30", "target": "projects"}, {"field": "p31", "target": "projects"}, {"field": "p32", "target": "projects"}, {"field": "p33", "target": "projects"}, {"field": "p34", "target": "projects"}, {"field": "p35", "target": "projects"}, {"field": "p36", "target": "projects"}, {"field": "p37", "target": "projects"}, {"field": "p38", "target": "projects"}, {"field": "p39", "target": "projects"}, {"field": "p40", "target": "projects"}, {"field": "p41", "target": "projects"}, {"field": "p42", "target": "projects"}, {"field": "p43", "target": "projects"}, {"field": "p44", "target": "projects"}, {"field": "p45", "target": "projects"}, {"field": "p46", "target": "projects"}, {"field": "p47", "target": "projects"}, {"field": "p48", "target": "projects"}, {"field": "p49", "target": "projects"}, {"field": "p50", "target": "projects"}, {"field": "p51", "target": "projects"}, {"field": "p52", "target": "projects"}, {"field": "p53", "target": "projects"}, {"field": "p54", "target": "projects"}, {"field": "p55", "target": "projects"}, {"field": "p56", "target": "projects"}, {"field": "p57", "target": "projects"}, {"field": "p58", "target": "projects"}, {"field": "p59", "target": "projects"}, {"field": "p60", "target": "projects"}, {"field": "p61", "target": "projects"}, {"field": "p62", "target": "projects"}, {"field": "p63", "target": "projects"}, {"field": "p64", "target": "projects"}]}
   ],
   "valid": [
     {"base": "reservation", "path": ["reservation", "plans"], "value": null},
@@ -42,6 +865,25 @@
     {"base": "reservation", "path": ["reservation", "planItem"], "value": ""},
     {"base": "reservation", "path": ["reservation", "transferredFrom"], "value": ""},
     {"base": "parent", "path": ["fields"], "value": []},
-    {"base": "parent", "path": ["fields"], "omit": true}
+    {"base": "parent", "path": ["fields"], "omit": true},
+    {"base": "allocation", "path": ["allocation", "draftStates"], "value": []},
+    {"base": "allocation", "path": ["allocation", "zeroQuantityPurposes"], "value": []},
+    {"base": "allocation", "path": ["allocation", "zeroQuantityPurposes"], "omit": true},
+    {"base": "allocation", "path": ["allocation", "parent", "direction"], "value": null},
+    {"base": "allocation", "path": ["allocation", "parent", "direction"], "omit": true},
+    {"base": "settlement", "path": ["settlement", "adjustment"], "value": null},
+    {"base": "settlement", "path": ["settlement", "adjustment"], "omit": true},
+    {"base": "settlement", "path": ["settlement", "request", "draftStates"], "value": []},
+    {"base": "settlement", "path": ["settlement", "request", "purposes"], "value": []},
+    {"base": "settlement", "path": ["settlement", "actual", "zeroQuantityPurposes"], "value": []},
+    {"base": "evidence", "path": ["evidence", "fields"], "value": []},
+    {"base": "evidence", "path": ["evidence", "fields"], "omit": true},
+    {"base": "evidence", "path": ["evidence", "evidence", "fields"], "value": []},
+    {"base": "evidence", "path": ["evidence", "ownerPath"], "value": []},
+    {"base": "evidence", "path": ["evidence", "allowInsert"], "value": true},
+    {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": true},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": true},
+    {"base": "group", "path": ["related"], "value": null},
+    {"base": "group", "path": ["reference"], "value": null}
   ]
 }

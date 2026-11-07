@@ -18,7 +18,7 @@
 
 部分初始化后禁用再启用，新的确认计划只继承已提交表与字段的 canonical ID；尚未创建的表重新进入精确计划，确认之前不会补建。已提交对象丢失会报缺失诊断，不能用空表替代。并发请求的失败状态在写事务内读取最新进度，不能覆盖另一个请求已完成的结果。映射接受与完成均检查原生字段迁移写锁；迁移切换权威字段时也重新检查模型核心保护。
 
-绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 192 条规则、64 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
+绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 192 条规则、65 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
 
 `sameTarget` 比较一行业务记录的两条关系路径，例如 `left:[{field:"version",target:"versions"},{field:"series",target:"series"}]` 与 `right:[{field:"item",target:"items"},{field:"series",target:"series"}]`。每条路径包含 1–4 个单值关系，两端必须抵达同一实体的同一条实际记录。`sameTarget` 的 `right:[]` 表示本行身份，左路径必须抵达本行所属实体。可选 `whenPresent` 只能等于左路径首字段：该单值指针尚为空时跳过；一旦赋值，后续每一跳均须存在。这样可在系列行上验证 `current → version.series` 恰好回到本系列，即使版本还没有明细。多值跳转、悬空引用、跨系列记录都被拒绝。每条来源分配可使用独立规则核对多个来源。
 
@@ -53,3 +53,90 @@
 `balance` 可选 `currentWhen:{left:[...],right:[...]}`，两端相同才将该行金额计入目标余额。左路径通常指向行所属版本，右路径指向系列当前版本；仅允许右路径的最后一个指针为空，表示尚无当前版本。悬空引用仍拒绝。切换当前指针与多行分配均在原生事务的最终图上检查。历史行仍受十进制和关系校验。
 
 `examples/plugins/model-conformance` 使用真实生产 SDK；离线测试宿主明确返回 `plugin_api_unsupported`。真实 WPF/WebView2 场景 `54-plugin-models` 通过正常打包、安装、原生 SendInput 确认覆盖空工作区取消后重新初始化、三表创建、异名手动映射、修复取消、空表字段重绑、历史数据阻断、原生重命名与合成用户字段值保留、版本升级。随后正常退出首个 Host，以第二个真实进程打开同一 workspace，核对新 session epoch、持久绑定与原值。逐步提交中断、安装 revision 变化和并发恢复另有真实 PocketBase 回归。原生输入仅允许受控 GitHub CI 的当前 Job-owned Host，执行前再次核对身份与前景窗口。
+
+
+### 开票份额、结算与更正依据
+
+`allocationBalance`、`settlementBalance`、`changeEvidence` 是闭集声明；完整字段见
+`contracts/plugin-allocation-rule.json`、`plugin-settlement-rule.json`、`plugin-evidence-rule.json`
+和 SDK 类型。所有路径最多四跳单值关系；`AuthorityRef` 的空 `path` 表示本行字段。
+安装和原生登记均校验逻辑字段及关系映射，原生写入按事务最终图重新检查。
+
+`allocationBalance` 的 `owner` 指向票面行，父子共同使用 quantity/net/tax/gross 四字段。
+净额加税额必须等于总额，每个份额与父效果同向，单份及累计幅值均不得超过父值；允许部分归属。
+只有声明的草稿阶段可保持未知，null 不当零。父 `direction` 指定真实头的方向及载体约定：
+`signed` 保留票面符号，`magnitude` 仅在红方向规范一次；内部归属始终保存 signed 效果。
+`zeroQuantityPurposes`（如 priceDiscount）要求内部数量为已知零，票面商品数量继续原样保留。
+蓝行显式 null 用途合法；字段缺失、类型错误、断裂路径不会变成 null。
+负数量蓝归属及正金额红归属拒绝；signed 蓝负金额可保留同向份额，但不能充当红预算的非负原蓝容量。
+原始票头/票面尚未归属、缺原蓝或含异常时可以单独登记，归属失败不截断原始事实。
+
+`settlementBalance` 的 `request`/`actual` 声明同一非空 measure 集合，`capacity` 声明其非空子集；
+普通蓝桶用真实义务数量，红桶用原蓝 allocation 的同一组四个 signed 字段，不另建蓝容量或可写效果副本。
+先按权威 direction 选角色，再检查用途、原蓝资格、容量与 application source；正式红份额不得缺原蓝，
+原蓝必须真实 blue、达到 actual.settledStates、非自身且容量非负；同事务确认后可引用，已有红占用时不得降回草稿。不同红原因共用原蓝桶。原始未归属票面不参与预算。
+可选 `currency`、`unit`、`material` 必须由 request/actual 成对声明为 AuthorityRef；capacity 可省略对应 ref，声明时追加容量侧一致性检查。币种在已声明的对应方明确一致，
+quantity 路径单位明确一致，已知物料 FK 在已声明的对应方不得冲突。物料显式 null 表示未映射，用户选定具体容量/来源
+构成该份额的匹配依据；缺字段、错误类型和断裂路径仍拒绝。amount 路径跳过物料/单位数量匹配。
+合同等真实 FK 通过既有 `sameTarget` 组合校验，不复制票面或引入拼接键。
+
+quantity 来源 Q>0，已执行 E 与明确关闭 C 满足 E+C<=Q；剩余净额/税额分别按
+`原额-roundHalfAway(原额*(E+C)/Q)` 计算，再由两者之和得到剩余总额。
+数量全部兑现时，即使实际金额有价差也不保留申请金额预留，实际原始差异仍保留。
+若同时声明 request.purpose、request.basis 与 actual.zeroQuantityPurposes，正式申请按同一零数量用途集合核对 basis：priceDiscount 必须 amount，数量用途必须 quantity；草稿可暂不完整。
+amount 来源数量必须明确为零，只通过 `fulfillKinds` 的明确金额事实或关闭事实释放预留。
+`adjustment` 先按 kind 选择结算事件；关闭可无 actual，兑现必须关联同 source、同 capacity 的真实 allocation，
+累计兑现不得超过该 allocation 的实际效果。关闭和兑现复用 adjustments 的同一组四范围字段。
+`closeRemaining` 必须捕获本次动作前剩余的固定四范围；之前仅数量关闭已经按比例消费预留，不能将其缺省金额误读为零释放或改写历史。
+不能只存 bool 动态重算；关闭后不允许新增或增加同源消费，
+历史执行保留。归属与兑现可在一个事务中创建，按最终图验算，不要求先经过非法中间图。
+原先开放或本事务从草稿确认的 source 才能承接新增消费。
+
+`plans` 仅要求容量声明 quantity（容量子集），不允许静默跳过金额检查；
+来源/实际继续携带完整四量结清，不因计划而丢弃。
+普通桶的 `plans` 直接复用 ReservationPlans 的 currentWhen、版本、logicalItem、share、义务及真实 planItem，
+占用为当前计划容量加直接申请剩余和直接执行；计划内申请/执行共同受该计划桶约束。
+义务10、当前计划8、直接申请6会因合占14拒绝，不复制计划余额。
+
+来源完整结清量与外部容量子集分离：`request`/`actual` 声明同一非空四维集合，`capacity`
+可声明其非空子集；每个容量维度必须对应声明的来源维度，已声明容量不得忽略。
+带 `plans` 的普通桶外部容量仅 quantity，来源/实际/adjustment 可继续携带完整四维；
+红桶继续四维原蓝共桶，不启用 optional。adjustment 的 close 字段随 request/actual 维度集合配对。
+外部容量可声明 `optional:true`（仅字面 true；false/null/错型拒绝）：行上容量引用仅在字段存在且为 null 时
+视为未知，缺字段/空串/错型/悬空仍拒。null 只跳过外部容量聚合与该容量额外 scope 检查，
+不跳过整行、不把多个 null 聚为共同预算；来源与其 actual 的容量 null-aware 精确一致（null/null 合法，
+已知/null、null/已知、不同已知拒绝），明确计划项时容量必须等于真实 planItems[item].scope（含关闭历史）。
+既有已知容量不可擦空为 null，删除归属仍走更正规则。amount 来源无 fulfill 不自动抵销待结，
+累计兑现不得超过实际归属与来源预期。
+
+`changeEvidence` 的 `fields` 保护核心事实，`ownerPath:[]` 可保护票头自身；既存归属的修改、删除、重绑均属于更正。`allowInsert` 省略时仍要求既有 owner 下新增子行有新依据；
+自然 invoice_allocations 可声明 `allowInsert:true`，允许原始票先登记后正常新增归属，无须伪造更正事件。
+该选项只豁免新增子行分支，旧行修改/删除/owner路径迁移不豁免，其他守卫照常执行；票面行新增仍使用默认严格策略。
+显式 false、null 或非 bool 都拒绝。更正须同事务新建有效证据并绑定 owner 的 latestEvidence，证据反向 owner 必须一致，
+`types` 只列更正可用 kind，说明须非空。旧证据不能复用，已记录声明事实不可改删；非声明扩展字段仍可编辑。
+请求关闭等事件 owner 可为 null，不能充当实际更正依据，但其说明及声明范围仍被冻结。
+保护字段与证据字段属于不同实体，可以同名且分别去重；冻结阶段守卫继续独立生效。
+同事务 before/after、changeSetId、原生行历史和历史恢复均复用既有 audit；不新增 SDK history API。
+
+拒绝使用 `transaction.allocation_invalid/mismatch/exceeded`、`transaction.settlement_invalid/exceeded`、
+`transaction.evidence_invalid/frozen/required/reused`，均表示 not-committed；十进制格式错误保留既有 decimal 码。
+
+
+`allocationBalance.requireCompleteWhenAllocated:true` 用于申请来源：没有任何 child 时允许父原始/草稿事实独立保存；
+一旦有 child，quantity/net/tax/gross 必须完整覆盖父四维，null/未知父或子不能借草稿分支绕过完整性。
+actual allocation 省略该选项，继续允许部分归属。该 enabled option 只接受显式 true，false/null/非 bool 拒绝。
+
+`sameTarget.skipEmptyRightEnd:true` 与 skipEmptyLeftEnd 对称，仅允许对应路径末端的明确 null/空关系；
+双方均已知时仍须同一目标。中间路径缺失、悬空、错类型和缺少末端字段均拒绝，最多四跳不变。
+省略维持原行为，显式 false/null/非 bool 拒绝，其他 rule kind 不接受该字段。
+
+quantity 原蓝 capacity 除真实票面 material 外，还保留其已有 application_source 所指 Request.Material 的已知事实；
+raw material=null 不能抹除来源中的已知物料。已知 raw、继承来源、red source 与 actual 之间不得冲突；
+明确无申请来源且 raw 未映射仍可显式匹配；amount 不套用数量物料规则。此过程不复制/回填 raw 字段。
+更正依据按 Types 判角色：属于更正 Types 必须关联真实非空 owner，非更正类型只允许 owner 空的请求事件；
+不能把 ghost correction 的空 owner 当普通关闭/兑现事件。
+
+
+state 可选 relationCases，键必须与 transitions 完全一致（最多32），每case明确 required/optional RelationStep列表，合计最多64；同case不得重复/重叠，跨case同field须同target。所有case构成受控关系集合：required须存在非空真实单值FK；optional须存在，可明确空；当前case未列的受控字段须明确空。缺字段、错类型、坏FK均拒，完整最终图原子修正可成功；原迁移/冻结仍生效。全部case关系/目标参与读取、绑定和保护，不只读取当前case。省略保持旧行为；显式null、未知字段、非法case键或列表均拒。
+
+groupSameTarget 用 group（1–4跳）分组，对 targets（1–64个 selector）收集同一目标实体的已知FK；末端明确空为unknown，中间缺失/错型/坏FK拒。selector.whenPresent若有须为path首字段，仅跳明确空。related可选且只指同entity；只展开所引用anchor的同一targets一次，不递归，也不读取该anchor的兄弟。每组已知目标最多一个。reference可选，group终点须同外层，每行只将自己的targets与已初始化G比较；不写回G、不在不同reference行之间传播。reference不存在的G拒绝。全部关系/实体/presence受原生Read、绑定与最终图守卫约束；冲突复用transaction.same_target_violation。完整wire见contracts/plugin-group-same-target-rule.json。它与同票守卫、单anchor继承、申请对原蓝整票的单向比较共同闭合合同，而非递归连通分量合并。

@@ -208,7 +208,8 @@
       "sidecar/migrations/2026092901_dependency_input_revision.go",
       "sidecar/migrations/2026100101_import_history.go",
       "sidecar/migrations/2026100401_source_import.go",
-      "sidecar/migrations/2026102001_plugin_preservation_revision.go"
+      "sidecar/migrations/2026102001_plugin_preservation_revision.go",
+      "sidecar/migrations/2026110701_plugin_event_index.go"
     ],
     "capabilities": [
       "sidecar/internal/schema/v2/capabilities.go",

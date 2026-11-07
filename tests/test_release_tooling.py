@@ -108,7 +108,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.40.6"
     assert versions.cel == "0.33.1"
     assert versions.contract == "v1"
-    assert versions.schema == "18"
+    assert versions.schema == "19"
     assert len(versions.migration_hash) == 64
 
 
@@ -370,7 +370,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.40.6",
         "celVersion": "0.33.1",
         "contractVersion": "2.0",
-        "schemaVersion": "18",
+        "schemaVersion": "19",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }

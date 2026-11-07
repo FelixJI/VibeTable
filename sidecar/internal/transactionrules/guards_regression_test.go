@@ -122,8 +122,9 @@ func TestDeliveryGuardClosedShapeCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 	var corpus struct {
-		Legacy []map[string]any `json:"legacy"`
-		Parent []map[string]any `json:"parentFreeze"`
+		Legacy         []map[string]any `json:"legacy"`
+		SameTargetOnly []map[string]any `json:"sameTargetOnly"`
+		Parent         []map[string]any `json:"parentFreeze"`
 	}
 	if err := json.Unmarshal(raw, &corpus); err != nil {
 		t.Fatal(err)
@@ -148,6 +149,9 @@ func TestDeliveryGuardClosedShapeCorpus(t *testing.T) {
 		patches := corpus.Legacy
 		if rule.Kind == "parentFreeze" {
 			patches = corpus.Parent
+		}
+		if rule.Kind != "sameTarget" {
+			patches = append(append([]map[string]any{}, patches...), corpus.SameTargetOnly...)
 		}
 		for i, patch := range patches {
 			t.Run(rule.Kind+"/"+string(rune('a'+i)), func(t *testing.T) {

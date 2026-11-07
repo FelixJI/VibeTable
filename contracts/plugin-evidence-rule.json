@@ -1,0 +1,19 @@
+{
+  "id": "allocation_correction_evidence",
+  "kind": "changeEvidence",
+  "entity": "allocations",
+  "evidence": {
+    "allowInsert": true,
+    "fields": ["quantity", "net", "tax", "gross"],
+    "ownerPath": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}],
+    "latestEvidence": "latest_evidence",
+    "types": ["correction"],
+    "evidence": {
+      "entity": "adjustments",
+      "owner": "invoice",
+      "type": "kind",
+      "note": "note",
+      "fields": ["source", "allocation", "date", "quantity", "net", "tax", "gross", "close_remaining"]
+    }
+  }
+}

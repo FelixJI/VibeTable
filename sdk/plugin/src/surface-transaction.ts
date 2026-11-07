@@ -50,6 +50,131 @@ export interface ReservationSpec {
   readonly transferredFrom?: string;
   readonly plans?: ReservationPlans;
 }
+/** One authoritative scalar: an empty path reads the row's own field. */
+export interface AuthorityRef { readonly path: readonly RelationStep[]; readonly field: string }
+/** One-shot signed/magnitude carrier mapping for allocation owners. */
+export interface AllocationDirection {
+  readonly path: readonly RelationStep[];
+  readonly conventionField: string;
+  readonly directionField: string;
+  readonly redDirections: readonly string[];
+}
+export interface AllocationParent {
+  readonly entity: string;
+  readonly quantity: string;
+  readonly net: string;
+  readonly tax: string;
+  readonly gross: string;
+  readonly direction?: AllocationDirection;
+}
+/** Closed typed shape of an allocationBalance rule: field and relation names only. */
+export interface AllocationSpec {
+  readonly requireCompleteWhenAllocated?: true;
+  readonly owner: string;
+  readonly parent: AllocationParent;
+  readonly quantity: string;
+  readonly net: string;
+  readonly tax: string;
+  readonly gross: string;
+  readonly state: AuthorityRef;
+  readonly draftStates?: readonly string[];
+  readonly purpose: AuthorityRef;
+  readonly zeroQuantityPurposes?: readonly string[];
+}
+export interface SettlementCapacity {
+  readonly material?: AuthorityRef;
+  readonly currency?: AuthorityRef;
+  readonly unit?: AuthorityRef;
+  readonly entity: string;
+  readonly direction?: AuthorityRef;
+  readonly directions?: readonly string[];
+  /** Only literal true: a present null capacity on rows means unknown and skips
+   * the external aggregation; the shared original-blue bucket never sets it. */
+  readonly optional?: true;
+  readonly quantity?: string;
+  readonly net?: string;
+  readonly tax?: string;
+  readonly gross?: string;
+}
+export interface SettlementRequest {
+  readonly material?: AuthorityRef;
+  readonly unit?: AuthorityRef;
+  readonly currency?: AuthorityRef;
+  readonly entity: string;
+  readonly state: AuthorityRef;
+  readonly direction: AuthorityRef;
+  readonly directions: readonly string[];
+  readonly purpose?: AuthorityRef;
+  readonly purposes?: readonly string[];
+  readonly basis?: AuthorityRef;
+  readonly draftStates?: readonly string[];
+  readonly openStates?: readonly string[];
+  readonly capacity: string;
+  readonly planItem?: string;
+  readonly quantity?: string;
+  readonly net?: string;
+  readonly tax?: string;
+  readonly gross?: string;
+}
+export interface SettlementActual {
+  readonly material?: AuthorityRef;
+  readonly unit?: AuthorityRef;
+  readonly currency?: AuthorityRef;
+  readonly entity: string;
+  readonly state: AuthorityRef;
+  readonly direction: AuthorityRef;
+  readonly directions: readonly string[];
+  readonly purpose?: AuthorityRef;
+  readonly purposes?: readonly string[];
+  readonly draftStates?: readonly string[];
+  readonly settledStates: readonly string[];
+  readonly request: string;
+  readonly capacity: string;
+  readonly planItem?: string;
+  readonly quantity?: string;
+  readonly net?: string;
+  readonly tax?: string;
+  readonly gross?: string;
+  readonly zeroQuantityPurposes?: readonly string[];
+}
+export interface SettlementAdjustment {
+  readonly entity: string;
+  readonly kind: string;
+  readonly closeKinds?: readonly string[];
+  readonly fulfillKinds?: readonly string[];
+  readonly target: string;
+  readonly allocation?: string;
+  readonly closeRemaining: string;
+  readonly closeQuantity?: string;
+  readonly closeNet?: string;
+  readonly closeTax?: string;
+  readonly closeGross?: string;
+}
+/** Closed typed shape of a settlementBalance rule; one bucket per declaration. */
+export interface SettlementSpec {
+  readonly capacity: SettlementCapacity;
+  readonly request: SettlementRequest;
+  readonly actual: SettlementActual;
+  readonly adjustment?: SettlementAdjustment;
+  readonly plans?: ReservationPlans;
+}
+export interface EvidenceRecord {
+  readonly entity: string;
+  readonly owner: string;
+  readonly type: string;
+  readonly note: string;
+  readonly fields?: readonly string[];
+}
+/** Closed typed shape of a changeEvidence rule; an empty ownerPath is self-owned. */
+export interface ChangeEvidenceSpec {
+  /** Only new child rows may attach to an existing owner without a correction event. */
+  readonly allowInsert?: true;
+  readonly fields?: readonly string[];
+  readonly ownerPath: readonly RelationStep[];
+  readonly latestEvidence: string;
+  readonly types: readonly string[];
+  readonly evidence: EvidenceRecord;
+}
 /** Stored original-line snapshots and a confirmed reversal quantity ceiling. */
 export interface ReversalSpec {
   readonly original: string;
@@ -64,18 +189,25 @@ export interface ReversalSpec {
   readonly sameFields: readonly string[];
   readonly sameOwnerFields: readonly string[];
 }
+export interface GroupTarget { readonly path: readonly RelationStep[]; readonly whenPresent?: string }
+export interface GroupReference { readonly entity: string; readonly group: readonly RelationStep[]; readonly targets: readonly GroupTarget[]; readonly whenPresent?: string }
+export interface StateRelationCase { readonly required: readonly RelationStep[]; readonly optional: readonly RelationStep[] }
 export type TransactionRule = RuleIdentity & (
-  { readonly kind: "unique"; readonly fields: readonly string[] }
+  { readonly kind: "groupSameTarget"; readonly group: readonly RelationStep[]; readonly targets: readonly GroupTarget[]; readonly related?: RelationStep; readonly reference?: GroupReference }
+  | { readonly kind: "unique"; readonly fields: readonly string[] }
   | { readonly kind: "atMostOne"; readonly fields: readonly [string, string] }
   | { readonly kind: "reference"; readonly field: string; readonly target: string }
-  | ({ readonly kind: "sameTarget"; readonly whenPresent?: string; readonly skipEmptyLeftEnd?: true } & PathMatch)
+  | ({ readonly kind: "sameTarget"; readonly whenPresent?: string; readonly skipEmptyLeftEnd?: true; readonly skipEmptyRightEnd?: true } & PathMatch)
   | (({ readonly kind: "conservation" } | { readonly kind: "balance"; readonly currentWhen?: PathMatch }) & { readonly target: string; readonly relation: string; readonly amount: string; readonly limit: string })
   | { readonly kind: "state"; readonly field: string; readonly transitions: Readonly<Record<string, readonly string[]>>;
-      readonly fields?: readonly string[]; readonly frozenStates?: readonly string[] }
+      readonly fields?: readonly string[]; readonly frozenStates?: readonly string[]; readonly relationCases?: Readonly<Record<string, StateRelationCase>> }
   | ({ readonly kind: "parentFreeze"; readonly parentPath: readonly RelationStep[]; readonly parentStateField: string;
       readonly frozenStates: readonly string[]; readonly fields?: readonly string[] })
   | { readonly kind: "reservationBalance"; readonly reservation: ReservationSpec }
   | { readonly kind: "reversalBalance"; readonly reversal: ReversalSpec }
+  | { readonly kind: "allocationBalance"; readonly allocation: AllocationSpec }
+  | { readonly kind: "settlementBalance"; readonly settlement: SettlementSpec }
+  | { readonly kind: "changeEvidence"; readonly evidence: ChangeEvidenceSpec }
 );
 export interface TransactionDeclaration {
   readonly contract: "vibetable.plugin-transactions.v1";

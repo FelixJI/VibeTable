@@ -1,0 +1,29 @@
+{
+  "id": "actual_line_allocation_balance",
+  "kind": "allocationBalance",
+  "entity": "allocations",
+  "allocation": {
+    "owner": "line",
+    "parent": {
+      "entity": "actual_lines",
+      "quantity": "quantity",
+      "net": "net",
+      "tax": "tax",
+      "gross": "gross",
+      "direction": {
+        "path": [{"field": "invoice", "target": "invoices"}],
+        "conventionField": "amount_convention",
+        "directionField": "direction",
+        "redDirections": ["red"]
+      }
+    },
+    "quantity": "quantity",
+    "net": "net",
+    "tax": "tax",
+    "gross": "gross",
+    "state": {"path": [{"field": "line", "target": "actual_lines"}, {"field": "invoice", "target": "invoices"}], "field": "status"},
+    "draftStates": ["draft"],
+    "purpose": {"path": [{"field": "line", "target": "actual_lines"}], "field": "purpose"},
+    "zeroQuantityPurposes": ["priceDiscount"]
+  }
+}

@@ -29,7 +29,7 @@ const MaxRows = 10000
 const MaxBytes = 1 << 20
 const MaxRules = 192
 const MaxRegistrations = 64
-const MaxDecimals = 64
+const MaxDecimals = 65
 const MaxParentFreezeFields = 64
 const MaxFrozenStates = 32
 
@@ -84,25 +84,34 @@ func (d *Decimal) UnmarshalJSON(raw []byte) error {
 
 // Rule is a closed union; Validate rejects fields belonging to a different rule kind.
 type Rule struct {
+	Group          []RelationStep               `json:"group,omitempty"`
+	Targets        []GroupTarget                `json:"targets,omitempty"`
+	Related        *RelationStep                `json:"related,omitempty"`
+	GroupReference *GroupReference              `json:"reference,omitempty"`
+	RelationCases  map[string]StateRelationCase `json:"relationCases,omitempty"`
 	PathMatch
-	SkipEmptyLeftEnd enabledOption       `json:"skipEmptyLeftEnd,omitempty"`
-	WhenPresent      string              `json:"whenPresent,omitempty"`
-	CurrentWhen      *PathMatch          `json:"currentWhen,omitempty"`
-	ID               string              `json:"id"`
-	Kind             string              `json:"kind"`
-	Entity           string              `json:"entity"`
-	Fields           []string            `json:"fields,omitempty"`
-	Field            string              `json:"field,omitempty"`
-	Target           string              `json:"target,omitempty"`
-	Relation         string              `json:"relation,omitempty"`
-	Amount           string              `json:"amount,omitempty"`
-	Limit            string              `json:"limit,omitempty"`
-	Transitions      map[string][]string `json:"transitions,omitempty"`
-	FrozenStates     []string            `json:"frozenStates,omitempty"`
-	ParentPath       []RelationStep      `json:"parentPath,omitempty"`
-	ParentStateField string              `json:"parentStateField,omitempty"`
-	Reservation      *ReservationSpec    `json:"reservation,omitempty"`
-	Reversal         *ReversalSpec       `json:"reversal,omitempty"`
+	SkipEmptyRightEnd enabledOption       `json:"skipEmptyRightEnd,omitempty"`
+	SkipEmptyLeftEnd  enabledOption       `json:"skipEmptyLeftEnd,omitempty"`
+	WhenPresent       string              `json:"whenPresent,omitempty"`
+	CurrentWhen       *PathMatch          `json:"currentWhen,omitempty"`
+	ID                string              `json:"id"`
+	Kind              string              `json:"kind"`
+	Entity            string              `json:"entity"`
+	Fields            []string            `json:"fields,omitempty"`
+	Field             string              `json:"field,omitempty"`
+	Target            string              `json:"target,omitempty"`
+	Relation          string              `json:"relation,omitempty"`
+	Amount            string              `json:"amount,omitempty"`
+	Limit             string              `json:"limit,omitempty"`
+	Transitions       map[string][]string `json:"transitions,omitempty"`
+	FrozenStates      []string            `json:"frozenStates,omitempty"`
+	ParentPath        []RelationStep      `json:"parentPath,omitempty"`
+	ParentStateField  string              `json:"parentStateField,omitempty"`
+	Reservation       *ReservationSpec    `json:"reservation,omitempty"`
+	Reversal          *ReversalSpec       `json:"reversal,omitempty"`
+	Allocation        *AllocationSpec     `json:"allocation,omitempty"`
+	Settlement        *SettlementSpec     `json:"settlement,omitempty"`
+	Evidence          *ChangeEvidenceSpec `json:"evidence,omitempty"`
 }
 
 // Presence matters even when a foreign field decodes to its zero value.
@@ -125,15 +134,23 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 	case "balance":
 		allowed += "target relation amount limit currentWhen "
 	case "state":
-		allowed += "field fields transitions frozenStates "
+		allowed += "field fields transitions frozenStates relationCases "
+	case "groupSameTarget":
+		allowed += "group targets related reference "
 	case "sameTarget":
-		allowed += "left right whenPresent skipEmptyLeftEnd "
+		allowed += "left right whenPresent skipEmptyLeftEnd skipEmptyRightEnd "
 	case "parentFreeze":
 		allowed += "parentPath parentStateField frozenStates fields "
 	case "reservationBalance":
 		allowed += "reservation "
 	case "reversalBalance":
 		allowed += "reversal "
+	case "allocationBalance":
+		allowed += "allocation "
+	case "settlementBalance":
+		allowed += "settlement "
+	case "changeEvidence":
+		allowed += "evidence "
 	}
 	var fields map[string]any
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -145,6 +162,47 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 		}
 	}
 	if decoded.Kind == "parentFreeze" && containsJSONNull(fields) {
+		return failure("rules_invalid")
+	}
+	if decoded.Kind == "allocationBalance" || decoded.Kind == "settlementBalance" || decoded.Kind == "changeEvidence" || decoded.Kind == "groupSameTarget" {
+		// Only optional structures accept explicit null, matching the manifest
+		// parser; null lists/paths must not silently decode as omitted slices.
+		removeNull := func(object map[string]any, keys ...string) {
+			for _, key := range keys {
+				if value, present := object[key]; present && value == nil {
+					delete(object, key)
+				}
+			}
+		}
+		if allocation, ok := fields["allocation"].(map[string]any); ok {
+			if parent, ok := allocation["parent"].(map[string]any); ok {
+				removeNull(parent, "direction")
+			}
+		}
+		if settlement, ok := fields["settlement"].(map[string]any); ok {
+			removeNull(settlement, "adjustment", "plans")
+			for _, role := range []string{"capacity", "request", "actual"} {
+				if entry, ok := settlement[role].(map[string]any); ok {
+					removeNull(entry, "currency", "unit", "material")
+					if role == "capacity" {
+						removeNull(entry, "direction")
+					} else {
+						removeNull(entry, "purpose")
+					}
+					if role == "request" {
+						removeNull(entry, "basis")
+					}
+				}
+			}
+		}
+		if decoded.Kind == "groupSameTarget" {
+			removeNull(fields, "related", "reference")
+		}
+		if containsJSONNull(fields) {
+			return failure("rules_invalid")
+		}
+	}
+	if rawCases, present := fields["relationCases"]; present && rawCases == nil {
 		return failure("rules_invalid")
 	}
 	*r = Rule(decoded)
@@ -224,12 +282,18 @@ func (d Declaration) Validate() error {
 			return failure("rules_invalid")
 		}
 		ids[r.ID] = true
-		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) ||
-			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" || r.Reversal != nil && r.Kind != "reversalBalance" {
+		if (r.Left != nil || r.Right != nil || r.WhenPresent != "" || bool(r.SkipEmptyLeftEnd) || bool(r.SkipEmptyRightEnd)) && r.Kind != "sameTarget" || r.CurrentWhen != nil && (r.Kind != "balance" || !r.CurrentWhen.valid("")) ||
+			(r.ParentPath != nil || r.ParentStateField != "") && r.Kind != "parentFreeze" || r.Reservation != nil && r.Kind != "reservationBalance" || r.Reversal != nil && r.Kind != "reversalBalance" ||
+			r.Allocation != nil && r.Kind != "allocationBalance" || r.Settlement != nil && r.Kind != "settlementBalance" || r.Evidence != nil && r.Kind != "changeEvidence" {
+			return failure("rules_invalid")
+		}
+		if (r.Group != nil || r.Targets != nil || r.Related != nil || r.GroupReference != nil) && r.Kind != "groupSameTarget" {
 			return failure("rules_invalid")
 		}
 		valid := false
 		switch r.Kind {
+		case "groupSameTarget":
+			valid = r.validGroup() && len(r.Fields) == 0 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil && r.Reversal == nil && r.Allocation == nil && r.Settlement == nil && r.Evidence == nil
 		case "sameTarget":
 			valid = r.PathMatch.valid(r.Entity) && (r.WhenPresent == "" || r.WhenPresent == r.Left[0].Field) && len(r.Fields) == 0 && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0
 		case "unique", "atMostOne":
@@ -251,8 +315,14 @@ func (d Declaration) Validate() error {
 				quantity, declared := decimals[r.Entity+"\x00"+r.Reversal.Quantity]
 				valid = r.Reversal.valid() && declared && !quantity.Nullable && (quantity.Sign == "positive" || quantity.Sign == "nonnegative") && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil
 			}
+		case "allocationBalance":
+			valid = r.Allocation != nil && r.Allocation.valid() && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil && r.Reversal == nil && r.Settlement == nil && r.Evidence == nil
+		case "settlementBalance":
+			valid = r.Settlement != nil && r.Settlement.valid() && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil && r.Reversal == nil && r.Allocation == nil && r.Evidence == nil
+		case "changeEvidence":
+			valid = r.Evidence != nil && r.Evidence.valid() && r.Field == "" && r.Target == "" && r.Relation == "" && r.Amount == "" && r.Limit == "" && len(r.Transitions) == 0 && len(r.FrozenStates) == 0 && len(r.Fields) == 0 && r.Left == nil && r.Right == nil && r.WhenPresent == "" && !bool(r.SkipEmptyLeftEnd) && r.CurrentWhen == nil && r.ParentPath == nil && r.ParentStateField == "" && r.Reservation == nil && r.Reversal == nil && r.Allocation == nil && r.Settlement == nil
 		}
-		if !valid {
+		if !valid || !r.validRelationCases() {
 			return failure("rules_invalid")
 		}
 		seen := map[string]bool{}
@@ -294,6 +364,111 @@ func (d Declaration) Validate() error {
 				first = declared.Format
 			} else if declared.Format != first {
 				return failure("rules_invalid")
+			}
+		}
+	}
+	for _, r := range d.Rules {
+		if spec := r.Allocation; r.Kind == "allocationBalance" && spec != nil {
+			// Quantities share one exact format family and money measures share
+			// another so the identity and magnitude comparisons never rescale.
+			for group, indexes := range map[string][]int{"q": {0}, "m": {1, 2, 3}} {
+				_ = group
+				first := exactdecimal.Format{}
+				for i, index := range indexes {
+					names := spec.measures()[index]
+					for _, key := range [][2]string{{r.Entity, names[0]}, {spec.Parent.Entity, names[1]}} {
+						declared, ok := decimals[key[0]+"\x00"+key[1]]
+						if !ok {
+							return failure("rules_invalid")
+						}
+						if i == 0 && key[0] == r.Entity && first == (exactdecimal.Format{}) {
+							first = declared.Format
+						}
+						if declared.Format != first {
+							return failure("rules_invalid")
+						}
+					}
+				}
+			}
+		}
+		if spec := r.Settlement; r.Kind == "settlementBalance" && spec != nil {
+			quantityKeys := [][2]string{}
+			magnitudeKeys := [][2]string{}
+			if spec.requestHasQuantity() {
+				// The actual keeps the one-shot signed quantity that allocation
+				// rules read on the same rows; only the request, capacity and
+				// explicit close quantities are declared magnitudes.
+				quantityKeys = append(quantityKeys,
+					[2]string{spec.Request.Entity, spec.Request.Quantity},
+					[2]string{spec.Actual.Entity, spec.Actual.Quantity})
+				magnitudeKeys = append(magnitudeKeys,
+					[2]string{spec.Request.Entity, spec.Request.Quantity})
+				if spec.Capacity.Quantity != "" {
+					quantityKeys = append(quantityKeys, [2]string{spec.Capacity.Entity, spec.Capacity.Quantity})
+				}
+				if spec.Adjustment != nil && spec.Adjustment.CloseQuantity != "" {
+					quantityKeys = append(quantityKeys, [2]string{spec.Adjustment.Entity, spec.Adjustment.CloseQuantity})
+					magnitudeKeys = append(magnitudeKeys, [2]string{spec.Adjustment.Entity, spec.Adjustment.CloseQuantity})
+				}
+			}
+			if spec.Plans != nil {
+				quantityKeys = append(quantityKeys, [2]string{spec.Plans.Entity, spec.Plans.Quantity})
+				magnitudeKeys = append(magnitudeKeys, [2]string{spec.Plans.Entity, spec.Plans.Quantity})
+			}
+			moneyKeys := [][2]string{}
+			for _, pair := range [][2]string{{spec.Capacity.Net, spec.Capacity.Entity}, {spec.Capacity.Tax, spec.Capacity.Entity}, {spec.Capacity.Gross, spec.Capacity.Entity},
+				{spec.Request.Net, spec.Request.Entity}, {spec.Request.Tax, spec.Request.Entity}, {spec.Request.Gross, spec.Request.Entity},
+				{spec.Actual.Net, spec.Actual.Entity}, {spec.Actual.Tax, spec.Actual.Entity}, {spec.Actual.Gross, spec.Actual.Entity}} {
+				if pair[0] != "" {
+					moneyKeys = append(moneyKeys, [2]string{pair[1], pair[0]})
+				}
+			}
+			closeKeys := [][2]string{}
+			if adj := spec.Adjustment; adj != nil {
+				for _, key := range []string{adj.CloseNet, adj.CloseTax, adj.CloseGross} {
+					if key != "" {
+						closeKeys = append(closeKeys, [2]string{adj.Entity, key})
+					}
+				}
+			}
+			// Quantities share one exact format family; only declared magnitude
+			// entries (request, capacity, explicit close) require a non-negative
+			// sign. Close amounts stay optional facts contributing nothing when
+			// absent.
+			for _, group := range [][][2]string{quantityKeys, closeKeys} {
+				first, seen := exactdecimal.Format{}, false
+				for _, key := range group {
+					declared, ok := decimals[key[0]+"\x00"+key[1]]
+					if !ok {
+						return failure("rules_invalid")
+					}
+					if !seen {
+						first, seen = declared.Format, true
+					} else if declared.Format != first {
+						return failure("rules_invalid")
+					}
+				}
+			}
+			for _, key := range append(append([][2]string{}, magnitudeKeys...), closeKeys...) {
+				declared, ok := decimals[key[0]+"\x00"+key[1]]
+				if !ok || declared.Sign != "nonnegative" && declared.Sign != "positive" {
+					return failure("rules_invalid")
+				}
+			}
+			// Every money measure — faces, capacities and explicit close amounts —
+			// shares one exact format; sign policies stay free because actual rows
+			// keep signed originals while requests and capacities reserve.
+			first, seen := exactdecimal.Format{}, false
+			for _, key := range append(append([][2]string{}, moneyKeys...), closeKeys...) {
+				declared, ok := decimals[key[0]+"\x00"+key[1]]
+				if !ok {
+					return failure("rules_invalid")
+				}
+				if !seen {
+					first, seen = declared.Format, true
+				} else if declared.Format != first {
+					return failure("rules_invalid")
+				}
 			}
 		}
 	}
@@ -345,6 +520,119 @@ func (r Registration) dependencies() map[string]map[string]bool {
 			add(owner, spec.OwnerStateField)
 			for _, field := range spec.SameOwnerFields {
 				add(owner, field)
+			}
+		}
+		if spec := rule.Allocation; spec != nil {
+			for _, field := range []string{spec.Owner, spec.Quantity, spec.Net, spec.Tax, spec.Gross} {
+				add(rule.Entity, field)
+			}
+			for _, field := range []string{spec.Parent.Quantity, spec.Parent.Net, spec.Parent.Tax, spec.Parent.Gross} {
+				add(spec.Parent.Entity, field)
+			}
+			addAuthority := func(source string, ref AuthorityRef) {
+				for _, step := range ref.Path {
+					add(source, step.Field)
+					source = step.Target
+				}
+				add(source, ref.Field)
+			}
+			addAuthority(rule.Entity, spec.State)
+			addAuthority(rule.Entity, spec.Purpose)
+			if dir := spec.Parent.Direction; dir != nil {
+				entity := spec.Parent.Entity
+				for _, step := range dir.Path {
+					add(entity, step.Field)
+					entity = step.Target
+				}
+				add(entity, dir.ConventionField)
+				add(entity, dir.DirectionField)
+			}
+		}
+		if spec := rule.Settlement; spec != nil {
+			addAuthority := func(source string, ref AuthorityRef) {
+				for _, step := range ref.Path {
+					add(source, step.Field)
+					source = step.Target
+				}
+				add(source, ref.Field)
+			}
+			capacity, request, actual := spec.Capacity, spec.Request, spec.Actual
+			for _, field := range []string{capacity.Quantity, capacity.Net, capacity.Tax, capacity.Gross} {
+				add(capacity.Entity, field)
+			}
+			for _, field := range []string{request.Capacity, request.Quantity, request.Net, request.Tax, request.Gross} {
+				add(request.Entity, field)
+			}
+			addAuthority(request.Entity, request.State)
+			addAuthority(request.Entity, request.Direction)
+			if request.Currency.Field != "" {
+				addAuthority(request.Entity, request.Currency)
+				addAuthority(actual.Entity, actual.Currency)
+				addAuthority(capacity.Entity, capacity.Currency)
+			}
+			if request.Basis.Field != "" {
+				addAuthority(request.Entity, request.Basis)
+			}
+			if request.Material.Field != "" {
+				addAuthority(request.Entity, request.Material)
+				addAuthority(actual.Entity, actual.Material)
+				addAuthority(capacity.Entity, capacity.Material)
+			}
+			if request.Unit.Field != "" {
+				addAuthority(request.Entity, request.Unit)
+				addAuthority(actual.Entity, actual.Unit)
+				addAuthority(capacity.Entity, capacity.Unit)
+			}
+			if request.Purpose.Field != "" {
+				addAuthority(request.Entity, request.Purpose)
+			}
+			for _, field := range []string{actual.Request, actual.Capacity, actual.PlanItem, actual.Quantity, actual.Net, actual.Tax, actual.Gross} {
+				add(actual.Entity, field)
+			}
+			addAuthority(actual.Entity, actual.State)
+			addAuthority(actual.Entity, actual.Direction)
+			if actual.Purpose.Field != "" {
+				addAuthority(actual.Entity, actual.Purpose)
+			}
+			if capacity.Direction.Field != "" {
+				addAuthority(capacity.Entity, capacity.Direction)
+			}
+			if spec.Plans != nil {
+				add(request.Entity, request.PlanItem)
+				add(spec.Plans.Entity, spec.Plans.Quantity)
+				add(spec.Plans.Entity, spec.Plans.Scope)
+				add(spec.Plans.Entity, spec.Plans.LogicalItem.Field)
+				add(spec.Plans.Entity, spec.Plans.Share)
+				add(spec.Plans.LogicalItem.Target, "")
+				for _, path := range [][]RelationStep{spec.Plans.CurrentWhen.Left, spec.Plans.CurrentWhen.Right} {
+					entity := spec.Plans.Entity
+					for _, step := range path {
+						add(entity, step.Field)
+						entity = step.Target
+					}
+				}
+			}
+			if adj := spec.Adjustment; adj != nil {
+				for _, field := range []string{adj.Kind, adj.Target, adj.Allocation, adj.CloseRemaining, adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
+					add(adj.Entity, field)
+				}
+			}
+		}
+		if spec := rule.Evidence; spec != nil {
+			for _, field := range spec.Fields {
+				add(rule.Entity, field)
+			}
+			owner := rule.Entity
+			for _, step := range spec.OwnerPath {
+				add(owner, step.Field)
+				owner = step.Target
+			}
+			add(owner, spec.LatestEvidence)
+			add(spec.Evidence.Entity, spec.Evidence.Owner)
+			add(spec.Evidence.Entity, spec.Evidence.Type)
+			add(spec.Evidence.Entity, spec.Evidence.Note)
+			for _, field := range spec.Evidence.Fields {
+				add(spec.Evidence.Entity, field)
 			}
 		}
 		if rule.Reservation != nil {
@@ -587,6 +875,10 @@ func (r Registration) Validate(before, after Images) error {
 	for _, rule := range r.Declaration.Rules {
 		rows := after[rule.Entity]
 		switch rule.Kind {
+		case "groupSameTarget":
+			if err := rule.validateGroup(after); err != nil {
+				return err
+			}
 		case "sameTarget":
 			for id, row := range rows {
 				if rule.WhenPresent != "" {
@@ -594,7 +886,7 @@ func (r Registration) Validate(before, after Images) error {
 						continue
 					}
 				}
-				match, err := rule.matches(after, row, id, pathEndPolicy{skipEmptyLeft: bool(rule.SkipEmptyLeftEnd)})
+				match, err := rule.matches(after, row, id, pathEndPolicy{skipEmptyLeft: bool(rule.SkipEmptyLeftEnd), skipEmptyRight: bool(rule.SkipEmptyRightEnd)})
 				if err != nil {
 					return err
 				}
@@ -736,6 +1028,9 @@ func (r Registration) Validate(before, after Images) error {
 				if _, known := rule.Transitions[state]; !known {
 					return failure("state_invalid")
 				}
+				if err := rule.validateRelationCase(after, row, state); err != nil {
+					return err
+				}
 			}
 		case "parentFreeze":
 			if err := rule.validateParentFreeze(before, after); err != nil {
@@ -747,6 +1042,18 @@ func (r Registration) Validate(before, after Images) error {
 			}
 		case "reversalBalance":
 			if err := rule.validateReversal(after, formats); err != nil {
+				return err
+			}
+		case "allocationBalance":
+			if err := rule.validateAllocation(after, formats); err != nil {
+				return err
+			}
+		case "settlementBalance":
+			if err := rule.validateSettlement(before, after, formats); err != nil {
+				return err
+			}
+		case "changeEvidence":
+			if err := rule.validateEvidence(before, after); err != nil {
 				return err
 			}
 		}
