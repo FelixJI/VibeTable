@@ -1157,7 +1157,7 @@ export interface PluginAuditEvent {
  */
 export interface PluginAuditSummaryEvent {
   readonly eventId: string;
-  readonly startedAt: string;
+  readonly startedAt: string | null;
   readonly eventType: string;
   readonly outcome: string;
   readonly runId: string | null;

@@ -14726,8 +14726,15 @@
                 "type": "string"
               },
               "startedAt": {
-                "format": "date-time",
-                "type": "string"
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "eventType": {
                 "type": "string"
@@ -14743,8 +14750,7 @@
                   {
                     "type": "null"
                   }
-                ],
-                "default": null
+                ]
               },
               "packageHash": {
                 "type": "string"
@@ -14759,8 +14765,7 @@
                   {
                     "type": "null"
                   }
-                ],
-                "default": null
+                ]
               },
               "metadataLimited": {
                 "type": "boolean"
@@ -14771,7 +14776,9 @@
               "startedAt",
               "eventType",
               "outcome",
+              "runId",
               "packageHash",
+              "durationMs",
               "metadataLimited"
             ],
             "type": "object"
@@ -14822,9 +14829,9 @@
               "startedAt": "2026-07-24T08:31:00Z",
               "eventType": "sample-value",
               "outcome": "sample-value",
-              "runId": null,
+              "runId": "00000000-0000-4000-8000-000000000001",
               "packageHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "durationMs": null,
+              "durationMs": 1,
               "metadataLimited": false
             }
           ],

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,10 +10,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/pocketbase/dbx"
+	pocketbase "github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
@@ -55,6 +60,11 @@ func seedAuditEvents(t *testing.T, store *pluginstore.Service, count, detailsByt
 // The full dispatcher fixture mirrors the production wiring: every Go-owned
 // method is registered, the Product HTTP boundary serializes each response.
 func pluginAuditPageFixture(t *testing.T) (http.Handler, *pluginstore.Service, context.Context) {
+	mux, store, ctx, _ := pluginAuditPageFixtureWithApp(t)
+	return mux, store, ctx
+}
+
+func pluginAuditPageFixtureWithApp(t *testing.T) (http.Handler, *pluginstore.Service, context.Context, *pocketbase.PocketBase) {
 	t.Helper()
 	pb := historyProductStore(t, t.TempDir())
 	store := pluginstore.New(pb, "11111111-1111-4111-8111-111111111111")
@@ -84,7 +94,7 @@ func pluginAuditPageFixture(t *testing.T) (http.Handler, *pluginstore.Service, c
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mux, store, context.Background()
+	return mux, store, context.Background(), pb
 }
 
 func pluginAuditPageParamsJSON(store *pluginstore.Service, extra string) string {
@@ -312,7 +322,9 @@ func customAuditEvent(store *pluginstore.Service, eventID string, mutate func(ma
 		"eventType": "model.progress", "outcome": "succeeded", "actor": "local-user",
 		"startedAt": "2026-11-07T19:05:58Z", "runId": nil, "details": map[string]any{},
 	}
-	mutate(event)
+	if mutate != nil {
+		mutate(event)
+	}
 	return event
 }
 
@@ -503,11 +515,8 @@ func TestPluginListAuditPageNormalizesLongFractionStartedAt(t *testing.T) {
 		if event.MetadataLimited != testCase.limited {
 			t.Fatalf("%s metadataLimited = %v, want %v", testCase.id, event.MetadataLimited, testCase.limited)
 		}
-		if event.StartedAt != testCase.normalized {
-			t.Fatalf("%s startedAt = %q, want %q", testCase.id, event.StartedAt, testCase.normalized)
-		}
-		if event.StartedAt == "" {
-			t.Fatalf("%s normalized into an empty date", testCase.id)
+		if event.StartedAt == nil || *event.StartedAt != testCase.normalized {
+			t.Fatalf("%s startedAt = %v, want %q", testCase.id, event.StartedAt, testCase.normalized)
 		}
 	}
 	assertAuditRawPreserved(t, store, before)
@@ -689,4 +698,216 @@ func TestPluginListAuditPageProjectionKeySet(t *testing.T) {
 		cursor = *page.NextCursor
 	}
 	_ = all
+}
+
+// wireAuditSummaryEvent mirrors the public wire shape with the nullable
+// startedAt the summary contract declares; asserting against this local
+// struct keeps the test honest about what actually crosses HTTP.
+type wireAuditSummaryEvent struct {
+	EventID         string  `json:"eventId"`
+	StartedAt       *string `json:"startedAt"`
+	EventType       string  `json:"eventType"`
+	Outcome         string  `json:"outcome"`
+	RunID           *string `json:"runId"`
+	PackageHash     string  `json:"packageHash"`
+	DurationMs      *int64  `json:"durationMs"`
+	MetadataLimited bool    `json:"metadataLimited"`
+}
+
+func walkWireAuditSummaries(t *testing.T, mux http.Handler, store *pluginstore.Service, ctx context.Context) []wireAuditSummaryEvent {
+	t.Helper()
+	var collected []wireAuditSummaryEvent
+	cursor := ""
+	for {
+		envelope := schemaProductRequestForMethod(t, mux, ctx, "plugin.listAuditPage",
+			pluginAuditPageParamsJSON(store, `,"cursor":"`+cursor+`"`), schemaListWire)
+		if envelope.Error != nil {
+			t.Fatalf("audit summary page failed: %+v", envelope.Error)
+		}
+		var page struct {
+			Events     []wireAuditSummaryEvent `json:"events"`
+			NextCursor *string                 `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(envelope.Result, &page); err != nil {
+			t.Fatal(err)
+		}
+		collected = append(collected, page.Events...)
+		if page.NextCursor == nil {
+			return collected
+		}
+		cursor = *page.NextCursor
+	}
+}
+
+// captureStoredAuditRaw snapshots the original payload_json column bytes of
+// every audit record of the scope straight from this test's own synthetic
+// database. Unlike GetAudit it never re-encodes, so it stays a valid
+// "before" witness even for HTML-heavy payloads the frozen full read keeps
+// rejecting at its 4 MiB writer boundary.
+func captureStoredAuditRaw(t *testing.T, pb *pocketbase.PocketBase, store *pluginstore.Service) map[string]json.RawMessage {
+	t.Helper()
+	rows, err := pb.FindRecordsByFilter("vibetable_plugin_records",
+		"kind={:kind} && project_key={:project} && plugin_id={:plugin}",
+		"+seq, +id", 1000, 0, dbx.Params{
+			"kind": "audit", "project": store.ProjectKey(), "plugin": "pmvt.project-manager",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raws := make(map[string]json.RawMessage, len(rows))
+	for _, row := range rows {
+		column, ok := row.GetRaw("payload_json").(pbtypes.JSONRaw)
+		if !ok || len(column) == 0 {
+			t.Fatalf("stored audit row %s has no raw payload column", row.GetString("item_key"))
+		}
+		raws[row.GetString("item_key")] = json.RawMessage(column)
+	}
+	if len(raws) == 0 {
+		t.Fatal("no stored audit rows found for the synthetic scope")
+	}
+	return raws
+}
+
+func assertStoredAuditRawPreserved(t *testing.T, pb *pocketbase.PocketBase, store *pluginstore.Service, before map[string]json.RawMessage) {
+	t.Helper()
+	after := captureStoredAuditRaw(t, pb, store)
+	if len(after) != len(before) {
+		t.Fatalf("stored audit row count changed: %d -> %d", len(before), len(after))
+	}
+	for id, want := range before {
+		if string(after[id]) != string(want) {
+			t.Fatalf("stored payload of %s changed across the summary pages", id)
+		}
+	}
+}
+
+// TestPluginListAuditPageReadsLegallyStoredHtmlHeavyRawPayloads pins the
+// frozen writer/read split: RecordAudit legally stores a payload whose
+// details carry 800k literal '<' bytes (under 1 MiB raw, far over 4 MiB once
+// the legacy reader's HTML-escaping json.Marshal expands it). The bounded
+// summary read must page across it at its true stored size, reach the normal
+// neighbors, and leave the stored bytes untouched; the old GetAudit reader
+// keeps its own frozen boundary and is deliberately not the witness here.
+func TestPluginListAuditPageReadsLegallyStoredHtmlHeavyRawPayloads(t *testing.T) {
+	mux, store, ctx, pb := pluginAuditPageFixtureWithApp(t)
+	seedCustomAuditEvent(t, store, "html-first", "run-normal")
+	// Encode without HTML escaping so the stored document keeps the literal
+	// '<' bytes — exactly what a formal writer preserving original text saves.
+	heavy := customAuditEvent(store, "html-heavy", func(event map[string]any) {
+		event["runId"] = "run-normal"
+	})
+	heavy["details"] = map[string]any{"blob": strings.Repeat("<", 800_000)}
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(heavy); err != nil {
+		t.Fatal(err)
+	}
+	raw := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
+	if len(raw) >= 1<<20 {
+		t.Fatalf("html-heavy fixture payload = %d bytes, want under PocketBase's 1 MiB raw bound", len(raw))
+	}
+	if _, err := store.RecordAudit(context.Background(), raw); err != nil {
+		t.Fatal("formal RecordAudit rejected the html-heavy payload", err)
+	}
+	seedCustomAuditEvent(t, store, "html-last", "run-normal")
+	before := captureStoredAuditRaw(t, pb, store)
+	if len(before) != 3 {
+		t.Fatalf("synthetic scope stored %d rows, want 3", len(before))
+	}
+	if !bytes.Equal(before["html-heavy"], raw) {
+		t.Fatal("formal RecordAudit changed the original HTML-heavy payload")
+	}
+
+	collected := walkWireAuditSummaries(t, mux, store, ctx)
+	ids := make([]string, 0, len(collected))
+	for _, event := range collected {
+		ids = append(ids, event.EventID)
+	}
+	if strings.Join(ids, ",") != "html-first,html-heavy,html-last" {
+		t.Fatalf("chain lost or reordered events around the html-heavy record: %v", ids)
+	}
+	heavyEvent := collected[1]
+	if heavyEvent.MetadataLimited {
+		t.Fatalf("html-heavy details never cross the projection: %+v", heavyEvent)
+	}
+	if heavyEvent.EventType != "model.progress" || derefString(heavyEvent.RunID) != "run-normal" {
+		t.Fatalf("html-heavy summary metadata changed: %+v", heavyEvent)
+	}
+	for _, index := range []int{0, 2} {
+		if collected[index].MetadataLimited {
+			t.Fatalf("normal neighbor must stay unflagged: %+v", collected[index])
+		}
+	}
+	assertStoredAuditRawPreserved(t, pb, store, before)
+}
+
+// TestPluginListAuditPageEmitsLegalRfc3339OrNullStartedAt pins the summary
+// wire's startedAt: normal legal offsets keep their representation; offsets
+// of ±24h or more (which Go's frozen write validation accepted and plain
+// formatting would emit illegally) shift the same instant to UTC and raise
+// metadataLimited; when even the UTC instant leaves the four-digit year
+// range the summary carries an explicit null instead of a fabricated date.
+type startedAtCase struct {
+	id         string
+	startedAt  string
+	limited    bool
+	normalized *string
+}
+
+func TestPluginListAuditPageEmitsLegalRfc3339OrNullStartedAt(t *testing.T) {
+	inUTC := func(value string) *string { return &value }
+	cases := []startedAtCase{
+		{"off-normal", "2026-11-08T03:05:58.5+08:00", false,
+			inUTC("2026-11-08T03:05:58.5+08:00")},
+		{"off-plus-24", "2026-11-07T19:05:58+24:00", true,
+			inUTC("2026-11-06T19:05:58Z")},
+		{"off-minus-24", "2026-11-07T19:05:58-24:00", true,
+			inUTC("2026-11-08T19:05:58Z")},
+		{"off-plus-24-60", "2026-11-07T19:05:58+24:60", true,
+			inUTC("2026-11-06T18:05:58Z")},
+		// The UTC shift would leave the legal four-digit year range; the
+		// summary must answer null instead of truncating or faking a year.
+		{"off-year-underflow", "0000-01-01T00:00:00+24:00", true, nil},
+		{"off-year-overflow", "9999-12-31T23:59:59-24:00", true, nil},
+		{"off-year-zero", "0000-01-01T00:00:00Z", true, nil},
+		{"off-normalized-year-zero", "0001-01-01T00:00:00+24:00", true, nil},
+		{"off-year-zero-representable", "0000-12-31T23:00:00-01:00", true,
+			inUTC("0001-01-01T00:00:00Z")},
+	}
+	mux, store, ctx := pluginAuditPageFixture(t)
+	ids := make([]string, 0, len(cases))
+	for _, testCase := range cases {
+		seedRawAuditEvent(t, store, customAuditEvent(store, testCase.id, func(event map[string]any) {
+			event["startedAt"] = testCase.startedAt
+		}))
+		ids = append(ids, testCase.id)
+	}
+	before := captureAuditRaw(t, store, ids)
+	collected := walkWireAuditSummaries(t, mux, store, ctx)
+	if len(collected) != len(cases) {
+		t.Fatalf("chain delivered %d of %d events", len(collected), len(cases))
+	}
+	for index, testCase := range cases {
+		event := collected[index]
+		if event.EventID != testCase.id {
+			t.Fatalf("chain reordered events: got %+v", collected)
+		}
+		if event.MetadataLimited != testCase.limited {
+			t.Fatalf("%s metadataLimited = %v, want %v", testCase.id, event.MetadataLimited, testCase.limited)
+		}
+		if (event.StartedAt == nil) != (testCase.normalized == nil) ||
+			(event.StartedAt != nil && *event.StartedAt != *testCase.normalized) {
+			t.Fatalf("%s startedAt = %v, want %v", testCase.id, event.StartedAt, testCase.normalized)
+		}
+		if event.StartedAt != nil {
+			instant, err := time.Parse(time.RFC3339, *event.StartedAt)
+			original, originalErr := time.Parse(time.RFC3339, testCase.startedAt)
+			if err != nil || originalErr != nil || !instant.Equal(original) {
+				t.Fatalf("%s startedAt %q is not the same legal RFC3339 instant (%v, %v)",
+					testCase.id, *event.StartedAt, err, originalErr)
+			}
+		}
+	}
+	assertAuditRawPreserved(t, store, before)
 }

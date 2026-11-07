@@ -419,17 +419,18 @@ class PluginAuditSummaryEvent(PluginContract):
     The details document never crosses this projection; the frozen
     full-history reads keep owning the complete payload. metadata_limited is
     true exactly when at least one displayed value is a bounded preview or an
-    old, write-accepted optional value the projection cannot represent; the
-    complete original stays on GetAudit and preservation.
+    old, write-accepted value the projection cannot represent. Preservation
+    retains the original. Every wire field is required; nullable values use
+    explicit nulls, including times outside the shared datetime range.
     """
 
     event_id: str
-    started_at: datetime
+    started_at: datetime | None
     event_type: str
     outcome: str
-    run_id: str | None = None
+    run_id: str | None
     package_hash: str
-    duration_ms: int | None = Field(default=None, ge=0, le=9007199254740991)
+    duration_ms: int | None = Field(ge=0, le=9007199254740991)
     metadata_limited: bool
 
 

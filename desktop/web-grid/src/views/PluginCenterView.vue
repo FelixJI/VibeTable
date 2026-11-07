@@ -350,20 +350,17 @@ async function retryCleanup(event: PluginAuditEvent): Promise<void> {
 onMounted(() => {
   service.init();
 
+  // A pre-existing selection's first audit page starts immediately and
+  // independently: a failed or superseded catalog/cleanup refresh must not
+  // gate it behind "暂无审计记录". The unified admission, generation and
+  // scope-watch guards still own every later transition, and a user's
+  // accumulated pages are never re-opened by late bootstrap replies.
+  const preselected = store.selectedPlugin?.pluginId ?? null;
+  if (props.autoLoad && preselected !== null)
+    void loadAuditPage(preselected, null);
   if (props.autoLoad) void safely(async () => {
-    // A pre-existing selection would not retrigger the audit watch.
-    const preselected = store.selectedPlugin?.pluginId ?? null;
-    const auditGenerationAtMount = auditGeneration;
     await service.list();
     pendingCleanup.value = await service.listPendingCleanup();
-    // Backfill only a first page that was never started meanwhile: any user
-    // gesture or scope transition advanced the generation and may already
-    // hold accumulated pages.
-    if (preselected !== null && store.selectedPlugin?.pluginId === preselected
-      && auditGeneration === auditGenerationAtMount
-      && !auditLoading.value && !auditEvents.value.length
-      && auditNextCursor.value === null && !auditError.value)
-      await loadAuditPage(preselected, null);
   });
 });
 onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
@@ -509,7 +506,7 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
           <header><h3>任务摘要与审计</h3></header>
           <div v-if="store.activeTask?.pluginId === plugin.pluginId" class="task-summary"><strong>{{ store.activeTask.actionId }}</strong><span>{{ store.activeTask.state }}</span><code>{{ store.activeTask.runId }}</code></div>
           <article v-for="event in auditEvents" :key="event.eventId" :data-audit-event-id="event.eventId">
-            <time>{{ formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
+            <time>{{ event.startedAt === null ? "时间未知" : formatAuditTimestamp(event.startedAt) }}</time><strong>{{ event.eventType }}</strong><span :data-outcome="event.outcome">{{ event.outcome }}</span><code>{{ event.runId ?? event.packageHash }}</code><small v-if="event.durationMs !== null">{{ event.durationMs }} ms</small>
           </article>
           <p v-if="!auditEvents.length && !auditLoading && !auditError" class="empty-line">暂无审计记录。</p>
           <p v-if="auditError" class="audit-state audit-error" role="alert">{{ auditError }}<button data-testid="plugin-audit-retry" type="button" :disabled="auditLoading" @click="retryAuditLoad">重试</button></p>

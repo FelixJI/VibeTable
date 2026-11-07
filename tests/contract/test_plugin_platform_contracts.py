@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from backend.contracts.plugin import (
     InteractionSnapshot,
     PluginEventEnvelope,
@@ -83,3 +85,44 @@ def test_uninstall_transport_fixture_validates_at_the_real_python_boundary() -> 
     case = next(item for item in catalog["rpcCases"] if item["method"] == "plugin.uninstall")
     params = UninstallPluginParams.model_validate(case["request"]["params"])
     assert params.model_dump(mode="json", by_alias=True) == case["request"]["params"]
+
+
+def test_plugin_audit_summary_wire_fields_are_required_and_nullable() -> None:
+    from pydantic import ValidationError
+
+    from backend.contracts.plugin import PluginAuditSummaryEvent
+
+    complete = {
+        "eventId": "audit-1",
+        "startedAt": None,
+        "eventType": "install",
+        "outcome": "succeeded",
+        "runId": None,
+        "packageHash": "sha256:0",
+        "durationMs": None,
+        "metadataLimited": True,
+    }
+    # Explicit nulls are legal for every nullable field.
+    event = PluginAuditSummaryEvent.model_validate(complete)
+    assert event.started_at is None
+    assert event.run_id is None
+    assert event.duration_ms is None
+    # The Go sender always emits the full 8-key shape: omitting any wire
+    # field must be rejected instead of silently defaulted.
+    for omitted in ("startedAt", "runId", "durationMs", "metadataLimited"):
+        partial = {key: value for key, value in complete.items() if key != omitted}
+        with pytest.raises(ValidationError, match=omitted):
+            PluginAuditSummaryEvent.model_validate(partial)
+    # The duration stays inside the exactly representable JSON number range.
+    for invalid in (-1, 9007199254740992):
+        with pytest.raises(ValidationError):
+            PluginAuditSummaryEvent.model_validate({**complete, "durationMs": invalid})
+    for invalid_time in ("not-a-time", "2026-11-07T19:05:58+24:00", "0000-01-01T00:00:00Z"):
+        with pytest.raises(ValidationError):
+            PluginAuditSummaryEvent.model_validate({**complete, "startedAt": invalid_time})
+    assert (
+        PluginAuditSummaryEvent.model_validate(
+            {**complete, "durationMs": 9007199254740991, "metadataLimited": False}
+        ).duration_ms
+        == 9007199254740991
+    )

@@ -483,13 +483,14 @@ const AuditSummaryItemBudgetBytes = 24 << 10
 // this projection; the details document and every other payload field stay
 // in storage and remain reachable through the frozen full-history reads.
 // MetadataLimited is true exactly when at least one displayed value is a
-// bounded preview or an old, write-accepted optional value the projection
-// cannot represent (non-standard runId/durationMs types, sub-nanosecond
-// timestamp fractions); normal rows stay false. The complete original
-// document is always available through GetAudit and preservation.
+// bounded preview or an old, write-accepted value the projection cannot
+// represent (non-standard runId/durationMs types, sub-nanosecond timestamp
+// fractions or incompatible datetime values); normal rows stay false.
+// StartedAt is nullable when UTC normalization cannot fit the shared
+// datetime range. Preservation retains the complete original document.
 type AuditSummaryItem struct {
 	EventID         string  `json:"eventId"`
-	StartedAt       string  `json:"startedAt"`
+	StartedAt       *string `json:"startedAt"`
 	EventType       string  `json:"eventType"`
 	Outcome         string  `json:"outcome"`
 	RunID           *string `json:"runId"`
@@ -550,7 +551,12 @@ func (service *Service) ListAuditSummaryPage(
 		if err := ctx.Err(); err != nil {
 			return nil, 0, false, err
 		}
-		row, decodeErr := recordFromStored(stored)
+		// The summary seam reads the original stored column text: the legacy
+		// recordFromStored re-marshals with HTML escaping, so a legally stored
+		// HTML-heavy payload would expand past the 4 MiB bound and strand the
+		// pages behind it. Identity, validity and size are still checked the
+		// same way before the projection; nothing else changes.
+		row, decodeErr := recordFromStoredRaw(stored)
 		if decodeErr != nil {
 			return nil, 0, false, decodeErr
 		}
@@ -654,27 +660,29 @@ func auditSummaryPreview(value string) (string, bool) {
 }
 
 type auditSummaryTimestamp struct {
-	normalized string
+	normalized *string
 	limited    bool
 }
 
-// auditStartedAtSummary normalizes one RFC3339 startedAt under the existing
-// time semantics: the exact string already passed time.Parse(RFC3339) at
-// write time, so it parses here too, and RFC3339Nano formatting bounds the
-// fraction to nanosecond precision without ever producing an invalid date.
-// A fraction with more than nine significant digits is not fully
-// representable and raises the limited flag instead of being silently cut;
-// cosmetic zero-trimming keeps the same instant and is not a loss.
+// Go's legacy parser accepts year zero and ±24h offsets that the datetime
+// wire cannot represent. Normalize those to the same UTC instant; preserve
+// an explicit unknown if the result still lies outside years 1..9999.
 func auditStartedAtSummary(value string) (auditSummaryTimestamp, error) {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		// Unreachable after validateLegacyRow; corrupt storage never fakes data.
 		return auditSummaryTimestamp{}, storageError()
 	}
-	return auditSummaryTimestamp{
-		normalized: parsed.Format(time.RFC3339Nano),
-		limited:    auditFractionPrecisionLost(value),
-	}, nil
+	limited := auditFractionPrecisionLost(value)
+	if _, offsetSeconds := parsed.Zone(); parsed.Year() < 1 || offsetSeconds >= 24*60*60 || offsetSeconds <= -24*60*60 {
+		parsed = parsed.UTC()
+		limited = true
+	}
+	if year := parsed.Year(); year < 1 || year > 9999 {
+		return auditSummaryTimestamp{normalized: nil, limited: true}, nil
+	}
+	normalized := parsed.Format(time.RFC3339Nano)
+	return auditSummaryTimestamp{normalized: &normalized, limited: limited}, nil
 }
 
 // auditFractionPrecisionLost reports whether the fractional seconds of a
@@ -1466,6 +1474,24 @@ type ImportResult struct {
 }
 
 // ---- storage helpers ----
+
+// Only audit summaries use this seam: HTML-escaping the stored JSON before
+// projection can expand valid details beyond the legacy read limit.
+func recordFromStoredRaw(stored *core.Record) (record, error) {
+	column, _ := stored.GetRaw("payload_json").(pbtypes.JSONRaw)
+	payload := json.RawMessage(column)
+	if len(payload) == 0 || !json.Valid(payload) || len(payload) > maxPayloadBytes {
+		return record{}, storageError()
+	}
+	return record{
+		Kind:       stored.GetString("kind"),
+		ProjectKey: stored.GetString("project_key"),
+		PluginID:   stored.GetString("plugin_id"),
+		ItemKey:    stored.GetString("item_key"),
+		Payload:    payload,
+		Seq:        int64(stored.GetInt("seq")),
+	}, nil
+}
 
 func recordFromStored(stored *core.Record) (record, error) {
 	raw, err := json.Marshal(stored.GetRaw("payload_json"))
