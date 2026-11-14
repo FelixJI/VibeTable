@@ -1070,6 +1070,26 @@ describe("PluginCenterView", () => {
     expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
   });
 
+  it("shows the Host's unavailable reasons as a visible error when the Run describe is declined", async () => {
+    const application: PluginSnapshot = { ...blockedPlugin, status: "enabled", disabledReason: null, blockingReasons: [],
+      manifest: { ...blockedPlugin.manifest, $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
+        actions: blockedPlugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
+          presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "owned" })) } };
+    usePluginStore().replaceCatalog("local:default", [application]);
+    const { posted } = replyingBridge(type => type === "plugin.catalog.list" ? [application]
+      : type === "plugin.action.describe" ? { available: false, reasons: ["插件界面暂不可用", "宿主未授权该动作"] }
+      : { available: true, reasons: [] });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get(".run-button").trigger("click");
+    await flushPromises();
+    expect(posted.some(request => request.type === "plugin.action.describe")).toBe(true);
+    expect(wrapper.get(".global-error").text()).toContain("插件界面暂不可用；宿主未授权该动作");
+    expect(usePluginStore().actionOpen).toBe(false);
+    expect(useUiStore().activePluginApp).toBeNull();
+    expect(posted.some(request => request.type === "plugin.action.start")).toBe(false);
+    wrapper.unmount();
+  });
+
   it("cancels an uninstall confirmation when the same revision belongs to a reinstallation", async () => {
     const posted: unknown[] = [];
     setHostBridgeForTesting(createHostBridge({ webview: { postMessage: message => posted.push(message),

@@ -1275,6 +1275,54 @@ describe("pluginService canonical wire", () => {
     expect(harness.posted).toHaveLength(1);
   });
 
+  it("records the Host's unavailable Run rejection on the store error surface", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(snapshot.pluginId, "normalize", context);
+    const rejected = expect(opening).rejects.toThrow("插件界面暂不可用；宿主未授权该动作");
+    harness.reply(harness.posted[0]!, { available: false, reasons: ["插件界面暂不可用", "宿主未授权该动作"] });
+    await rejected;
+    expect(store.lastError).toBe("插件界面暂不可用；宿主未授权该动作");
+    expect(store.busy).toBe(false);
+    expect(store.describedAction).toBeNull(); expect(store.actionOpen).toBe(false);
+    expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("keeps a stale unavailable Run rejection silent", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(snapshot.pluginId, "normalize", context);
+    useUiStore().navigate(useUiStore().activeView);
+    harness.reply(harness.posted[0]!, { available: false, reasons: ["插件界面暂不可用"] });
+    await expect(opening).resolves.toEqual({ available: false, reasons: [] });
+    expect(store.lastError).toBeNull(); expect(store.busy).toBe(false);
+    expect(store.describedAction).toBeNull(); expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("records local catalog and manual-invocation Run rejections on the store error surface", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const service = usePluginService();
+    // Same installation re-projected without the action: identity guards still pass, so only the local manifest check can surface this.
+    const gone = service.describeAction(snapshot.pluginId, "normalize", context);
+    store.replaceCatalog("local:default", [{ ...snapshot, manifest: { ...snapshot.manifest, actions: [] } }]);
+    const goneRejected = expect(gone).rejects.toThrow("插件动作清单已变化");
+    harness.reply(harness.posted[0]!, { available: true, reasons: [] });
+    await goneRejected;
+    expect(store.lastError).toBe("插件动作清单已变化，请刷新目录");
+    const webhook: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest,
+      actions: [{ ...snapshot.manifest.actions[0]!, invocation: "webhook" }] } };
+    store.replaceCatalog("local:default", [webhook]);
+    const manualRejected = expect(service.describeAction(snapshot.pluginId, "normalize", context))
+      .rejects.toThrow("该动作不支持手动启动");
+    harness.reply(harness.posted.at(-1)!, { available: true, reasons: [] });
+    await manualRejected;
+    expect(store.lastError).toBe("该动作不支持手动启动");
+  });
+
   it.each([
     [false, false, true], [true, false, true],
     [false, true, true], [true, true, true],
