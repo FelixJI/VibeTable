@@ -474,6 +474,14 @@
       "effect": "read"
     },
     {
+      "method": "plugin.listAuditPage",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
       "method": "plugin.listCatalog",
       "scope": "workspace",
       "audience": "rendererPublic",

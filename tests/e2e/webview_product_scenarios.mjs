@@ -7081,6 +7081,60 @@ async function waitForPluginTerminal(page, taskId) {
   throw new Error(`native plugin task did not settle: ${JSON.stringify(task)}`);
 }
 
+// #572: the bounded audit summary chain must terminate without duplicates
+// or leaked details.
+async function collectPluginAuditSummaryPages(webPage, projectKey, pluginId) {
+  const events = [];
+  const seen = new Set();
+  let cursor = null;
+  for (let index = 0; index < 50; index += 1) {
+    const reply = (await rawBridgeRequest(webPage, "plugin.audit.page", { projectKey, pluginId, cursor })).payload;
+    if (!Array.isArray(reply?.events)
+      || (reply.nextCursor !== null && typeof reply.nextCursor !== "string"))
+      throw new Error(`plugin.audit.page returned an invalid page: ${JSON.stringify(reply).slice(0, 400)}`);
+    for (const event of reply.events) {
+      if (!event.eventId || "details" in event)
+        throw new Error(`plugin.audit.page returned malformed summary metadata: ${JSON.stringify(event).slice(0, 400)}`);
+      if (seen.has(event.eventId))
+        throw new Error(`plugin.audit.page duplicated event ${event.eventId}`);
+      seen.add(event.eventId);
+      events.push(event);
+    }
+    if (reply.nextCursor === null) return { events, pages: index + 1 };
+    cursor = reply.nextCursor;
+  }
+  throw new Error("plugin.audit.page cursor chain did not terminate");
+}
+
+// Wait for each page to settle so pending RPCs cannot look like missing controls.
+async function pageThroughAuditHistory(page) {
+  const settle = () => page.waitForFunction(() => {
+    const section = document.querySelector(".audit-log");
+    if (!section) return false;
+    const text = section.textContent ?? "";
+    if (text.includes("正在加载审计记录…")) return false;
+    const more = document.querySelector('[data-testid="plugin-audit-more"]');
+    return text.includes("已加载全部审计记录。")
+      || document.querySelector('[data-testid="plugin-audit-retry"]') !== null
+      || (more instanceof HTMLButtonElement && !more.disabled);
+  }, undefined, { timeout: 30_000 });
+  const renderedIds = () => page.locator(".audit-log article[data-audit-event-id]")
+    .evaluateAll(rows => rows.map(row => row.getAttribute("data-audit-event-id")));
+  await settle();
+  let pages = 1;
+  for (;;) {
+    const sectionText = await page.locator(".audit-log").innerText();
+    if (sectionText.includes("已加载全部审计记录。"))
+      return { pages, renderedIds: await renderedIds() };
+    if (await page.getByTestId("plugin-audit-retry").count())
+      throw new Error(`audit paging surfaced a failure: ${sectionText.trim()}`);
+    await page.getByTestId("plugin-audit-more").click();
+    await settle();
+    pages += 1;
+    if (pages > 20) throw new Error("audit load-more chain did not terminate");
+  }
+}
+
 async function scenario11(page, recorder, _network, runtime) {
   const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = databaseOpened.payload.projectKey.trim();
@@ -7146,6 +7200,11 @@ async function scenario11(page, recorder, _network, runtime) {
     recorder.check(`surface ${decision} durable audit binds to the exact Host run`,
       events.some(event => event.eventType === "action" && event.runId === task.runId
         && event.details?.taskId === taskId && event.outcome === (decision === "approved" ? "succeeded" : decision)), { events });
+    const summary = await collectPluginAuditSummaryPages(page, projectKey, pluginId);
+    recorder.check(`surface ${decision} bounded audit summary pages carry the same run binding without details`,
+      summary.events.some(event => event.eventType === "action" && event.runId === task.runId
+        && event.outcome === (decision === "approved" ? "succeeded" : decision))
+        && summary.events.every(event => !("details" in event)), { summary });
     if (decision === "approved") successfulTask = task;
   }
   await frame.locator("#denied").click();
@@ -7154,6 +7213,42 @@ async function scenario11(page, recorder, _network, runtime) {
   recorder.check("undeclared field preview is rejected before a mutation can be submitted",
     /field|permission|forbidden|denied/iu.test(`${denied.code} ${denied.message}`) && await rows() === 1, { denied });
   await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  // #572: grow the history past one fixed page through the formal lifecycle
+  // write path the toggle UI uses, then page the real audit section with the
+  // real 加载更多 control and bind the rendered rows to the durable ids.
+  let lifecycleEntry = findCatalogEntry(
+    (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey })).payload, pluginId);
+  if (!lifecycleEntry?.installationId) throw new Error("plugin installation identity is required for multi-page audit paging");
+  for (let toggleIndex = 0; toggleIndex < 60; toggleIndex += 1) {
+    lifecycleEntry = (await rawBridgeRequest(page, "plugin.lifecycle.setEnabled", {
+      projectKey,
+      pluginId,
+      enabled: lifecycleEntry.status !== "enabled",
+      installationId: lifecycleEntry.installationId,
+      expectedRevision: lifecycleEntry.revision,
+    })).payload;
+  }
+  if (lifecycleEntry.status !== "enabled") throw new Error("multi-page audit paging must leave the plugin enabled");
+  await pluginRow.click(); // Reopen the first page of the grown history.
+  const uiPaging = await pageThroughAuditHistory(page);
+  const completeAudit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey, pluginId })).payload;
+  const summaryChain = await collectPluginAuditSummaryPages(page, projectKey, pluginId);
+  recorder.check("multi-page audit history pages through the real load-more control to the durable identities",
+    summaryChain.pages > 1
+      && uiPaging.pages > 1
+      && new Set(uiPaging.renderedIds).size === uiPaging.renderedIds.length
+      && isDeepStrictEqual([...uiPaging.renderedIds].sort(), completeAudit.map(event => event.eventId).sort())
+      && summaryChain.events.length === completeAudit.length
+      && isDeepStrictEqual(summaryChain.events.map(event => event.eventId).sort(),
+        completeAudit.map(event => event.eventId).sort())
+      && completeAudit.some(event => event.eventType === "enable" || event.eventType === "disable"),
+    { summaryPages: summaryChain.pages, uiPages: uiPaging.pages, rendered: uiPaging.renderedIds.length,
+      durableEvents: completeAudit.length });
+  const settledAuditState = page.locator(".audit-log .audit-state").filter({ hasText: /已加载全部审计记录。|加载更多/u });
+  await settledAuditState.waitFor({ timeout: 30_000 });
+  recorder.check("plugin center renders bounded audit summaries with an explicit end state",
+    (await page.locator(".audit-log article").count()) > 0
+      && (await settledAuditState.innerText()).trim().length > 0);
   const sourceControl = path.join(runtime.controlsDir, "plugin-source.txt");
   const installedSource = (await fs.readFile(sourceControl, "utf8")).trim();
   const invalidUpgrade = path.join(runtime.controlsDir, "invalid-plugin-upgrade");
@@ -8248,6 +8343,13 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   const audit = (await rawBridgeRequest(page, "plugin.audit.list", { projectKey: state.projectKey, pluginId: state.pluginId })).payload;
   recorder.check("durable native plugin audit survives Host restart", audit.some(event => event.eventType === "install")
     && audit.some(event => event.eventType === "action" && event.outcome === "succeeded"), { audit });
+  const summary = await collectPluginAuditSummaryPages(page, state.projectKey, state.pluginId);
+  recorder.check("bounded audit summary pages survive the restart and cover every durable event exactly once",
+    summary.events.some(event => event.eventType === "install")
+      && summary.events.some(event => event.eventType === "action" && event.outcome === "succeeded")
+      && new Set(summary.events.map(event => event.eventId)).size === summary.events.length
+      && JSON.stringify(summary.events.map(event => event.eventId).sort())
+        === JSON.stringify(audit.map(event => event.eventId).sort()), { summary, audit });
   const legacy = findCatalogEntry(catalog, state.legacyPlugin.pluginId);
   recorder.check("historical installation is visible and explicitly retired without losing identity",
     legacy?.installationId === state.legacyPlugin.installationId && legacy.revision === 1
@@ -8275,6 +8377,20 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   await assertZeroExecutionProcesses("cold catalog and audit avoid plugin execution; the fixed preservation verifier has exited without Python or Node residue");
   await page.getByTestId("nav-tables").click(); await selectTable(page, "E2E Plugin Target");
   await page.getByTestId("nav-plugins").click(); await pluginRow.click();
+  const reopenedPaging = await pageThroughAuditHistory(page);
+  const reopenedAuditState = page.locator(".audit-log .audit-state").filter({ hasText: /已加载全部审计记录。|加载更多/u });
+  await reopenedAuditState.waitFor({ timeout: 30_000 });
+  recorder.check("reopened plugin center renders the restarted audit summary page with an explicit end state",
+    (await page.locator(".audit-log article").count()) > 0
+      && (await reopenedAuditState.innerText()).trim().length > 0);
+  recorder.check("restarted multi-page audit history reloads through the real load-more control onto the durable identities",
+    reopenedPaging.pages > 1
+      && new Set(reopenedPaging.renderedIds).size === reopenedPaging.renderedIds.length
+      && isDeepStrictEqual([...reopenedPaging.renderedIds].sort(), audit.map(event => event.eventId).sort())
+      && isDeepStrictEqual(summary.events.map(event => event.eventId).sort(),
+        audit.map(event => event.eventId).sort()),
+    { reopenedPages: reopenedPaging.pages, rendered: reopenedPaging.renderedIds.length,
+      durableEvents: audit.length });
   const frame = await openMutationBoundary(page);
   await mutationBoundaryFiles(page, recorder, runtime, frame);
   await assertZeroExecutionProcesses("surface and scoped file roundtrip execute after restart without Python or Node");

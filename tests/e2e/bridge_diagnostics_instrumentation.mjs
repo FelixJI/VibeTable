@@ -248,6 +248,7 @@ export function installBridgeDiagnosticsInPage() {
           || message.type === "settings.readWorkCalendar" || message.type === "gridState.get"
           || message.type === "lookup.query"
           || message.type === "plugin.catalog.list" || message.type === "plugin.audit.list"
+          || message.type === "plugin.audit.page"
           || message.type === "plugin.cleanup.listPending")
           && message.scope?.scope === "workspace" ? {
             retirementScope: {

@@ -101,6 +101,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "mutation.apply",
         "mutation.preview",
         "plugin.listAudit",
+        "plugin.listAuditPage",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",

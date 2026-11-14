@@ -233,6 +233,7 @@ describe("HostBridge", () => {
         bridge.request("lookup.valuePage", lookupValuePagePayload()),
         bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
         bridge.request("plugin.audit.list", { projectKey: pluginProjectKey, pluginId: "com.acme.clean" }),
+        bridge.request("plugin.audit.page", { projectKey: pluginProjectKey, pluginId: "com.acme.clean", cursor: null }),
         bridge.request("plugin.cleanup.listPending", { projectKey: pluginProjectKey }),
       ].map(promise => promise.catch(error => error));
       if (retirementTrigger === "closeSession") {
@@ -255,7 +256,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(11);
+      expect(retired).toHaveBeenCalledTimes(12);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");
@@ -307,6 +308,7 @@ describe("HostBridge", () => {
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
         bridge.request("plugin.audit.list", { projectKey: pluginProjectKey, pluginId: "com.acme.clean" }),
+        bridge.request("plugin.audit.page", { projectKey: pluginProjectKey, pluginId: "com.acme.clean", cursor: null }),
         bridge.request("plugin.cleanup.listPending", { projectKey: pluginProjectKey }),
       ].map(promise => promise.catch(error => error));
       expect(vi.getTimerCount()).toBe(0);

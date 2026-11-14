@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -34,6 +35,13 @@ const (
 	maxPayloadBytes    = 4 << 20
 	listPageSize       = 1_000
 	PluginCatalogTable = "plugin:catalog"
+	// AuditSummaryPageSize is the fixed small page of plugin center audit
+	// summaries. The page plus the byte budget below keeps every summary
+	// response far below the 4 MiB Product envelope cap.
+	AuditSummaryPageSize = 50
+	// AuditSummaryPageBudgetBytes bounds the serialized events array of one
+	// summary page, leaving framing margin for the JSON-RPC envelope.
+	AuditSummaryPageBudgetBytes = 512 << 10
 	// ConflictItemID projects the whole plugin shared catalog as one
 	// synchronized workspace settings item, mirroring metadata namespaces.
 	ConflictItemID = "plugin:shared-state"
@@ -451,6 +459,285 @@ func (service *Service) listAudit(
 		result = append(result, row.Payload)
 	}
 	return result, nil
+}
+
+// AuditSummaryPreviewRunes bounds every display metadata string of one
+// summary item (eventType, outcome, runId, packageHash) to at most 512
+// runes, including the single explicit "…" omission marker appended when the
+// stored value is longer. eventId is never bounded by this projection: it is
+// the storage item_key, capped at 512 by the existing shared-state
+// migration, and stays complete so every event remains exactly identifiable.
+const AuditSummaryPreviewRunes = 512
+
+// AuditSummaryItemBudgetBytes is the construction bound of one fully bounded
+// summary item: the four preview strings at the worst case of 512 control
+// runes (six escaped bytes each), the complete escaped eventId, the
+// normalized RFC3339 timestamp, the numeric, boolean and key punctuation.
+// Every projected item therefore always fits any page budget at or above
+// this ceiling, so a page never skips a record and never stalls without
+// progress.
+const AuditSummaryItemBudgetBytes = 24 << 10
+
+// AuditSummaryItem is the bounded metadata projection of one immutable audit
+// event for the plugin center. Only the fields the audit list renders cross
+// this projection; the details document and every other payload field stay
+// in storage and remain reachable through the frozen full-history reads.
+// MetadataLimited is true exactly when at least one displayed value is a
+// bounded preview or an old, write-accepted value the projection cannot
+// represent (non-standard runId/durationMs types, sub-nanosecond timestamp
+// fractions or incompatible datetime values); normal rows stay false.
+// StartedAt is nullable when UTC normalization cannot fit the shared
+// datetime range. Preservation retains the complete original document.
+type AuditSummaryItem struct {
+	EventID         string  `json:"eventId"`
+	StartedAt       *string `json:"startedAt"`
+	EventType       string  `json:"eventType"`
+	Outcome         string  `json:"outcome"`
+	RunID           *string `json:"runId"`
+	PackageHash     string  `json:"packageHash"`
+	DurationMs      *int64  `json:"durationMs"`
+	MetadataLimited bool    `json:"metadataLimited"`
+}
+
+// ListAuditSummaryPage reads one bounded page of audit summary metadata in
+// the stable (seq, id) keyset order. afterSeq <= 0 starts at the oldest
+// event; otherwise the page continues strictly after that seq, so chained
+// reads cover every event of the scope exactly once without duplicates or
+// gaps. nextAfterSeq is the last returned item's seq (0 for an empty page)
+// and hasMore reports whether at least one further event exists in scope.
+// Unbounded legacy metadata never blocks the chain: every item is projected
+// to a bounded preview first, so each serialized item always fits the byte
+// budget and no stored record is skipped or able to strand the pages behind
+// it. The stored payload itself is never rewritten.
+func (service *Service) ListAuditSummaryPage(
+	ctx context.Context,
+	projectKey string,
+	pluginID string,
+	afterSeq int64,
+	limit int,
+	byteBudget int,
+) ([]AuditSummaryItem, int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, 0, false, err
+	}
+	// A budget below the construction bound of one bounded item could never
+	// make progress; the caller misused the internal paging contract.
+	if pluginID == "" || limit < 1 || byteBudget < AuditSummaryItemBudgetBytes {
+		return nil, 0, false, requestError(
+			"plugin.request_invalid", "audit summary page request is invalid", nil,
+		)
+	}
+	collection, err := service.app.FindCollectionByNameOrId(recordsCollection)
+	if err != nil {
+		return nil, 0, false, storageError()
+	}
+	filter := "kind={:kind} && project_key={:project} && plugin_id={:plugin} && seq>{:after}"
+	params := dbx.Params{"kind": KindAudit, "project": projectKey, "plugin": pluginID, "after": afterSeq}
+	// Fetch one row beyond the fixed page: its presence is the only hasMore
+	// signal, mirroring the keyset discipline of the query surfaces.
+	page, pageErr := service.app.FindRecordsByFilter(
+		collection, filter, "+seq, +id", limit+1, 0, params,
+	)
+	if pageErr != nil {
+		return nil, 0, false, storageError()
+	}
+	items := make([]AuditSummaryItem, 0, len(page))
+	budget := 2 // JSON array brackets.
+	var lastSeq int64
+	for _, stored := range page {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, false, err
+		}
+		// The summary seam reads the original stored column text: the legacy
+		// recordFromStored re-marshals with HTML escaping, so a legally stored
+		// HTML-heavy payload would expand past the 4 MiB bound and strand the
+		// pages behind it. Identity, validity and size are still checked the
+		// same way before the projection; nothing else changes.
+		row, decodeErr := recordFromStoredRaw(stored)
+		if decodeErr != nil {
+			return nil, 0, false, decodeErr
+		}
+		if err := service.validateLegacyRow(row); err != nil {
+			return nil, 0, false, storageError()
+		}
+		item, projectErr := projectAuditSummaryItem(row.Payload)
+		if projectErr != nil {
+			return nil, 0, false, projectErr
+		}
+		// The budget counts serialized JSON bytes — escaping included — plus
+		// the array separators, never the raw field lengths. Projections are
+		// bounded before this point, so a single item always fits and the
+		// page merely closes early when the accumulated bytes would overflow.
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return nil, 0, false, storageError()
+		}
+		separator := 0
+		if len(items) > 0 {
+			separator = 1
+		}
+		if len(items) >= limit || budget+separator+len(encoded) > byteBudget {
+			// The row beyond the fixed page or the byte budget closes the
+			// page; it remains the next page's first event.
+			return items, lastSeq, true, nil
+		}
+		items = append(items, item)
+		budget += separator + len(encoded)
+		lastSeq = row.Seq
+	}
+	hasMore := len(page) > limit
+	return items, lastSeq, hasMore, nil
+}
+
+// auditSummaryProjection decodes one stored audit payload tolerantly. The
+// frozen write validation (validateAuditPayload) guarantees the required
+// text fields and the RFC3339 startedAt, but never type-checked the optional
+// runId/durationMs: those decode as raw JSON and are projected below, so a
+// legal legacy record can never fail the whole page.
+type auditSummaryProjection struct {
+	EventID     string          `json:"eventId"`
+	StartedAt   string          `json:"startedAt"`
+	EventType   string          `json:"eventType"`
+	Outcome     string          `json:"outcome"`
+	RunID       json.RawMessage `json:"runId"`
+	PackageHash string          `json:"packageHash"`
+	DurationMs  json.RawMessage `json:"durationMs"`
+}
+
+// projectAuditSummaryItem builds the bounded display projection of one
+// stored audit payload. eventId stays the complete storage identity; every
+// unbounded display string becomes a rune-safe preview with the explicit
+// omission marker; startedAt is normalized under the existing RFC3339 time
+// semantics (never cut into an invalid date); optional values the old writes
+// accepted but the projection cannot represent safely become null. Any of
+// those losses raises metadataLimited — normal rows stay false.
+func projectAuditSummaryItem(payload json.RawMessage) (AuditSummaryItem, error) {
+	var projection auditSummaryProjection
+	if err := json.Unmarshal(payload, &projection); err != nil {
+		return AuditSummaryItem{}, storageError()
+	}
+	if projection.EventID == "" || projection.StartedAt == "" ||
+		projection.EventType == "" || projection.Outcome == "" {
+		// Unreachable after validateLegacyRow; corrupt storage never fakes data.
+		return AuditSummaryItem{}, storageError()
+	}
+	startedAt, err := auditStartedAtSummary(projection.StartedAt)
+	if err != nil {
+		return AuditSummaryItem{}, err
+	}
+	eventType, eventTypeLimited := auditSummaryPreview(projection.EventType)
+	outcome, outcomeLimited := auditSummaryPreview(projection.Outcome)
+	packageHash, packageHashLimited := auditSummaryPreview(projection.PackageHash)
+	runID, runIDLimited := auditSummaryOptionalText(projection.RunID)
+	duration, durationLimited := auditSummaryOptionalInt(projection.DurationMs)
+	limited := startedAt.limited || eventTypeLimited || outcomeLimited ||
+		packageHashLimited || runIDLimited || durationLimited
+	return AuditSummaryItem{
+		EventID:         projection.EventID,
+		StartedAt:       startedAt.normalized,
+		EventType:       eventType,
+		Outcome:         outcome,
+		RunID:           runID,
+		PackageHash:     packageHash,
+		DurationMs:      duration,
+		MetadataLimited: limited,
+	}, nil
+}
+
+// auditSummaryPreview bounds one display string to at most
+// AuditSummaryPreviewRunes runes. The cut is rune-aligned (never splits a
+// UTF-8 sequence) and appends the explicit "…" omission marker; the second
+// return reports whether the value was truncated.
+func auditSummaryPreview(value string) (string, bool) {
+	if utf8.RuneCountInString(value) <= AuditSummaryPreviewRunes {
+		return value, false
+	}
+	runes := []rune(value)
+	return string(runes[:AuditSummaryPreviewRunes-1]) + "…", true
+}
+
+type auditSummaryTimestamp struct {
+	normalized *string
+	limited    bool
+}
+
+// Go's legacy parser accepts year zero and ±24h offsets that the datetime
+// wire cannot represent. Normalize those to the same UTC instant; preserve
+// an explicit unknown if the result still lies outside years 1..9999.
+func auditStartedAtSummary(value string) (auditSummaryTimestamp, error) {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		// Unreachable after validateLegacyRow; corrupt storage never fakes data.
+		return auditSummaryTimestamp{}, storageError()
+	}
+	limited := auditFractionPrecisionLost(value)
+	if _, offsetSeconds := parsed.Zone(); parsed.Year() < 1 || offsetSeconds >= 24*60*60 || offsetSeconds <= -24*60*60 {
+		parsed = parsed.UTC()
+		limited = true
+	}
+	if year := parsed.Year(); year < 1 || year > 9999 {
+		return auditSummaryTimestamp{normalized: nil, limited: true}, nil
+	}
+	normalized := parsed.Format(time.RFC3339Nano)
+	return auditSummaryTimestamp{normalized: &normalized, limited: limited}, nil
+}
+
+// auditFractionPrecisionLost reports whether the fractional seconds of a
+// RFC3339 string carry more than nine significant digits (trailing zeros do
+// not count). Go accepts both '.' and ',' separators, so both count here:
+// those nanosecond-overflow digits cannot survive the normalized projection.
+func auditFractionPrecisionLost(value string) bool {
+	dot := strings.LastIndexAny(value, ".,")
+	if dot < 0 {
+		return false
+	}
+	rest := value[dot+1:]
+	// The fraction is the leading digit run; the timezone terminator is not
+	// part of it.
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	fraction := strings.TrimRight(rest[:end], "0")
+	return len(fraction) > 9
+}
+
+// auditSummaryOptionalText projects one optional string field whose stored
+// value the frozen write validation never type-checked: null or absence
+// stays nil without a flag, a string gets the bounded preview, and any other
+// legal legacy JSON value projects to null with the limited flag instead of
+// failing the page.
+func auditSummaryOptionalText(raw json.RawMessage) (*string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, true
+	}
+	preview, limited := auditSummaryPreview(value)
+	return &preview, limited
+}
+
+// auditSummaryOptionalInt projects one optional integer field the frozen
+// write validation never type-checked: null or absence stays nil without a
+// flag and an exact int64 JSON number is kept verbatim. Anything else the old
+// writes could store (string — including numeric strings, float, exponent,
+// out-of-range…) projects to null with the limited flag: the direct int64
+// decode rejects exactly those, and a duration is never fabricated.
+func auditSummaryOptionalInt(raw json.RawMessage) (*int64, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var value int64
+	// The Web consumer needs a nonnegative, exactly representable JSON number.
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > 9007199254740991 {
+		return nil, true
+	}
+	return &value, false
 }
 
 func (service *Service) list(
@@ -1187,6 +1474,24 @@ type ImportResult struct {
 }
 
 // ---- storage helpers ----
+
+// Only audit summaries use this seam: HTML-escaping the stored JSON before
+// projection can expand valid details beyond the legacy read limit.
+func recordFromStoredRaw(stored *core.Record) (record, error) {
+	column, _ := stored.GetRaw("payload_json").(pbtypes.JSONRaw)
+	payload := json.RawMessage(column)
+	if len(payload) == 0 || !json.Valid(payload) || len(payload) > maxPayloadBytes {
+		return record{}, storageError()
+	}
+	return record{
+		Kind:       stored.GetString("kind"),
+		ProjectKey: stored.GetString("project_key"),
+		PluginID:   stored.GetString("plugin_id"),
+		ItemKey:    stored.GetString("item_key"),
+		Payload:    payload,
+		Seq:        int64(stored.GetInt("seq")),
+	}, nil
+}
 
 func recordFromStored(stored *core.Record) (record, error) {
 	raw, err := json.Marshal(stored.GetRaw("payload_json"))

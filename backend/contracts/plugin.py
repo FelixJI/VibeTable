@@ -413,6 +413,35 @@ class PluginEventEnvelope(PluginContract):
     snapshot: dict[str, Any]
 
 
+class PluginAuditSummaryEvent(PluginContract):
+    """Bounded metadata projection of one audit event for the plugin center.
+
+    The details document never crosses this projection; the frozen
+    full-history reads keep owning the complete payload. metadata_limited is
+    true exactly when at least one displayed value is a bounded preview or an
+    old, write-accepted value the projection cannot represent. Preservation
+    retains the original. Every wire field is required; nullable values use
+    explicit nulls, including times outside the shared datetime range.
+    """
+
+    event_id: str
+    started_at: datetime | None
+    event_type: str
+    outcome: str
+    run_id: str | None
+    package_hash: str
+    duration_ms: int | None = Field(ge=0, le=9007199254740991)
+    metadata_limited: bool
+
+
+class PluginAuditSummaryPage(PluginContract):
+    """One fixed-size page of plugin center audit summaries with the
+    continuation token of the same project/plugin scope."""
+
+    events: list[PluginAuditSummaryEvent]
+    next_cursor: str | None
+
+
 class PluginAuditEvent(PluginContract):
     event_id: str
     project_key: str
@@ -454,6 +483,8 @@ __all__ = [
     "PendingConfirmation",
     "PluginAction",
     "PluginAuditEvent",
+    "PluginAuditSummaryEvent",
+    "PluginAuditSummaryPage",
     "PluginContract",
     "PluginEventEnvelope",
     "PluginFileRequest",

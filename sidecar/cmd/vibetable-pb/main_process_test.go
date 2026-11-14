@@ -565,6 +565,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"mutation.apply",
 		"mutation.preview",
 		"plugin.listAudit",
+		"plugin.listAuditPage",
 		"plugin.listCatalog",
 		"plugin.listPendingCleanup",
 		"plugin.setEnabled",

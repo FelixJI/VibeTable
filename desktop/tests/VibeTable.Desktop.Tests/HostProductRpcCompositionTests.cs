@@ -85,6 +85,48 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    public async Task PluginAuditPageAdmittedThroughTheRealHostGatewaySeam()
+    {
+        // The default generated policy is required: plugin.listAuditPage must
+        // resolve to the Go sidecar route exactly like production.
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        HostProductRpcBinding binding = fixture.Factory.CaptureHostProductRpcBinding()!;
+        using var gateway = binding.CreateGateway(fixture.Leases, fixture.Http);
+        string projectKey = $"local:{fixture.Session.WorkspaceId:N}";
+        fixture.Http.Result = Json("""
+            {"events":[{"eventId":"audit-1","startedAt":"2026-11-07T19:05:58Z","eventType":"install","outcome":"succeeded","runId":null,"packageHash":"sha256:0","durationMs":0,"metadataLimited":false}],"nextCursor":null}
+            """);
+
+        JsonElement page = await gateway.InvokePluginCatalogAsync(
+            "plugin.listAuditPage",
+            JsonSerializer.SerializeToElement(new
+            {
+                projectKey,
+                pluginId = "com.acme.clean",
+                cursor = (string?)null,
+            }),
+            CancellationToken.None);
+
+        // The call travelled the real Host invoker seam — one Product HTTP
+        // forward of the exact catalog method and params, not a fake dispatcher.
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual("plugin.listAuditPage", fixture.Http.LastProductMethod);
+        Assert.AreEqual(projectKey, fixture.Http.LastProductParams!.Value.GetProperty("projectKey").GetString());
+        Assert.AreEqual("audit-1", page.GetProperty("events")[0].GetProperty("eventId").GetString());
+        Assert.IsFalse(page.GetProperty("events")[0].GetProperty("metadataLimited").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, page.GetProperty("nextCursor").ValueKind);
+
+        // The closed whitelist keeps rejecting unknown catalog methods before
+        // any transport write.
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await gateway.InvokePluginCatalogAsync(
+                "plugin.listAuditPages",
+                Json("{}"),
+                CancellationToken.None));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
     public async Task LazyTableGatewayKeepsGoPasteAfterPythonStops()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
@@ -1031,6 +1073,8 @@ public sealed class HostProductRpcCompositionTests
         internal IDictionary<string, string> Environment { get; set; } = null!;
         internal int ProductCalls { get; private set; }
         internal int ProductHandshakes { get; private set; }
+        internal string? LastProductMethod { get; private set; }
+        internal JsonElement? LastProductParams { get; private set; }
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
@@ -1068,6 +1112,12 @@ public sealed class HostProductRpcCompositionTests
             ProductCalls++;
             JsonElement call = Json(await request.Content!.ReadAsStringAsync(token));
             LastWire = call.GetProperty("wire").Clone();
+            if (call.TryGetProperty("method", out JsonElement postedMethod) && postedMethod.ValueKind == JsonValueKind.String)
+            {
+                LastProductMethod = postedMethod.GetString();
+                LastProductParams = call.TryGetProperty("params", out JsonElement postedParams)
+                    ? postedParams.Clone() : default;
+            }
             RpcEntered.TrySetResult();
             if (ReplyGate is not null) await ReplyGate.Task.WaitAsync(token);
             if (DomainError is JsonElement domainError)

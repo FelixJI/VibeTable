@@ -916,6 +916,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       || type === "settings.readWorkCalendar" || type === "gridState.get"
       || type === "lookup.query" || type === "lookup.valuePage"
       || type === "plugin.catalog.list" || type === "plugin.audit.list"
+      || type === "plugin.audit.page"
       || type === "plugin.cleanup.listPending"
       || type.startsWith("command.") || type.startsWith("shortcut.")
       || type.startsWith("clipboard.")

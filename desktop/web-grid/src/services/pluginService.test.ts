@@ -209,6 +209,87 @@ describe("pluginService canonical wire", () => {
     expect(store.busy).toBe(false);
   });
 
+  it("keeps a failed audit page read off the global error surface", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "audit-page-local",
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({
+            data: {
+              type: "operation.failed",
+              requestId: request.requestId,
+              payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+            },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+
+    // The audit section owns this failure; the store's global error banner
+    // and busy gate stay untouched even with no other error visible, so a
+    // later retry cannot leave a stale global error behind either.
+    await expect(usePluginService().auditPage(snapshot.pluginId)).rejects.toThrow(
+      "audit unavailable",
+    );
+
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(false);
+    bridge.stop();
+  });
+
+  it("keeps a late audit page failure from a previous selection off the next global error", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const failures: Array<() => void> = [];
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-page-late-${failures.length}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          if (request.type !== "plugin.audit.page") {
+            queueMicrotask(() => listener?.({ data: { type: request.type, requestId: request.requestId, payload: [] } }));
+            return;
+          }
+          failures.push(() => queueMicrotask(() => listener?.({
+            data: {
+              type: "operation.failed",
+              requestId: request.requestId,
+              payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+            },
+          })));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+
+    // Plugin A's page request stays pending; the user switches to plugin B
+    // and loads its pages before A's late failure lands.
+    const lateFailure = service.auditPage("com.acme.first");
+    store.setProjectContext("local:switched", "r2");
+    const currentFailure = service.auditPage("com.acme.second");
+    failures[1]?.();
+    await expect(currentFailure).rejects.toThrow("audit unavailable");
+    failures[0]?.();
+    await expect(lateFailure).rejects.toThrow("audit unavailable");
+
+    // Neither the current-context failure nor the stale one may pollute the
+    // global error banner of the next selection.
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(false);
+    bridge.stop();
+  });
+
   it("keeps overlapping background catalog refreshes off the foreground busy gate", async () => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;

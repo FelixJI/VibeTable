@@ -39,6 +39,7 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "plugin.describeAction",
   "plugin.inspectInstall",
   "plugin.listAudit",
+  "plugin.listAuditPage",
   "plugin.listCatalog",
   "plugin.listPendingCleanup",
   "plugin.setEnabled",

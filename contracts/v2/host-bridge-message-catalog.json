@@ -1046,6 +1046,15 @@
       "bridgeHost": true
     },
     {
+      "name": "plugin.audit.page",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
       "reference": {
         "source": "product",
         "topic": "plugin.catalog.changed"

@@ -769,7 +769,7 @@ test("records document operation failure notifications without retaining private
 
 for (const method of [
   "dashboard.listRequested", "settings.readWorkCalendar", "lookup.query", "gridState.get",
-  "plugin.catalog.list", "plugin.audit.list", "plugin.cleanup.listPending",
+  "plugin.catalog.list", "plugin.audit.list", "plugin.audit.page", "plugin.cleanup.listPending",
 ]) {
 test(`retirement only settles ${method} with matching type and epoch`, () => {
   const listeners = new Map();
@@ -842,7 +842,7 @@ function installRetirementHarness(method) {
 
 for (const method of [
   "dashboard.listRequested", "dashboard.manifestRequested", "lookup.query", "gridState.get",
-  "plugin.catalog.list", "plugin.audit.list", "plugin.cleanup.listPending",
+  "plugin.catalog.list", "plugin.audit.list", "plugin.audit.page", "plugin.cleanup.listPending",
 ]) {
 test(`late BAD_WORKSPACE_SCOPE failure after ${method} retirement keeps code and request identity`, () => {
   const { retire, postScoped, lateFailure } = installRetirementHarness(method);

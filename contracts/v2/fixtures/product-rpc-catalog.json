@@ -60,6 +60,7 @@
     "plugin.describeAction",
     "plugin.inspectInstall",
     "plugin.listAudit",
+    "plugin.listAuditPage",
     "plugin.listCatalog",
     "plugin.listPendingCleanup",
     "plugin.resolveFile",
@@ -14713,6 +14714,145 @@
       }
     },
     {
+      "method": "plugin.listAuditPage",
+      "paramsModel": "PluginAuditPageParams",
+      "resultModel": "PluginAuditSummaryPage",
+      "resultSchema": {
+        "$defs": {
+          "PluginAuditSummaryEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "eventId": {
+                "type": "string"
+              },
+              "startedAt": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "eventType": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "packageHash": {
+                "type": "string"
+              },
+              "durationMs": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "metadataLimited": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "eventId",
+              "startedAt",
+              "eventType",
+              "outcome",
+              "runId",
+              "packageHash",
+              "durationMs",
+              "metadataLimited"
+            ],
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/$defs/PluginAuditSummaryEvent"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "nextCursor"
+        ],
+        "type": "object"
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "rpc-060",
+        "method": "plugin.listAuditPage",
+        "params": {
+          "projectKey": "local:default",
+          "pluginId": "sample-plugin",
+          "cursor": null
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "rpc-060",
+        "result": {
+          "events": [
+            {
+              "eventId": "00000000-0000-4000-8000-000000000001",
+              "startedAt": "2026-07-24T08:31:00Z",
+              "eventType": "sample-value",
+              "outcome": "sample-value",
+              "runId": "00000000-0000-4000-8000-000000000001",
+              "packageHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "durationMs": 1,
+              "metadataLimited": false
+            }
+          ],
+          "nextCursor": "sample-value"
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "rpc-060",
+        "error": {
+          "code": "request.invalid",
+          "message": "plugin.listAuditPage request validation failed.",
+          "data": {
+            "method": "plugin.listAuditPage",
+            "path": "params",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
       "method": "plugin.listCatalog",
       "paramsModel": "PluginProjectParams",
       "resultModel": "PluginSnapshotList",
@@ -15013,7 +15153,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "method": "plugin.listCatalog",
         "params": {
           "projectKey": "local:default"
@@ -15021,7 +15161,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "result": [
           {
             "installationId": null,
@@ -15054,7 +15194,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-060",
+        "id": "rpc-061",
         "error": {
           "code": "request.invalid",
           "message": "plugin.listCatalog request validation failed.",
@@ -15223,7 +15363,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "method": "plugin.listPendingCleanup",
         "params": {
           "projectKey": "local:default"
@@ -15231,7 +15371,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "result": [
           {
             "eventId": "00000000-0000-4000-8000-000000000001",
@@ -15257,7 +15397,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-061",
+        "id": "rpc-062",
         "error": {
           "code": "request.invalid",
           "message": "plugin.listPendingCleanup request validation failed.",
@@ -15279,18 +15419,18 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "method": "plugin.resolveFile",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-062",
+        "id": "rpc-063",
         "error": {
           "code": "request.invalid",
           "message": "plugin.resolveFile request validation failed.",
@@ -15312,18 +15452,18 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "method": "plugin.resolveInteraction",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-063",
+        "id": "rpc-064",
         "error": {
           "code": "request.invalid",
           "message": "plugin.resolveInteraction request validation failed.",
@@ -15630,7 +15770,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "method": "plugin.rollback",
         "params": {
           "projectKey": "local:default",
@@ -15639,7 +15779,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -15670,7 +15810,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-064",
+        "id": "rpc-065",
         "error": {
           "code": "request.invalid",
           "message": "plugin.rollback request validation failed.",
@@ -15977,7 +16117,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "method": "plugin.setEnabled",
         "params": {
           "projectKey": "local:default",
@@ -15987,7 +16127,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -16018,7 +16158,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-065",
+        "id": "rpc-066",
         "error": {
           "code": "request.invalid",
           "message": "plugin.setEnabled request validation failed.",
@@ -16325,7 +16465,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "method": "plugin.setEnabledExecution",
         "params": {
           "projectKey": "local:default",
@@ -16337,7 +16477,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -16368,7 +16508,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-066",
+        "id": "rpc-067",
         "error": {
           "code": "request.invalid",
           "message": "plugin.setEnabledExecution request validation failed.",
@@ -16390,18 +16530,18 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "method": "plugin.startAction",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "result": {}
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-067",
+        "id": "rpc-068",
         "error": {
           "code": "request.invalid",
           "message": "plugin.startAction request validation failed.",
@@ -16439,7 +16579,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "method": "plugin.uninstall",
         "params": {
           "projectKey": "local:default",
@@ -16451,7 +16591,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "result": {
           "uninstalled": false,
           "privateSettingsRetained": false,
@@ -16460,7 +16600,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-068",
+        "id": "rpc-069",
         "error": {
           "code": "request.invalid",
           "message": "plugin.uninstall request validation failed.",
@@ -16767,7 +16907,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "method": "plugin.upgrade",
         "params": {
           "projectKey": "local:default",
@@ -16778,7 +16918,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "result": {
           "installationId": null,
           "projectKey": "local:default",
@@ -16809,7 +16949,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-069",
+        "id": "rpc-070",
         "error": {
           "code": "request.invalid",
           "message": "plugin.upgrade request validation failed.",
@@ -16879,7 +17019,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "method": "pluginPreservation.snapshot",
         "params": {
           "projectKey": "local:default",
@@ -16893,7 +17033,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "result": {
           "contractVersion": "2.0",
           "snapshotRevision": "0",
@@ -16910,7 +17050,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-070",
+        "id": "rpc-071",
         "error": {
           "code": "request.invalid",
           "message": "pluginPreservation.snapshot request validation failed.",
@@ -16955,7 +17095,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "method": "preset.delete",
         "params": {
           "presetId": "00000000-0000-4000-8000-000000000001",
@@ -16965,7 +17105,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
           "status": "applied",
@@ -16977,7 +17117,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-071",
+        "id": "rpc-072",
         "error": {
           "code": "request.invalid",
           "message": "preset.delete request validation failed.",
@@ -17438,7 +17578,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "method": "preset.list",
         "params": {
           "collection": "orders"
@@ -17446,7 +17586,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "result": {
           "collection": "orders",
           "presets": []
@@ -17454,7 +17594,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-072",
+        "id": "rpc-073",
         "error": {
           "code": "request.invalid",
           "message": "preset.list request validation failed.",
@@ -17895,7 +18035,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "method": "preset.save",
         "params": {
           "collection": "orders",
@@ -17925,7 +18065,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "result": {
           "id": "sample-value",
           "collection": "orders",
@@ -17957,7 +18097,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-073",
+        "id": "rpc-074",
         "error": {
           "code": "request.invalid",
           "message": "preset.save request validation failed.",
@@ -18093,7 +18233,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "method": "query.cursorFetch",
         "params": {
           "cursor": "sample-value"
@@ -18101,7 +18241,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "result": {
           "rows": [
             {
@@ -18131,7 +18271,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-074",
+        "id": "rpc-075",
         "error": {
           "code": "request.invalid",
           "message": "query.cursorFetch request validation failed.",
@@ -18267,7 +18407,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "method": "query.cursorOpen",
         "params": {
           "query": {},
@@ -18276,7 +18416,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "result": {
           "rows": [
             {
@@ -18306,7 +18446,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-075",
+        "id": "rpc-076",
         "error": {
           "code": "request.invalid",
           "message": "query.cursorOpen request validation failed.",
@@ -18438,7 +18578,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "method": "query.page",
         "params": {
           "query": {},
@@ -18447,7 +18587,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "result": {
           "rows": [
             {
@@ -18478,7 +18618,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-076",
+        "id": "rpc-077",
         "error": {
           "code": "request.invalid",
           "message": "query.page request validation failed.",
@@ -18524,7 +18664,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "method": "query.readRows",
         "params": {
           "rowIds": [],
@@ -18533,7 +18673,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "result": {
           "rows": [
             {
@@ -18545,7 +18685,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-077",
+        "id": "rpc-078",
         "error": {
           "code": "request.invalid",
           "message": "query.readRows request validation failed.",
@@ -20320,7 +20460,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "method": "query.selectionOpen",
         "params": {
           "query": {},
@@ -20329,7 +20469,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "result": {
           "schemaSnapshot": {
             "contract": "vibetable.schema.v2",
@@ -20597,7 +20737,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-078",
+        "id": "rpc-079",
         "error": {
           "code": "request.invalid",
           "message": "query.selectionOpen request validation failed.",
@@ -20639,7 +20779,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "method": "query.validateSnapshot",
         "params": {
           "snapshot": {}
@@ -20647,7 +20787,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "result": {
           "valid": false,
           "reason": "application_write",
@@ -20657,7 +20797,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-079",
+        "id": "rpc-080",
         "error": {
           "code": "request.invalid",
           "message": "query.validateSnapshot request validation failed.",
@@ -20893,7 +21033,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "method": "query.view",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -20902,7 +21042,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "result": {
           "page": {
             "rows": [
@@ -20954,7 +21094,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-080",
+        "id": "rpc-081",
         "error": {
           "code": "request.invalid",
           "message": "query.view request validation failed.",
@@ -21040,7 +21180,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "method": "recordDocumentLink.commit",
         "params": {
           "link": {
@@ -21058,7 +21198,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "result": {
           "link": {
             "contractVersion": "1.0",
@@ -21074,7 +21214,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-081",
+        "id": "rpc-082",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.commit request validation failed.",
@@ -21105,7 +21245,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "method": "recordDocumentLink.delete",
         "params": {
           "linkId": "00000000-0000-4000-8000-000000000001",
@@ -21115,14 +21255,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "result": {
           "linkId": "00000000-0000-4000-8000-000000000001"
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-082",
+        "id": "rpc-083",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.delete request validation failed.",
@@ -21223,7 +21363,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "method": "recordDocumentLink.list",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -21232,7 +21372,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "result": {
           "items": [
             {
@@ -21252,7 +21392,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-083",
+        "id": "rpc-084",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.list request validation failed.",
@@ -21338,7 +21478,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "method": "recordDocumentLink.repair",
         "params": {
           "linkId": "00000000-0000-4000-8000-000000000001",
@@ -21349,7 +21489,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "result": {
           "link": {
             "contractVersion": "1.0",
@@ -21365,7 +21505,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-084",
+        "id": "rpc-085",
         "error": {
           "code": "request.invalid",
           "message": "recordDocumentLink.repair request validation failed.",
@@ -21487,7 +21627,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "method": "relation.applyDelta",
         "params": {
           "adds": "sample-value",
@@ -21500,7 +21640,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "result": {
           "outcome": "committed",
           "current": [
@@ -21519,7 +21659,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-085",
+        "id": "rpc-086",
         "error": {
           "code": "request.invalid",
           "message": "relation.applyDelta request validation failed.",
@@ -21631,7 +21771,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "method": "relation.createTarget",
         "params": {
           "idempotencyKey": "00000000-0000-4000-8000-000000000001",
@@ -21640,7 +21780,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "result": {
           "outcome": "committed",
           "target": {
@@ -21656,7 +21796,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-086",
+        "id": "rpc-087",
         "error": {
           "code": "request.invalid",
           "message": "relation.createTarget request validation failed.",
@@ -21907,7 +22047,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "method": "relation.inspectPair",
         "params": {
           "fieldId": "fld_00000001",
@@ -21916,7 +22056,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "result": {
           "pairId": "pair_example",
           "endpoints": [
@@ -21947,7 +22087,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-087",
+        "id": "rpc-088",
         "error": {
           "code": "request.invalid",
           "message": "relation.inspectPair request validation failed.",
@@ -22194,7 +22334,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "method": "relation.previewDelta",
         "params": {
           "adds": "sample-value",
@@ -22207,7 +22347,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "result": {
           "delta": {
             "relationId": "00000000-0000-4000-8000-000000000001",
@@ -22231,7 +22371,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-088",
+        "id": "rpc-089",
         "error": {
           "code": "request.invalid",
           "message": "relation.previewDelta request validation failed.",
@@ -22342,7 +22482,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "method": "relation.searchTargets",
         "params": {
           "relationId": "00000000-0000-4000-8000-000000000001"
@@ -22350,7 +22490,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "result": {
           "items": [
             {
@@ -22367,7 +22507,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-089",
+        "id": "rpc-090",
         "error": {
           "code": "request.invalid",
           "message": "relation.searchTargets request validation failed.",
@@ -22493,7 +22633,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "method": "relation.updateSingle",
         "params": {
           "expectedSchemaRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -22505,7 +22645,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "result": {
           "outcome": "committed",
           "current": null,
@@ -22515,7 +22655,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-090",
+        "id": "rpc-091",
         "error": {
           "code": "request.invalid",
           "message": "relation.updateSingle request validation failed.",
@@ -22549,7 +22689,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "method": "schema.delete",
         "params": {
           "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -22558,7 +22698,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "result": {
           "deleted": true,
           "tableId": "orders"
@@ -22566,7 +22706,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-091",
+        "id": "rpc-092",
         "error": {
           "code": "request.invalid",
           "message": "schema.delete request validation failed.",
@@ -23337,7 +23477,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "method": "schema.describe",
         "params": {
           "accepts": [],
@@ -23347,7 +23487,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "result": {
           "contract": "vibetable.schema-describe.v1",
           "collection": "orders",
@@ -23393,7 +23533,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-092",
+        "id": "rpc-093",
         "error": {
           "code": "request.invalid",
           "message": "schema.describe request validation failed.",
@@ -24880,7 +25020,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "method": "schema.getTable",
         "params": {
           "tableId": "00000000-0000-4000-8000-000000000001"
@@ -24888,7 +25028,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "result": {
           "contract": "vibetable.schema.v2",
           "tableId": "00000000-0000-4000-8000-000000000001",
@@ -25128,7 +25268,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-093",
+        "id": "rpc-094",
         "error": {
           "code": "request.invalid",
           "message": "schema.getTable request validation failed.",
@@ -25183,13 +25323,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "method": "schema.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "result": {
           "tables": [
             {
@@ -25202,7 +25342,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-094",
+        "id": "rpc-095",
         "error": {
           "code": "request.invalid",
           "message": "schema.list request validation failed.",
@@ -25252,7 +25392,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "method": "schema.table.create",
         "params": {
           "actor": {},
@@ -25262,7 +25402,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "result": {
           "contract": "vibetable.schema.v2",
           "operationId": "operation-create-table-12345678",
@@ -25273,7 +25413,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-095",
+        "id": "rpc-096",
         "error": {
           "code": "request.invalid",
           "message": "schema.table.create request validation failed.",
@@ -25357,7 +25497,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "method": "settings.commitWorkCalendar",
         "params": {
           "overrides": [],
@@ -25367,7 +25507,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "result": {
           "overrides": [],
           "revision": "sha256:example",
@@ -25378,7 +25518,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-096",
+        "id": "rpc-097",
         "error": {
           "code": "request.invalid",
           "message": "settings.commitWorkCalendar request validation failed.",
@@ -25455,13 +25595,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "method": "settings.readDevice",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -25476,7 +25616,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-097",
+        "id": "rpc-098",
         "error": {
           "code": "request.invalid",
           "message": "settings.readDevice request validation failed.",
@@ -25541,13 +25681,13 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "method": "settings.readWorkCalendar",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "result": {
           "overrides": [],
           "revision": ""
@@ -25555,7 +25695,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-098",
+        "id": "rpc-099",
         "error": {
           "code": "request.invalid",
           "message": "settings.readWorkCalendar request validation failed.",
@@ -25632,7 +25772,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "method": "settings.saveDevice",
         "params": {
           "settings": {
@@ -25650,7 +25790,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "result": {
           "schemaVersion": 1,
           "theme": {
@@ -25665,7 +25805,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-099",
+        "id": "rpc-100",
         "error": {
           "code": "request.invalid",
           "message": "settings.saveDevice request validation failed.",
@@ -25695,7 +25835,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "method": "shortcut.delete",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001"
@@ -25703,14 +25843,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "result": {
           "deleted": "11111111-1111-4111-8111-111111111111"
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-100",
+        "id": "rpc-101",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.delete request validation failed.",
@@ -25769,7 +25909,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "method": "shortcut.launch",
         "params": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
@@ -25778,7 +25918,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "launched": false,
@@ -25788,7 +25928,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-101",
+        "id": "rpc-102",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.launch request validation failed.",
@@ -25871,20 +26011,20 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "method": "shortcut.list",
         "params": {}
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "result": {
           "shortcuts": []
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-102",
+        "id": "rpc-103",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.list request validation failed.",
@@ -25953,7 +26093,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "method": "shortcut.save",
         "params": {
           "shortcut": {
@@ -25967,7 +26107,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "result": {
           "shortcutId": "00000000-0000-4000-8000-000000000001",
           "target": "built-in-command",
@@ -25978,7 +26118,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-103",
+        "id": "rpc-104",
         "error": {
           "code": "request.invalid",
           "message": "shortcut.save request validation failed.",
@@ -26019,7 +26159,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "method": "system.handshake",
         "params": {
           "clientVersion": "sample-value",
@@ -26028,7 +26168,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "result": {
           "backendVersion": "sample-value",
           "protocolVersion": "sample-value",
@@ -26039,7 +26179,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-104",
+        "id": "rpc-105",
         "error": {
           "code": "request.invalid",
           "message": "system.handshake request validation failed.",
@@ -26167,7 +26307,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "method": "table.applyPaste",
         "params": {
           "collection": "orders",
@@ -26177,7 +26317,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "result": {
           "collection": "orders",
           "outcome": "committed",
@@ -26190,7 +26330,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-105",
+        "id": "rpc-106",
         "error": {
           "code": "request.invalid",
           "message": "table.applyPaste request validation failed.",
@@ -26409,7 +26549,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "method": "table.previewPaste",
         "params": {
           "collection": "orders",
@@ -26434,7 +26574,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "result": {
           "collection": "orders",
           "schemaRevision": "schema_0001",
@@ -26466,7 +26606,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-106",
+        "id": "rpc-107",
         "error": {
           "code": "request.invalid",
           "message": "table.previewPaste request validation failed.",
@@ -26569,7 +26709,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "method": "task.cancel",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -26577,7 +26717,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -26594,7 +26734,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-107",
+        "id": "rpc-108",
         "error": {
           "code": "request.invalid",
           "message": "task.cancel request validation failed.",
@@ -26615,7 +26755,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "method": "task.cancelExecution",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -26623,12 +26763,12 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "result": true
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-108",
+        "id": "rpc-109",
         "error": {
           "code": "request.invalid",
           "message": "task.cancelExecution request validation failed.",
@@ -26731,7 +26871,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "method": "task.create",
         "params": {
           "kind": "data.import",
@@ -26740,7 +26880,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -26757,7 +26897,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-109",
+        "id": "rpc-110",
         "error": {
           "code": "request.invalid",
           "message": "task.create request validation failed.",
@@ -26794,7 +26934,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "method": "task.settleExport",
         "params": {
           "grantId": "00000000-0000-4000-8000-000000000001"
@@ -26802,7 +26942,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "result": {
           "grantId": "00000000-0000-4000-8000-000000000001",
           "settled": true
@@ -26810,7 +26950,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-110",
+        "id": "rpc-111",
         "error": {
           "code": "request.invalid",
           "message": "task.settleExport request validation failed.",
@@ -26840,7 +26980,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "method": "task.startExecution",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001",
@@ -26850,14 +26990,14 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "result": {
           "accepted": true
         }
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-111",
+        "id": "rpc-112",
         "error": {
           "code": "request.invalid",
           "message": "task.startExecution request validation failed.",
@@ -26960,7 +27100,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "method": "task.status",
         "params": {
           "taskId": "00000000-0000-4000-8000-000000000001"
@@ -26968,7 +27108,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "result": {
           "taskId": "00000000-0000-4000-8000-000000000001",
           "kind": "data.import",
@@ -26985,7 +27125,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-112",
+        "id": "rpc-113",
         "error": {
           "code": "request.invalid",
           "message": "task.status request validation failed.",
@@ -27051,7 +27191,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "method": "version.compare",
         "params": {
           "collection": "orders",
@@ -27062,7 +27202,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -27075,7 +27215,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-113",
+        "id": "rpc-114",
         "error": {
           "code": "request.invalid",
           "message": "version.compare request validation failed.",
@@ -27149,7 +27289,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "method": "version.create",
         "params": {
           "collection": "orders",
@@ -27161,7 +27301,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "result": {
           "id": "sample-value",
           "key": "",
@@ -27175,7 +27315,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-114",
+        "id": "rpc-115",
         "error": {
           "code": "request.invalid",
           "message": "version.create request validation failed.",
@@ -27220,7 +27360,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "method": "version.delete",
         "params": {
           "collection": "orders",
@@ -27232,7 +27372,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "result": {
           "deleted": "00000000-0000-4000-8000-000000000001",
           "status": "applied",
@@ -27244,7 +27384,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-115",
+        "id": "rpc-116",
         "error": {
           "code": "request.invalid",
           "message": "version.delete request validation failed.",
@@ -27346,7 +27486,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "method": "version.list",
         "params": {
           "collection": "orders",
@@ -27355,7 +27495,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "result": {
           "collection": "orders",
           "itemId": "00000000-0000-4000-8000-000000000001",
@@ -27364,7 +27504,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-116",
+        "id": "rpc-117",
         "error": {
           "code": "request.invalid",
           "message": "version.list request validation failed.",
@@ -27443,7 +27583,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-117",
+        "id": "rpc-118",
         "method": "version.promote",
         "params": {
           "collection": "orders",
@@ -27456,7 +27596,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-117",
+        "id": "rpc-118",
         "result": {
           "promoted": "version-1",
           "restoredToRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -27471,7 +27611,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-117",
+        "id": "rpc-118",
         "error": {
           "code": "request.invalid",
           "message": "version.promote request validation failed.",
@@ -27524,7 +27664,7 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "rpc-118",
+        "id": "rpc-119",
         "method": "version.save",
         "params": {
           "collection": "orders",
@@ -27537,7 +27677,7 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "rpc-118",
+        "id": "rpc-119",
         "result": {
           "saved": "version-1",
           "changeSetId": "change-set-1",
@@ -27551,7 +27691,7 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "rpc-118",
+        "id": "rpc-119",
         "error": {
           "code": "request.invalid",
           "message": "version.save request validation failed.",
