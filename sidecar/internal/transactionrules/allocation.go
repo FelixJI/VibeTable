@@ -108,6 +108,33 @@ type AllocationCoverageCondition struct {
 	Equals string       `json:"equals"`
 }
 
+// Only the new condition uses exact wire keys. Older AuthorityRef users keep their decoder.
+func validCoverageWire(entry any) bool {
+	condition, ok := entry.(map[string]any)
+	if !ok || len(condition) != 2 || condition["equals"] == nil {
+		return false
+	}
+	ref, ok := condition["ref"].(map[string]any)
+	if !ok || ref["field"] == nil {
+		return false
+	}
+	rawPath, supplied := ref["path"]
+	if !supplied {
+		return len(ref) == 1
+	}
+	path, ok := rawPath.([]any)
+	if !ok || len(ref) != 2 {
+		return false
+	}
+	for _, entry := range path {
+		step, ok := entry.(map[string]any)
+		if !ok || len(step) != 2 || step["field"] == nil || step["target"] == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // AllocationSpec is the closed typed shape of an allocationBalance rule:
 // field and relation names only; no formulas, SQL or scripts are accepted.
 type AllocationSpec struct {

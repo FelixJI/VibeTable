@@ -175,17 +175,21 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			}
 		}
 		if allocation, ok := fields["allocation"].(map[string]any); ok {
+			conditions, hasCoverage := allocation["requireCompleteWhen"].([]any)
 			for key := range allocation {
-				if key != "requireCompleteWhen" && strings.EqualFold(key, "requireCompleteWhen") {
+				if key != "requireCompleteWhen" && strings.EqualFold(key, "requireCompleteWhen") ||
+					hasCoverage && key != "requireCompleteWhenAllocated" && strings.EqualFold(key, "requireCompleteWhenAllocated") {
 					return failure("rules_invalid")
 				}
 			}
-			if conditions, ok := allocation["requireCompleteWhen"].([]any); ok {
-				for _, entry := range conditions {
-					condition, ok := entry.(map[string]any)
-					if !ok || len(condition) != 2 || condition["ref"] == nil || condition["equals"] == nil {
-						return failure("rules_invalid")
-					}
+			for i, entry := range conditions {
+				if !validCoverageWire(entry) {
+					return failure("rules_invalid")
+				}
+				ref := &decoded.Allocation.RequireCompleteWhen[i].Ref
+				if ref.Path == nil {
+					// AuthorityRef persists self references with an empty array.
+					ref.Path = []RelationStep{}
 				}
 			}
 			if parent, ok := allocation["parent"].(map[string]any); ok {

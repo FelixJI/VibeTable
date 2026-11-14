@@ -1259,6 +1259,7 @@ func TestInvoiceAuthorityRequestAllocationCompleteOnlyWhenPresent(t *testing.T) 
 }
 
 func TestInvoiceAuthorityConditionalRequestSourceCoverage(t *testing.T) {
+	var declaration map[string]any
 	f := newInvoiceAuthorityFixtureWithWire(t, func(d transactionrules.Declaration) any {
 		base := d.Rules[len(d.Rules)-1]
 		spec := *base.Allocation
@@ -1266,12 +1267,33 @@ func TestInvoiceAuthorityConditionalRequestSourceCoverage(t *testing.T) {
 		spec.RequireCompleteWhen = []transactionrules.AllocationCoverageCondition{
 			{Ref: transactionrules.AuthorityRef{Path: path, Field: "direction"}, Equals: "red"},
 			{Ref: transactionrules.AuthorityRef{Path: path, Field: "status"}, Equals: "confirmed"},
+			{Ref: transactionrules.AuthorityRef{Field: "unit"}, Equals: "piece"},
 		}
 		base.ID, base.Allocation = "red_request_source_coverage", &spec
 		d.Rules = append(d.Rules, base)
 		d.Rules[1].Settlement.Request.OpenStates = []string{"confirmed"}
-		return d
+		raw, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &declaration); err != nil {
+			t.Fatal(err)
+		}
+		rules := declaration["rules"].([]any)
+		allocation := rules[len(rules)-1].(map[string]any)["allocation"].(map[string]any)
+		conditions := allocation["requireCompleteWhen"].([]any)
+		delete(conditions[2].(map[string]any)["ref"].(map[string]any), "path")
+		return declaration
 	})
+	repeat := *f
+	repeat.input.RequestID = "repeat-coverage-configure"
+	if _, err := repeat.call("transaction.configure", map[string]any{"declaration": declaration}); err != nil {
+		t.Fatalf("repeat configure with omitted condition path: %v", err)
+	}
+	registrations, err := transactionrules.Load(t.Context(), f.pb)
+	if err != nil || len(registrations) != 1 {
+		t.Fatalf("expected exactly one immutable coverage registration: %d, %v", len(registrations), err)
+	}
 	const mismatch = "transaction.allocation_mismatch"
 	request := invoiceRequest("missing", "physicalReturn", "quantity", "1", "10.00", "0.00", "10.00", nil)
 	request.Operations[0].Values["status"] = "confirmed"

@@ -917,18 +917,20 @@ def test_new_rule_null_shapes_match_go() -> None:
         )
     )
 
-    def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
+    def validate(base: str, *edits: dict) -> None:
         rule = copy.deepcopy(corpus["rules"][base])
-        node = rule
-        for index, key in enumerate(path):
-            key = int(key) if isinstance(node, list) else key
-            if index == len(path) - 1:
-                if omit:
-                    del node[key]
+        for edit in edits:
+            path = edit["path"]
+            node = rule
+            for index, key in enumerate(path):
+                key = int(key) if isinstance(node, list) else key
+                if index == len(path) - 1:
+                    if edit.get("omit"):
+                        del node[key]
+                    else:
+                        node[key] = edit.get("value")
                 else:
-                    node[key] = value
-            else:
-                node = node[key]
+                    node = node[key]
         PluginTransactionsDeclaration.model_validate(
             {
                 "contract": "vibetable.plugin-transactions.v1",
@@ -958,12 +960,12 @@ def test_new_rule_null_shapes_match_go() -> None:
         )
 
     for base in corpus["rules"]:
-        validate(base, [])
+        validate(base)
     for case in corpus["invalid"]:
         with pytest.raises(ValidationError):
-            validate(case["base"], case["path"], case.get("value"))
+            validate(case["base"], case, *([case["also"]] if "also" in case else []))
     for case in corpus["valid"]:
-        validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+        validate(case["base"], case)
 
 
 def invoice_guard_decimals() -> list[dict]:

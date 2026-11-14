@@ -843,6 +843,11 @@
     {"base": "allocation", "path": ["allocation", "RequireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "red"}]},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"Ref": {"field": "status"}, "equals": "red"}]},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "Equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"Field": "status"}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status", "Path": []}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status", "path": [{"Field": "invoice", "target": "invoices"}]}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status", "path": [{"field": "invoice", "Target": "invoices"}]}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "RequireCompleteWhenAllocated"], "value": true, "also": {"path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "red"}]}},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": null, "equals": "red"}]},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status", "path": null}, "equals": "red"}]},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": ""}]},
@@ -901,6 +906,7 @@
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": true},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "omit": true},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"path": [{"field": "invoice", "target": "invoices"}], "field": "direction"}, "equals": "red"}, {"ref": {"path": [], "field": "purpose"}, "equals": "physicalReturn"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "purpose"}, "equals": "physicalReturn"}]},
     {"base": "group", "path": ["related"], "value": null},
     {"base": "group", "path": ["reference"], "value": null}
   ]
