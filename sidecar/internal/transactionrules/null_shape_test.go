@@ -9,12 +9,17 @@ import (
 )
 
 func TestNewRuleNullShapesMatchPython(t *testing.T) {
+	type edit struct {
+		Path  []string
+		Value any
+		Omit  bool
+	}
 	var corpus struct {
 		Rules   map[string]json.RawMessage `json:"rules"`
 		Invalid []struct {
-			Base  string
-			Path  []string
-			Value any
+			Base string
+			edit
+			Also *edit
 		} `json:"invalid"`
 		Valid []struct {
 			Base  string
@@ -30,34 +35,36 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 	if err = json.Unmarshal(raw, &corpus); err != nil {
 		t.Fatal(err)
 	}
-	check := func(t *testing.T, base string, path []string, value any, omit, valid bool) {
+	check := func(t *testing.T, base string, valid bool, edits ...edit) {
 		t.Helper()
 		var rule any
 		if err := json.Unmarshal(corpus.Rules[base], &rule); err != nil {
 			t.Fatal(err)
 		}
-		current := rule
-		for i, key := range path {
-			switch node := current.(type) {
-			case map[string]any:
-				if i == len(path)-1 {
-					if omit {
-						delete(node, key)
+		for _, change := range edits {
+			current := rule
+			for i, key := range change.Path {
+				switch node := current.(type) {
+				case map[string]any:
+					if i == len(change.Path)-1 {
+						if change.Omit {
+							delete(node, key)
+						} else {
+							node[key] = change.Value
+						}
 					} else {
-						node[key] = value
+						current = node[key]
 					}
-				} else {
-					current = node[key]
-				}
-			case []any:
-				index, err := strconv.Atoi(key)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if i == len(path)-1 {
-					node[index] = value
-				} else {
-					current = node[index]
+				case []any:
+					index, err := strconv.Atoi(key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if i == len(change.Path)-1 {
+						node[index] = change.Value
+					} else {
+						current = node[index]
+					}
 				}
 			}
 		}
@@ -90,18 +97,34 @@ func TestNewRuleNullShapesMatchPython(t *testing.T) {
 			map[string]any{"entity": "adjustments", "field": "gross", "storage": "decimalText", "scale": 2, "digits": 38, "sign": "nonnegative", "nullable": true},
 		}}
 		encoded, _ := json.Marshal(declaration)
-		_, err := Decode(encoded)
+		parsed, err := Decode(encoded)
 		if (err == nil) != valid {
 			t.Errorf("valid=%v got %v: %s", valid, err, encoded)
 		}
+		if err == nil && len(parsed.Rules) == 1 && parsed.Rules[0].Allocation != nil && len(parsed.Rules[0].Allocation.RequireCompleteWhen) > 0 {
+			persisted, err := json.Marshal(parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := Decode(persisted)
+			if err != nil || !reloaded.Retains(parsed) {
+				t.Fatalf("conditional coverage changed when persisted: %v", err)
+			}
+		}
 	}
 	for base := range corpus.Rules {
-		t.Run(base+"/omitted-options", func(t *testing.T) { check(t, base, nil, nil, false, true) })
+		t.Run(base+"/omitted-options", func(t *testing.T) { check(t, base, true) })
 	}
 	for _, tc := range corpus.Invalid {
-		t.Run(tc.Base+"/invalid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, false, false) })
+		t.Run(tc.Base+"/invalid/"+strings.Join(tc.Path, "/"), func(t *testing.T) {
+			edits := []edit{tc.edit}
+			if tc.Also != nil {
+				edits = append(edits, *tc.Also)
+			}
+			check(t, tc.Base, false, edits...)
+		})
 	}
 	for _, tc := range corpus.Valid {
-		t.Run(tc.Base+"/valid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, tc.Path, tc.Value, tc.Omit, true) })
+		t.Run(tc.Base+"/valid/"+strings.Join(tc.Path, "/"), func(t *testing.T) { check(t, tc.Base, true, edit{tc.Path, tc.Value, tc.Omit}) })
 	}
 }

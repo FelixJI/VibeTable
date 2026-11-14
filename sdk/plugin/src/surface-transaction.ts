@@ -70,6 +70,8 @@ export interface AllocationParent {
 /** Closed typed shape of an allocationBalance rule: field and relation names only. */
 export interface AllocationSpec {
   readonly requireCompleteWhenAllocated?: true;
+  /** With requireCompleteWhenAllocated, matching parent rows also need at least one allocation. All 1–4 parent-relative text comparisons must match. */
+  readonly requireCompleteWhen?: readonly { readonly ref: AuthorityRef; readonly equals: string }[];
   readonly owner: string;
   readonly parent: AllocationParent;
   readonly quantity: string;
