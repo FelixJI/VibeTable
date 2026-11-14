@@ -1,6 +1,9 @@
 package transactionrules
 
-import "github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+import (
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+)
 
 type RelationStep struct {
 	Field  string `json:"field"`
@@ -144,6 +147,9 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 				entity = step.Target
 			}
 		}
+		for _, condition := range spec.RequireCompleteWhen {
+			walk(spec.Parent.Entity, condition.Ref.Path)
+		}
 	}
 	if spec := r.Settlement; spec != nil {
 		visit(spec.Request.Entity, RelationStep{spec.Request.Capacity, spec.Capacity.Entity})
@@ -231,12 +237,16 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 	singles := map[[2]string]string{}
 	scalars := map[[2]string]bool{}
+	textFields := map[[2]string]bool{}
 	for _, entity := range model.Entities {
 		for _, field := range entity.Fields {
 			if field.Relation != nil && field.Relation.Cardinality == "one" {
 				singles[[2]string{entity.Key, field.Key}] = field.Relation.Entity
 			}
 			scalars[[2]string{entity.Key, field.Key}] = true
+			if field.Type == v2.LogicalText {
+				textFields[[2]string{entity.Key, field.Key}] = true
+			}
 		}
 	}
 	for _, rule := range d.Rules {
@@ -307,6 +317,15 @@ func (d Declaration) ValidatePaths(model *pluginmodel.Declaration) error {
 			}
 		}
 		if spec := rule.Allocation; spec != nil {
+			for _, condition := range spec.RequireCompleteWhen {
+				entity := spec.Parent.Entity
+				for _, step := range condition.Ref.Path {
+					entity = step.Target
+				}
+				if !textFields[[2]string{entity, condition.Ref.Field}] {
+					return failure("rules_invalid")
+				}
+			}
 			for _, key := range []string{spec.Owner, spec.Quantity, spec.Net, spec.Tax, spec.Gross} {
 				if !scalars[[2]string{rule.Entity, key}] {
 					return failure("rules_invalid")

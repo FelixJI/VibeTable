@@ -259,11 +259,25 @@ class AllocationParent(TransactionContract):
     direction: AllocationDirection | None = None
 
 
+class AllocationCoverageCondition(TransactionContract):
+    ref: AuthorityRef
+    equals: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_value(self) -> AllocationCoverageCondition:
+        if len(self.equals.encode("utf-8")) > 64:
+            raise ValueError("allocation coverage values must fit the native 64-byte limit")
+        return self
+
+
 class AllocationSpec(TransactionContract):
     """Closed typed shape of an allocationBalance rule."""
 
     require_complete_when_allocated: bool = Field(
         default=False, alias="requireCompleteWhenAllocated"
+    )
+    require_complete_when: list[AllocationCoverageCondition] | None = Field(
+        default=None, alias="requireCompleteWhen", min_length=1, max_length=4
     )
     owner: str = Field(min_length=1)
     parent: AllocationParent
@@ -287,6 +301,12 @@ class AllocationSpec(TransactionContract):
             and not self.require_complete_when_allocated
         ):
             raise ValueError("requireCompleteWhenAllocated must be true when supplied")
+        if "require_complete_when" in self.model_fields_set:
+            if self.require_complete_when is None or not self.require_complete_when_allocated:
+                raise ValueError("requireCompleteWhen requires requireCompleteWhenAllocated")
+            refs = [condition.ref for condition in self.require_complete_when]
+            if any(ref in refs[:index] for index, ref in enumerate(refs)):
+                raise ValueError("allocation coverage refs must be distinct")
         for states in (self.draft_states, self.zero_quantity_purposes):
             if any(not state or len(state.encode("utf-8")) > 64 for state in states) or len(
                 set(states)
@@ -788,7 +808,7 @@ class PluginTransactionsDeclaration(TransactionContract):
         if self.model_id != model.model_id:
             raise ValueError("transactions rules must reference the declared model")
         relations = {(e.key, f.key): f.relation for e in model.entities for f in e.fields}
-        owned = {(e.key, f.key) for e in model.entities for f in e.fields}
+        owned = {(e.key, f.key): f.type for e in model.entities for f in e.fields}
 
         def walk(entity: str, path: list[RelationStep]) -> None:
             for step in path:
@@ -845,6 +865,16 @@ class PluginTransactionsDeclaration(TransactionContract):
                     )
                 authority(rule.entity, allocation.state)
                 authority(rule.entity, allocation.purpose)
+                for condition in allocation.require_complete_when or []:
+                    coverage_ref = condition.ref
+                    walk(allocation.parent.entity, coverage_ref.path)
+                    entity = (
+                        coverage_ref.path[-1].target
+                        if coverage_ref.path
+                        else allocation.parent.entity
+                    )
+                    if owned.get((entity, coverage_ref.field)) != "text":
+                        raise ValueError("allocation coverage requires a declared text field")
                 if allocation.parent.direction is not None:
                     direction = allocation.parent.direction
                     walk(allocation.parent.entity, direction.path)

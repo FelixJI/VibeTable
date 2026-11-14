@@ -19,7 +19,10 @@ const capacity: SettlementSpec["capacity"] = {
 };
 const policy: Pick<ChangeEvidenceSpec, "allowInsert"> = { allowInsert: true };
 void actual;
-const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated"> = { requireCompleteWhenAllocated: true };
+const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated" | "requireCompleteWhen"> = {
+  requireCompleteWhenAllocated: true,
+  requireCompleteWhen: [{ ref: { path: [{ field: "request", target: "requests" }], field: "direction" }, equals: "red" }],
+};
 const optional: import(${JSON.stringify(entry)}).TransactionRule = { id: "optional", kind: "sameTarget", entity: "rows", left: [{field:"x",target:"rows"}], right: [], skipEmptyRightEnd: true };
 void policy;
 void complete;

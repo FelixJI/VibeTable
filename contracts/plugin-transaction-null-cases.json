@@ -69,6 +69,7 @@
       "kind": "allocationBalance",
       "entity": "allocations",
       "allocation": {
+        "requireCompleteWhenAllocated": true,
         "owner": "line",
         "parent": {
           "entity": "actual_lines",
@@ -835,6 +836,21 @@
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": "true"},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": {}},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": []},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": null},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": []},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": {}},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [null]},
+    {"base": "allocation", "path": ["allocation", "RequireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"Ref": {"field": "status"}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "Equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": null, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status", "path": null}, "equals": "red"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": ""}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "红红红红红红红红红红红红红红红红红红红红红红"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": 1}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "red", "extra": true}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "status"}, "equals": "red"}, {"ref": {"field": "status", "path": []}, "equals": "blue"}]},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"field": "a"}, "equals": "red"}, {"ref": {"field": "b"}, "equals": "red"}, {"ref": {"field": "c"}, "equals": "red"}, {"ref": {"field": "d"}, "equals": "red"}, {"ref": {"field": "e"}, "equals": "red"}]},
     {"base": "stateRelations", "path": ["relationCases"], "value": null},
     {"base": "stateRelations", "path": ["relationCases"], "value": {}},
     {"base": "stateRelations", "path": ["relationCases", "project", "required"], "value": null},
@@ -883,6 +899,8 @@
     {"base": "evidence", "path": ["evidence", "allowInsert"], "value": true},
     {"base": "optionalTarget", "path": ["skipEmptyRightEnd"], "value": true},
     {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "value": true},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhenAllocated"], "omit": true},
+    {"base": "allocation", "path": ["allocation", "requireCompleteWhen"], "value": [{"ref": {"path": [{"field": "invoice", "target": "invoices"}], "field": "direction"}, "equals": "red"}, {"ref": {"path": [], "field": "purpose"}, "equals": "physicalReturn"}]},
     {"base": "group", "path": ["related"], "value": null},
     {"base": "group", "path": ["reference"], "value": null}
   ]

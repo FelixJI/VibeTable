@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"reflect"
 	"strings"
@@ -1255,6 +1256,99 @@ func TestInvoiceAuthorityRequestAllocationCompleteOnlyWhenPresent(t *testing.T) 
 		draft.Operations[1].Values[key] = nil
 	}
 	regressionReject(t, f, draft, "transaction.allocation_invalid")
+}
+
+func TestInvoiceAuthorityConditionalRequestSourceCoverage(t *testing.T) {
+	f := newInvoiceAuthorityFixtureWithWire(t, func(d transactionrules.Declaration) any {
+		base := d.Rules[len(d.Rules)-1]
+		spec := *base.Allocation
+		path := []transactionrules.RelationStep{{Field: "request", Target: "requests"}}
+		spec.RequireCompleteWhen = []transactionrules.AllocationCoverageCondition{
+			{Ref: transactionrules.AuthorityRef{Path: path, Field: "direction"}, Equals: "red"},
+			{Ref: transactionrules.AuthorityRef{Path: path, Field: "status"}, Equals: "confirmed"},
+		}
+		base.ID, base.Allocation = "red_request_source_coverage", &spec
+		d.Rules = append(d.Rules, base)
+		d.Rules[1].Settlement.Request.OpenStates = []string{"confirmed"}
+		return d
+	})
+	const mismatch = "transaction.allocation_mismatch"
+	request := invoiceRequest("missing", "physicalReturn", "quantity", "1", "10.00", "0.00", "10.00", nil)
+	request.Operations[0].Values["status"] = "confirmed"
+	regressionReject(t, f, invoicePlan(request.Operations[:2]...), mismatch)
+
+	request.Operations[0].Values["status"] = "draft"
+	red := f.submit(t, invoicePlan(request.Operations[:2]...)).NewIDs
+	redID := red["requests"]["missing"]
+	_, digest := regressionRow(t, f, "requests", redID)
+	before := transactionBusinessSnapshot(t, f)
+	response := reversalNative(t, f, "confirm-missing-source", "requests", map[string]any{"kind": "update", "primaryKey": redID, "expectedDigest": digest, "values": map[string]any{"status": "confirmed"}})
+	requireHTTPNotCommitted(t, response, mismatch)
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("rejected confirmation changed business rows")
+	}
+
+	request.Operations[0].Values["status"], request.Operations[0].Values["direction"] = "confirmed", "blue"
+	blueID := f.submit(t, invoicePlan(request.Operations[:2]...)).NewIDs["requests"]["missing"]
+	_, digest = regressionRow(t, f, "requests", blueID)
+	before = transactionBusinessSnapshot(t, f)
+	response = reversalNative(t, f, "redirection-without-source", "requests", map[string]any{"kind": "update", "primaryKey": blueID, "expectedDigest": digest, "values": map[string]any{"direction": "red"}})
+	requireHTTPNotCommitted(t, response, mismatch)
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("rejected direction change changed business rows")
+	}
+	f.submit(t, invoiceFace("raw-red", "red", "physicalReturn", "-1", "-10.00", "0.00", "-10.00", nil, nil, false))
+
+	original := f.submit(t, invoiceFace("original", "blue", "", "1", "10.00", "0.00", "10.00", nil, nil, true)).NewIDs["allocations"]["original"]
+	complete := invoiceRequest("complete", "physicalReturn", "quantity", "1", "10.00", "0.00", "10.00", original)
+	complete.Operations[0].Values["status"] = "confirmed"
+	missingLine := invoiceMeasures("0", "0.00", "0.00", "0.00")
+	missingLine["request"], missingLine["unit"] = regressionRef("requests", "complete"), "piece"
+	regressionReject(t, f, invoicePlan(append(complete.Operations, invoiceCreate("request_lines", "second", missingLine))...), mismatch)
+	id := f.submit(t, complete).NewIDs["request_sources"]["complete"]
+	_, digest = regressionRow(t, f, "request_sources", id)
+	regressionReject(t, f, invoicePlan(transactionOperation{Entity: "request_sources", Kind: "delete", RecordID: id, ExpectedDigest: &digest}), mismatch)
+	line := invoiceMeasures("0", "0.00", "0.00", "0.00")
+	justHead := f.submit(t, invoicePlan(invoiceCreate("requests", "just-head", complete.Operations[0].Values))).NewIDs["requests"]["just-head"]
+	line["request"] = justHead
+	line["unit"] = "piece"
+	before = transactionBusinessSnapshot(t, f)
+	response = reversalNative(t, f, "insert-source-free-line", "request_lines", map[string]any{"kind": "create", "values": line})
+	requireHTTPNotCommitted(t, response, mismatch)
+	if before != transactionBusinessSnapshot(t, f) {
+		t.Fatal("rejected native insert changed business rows")
+	}
+	regressionReject(t, f, complete, "transaction.settlement_exceeded")
+
+	history, err := audit.New(f.pb, f.kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := f.model.Bindings["requests"].TableID
+	// A confirmed red revision without lines was valid; another state can add
+	// a line later. Restoring that old header now needs to check the final graph.
+	page, err := history.ReadChangeSets(t.Context(), audit.ReadParams{TableID: table, ItemID: &justHead, Scope: "row", Limit: 10})
+	if err != nil || len(page.ChangeSets) == 0 {
+		t.Fatalf("header history: %v %v", page, err)
+	}
+	oldRevision := page.ChangeSets[0].RootRevisionID
+	_, digest = regressionRow(t, f, "requests", justHead)
+	response = reversalNative(t, f, "make-header-blue", "requests", map[string]any{"kind": "update", "primaryKey": justHead, "expectedDigest": digest, "values": map[string]any{"direction": "blue"}})
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	f.submit(t, invoicePlan(invoiceCreate("request_lines", "blue-no-source", line)))
+	directionField := f.model.Bindings["requests"].Fields["direction"]
+	preview, err := history.PreviewRestore(t.Context(), audit.PreviewParams{TableID: table, ItemID: justHead, TargetRevision: oldRevision, Scope: "cell", Field: &directionField})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before = transactionBusinessSnapshot(t, f)
+	_, err = history.ApplyRestore(t.Context(), audit.ApplyParams{TableID: table, ItemID: justHead, Token: preview.Token})
+	var restoreErr *audit.Error
+	if !errors.As(err, &restoreErr) || restoreErr.Code != "restore_validation_failed" || restoreErr.Details["mutationCode"] != mismatch || before != transactionBusinessSnapshot(t, f) {
+		t.Fatalf("restore did not preserve rows with the expected rejection: %#v", restoreErr)
+	}
 }
 
 func TestInvoiceAuthorityStateRelationCasesUseCompleteNativeProjection(t *testing.T) {

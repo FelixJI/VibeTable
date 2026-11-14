@@ -175,6 +175,19 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			}
 		}
 		if allocation, ok := fields["allocation"].(map[string]any); ok {
+			for key := range allocation {
+				if key != "requireCompleteWhen" && strings.EqualFold(key, "requireCompleteWhen") {
+					return failure("rules_invalid")
+				}
+			}
+			if conditions, ok := allocation["requireCompleteWhen"].([]any); ok {
+				for _, entry := range conditions {
+					condition, ok := entry.(map[string]any)
+					if !ok || len(condition) != 2 || condition["ref"] == nil || condition["equals"] == nil {
+						return failure("rules_invalid")
+					}
+				}
+			}
 			if parent, ok := allocation["parent"].(map[string]any); ok {
 				removeNull(parent, "direction")
 			}
@@ -542,6 +555,9 @@ func (r Registration) dependencies() map[string]map[string]bool {
 			}
 			addAuthority(rule.Entity, spec.State)
 			addAuthority(rule.Entity, spec.Purpose)
+			for _, condition := range spec.RequireCompleteWhen {
+				addAuthority(spec.Parent.Entity, condition.Ref)
+			}
 			if dir := spec.Parent.Direction; dir != nil {
 				entity := spec.Parent.Entity
 				for _, step := range dir.Path {
