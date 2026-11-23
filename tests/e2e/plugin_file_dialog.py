@@ -129,10 +129,7 @@ def handle_file_dialog(
 
     native = None
     cleanup = None
-    # Observer-subprocess clock alone: a timeout delta must exclude the
-    # preceding window search.
-    started_utc: str | None = None
-    started_monotonic: float | None = None
+    uia_failure: dict[str, str | int | float | None] | None = None
     try:
         target = validate_file_request(request, controls)
         pid = host_scope.root.pid
@@ -167,27 +164,41 @@ def handle_file_dialog(
         )
 
         def observe() -> dict[str, Any]:
-            nonlocal started_utc, started_monotonic
+            nonlocal uia_failure
             job_owned()
             started_utc = datetime.now(UTC).isoformat()
             started_monotonic = time.monotonic()
-            result = subprocess.run(
-                [
-                    str(runner.NATIVE_UIA_OBSERVER_EXE),
-                    "--file-dialog",
-                    str(hwnd),
-                    str(pid),
-                    str(screenshot.resolve()),
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=5,
-                check=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        str(runner.NATIVE_UIA_OBSERVER_EXE),
+                        "--file-dialog",
+                        str(hwnd),
+                        str(pid),
+                        str(screenshot.resolve()),
+                    ],
+                    capture_output=True,
+                    timeout=5,
+                    check=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                stderr = error.stderr or ""
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors="replace")
+                uia_failure = {
+                    "startedAtUtc": started_utc,
+                    "elapsedMs": round((time.monotonic() - started_monotonic) * 1000),
+                    "returnCode": error.returncode
+                    if isinstance(error, subprocess.CalledProcessError)
+                    else None,
+                    "stderr": stderr[:4096],
+                }
+                if isinstance(error, subprocess.TimeoutExpired):
+                    uia_failure["timeoutSeconds"] = error.timeout
+                raise
             job_owned()
-            value = json.loads(result.stdout)
+            value = json.loads(result.stdout.decode("utf-8"))
             if (
                 value["hwnd"] != hwnd
                 or value["pid"] != pid
@@ -262,33 +273,14 @@ def handle_file_dialog(
         return result
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         result = {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
-        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
-            # str(error) drops the observer's fixed stderr stages; stdout stays
-            # excluded because a partial dialog JSON is never success evidence.
-            stderr = error.stderr or ""
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            uia_failure: dict[str, str | int | float | None] = {
-                "startedAtUtc": started_utc,
-                "elapsedMs": (
-                    round((time.monotonic() - started_monotonic) * 1000)
-                    if started_monotonic is not None
-                    else None
-                ),
-                "returnCode": error.returncode
-                if isinstance(error, subprocess.CalledProcessError)
-                else None,
-                "stderr": stderr[:4096],
-            }
-            if isinstance(error, subprocess.TimeoutExpired):
-                uia_failure["timeoutSeconds"] = error.timeout
-            result["uiaFailure"] = uia_failure
-        if cleanup is not None:
+        if uia_failure is None and cleanup is not None:
             try:
                 cleanup("cancel")
                 result["cleanup"] = "owned-dialog-cancel-sent"
             except (OSError, ValueError, KeyError, subprocess.SubprocessError) as cleanup_error:
                 result["cleanup"] = str(cleanup_error)
+        if uia_failure is not None:
+            result["uiaFailure"] = uia_failure
         return result
     finally:
         if native is not None:
