@@ -180,14 +180,12 @@ def handle_file_dialog(
                     str(screenshot.resolve()),
                 ],
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
                 timeout=5,
                 check=True,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             job_owned()
-            value = json.loads(result.stdout)
+            value = json.loads(result.stdout.decode("utf-8"))
             if (
                 value["hwnd"] != hwnd
                 or value["pid"] != pid
@@ -283,7 +281,7 @@ def handle_file_dialog(
             if isinstance(error, subprocess.TimeoutExpired):
                 uia_failure["timeoutSeconds"] = error.timeout
             result["uiaFailure"] = uia_failure
-        if cleanup is not None:
+        elif cleanup is not None:
             try:
                 cleanup("cancel")
                 result["cleanup"] = "owned-dialog-cancel-sent"
