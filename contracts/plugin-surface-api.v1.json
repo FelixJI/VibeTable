@@ -119,7 +119,7 @@
   },
   "transactions": {
     "contract": "vibetable.plugin-transactions.v1",
-    "declaration": "closed permissions.transactions rules over confirmed model logical entities and fields; unique/reference/conservation/balance/state/sameTarget/groupSameTarget/atMostOne/parentFreeze/reservationBalance/reversalBalance/allocationBalance/settlementBalance/changeEvidence; optional decimal sign/nullable and sameTarget skipEmptyLeftEnd/skipEmptyRightEnd, allocationBalance requireCompleteWhenAllocated, changeEvidence allowInsert, state relationCases; no arbitrary SQL, scripts or unconstrained values",
+    "declaration": "closed permissions.transactions rules over confirmed model logical entities and fields; unique/reference/conservation/balance/state/sameTarget/groupSameTarget/atMostOne/parentFreeze/reservationBalance/reversalBalance/allocationBalance/settlementBalance/changeEvidence; optional decimal sign/nullable and sameTarget skipEmptyLeftEnd/skipEmptyRightEnd, allocationBalance requireCompleteWhenAllocated with optional parent-relative requireCompleteWhen, changeEvidence allowInsert, state relationCases; no arbitrary SQL, scripts or unconstrained values",
     "configuration": "transaction.configure registers the manifest declaration after native confirmation; persisted rules survive plugin disable; declaration modelId must equal permissions.model modelId",
     "hostOnly": ["transaction.commit"],
     "numbers": "model-bound Text stores canonical fixed-scale decimal text; verified Number fields may use safe integer minor units; shared bounded integer coefficients parse, compare and sum; no float aggregation or implicit rounding",

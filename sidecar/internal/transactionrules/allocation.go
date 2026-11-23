@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"math/big"
+	"slices"
 
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 )
@@ -101,20 +102,54 @@ type AllocationParent struct {
 	Direction *AllocationDirection `json:"direction,omitempty"`
 }
 
+// AllocationCoverageCondition compares a text field reached from the parent row.
+type AllocationCoverageCondition struct {
+	Ref    AuthorityRef `json:"ref"`
+	Equals string       `json:"equals"`
+}
+
+// Only the new condition uses exact wire keys. Older AuthorityRef users keep their decoder.
+func validCoverageWire(entry any) bool {
+	condition, ok := entry.(map[string]any)
+	if !ok || len(condition) != 2 || condition["equals"] == nil {
+		return false
+	}
+	ref, ok := condition["ref"].(map[string]any)
+	if !ok || ref["field"] == nil {
+		return false
+	}
+	rawPath, supplied := ref["path"]
+	if !supplied {
+		return len(ref) == 1
+	}
+	path, ok := rawPath.([]any)
+	if !ok || len(ref) != 2 {
+		return false
+	}
+	for _, entry := range path {
+		step, ok := entry.(map[string]any)
+		if !ok || len(step) != 2 || step["field"] == nil || step["target"] == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // AllocationSpec is the closed typed shape of an allocationBalance rule:
 // field and relation names only; no formulas, SQL or scripts are accepted.
 type AllocationSpec struct {
-	RequireCompleteWhenAllocated enabledOption    `json:"requireCompleteWhenAllocated,omitempty"`
-	Owner                        string           `json:"owner"`
-	Parent                       AllocationParent `json:"parent"`
-	Quantity                     string           `json:"quantity"`
-	Net                          string           `json:"net"`
-	Tax                          string           `json:"tax"`
-	Gross                        string           `json:"gross"`
-	State                        AuthorityRef     `json:"state"`
-	DraftStates                  []string         `json:"draftStates,omitempty"`
-	Purpose                      AuthorityRef     `json:"purpose"`
-	ZeroQuantityPurposes         []string         `json:"zeroQuantityPurposes,omitempty"`
+	RequireCompleteWhenAllocated enabledOption                 `json:"requireCompleteWhenAllocated,omitempty"`
+	RequireCompleteWhen          []AllocationCoverageCondition `json:"requireCompleteWhen,omitempty"`
+	Owner                        string                        `json:"owner"`
+	Parent                       AllocationParent              `json:"parent"`
+	Quantity                     string                        `json:"quantity"`
+	Net                          string                        `json:"net"`
+	Tax                          string                        `json:"tax"`
+	Gross                        string                        `json:"gross"`
+	State                        AuthorityRef                  `json:"state"`
+	DraftStates                  []string                      `json:"draftStates,omitempty"`
+	Purpose                      AuthorityRef                  `json:"purpose"`
+	ZeroQuantityPurposes         []string                      `json:"zeroQuantityPurposes,omitempty"`
 }
 
 func uniqueStates(states []string) bool {
@@ -133,6 +168,19 @@ func (s *AllocationSpec) valid() bool {
 		s.Parent.Tax == "" || s.Parent.Gross == "" || s.Quantity == "" || s.Net == "" || s.Tax == "" || s.Gross == "" ||
 		!s.State.valid() || !s.Purpose.valid() || len(s.DraftStates) > MaxFrozenStates || len(s.ZeroQuantityPurposes) > MaxFrozenStates {
 		return false
+	}
+	if s.RequireCompleteWhen != nil && (!bool(s.RequireCompleteWhenAllocated) || len(s.RequireCompleteWhen) == 0 || len(s.RequireCompleteWhen) > 4) {
+		return false
+	}
+	for i, condition := range s.RequireCompleteWhen {
+		if !condition.Ref.valid() || condition.Equals == "" || len(condition.Equals) > 64 {
+			return false
+		}
+		for _, previous := range s.RequireCompleteWhen[:i] {
+			if condition.Ref.Field == previous.Ref.Field && slices.Equal(condition.Ref.Path, previous.Ref.Path) {
+				return false
+			}
+		}
 	}
 	return uniqueStates(s.DraftStates) && uniqueStates(s.ZeroQuantityPurposes) && s.Parent.Direction.valid()
 }
@@ -318,6 +366,21 @@ func (rule Rule) validateAllocation(after Images, decimals map[string]exactdecim
 				return failure("allocation_exceeded")
 			}
 			if bool(spec.RequireCompleteWhenAllocated) && sum.Cmp(total.parent[i]) != 0 {
+				return failure("allocation_mismatch")
+			}
+		}
+	}
+	if len(spec.RequireCompleteWhen) != 0 {
+		for id, parent := range after[spec.Parent.Entity] {
+			matches := true
+			for _, condition := range spec.RequireCompleteWhen {
+				value, err := authorityValue(after, parent, condition.Ref)
+				if err != nil {
+					return failure("allocation_invalid")
+				}
+				matches = matches && value == condition.Equals
+			}
+			if matches && totals[id] == nil {
 				return failure("allocation_mismatch")
 			}
 		}

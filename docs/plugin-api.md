@@ -298,6 +298,6 @@ if (task) {
 
 自然内部归属的 changeEvidence 可声明 `allowInsert:true`：原始票头/票面先保存，再普通新增 allocation，无须创建更正事件；原生审计照常记录。该开关不放宽既有归属的更改/删除/重绑，也不放宽票面行新增或其它守卫。
 
-`sameTarget` 可用 `skipEmptyRightEnd:true` 与既有左端选项对称处理合同末端未知；双方已知冲突仍拒。申请来源的 allocationBalance 可用 `requireCompleteWhenAllocated:true`，空来源集合合法，非空须完整覆盖父四维；actual allocation 继续允许部分归属。
+`sameTarget` 可用 `skipEmptyRightEnd:true` 与既有左端选项对称处理合同末端未知；双方已知冲突仍拒。申请来源的 allocationBalance 可用 `requireCompleteWhenAllocated:true`，有来源时须完整覆盖父四维。配合 `requireCompleteWhen` 可要求命中全部父行条件时至少有一个来源，例如已确认红字申请的每一行。actual allocation 继续允许部分归属。
 
 state.relationCases 为不同来源角色声明必填/可空/禁止关系；groupSameTarget 按整票分组比较已知合同，related单层继承，reference单向校验不污染组。二者都在原生最终图执行，写入/历史恢复不能绕过。

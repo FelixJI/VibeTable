@@ -175,6 +175,23 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			}
 		}
 		if allocation, ok := fields["allocation"].(map[string]any); ok {
+			conditions, hasCoverage := allocation["requireCompleteWhen"].([]any)
+			for key := range allocation {
+				if key != "requireCompleteWhen" && strings.EqualFold(key, "requireCompleteWhen") ||
+					hasCoverage && key != "requireCompleteWhenAllocated" && strings.EqualFold(key, "requireCompleteWhenAllocated") {
+					return failure("rules_invalid")
+				}
+			}
+			for i, entry := range conditions {
+				if !validCoverageWire(entry) {
+					return failure("rules_invalid")
+				}
+				ref := &decoded.Allocation.RequireCompleteWhen[i].Ref
+				if ref.Path == nil {
+					// AuthorityRef persists self references with an empty array.
+					ref.Path = []RelationStep{}
+				}
+			}
 			if parent, ok := allocation["parent"].(map[string]any); ok {
 				removeNull(parent, "direction")
 			}
@@ -542,6 +559,9 @@ func (r Registration) dependencies() map[string]map[string]bool {
 			}
 			addAuthority(rule.Entity, spec.State)
 			addAuthority(rule.Entity, spec.Purpose)
+			for _, condition := range spec.RequireCompleteWhen {
+				addAuthority(spec.Parent.Entity, condition.Ref)
+			}
 			if dir := spec.Parent.Direction; dir != nil {
 				entity := spec.Parent.Entity
 				for _, step := range dir.Path {
