@@ -218,7 +218,7 @@ def test_picker_rechecks_retirement_after_finding_the_owned_dialog(
     assert closed == [True]
 
 
-@pytest.mark.parametrize("failed_observation", [1, 2])
+@pytest.mark.parametrize("failed_observation", [1, 2, 3])
 @pytest.mark.parametrize("failure", ["timeout", "nonzero"])
 def test_picker_observer_failure_keeps_bounded_stage_evidence_without_input(
     tmp_path: Path, monkeypatch, failure: str, failed_observation: int
@@ -237,7 +237,7 @@ def test_picker_observer_failure_keeps_bounded_stage_evidence_without_input(
     payload = stages.encode() + b"\xff" + filler.encode()
     expected = stages + "\ufffd" + filler
     command = ["NativeUiaObserver.exe", "--file-dialog", "10", "7"]
-    observation = {"hwnd": 10, "pid": 7, "title": "Replace attachment"}
+    observation = {"hwnd": 10, "pid": 7, "title": "Replace attachment", "controls": []}
     calls = 0
     run = subprocess.run
     child = tmp_path / "observer.py"
@@ -281,10 +281,16 @@ def test_picker_observer_failure_keeps_bounded_stage_evidence_without_input(
     assert result["status"] == "failed"
     assert result["requestId"] == "observer-failure"
     uia_failure = result["uiaFailure"]
+    if failed_observation == 3:
+        assert result["error"] == "picker control is missing or ambiguous"
+        observer_error = result["cleanup"]
+    else:
+        assert "cleanup" not in result
+        observer_error = result["error"]
     if failure == "timeout":
         assert uia_failure["returnCode"] is None
         assert uia_failure["timeoutSeconds"] == 5
-        assert "timed out after 5 seconds" in result["error"]
+        assert "timed out after 5 seconds" in observer_error
     else:
         assert uia_failure["returnCode"] == 1
         assert "timeoutSeconds" not in uia_failure
@@ -294,7 +300,6 @@ def test_picker_observer_failure_keeps_bounded_stage_evidence_without_input(
     assert uia_failure["elapsedMs"] >= 0
     assert calls == failed_observation
     assert sent == []
-    assert "cleanup" not in result
     assert "PRIVATE_DIALOG_STDOUT" not in json.dumps(result)
 
 
