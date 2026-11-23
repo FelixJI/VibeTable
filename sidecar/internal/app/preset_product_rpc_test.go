@@ -58,6 +58,7 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 			unrelatedPresetRegistration(t, "insights.saveDashboardDraft"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listCatalog"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
+			unrelatedPluginCatalogRegistration(t, "plugin.listAuditPage"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
 			unrelatedPluginPreservationRegistration(t),

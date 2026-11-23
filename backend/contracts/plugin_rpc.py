@@ -62,6 +62,14 @@ class PluginIdentityParams(PluginContract):
     plugin_id: str
 
 
+class PluginAuditPageParams(PluginIdentityParams):
+    """Plugin center audit summary continuation request: identity plus the
+    opaque cursor of the previous page of the same scope (omitted or null
+    for the first page)."""
+
+    cursor: str | None = None
+
+
 class SetPluginEnabledParams(PluginIdentityParams):
     enabled: bool
 

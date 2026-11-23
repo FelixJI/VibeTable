@@ -122,9 +122,15 @@ amount 来源数量必须明确为零，只通过 `fulfillKinds` 的明确金额
 `transaction.evidence_invalid/frozen/required/reused`，均表示 not-committed；十进制格式错误保留既有 decimal 码。
 
 
-`allocationBalance.requireCompleteWhenAllocated:true` 用于申请来源：没有任何 child 时允许父原始/草稿事实独立保存；
+`allocation.requireCompleteWhenAllocated:true` 用于申请来源：默认没有任何来源时允许父事实独立保存；
 一旦有 child，quantity/net/tax/gross 必须完整覆盖父四维，null/未知父或子不能借草稿分支绕过完整性。
 actual allocation 省略该选项，继续允许部分归属。该 enabled option 只接受显式 true，false/null/非 bool 拒绝。
+
+与该选项并用时，`allocation.requireCompleteWhen` 可声明 1–4 个 `{ref, equals}` 条件。`ref` 是从父行出发的 `AuthorityRef`：
+最多四跳单值关系，空路径表示父行自身；指向的字段须为模型声明的文本字段。各 `ref` 不可重复，`equals` 为 1–64 字节的文本。
+例如申请行通过 `request` 读取申请头的 `direction` 和 `status`，两项分别为 `red`、`confirmed` 时，该行至少须有一个来源，
+即使四维都为零也是如此。原生写入、历史恢复和规则登记均校验该条件；缺少来源返回 `transaction.allocation_mismatch`，
+无法读取条件字段或路径时拒绝。已有登记需要增强时，保留原规则，以新 ID 追加含该条件的规则。
 
 `sameTarget.skipEmptyRightEnd:true` 与 skipEmptyLeftEnd 对称，仅允许对应路径末端的明确 null/空关系；
 双方均已知时仍须同一目标。中间路径缺失、悬空、错类型和缺少末端字段均拒绝，最多四跳不变。

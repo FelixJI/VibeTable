@@ -917,18 +917,20 @@ def test_new_rule_null_shapes_match_go() -> None:
         )
     )
 
-    def validate(base: str, path: list[str], value: object = None, omit: bool = False) -> None:
+    def validate(base: str, *edits: dict) -> None:
         rule = copy.deepcopy(corpus["rules"][base])
-        node = rule
-        for index, key in enumerate(path):
-            key = int(key) if isinstance(node, list) else key
-            if index == len(path) - 1:
-                if omit:
-                    del node[key]
+        for edit in edits:
+            path = edit["path"]
+            node = rule
+            for index, key in enumerate(path):
+                key = int(key) if isinstance(node, list) else key
+                if index == len(path) - 1:
+                    if edit.get("omit"):
+                        del node[key]
+                    else:
+                        node[key] = edit.get("value")
                 else:
-                    node[key] = value
-            else:
-                node = node[key]
+                    node = node[key]
         PluginTransactionsDeclaration.model_validate(
             {
                 "contract": "vibetable.plugin-transactions.v1",
@@ -958,12 +960,12 @@ def test_new_rule_null_shapes_match_go() -> None:
         )
 
     for base in corpus["rules"]:
-        validate(base, [])
+        validate(base)
     for case in corpus["invalid"]:
         with pytest.raises(ValidationError):
-            validate(case["base"], case["path"], case.get("value"))
+            validate(case["base"], case, *([case["also"]] if "also" in case else []))
     for case in corpus["valid"]:
-        validate(case["base"], case["path"], case.get("value"), case.get("omit", False))
+        validate(case["base"], case)
 
 
 def invoice_guard_decimals() -> list[dict]:
@@ -1353,6 +1355,37 @@ def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:
         paired = copy.deepcopy(manifest)
         del declaration(paired)["rules"][1]["settlement"]["capacity"][field]
         assert PluginManifest.model_validate(paired)
+
+
+def test_allocation_coverage_requires_text_on_a_parent_path() -> None:
+    manifest = invoice_guard_manifest()
+    allocation = declaration(manifest)["rules"][0]["allocation"]
+    allocation["requireCompleteWhenAllocated"] = True
+    allocation["requireCompleteWhen"] = [
+        {
+            "ref": {"path": [{"field": "invoice", "target": "invoices"}], "field": "status"},
+            "equals": "issued",
+        }
+    ]
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+
+    ref = allocation["requireCompleteWhen"][0]["ref"]
+    for invalid_ref in (
+        {**ref, "field": "missing"},
+        {**ref, "field": "latest_evidence"},
+        {**ref, "path": [{"field": "invoice", "target": "requests"}]},
+    ):
+        allocation["requireCompleteWhen"][0]["ref"] = invalid_ref
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(manifest)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(manifest))
+
+    allocation["requireCompleteWhen"][0]["ref"] = ref
+    del allocation["requireCompleteWhenAllocated"]
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(manifest)
 
 
 def test_reversal_shape_quantity_and_model_binding_match_native_contract() -> None:

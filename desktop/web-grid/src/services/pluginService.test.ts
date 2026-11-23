@@ -209,6 +209,87 @@ describe("pluginService canonical wire", () => {
     expect(store.busy).toBe(false);
   });
 
+  it("keeps a failed audit page read off the global error surface", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "audit-page-local",
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({
+            data: {
+              type: "operation.failed",
+              requestId: request.requestId,
+              payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+            },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+
+    // The audit section owns this failure; the store's global error banner
+    // and busy gate stay untouched even with no other error visible, so a
+    // later retry cannot leave a stale global error behind either.
+    await expect(usePluginService().auditPage(snapshot.pluginId)).rejects.toThrow(
+      "audit unavailable",
+    );
+
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(false);
+    bridge.stop();
+  });
+
+  it("keeps a late audit page failure from a previous selection off the next global error", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const failures: Array<() => void> = [];
+    const bridge = createHostBridge({
+      generateRequestId: () => `audit-page-late-${failures.length}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          if (request.type !== "plugin.audit.page") {
+            queueMicrotask(() => listener?.({ data: { type: request.type, requestId: request.requestId, payload: [] } }));
+            return;
+          }
+          failures.push(() => queueMicrotask(() => listener?.({
+            data: {
+              type: "operation.failed",
+              requestId: request.requestId,
+              payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+            },
+          })));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+
+    // Plugin A's page request stays pending; the user switches to plugin B
+    // and loads its pages before A's late failure lands.
+    const lateFailure = service.auditPage("com.acme.first");
+    store.setProjectContext("local:switched", "r2");
+    const currentFailure = service.auditPage("com.acme.second");
+    failures[1]?.();
+    await expect(currentFailure).rejects.toThrow("audit unavailable");
+    failures[0]?.();
+    await expect(lateFailure).rejects.toThrow("audit unavailable");
+
+    // Neither the current-context failure nor the stale one may pollute the
+    // global error banner of the next selection.
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(false);
+    bridge.stop();
+  });
+
   it("keeps overlapping background catalog refreshes off the foreground busy gate", async () => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -1192,6 +1273,54 @@ describe("pluginService canonical wire", () => {
     harness.fail(harness.posted[0]!, "old catalog failed"); await opening;
     expect(store.lastError).toBeNull(); expect(store.describedAction).toBeNull();
     expect(harness.posted).toHaveLength(1);
+  });
+
+  it("records the Host's unavailable Run rejection on the store error surface", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(snapshot.pluginId, "normalize", context);
+    const rejected = expect(opening).rejects.toThrow("插件界面暂不可用；宿主未授权该动作");
+    harness.reply(harness.posted[0]!, { available: false, reasons: ["插件界面暂不可用", "宿主未授权该动作"] });
+    await rejected;
+    expect(store.lastError).toBe("插件界面暂不可用；宿主未授权该动作");
+    expect(store.busy).toBe(false);
+    expect(store.describedAction).toBeNull(); expect(store.actionOpen).toBe(false);
+    expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("keeps a stale unavailable Run rejection silent", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(snapshot.pluginId, "normalize", context);
+    useUiStore().navigate(useUiStore().activeView);
+    harness.reply(harness.posted[0]!, { available: false, reasons: ["插件界面暂不可用"] });
+    await expect(opening).resolves.toEqual({ available: false, reasons: [] });
+    expect(store.lastError).toBeNull(); expect(store.busy).toBe(false);
+    expect(store.describedAction).toBeNull(); expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("records local catalog and manual-invocation Run rejections on the store error surface", async () => {
+    const store = usePluginStore(); store.applyPlugin(snapshot);
+    const harness = catalogHarness([snapshot]);
+    const context = createPluginCommandContext({ projectKey: snapshot.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const service = usePluginService();
+    // Same installation re-projected without the action: identity guards still pass, so only the local manifest check can surface this.
+    const gone = service.describeAction(snapshot.pluginId, "normalize", context);
+    store.replaceCatalog("local:default", [{ ...snapshot, manifest: { ...snapshot.manifest, actions: [] } }]);
+    const goneRejected = expect(gone).rejects.toThrow("插件动作清单已变化");
+    harness.reply(harness.posted[0]!, { available: true, reasons: [] });
+    await goneRejected;
+    expect(store.lastError).toBe("插件动作清单已变化，请刷新目录");
+    const webhook: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest,
+      actions: [{ ...snapshot.manifest.actions[0]!, invocation: "webhook" }] } };
+    store.replaceCatalog("local:default", [webhook]);
+    const manualRejected = expect(service.describeAction(snapshot.pluginId, "normalize", context))
+      .rejects.toThrow("该动作不支持手动启动");
+    harness.reply(harness.posted.at(-1)!, { available: true, reasons: [] });
+    await manualRejected;
+    expect(store.lastError).toBe("该动作不支持手动启动");
   });
 
   it.each([

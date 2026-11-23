@@ -424,11 +424,6 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                 {
                     contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
                 })));
-            await sink.WaitForFailedAsync();
-
-            AssertRetiredReply(sink, "old-response");
-            Assert.AreEqual(1, sidecar.CallCount);
-            Assert.AreEqual(0, transport.WriteCount);
         }
         finally
         {
@@ -441,6 +436,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
             await dispatch;
         }
+        AssertRetiredReply(sink, "old-response");
+        Assert.AreEqual(1, sink.Replies.Count);
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual(0, transport.WriteCount);
     }
 
     [TestMethod]

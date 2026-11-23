@@ -1617,6 +1617,7 @@
       "kind": "rpc",
       "names": [
         "plugin.listAudit",
+        "plugin.listAuditPage",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled"
@@ -1633,6 +1634,7 @@
       "effects": {
         "read": [
           "plugin.listAudit",
+          "plugin.listAuditPage",
           "plugin.listCatalog",
           "plugin.listPendingCleanup"
         ],

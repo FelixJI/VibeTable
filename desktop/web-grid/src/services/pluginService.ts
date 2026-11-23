@@ -2,6 +2,7 @@ import type {
   PluginAction,
   PluginActionAvailability,
   PluginAuditEvent,
+  PluginAuditSummaryPage,
   PluginCommandContext,
   PluginEventEnvelope,
   PluginInstallPlan,
@@ -43,6 +44,7 @@ export interface PluginService {
   updateProjectRevision(projectRevision: string): void;
   list(): Promise<readonly PluginSnapshot[]>;
   listAudit(pluginId: string): Promise<readonly PluginAuditEvent[]>;
+  auditPage(pluginId: string, cursor?: string | null): Promise<PluginAuditSummaryPage>;
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
   retryCleanup(event: PluginAuditEvent): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
@@ -135,7 +137,7 @@ export function usePluginService(): PluginService {
     initialized = false;
   }
 
-  type RequestErrorPolicy = "foreground" | "background";
+  type RequestErrorPolicy = "foreground" | "background" | "local";
 
   async function call<K extends WebMessageType, T>(
     type: K,
@@ -147,6 +149,10 @@ export function usePluginService(): PluginService {
       && store.projectContextGeneration === context.generation && (options.isCurrent?.() ?? true);
     const errorPolicy = options.errorPolicy ?? "foreground";
     // Background refreshes must not toggle buttons or release a foreground operation.
+    // The "local" policy additionally never touches the store's global
+    // error surface: the owning view renders the failure in its own section,
+    // so a late or retried audit page can neither pollute the global error
+    // of a different plugin selection nor leave a stale banner behind.
     if (errorPolicy === "foreground") store.startBusy();
     try {
       const result = await bridge.request(type, payload);
@@ -170,7 +176,7 @@ export function usePluginService(): PluginService {
       if (contextCurrent) {
         if (errorPolicy === "foreground") {
           store.fail(error);
-        } else {
+        } else if (errorPolicy === "background") {
           store.failIfNoError(error);
         }
         options.onErrorClassified?.("visible");
@@ -483,11 +489,24 @@ export function usePluginService(): PluginService {
         { isErrorCurrent: isCurrent },
       );
       if (!isCurrent()) return retired;
-      if (!availability.available) throw new Error(availability.reasons.join("；") || "当前动作不可用");
+      // The RPC already resolved; record these local rejections on the store's error surface before rethrowing, because the owning view's safely() shows nothing else.
+      if (!availability.available) {
+        const error = new Error(availability.reasons.join("；") || "当前动作不可用");
+        store.fail(error);
+        throw error;
+      }
       const plugin = store.plugins.find((item) => item.pluginId === pluginId);
       const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
-      if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
-      if (action.invocation !== "manual") throw new Error("该动作不支持手动启动");
+      if (!plugin || !action) {
+        const error = new Error("插件动作清单已变化，请刷新目录");
+        store.fail(error);
+        throw error;
+      }
+      if (action.invocation !== "manual") {
+        const error = new Error("该动作不支持手动启动");
+        store.fail(error);
+        throw error;
+      }
       const description = projectAction(plugin, action, context.locale);
       const application = description.presentation === "application";
       store.beginAction(description, context, openPanel && !application);
@@ -509,6 +528,11 @@ export function usePluginService(): PluginService {
       "plugin.audit.list",
       { projectKey: store.projectKey, pluginId },
       { errorPolicy: "background" },
+    ),
+    auditPage: (pluginId, cursor = null) => call(
+      "plugin.audit.page",
+      { projectKey: store.projectKey, pluginId, cursor },
+      { errorPolicy: "local" },
     ),
     listPendingCleanup: () => call(
       "plugin.cleanup.listPending",

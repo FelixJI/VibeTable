@@ -7,6 +7,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 var (
@@ -287,5 +288,51 @@ func TestAllocationBalanceClosedBoundsAndDependencies(t *testing.T) {
 		if !r.selectedBy(WriteSet{table: {"*": true}}) {
 			t.Fatal("whole-table native write bypasses the allocation guard", table)
 		}
+	}
+}
+
+func TestAllocationCoverageBindsParentConditionFields(t *testing.T) {
+	rule := newKindRule(t, "allocation")
+	spec := rule.Allocation
+	path := spec.Parent.Direction.Path
+	spec.RequireCompleteWhenAllocated = true
+	spec.RequireCompleteWhen = []AllocationCoverageCondition{{Ref: AuthorityRef{Path: path, Field: "coverage"}, Equals: "required"}}
+	d := invoiceGuardsDeclaration(t, rule)
+	registration := Registration{Declaration: d, Bindings: map[string]pluginmodel.Binding{}}
+	model := pluginmodel.Declaration{}
+	for entity, dependencies := range registration.dependencies() {
+		binding := pluginmodel.Binding{TableID: entity, Fields: map[string]string{}}
+		entry := pluginmodel.Entity{Key: entity}
+		for field := range dependencies {
+			binding.Fields[field] = field
+			definition := pluginmodel.Field{Key: field, Type: v2.LogicalText}
+			rule.relationSteps(func(from string, step RelationStep) {
+				if entity == from && field == step.Field {
+					definition.Type = v2.LogicalRelation
+					definition.Relation = &pluginmodel.Relation{Entity: step.Target, Cardinality: "one"}
+				}
+			})
+			entry.Fields = append(entry.Fields, definition)
+		}
+		model.Entities = append(model.Entities, entry)
+		registration.Bindings[entity] = binding
+	}
+	if err := d.ValidatePaths(&model); err != nil {
+		t.Fatal(err)
+	}
+	if !registration.selectedBy(WriteSet{"invoices": {"coverage": true}}) || !registration.ProtectsBinding("invoices", "coverage") {
+		t.Fatal("condition-only writes and schema edits must be guarded")
+	}
+	spec.RequireCompleteWhen[0].Ref.Field = "missing"
+	if err := d.ValidatePaths(&model); err == nil {
+		t.Fatal("missing condition field admitted")
+	}
+	spec.RequireCompleteWhen[0].Ref = AuthorityRef{Field: "invoice"}
+	if err := d.ValidatePaths(&model); err == nil {
+		t.Fatal("relation as text condition admitted")
+	}
+	spec.RequireCompleteWhen[0].Ref = AuthorityRef{Path: []RelationStep{{Field: "invoice", Target: "actual_lines"}}, Field: "purpose"}
+	if err := d.ValidatePaths(&model); err == nil {
+		t.Fatal("foreign relation target admitted")
 	}
 }

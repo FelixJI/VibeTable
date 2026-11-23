@@ -54,6 +54,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "mutation.apply",
         "mutation.preview",
         "plugin.listAudit",
+        "plugin.listAuditPage",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
         "plugin.setEnabled",

@@ -40,6 +40,7 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 			unrelatedContentRegistration(t, "recordDocumentLink.repair"), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 			unrelatedPluginCatalogRegistration(t, "plugin.listCatalog"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
+			unrelatedPluginCatalogRegistration(t, "plugin.listAuditPage"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
 			unrelatedPluginPreservationRegistration(t),

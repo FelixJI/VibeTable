@@ -41,6 +41,7 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 			unrelatedContentRegistration(t, "recordDocumentLink.repair"), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 			unrelatedPluginCatalogRegistration(t, "plugin.listCatalog"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
+			unrelatedPluginCatalogRegistration(t, "plugin.listAuditPage"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
 			unrelatedPluginPreservationRegistration(t),

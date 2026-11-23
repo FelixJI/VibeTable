@@ -60,6 +60,7 @@
     {"method":"plugin.describeAction","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.inspectInstall","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.listAudit","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
+    {"method":"plugin.listAuditPage","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.listCatalog","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.listPendingCleanup","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.resolveFile","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.host"},

@@ -49,6 +49,7 @@ func queryValidateSnapshotHTTPMux(t *testing.T, pb *pocketbase.PocketBase, snaps
 			unrelatedContentRegistration(t, "recordDocumentLink.repair"), productrpc.ReconcileRegistration(catalog), snapshotRegistration,
 			unrelatedPluginCatalogRegistration(t, "plugin.listCatalog"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
+			unrelatedPluginCatalogRegistration(t, "plugin.listAuditPage"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),
 			unrelatedPluginCatalogRegistration(t, "plugin.setEnabled"),
 			unrelatedPluginPreservationRegistration(t),
