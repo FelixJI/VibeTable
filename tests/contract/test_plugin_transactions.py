@@ -1357,6 +1357,36 @@ def test_invoice_natural_rules_validate_model_at_both_package_seams() -> None:
         assert PluginManifest.model_validate(paired)
 
 
+def test_settlement_scope_dimensions_bind_three_single_relations_at_package_seams() -> None:
+    manifest = invoice_guard_manifest()
+    settlement = declaration(manifest)["rules"][1]["settlement"]
+    dimension = {
+        "capacity": "original",
+        "request": "original",
+        "actual": "original",
+        "target": "allocations",
+    }
+    settlement["scopeDimensions"] = [dimension]
+    assert PluginManifest.model_validate(manifest)
+    assert validate_plugin_manifest(package_entries(manifest)) == manifest
+    for invalid in (
+        None,
+        [],
+        [dimension, dimension],
+        [{**dimension, "target": "requests"}],
+        [{**dimension, "capacity": "quantity"}],
+        [{**dimension, "request": "actuals"}],
+        [{**dimension, "actual": "missing"}],
+        [{**dimension, "path": []}],
+        [{**dimension, "capacity": str(i)} for i in range(9)],
+    ):
+        settlement["scopeDimensions"] = invalid
+        with pytest.raises(ValidationError):
+            PluginManifest.model_validate(manifest)
+        with pytest.raises(PluginPackageError):
+            validate_plugin_manifest(package_entries(manifest))
+
+
 def test_allocation_coverage_requires_text_on_a_parent_path() -> None:
     manifest = invoice_guard_manifest()
     allocation = declaration(manifest)["rules"][0]["allocation"]

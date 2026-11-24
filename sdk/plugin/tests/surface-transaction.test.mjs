@@ -18,6 +18,10 @@ const capacity: SettlementSpec["capacity"] = {
   entity: "obligations", optional: true, quantity: "quantity"
 };
 const policy: Pick<ChangeEvidenceSpec, "allowInsert"> = { allowInsert: true };
+const dimensions: SettlementSpec["scopeDimensions"] = [
+  { capacity: "project", request: "request_project", actual: "assigned_project", target: "projects" }
+];
+void dimensions;
 void actual;
 const complete: Pick<AllocationSpec, "requireCompleteWhenAllocated" | "requireCompleteWhen"> = {
   requireCompleteWhenAllocated: true,

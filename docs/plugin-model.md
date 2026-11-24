@@ -80,6 +80,14 @@ quantity 路径单位明确一致，已知物料 FK 在已声明的对应方不�
 构成该份额的匹配依据；缺字段、错误类型和断裂路径仍拒绝。amount 路径跳过物料/单位数量匹配。
 合同等真实 FK 通过既有 `sameTarget` 组合校验，不复制票面或引入拼接键。
 
+`settlement.scopeDimensions` 可声明 1 至 8 个归属维度，例如
+`{"capacity":"project","request":"request_project","actual":"assigned_project","target":"projects"}`。
+三个字段必须分别属于容量、申请来源和实际归属，且是指向同一目标实体的单值关系。
+显式 null 表示未知。确认申请时，来源与当前容量均已知的维度必须相同。
+来源仍开放且逐来源任一维度的精确余量为正时，更正容量须保留原先已知的归属，
+包括从容量继承的值。该来源关闭、取消或结清后释放预留，保留历史快照。
+已入账的实际归属独立执行同样的范围核对。冲突返回 `transaction.settlement_invalid`。
+
 quantity 来源 Q>0，已执行 E 与明确关闭 C 满足 E+C<=Q；剩余净额/税额分别按
 `原额-roundHalfAway(原额*(E+C)/Q)` 计算，再由两者之和得到剩余总额。
 数量全部兑现时，即使实际金额有价差也不保留申请金额预留，实际原始差异仍保留。

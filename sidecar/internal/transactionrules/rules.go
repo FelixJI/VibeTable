@@ -197,6 +197,21 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			}
 		}
 		if settlement, ok := fields["settlement"].(map[string]any); ok {
+			// Go's decoder folds case even with DisallowUnknownFields. Enforce
+			// the new closed wire shape before persisting the registration.
+			for key := range settlement {
+				if key != "scopeDimensions" && strings.EqualFold(key, "scopeDimensions") {
+					return failure("rules_invalid")
+				}
+			}
+			if dimensions, ok := settlement["scopeDimensions"].([]any); ok {
+				for _, item := range dimensions {
+					d, ok := item.(map[string]any)
+					if !ok || len(d) != 4 || d["capacity"] == nil || d["request"] == nil || d["actual"] == nil || d["target"] == nil {
+						return failure("rules_invalid")
+					}
+				}
+			}
 			removeNull(settlement, "adjustment", "plans")
 			for _, role := range []string{"capacity", "request", "actual"} {
 				if entry, ok := settlement[role].(map[string]any); ok {

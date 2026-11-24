@@ -154,6 +154,13 @@ export interface SettlementAdjustment {
 }
 /** Closed typed shape of a settlementBalance rule; one bucket per declaration. */
 export interface SettlementSpec {
+  /** Direct single relations to the same target on the capacity, open source and settled actual. */
+  readonly scopeDimensions?: readonly {
+    readonly capacity: string;
+    readonly request: string;
+    readonly actual: string;
+    readonly target: string;
+  }[];
   readonly capacity: SettlementCapacity;
   readonly request: SettlementRequest;
   readonly actual: SettlementActual;
