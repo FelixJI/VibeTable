@@ -760,6 +760,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	closedAmounts := map[string]*settlementBucket{}
 	fulfilledAmounts := map[string]*settlementBucket{}
 	closingNow := map[string]bool{}
+	closedAfter := map[string]bool{}
 	closingScopes := map[string]*settlementBucket{}
 	if adj := spec.Adjustment; adj != nil {
 		for eventID, row := range after[adj.Entity] {
@@ -804,6 +805,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 			}
 			if flag, present := row[adj.CloseRemaining]; present && flag == true && closeEvent {
+				closedAfter[target] = true
 				for _, field := range []string{adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
 					if field == "" {
 						continue
@@ -1191,7 +1193,9 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		if !contains(request.OpenStates, state) {
 			continue
 		}
-		if len(spec.ScopeDimensions) > 0 {
+		// A historical closeRemaining ends future execution even when correcting
+		// an actual later restores arithmetic headroom in the shared budget.
+		if len(spec.ScopeDimensions) > 0 && !closedAfter[id] {
 			// A newly confirmed source is checked against the current capacity,
 			// including when it is fully disposed of in this very transaction.
 			// Historical sources release only their own exhausted reservation.

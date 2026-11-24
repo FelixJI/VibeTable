@@ -1108,7 +1108,8 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	if len(f.declaration.Decimals) != 64 {
 		t.Fatal("legacy fixture must have 64 mappings")
 	}
-	id := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true))).NewIDs["invoices"]["kept"]
+	applied := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)))
+	id := applied.NewIDs["invoices"]["kept"]
 	oldRow, oldDigest := regressionRow(t, f, "invoices", id)
 	oldRules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil {
@@ -1137,6 +1138,14 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	upgraded := f.declaration
 	upgraded.Version++
 	upgraded.Decimals = append(append([]transactionrules.Decimal{}, upgraded.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "budget_44", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
+	// The same package upgrade strengthens an existing settlement rule. The
+	// receipt from its previous unscoped declaration must remain recoverable.
+	upgraded.Rules = append([]transactionrules.Rule{}, upgraded.Rules...)
+	settlement := *upgraded.Rules[1].Settlement
+	settlement.ScopeDimensions = []transactionrules.SettlementScopeDimension{
+		{Capacity: "original", Request: "original", Actual: "original", Target: "allocations"},
+	}
+	upgraded.Rules[1].Settlement = &settlement
 	installed, err := commitUpgrade(upgraded, "1.0.1", "6")
 	if err != nil {
 		t.Fatalf("real 64 to 65 package upgrade failed: %v", err)
@@ -1178,6 +1187,12 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 		t.Fatal("successful upgrade changed business row")
 	}
 	before := transactionBusinessSnapshot(t, f)
+	for _, method := range []string{"transaction.status", "transaction.commit"} {
+		got, err := f.call(method, map[string]any{"requestId": applied.RequestID})
+		if err != nil || !reflect.DeepEqual(got, applied) {
+			t.Fatalf("%s lost the receipt after adding scope dimensions: %v", method, err)
+		}
+	}
 	oversized := upgraded
 	oversized.Version++
 	oversized.Decimals = append(append([]transactionrules.Decimal{}, oversized.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "number", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}})

@@ -110,6 +110,28 @@ func TestSettlementScopeUsesEachOutstandingReservation(t *testing.T) {
 		after["request_sources"]["s2"]["source_project"] = "a"
 		check(t, before, after, false)
 	})
+	t.Run("fixed close survives removal of mistaken actual", func(t *testing.T) {
+		partial := clone(base)
+		partial["request_sources"]["s1"]["source_project"] = "a"
+		red := settlementImages()["allocations"]["red"]
+		red["assigned_project"], red["net"], red["gross"] = nil, "-60.00", "-60.00"
+		partial["allocations"]["red"] = red
+		closed := clone(partial)
+		closed["adjustments"]["closed"] = map[string]any{"kind": "sourceClose", "source": "s1", "close_remaining": true, "quantity": "4", "net": "40.00", "tax": "0.00", "gross": "40.00"}
+		check(t, partial, closed, true)
+		reassigned := clone(closed)
+		reassigned["allocations"]["orig"]["anchor_project"] = "b"
+		check(t, closed, reassigned, false) // The actual still inherits the old scope.
+		delete(reassigned["allocations"], "red")
+		check(t, closed, reassigned, true)
+		check(t, nil, reassigned, true) // Historical admission after correction.
+		// Six units still occupy the budget after reversing the actual. Only
+		// attribution protection was released by the fixed four-unit close.
+		reassigned["allocations"]["orig"]["quantity"] = "5"
+		if err := registration.Validate(nil, reassigned); err == nil || err.Error() != "transaction.settlement_exceeded" {
+			t.Fatalf("lost remaining capacity usage: %v", err)
+		}
+	})
 	t.Run("unknowns and malformed relations", func(t *testing.T) {
 		before := clone(base)
 		before["allocations"]["orig"]["anchor_project"] = nil
@@ -124,4 +146,36 @@ func TestSettlementScopeUsesEachOutstandingReservation(t *testing.T) {
 		delete(after["request_sources"]["s1"], "source_project")
 		check(t, before, after, false)
 	})
+}
+
+func TestSettlementScopeRetainsOnlyCumulativeDimensions(t *testing.T) {
+	first := SettlementScopeDimension{Capacity: "a", Request: "s", Actual: "r", Target: "areas"}
+	second := SettlementScopeDimension{Capacity: "project", Request: "project", Actual: "project", Target: "projects"}
+	registered := func(version int, dimensions ...SettlementScopeDimension) Registration {
+		rule := newKindRule(t, "settlement")
+		rule.Settlement.ScopeDimensions = dimensions
+		r := Registration{WorkspaceID: "w", InstallationID: "i", PluginID: "p", Declaration: invoiceGuardsDeclaration(t, rule), Bindings: map[string]pluginmodel.Binding{}}
+		r.Declaration.Version = version
+		for entity, fields := range r.dependencies() {
+			b := pluginmodel.Binding{TableID: entity, Fields: map[string]string{}}
+			for field := range fields {
+				b.Fields[field] = field
+			}
+			r.Bindings[entity] = b
+		}
+		return r
+	}
+	initial, one, both := registered(1), registered(2, first), registered(3, second, first)
+	if guards := activeGuards([]Registration{initial, one, both}); len(guards) != 1 || guards[0].Declaration.Version != 3 {
+		t.Fatal("cumulative scopes must spend the read budget only once")
+	}
+	replaced := first
+	replaced.Request = "other"
+	changedMeasure := registered(4, first, second)
+	changedMeasure.Declaration.Rules[0].Settlement.Capacity.Directions = []string{"another"}
+	for _, invalid := range []Registration{registered(3, first, second), registered(4, first), registered(4, replaced, second), changedMeasure} {
+		if invalid.Declaration.Retains(both.Declaration) {
+			t.Fatal("changed rule, removed mapping or same-version edit authorized recovery")
+		}
+	}
 }
