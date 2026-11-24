@@ -1,5 +1,7 @@
 package transactionrules
 
+import "reflect"
+
 // Each role's direct relation points at the same logical target. A null
 // relation is unknown; missing fields, malformed values and dangling IDs
 // cannot serve as attribution evidence.
@@ -8,6 +10,26 @@ type SettlementScopeDimension struct {
 	Request  string `json:"request"`
 	Actual   string `json:"actual"`
 	Target   string `json:"target"`
+}
+
+// Only a capture already effective for this source with the same fixed
+// amounts survives without recalculating it from today's actuals.
+func (s *SettlementSpec) retainsScopeClose(before Images, eventID, target string, current map[string]any) bool {
+	adj := s.Adjustment
+	row := before[adj.Entity][eventID]
+	kind, _ := row[adj.Kind].(string)
+	if row[adj.Target] != target || row[adj.CloseRemaining] != true || !contains(adj.CloseKinds, kind) {
+		return false
+	}
+	for _, field := range []string{adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
+		if field != "" && !reflect.DeepEqual(row[field], current[field]) {
+			return false
+		}
+	}
+	source := before[s.Request.Entity][target]
+	state, stateErr := authorityValue(before, source, s.Request.State)
+	direction, directionErr := authorityValue(before, source, s.Request.Direction)
+	return stateErr == nil && directionErr == nil && !contains(s.Request.DraftStates, state) && contains(s.Request.Directions, direction)
 }
 
 func scopeRelation(images Images, row map[string]any, field, target string) (string, error) {

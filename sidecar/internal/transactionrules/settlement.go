@@ -805,7 +805,6 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 				}
 			}
 			if flag, present := row[adj.CloseRemaining]; present && flag == true && closeEvent {
-				closedAfter[target] = true
 				for _, field := range []string{adj.CloseQuantity, adj.CloseNet, adj.CloseTax, adj.CloseGross} {
 					if field == "" {
 						continue
@@ -814,9 +813,18 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 						return failure("settlement_invalid")
 					}
 				}
-				// Only a newly written close captures today's remaining scope.
-				// Admission keeps the fixed scope of historical close events.
-				if before != nil && before[adj.Entity][eventID] == nil {
+				// Scoped releases must capture the current remainder the first
+				// time this event terminates this source, even on an update.
+				// Admission and retained closes keep their historical amounts.
+				capture := before != nil && before[adj.Entity][eventID] == nil
+				if before != nil && len(spec.ScopeDimensions) > 0 {
+					capture = !spec.retainsScopeClose(before, eventID, target, row)
+					if closedAfter[target] && (capture || closingNow[target]) {
+						return failure("settlement_invalid")
+					}
+				}
+				closedAfter[target] = true
+				if capture {
 					if closingNow[target] {
 						return failure("settlement_invalid")
 					}

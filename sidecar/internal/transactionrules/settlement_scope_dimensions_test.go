@@ -162,6 +162,49 @@ func TestSettlementScopeUsesEachOutstandingReservation(t *testing.T) {
 		delete(after["request_sources"]["s1"], "source_project")
 		check(t, before, after, false)
 	})
+	t.Run("first effective terminal capture on an existing event", func(t *testing.T) {
+		partial := clone(base)
+		partial["adjustments"]["close"] = map[string]any{"kind": "sourceClose", "source": "s1", "close_remaining": false, "quantity": "4", "net": "40.00", "tax": "0.00", "gross": "40.00"}
+		check(t, nil, partial, true)
+		closed := clone(partial)
+		event := closed["adjustments"]["close"]
+		event["close_remaining"] = true
+		check(t, partial, closed, false)
+		// Unscoped declarations retain their historical handling of updates.
+		legacy := Registration{Declaration: invoiceGuardsDeclaration(t, newKindRule(t, "settlement"))}
+		if err := legacy.Validate(partial, closed); err != nil {
+			t.Fatal(err)
+		}
+		draft := clone(closed)
+		draft["requests"]["r1"]["status"] = "draft"
+		check(t, draft, closed, false)
+		event["quantity"], event["net"], event["gross"] = "10", "100.00", "100.00"
+		check(t, partial, closed, true)
+		check(t, draft, closed, true)
+		edited := clone(closed)
+		edited["adjustments"]["close"]["net"], edited["adjustments"]["close"]["gross"] = "90.00", "90.00"
+		check(t, closed, edited, false)
+
+		duplicate := clone(closed)
+		duplicate["adjustments"]["second"] = map[string]any{"kind": "sourceClose", "source": "s1", "close_remaining": true, "quantity": "0", "net": "0.00", "tax": "0.00", "gross": "0.00"}
+		check(t, closed, duplicate, false)
+	})
+	t.Run("retargeted close must capture the new source remainder", func(t *testing.T) {
+		before := clone(base)
+		before["allocations"]["orig"]["quantity"] = "30"
+		before["allocations"]["orig"]["net"], before["allocations"]["orig"]["gross"] = "300.00", "300.00"
+		second := clone(base)["request_sources"]["s1"]
+		second["quantity"], second["net"], second["gross"] = "20", "200.00", "200.00"
+		before["request_sources"]["s2"] = second
+		before["adjustments"]["close"] = map[string]any{"kind": "sourceClose", "source": "s1", "close_remaining": true, "quantity": "10", "net": "100.00", "tax": "0.00", "gross": "100.00"}
+		check(t, nil, before, true)
+		after := clone(before)
+		event := after["adjustments"]["close"]
+		event["source"] = "s2"
+		check(t, before, after, false)
+		event["quantity"], event["net"], event["gross"] = "20", "200.00", "200.00"
+		check(t, before, after, true)
+	})
 }
 
 func TestSettlementScopeRetainsOnlyCumulativeDimensions(t *testing.T) {
