@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
@@ -20,7 +23,6 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -79,13 +81,14 @@ func resolveModelGrantState(ctx context.Context, app core.App, project, plugin s
 }
 
 func loadCompletedModel(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation, revisions map[string]string) (*pluginmodel.State, error) {
-	states, err := pluginmodel.States(ctx, app, project, plugin)
+	// Grants derive from the newest completed state only.
+	completed, err := completedModelHistory(ctx, app, project, plugin)
 	if err != nil {
 		return nil, err
 	}
-	for i := len(states) - 1; i >= 0; i-- {
-		s := states[i]
-		if s.Status != "completed" || s.InstallationID != installed.InstallationID || s.InstallationRevision != installed.Revision || !pluginmodel.Equal(s.Model, *installed.Manifest.Permissions.Model) {
+	for i := len(completed) - 1; i >= 0; i-- {
+		s := completed[i]
+		if s.InstallationID != installed.InstallationID || s.InstallationRevision != installed.Revision || !pluginmodel.Equal(s.Model, *installed.Manifest.Permissions.Model) {
 			continue
 		}
 		return &s, validateModelBindings(ctx, app, s, revisions)
@@ -673,12 +676,20 @@ func modelDisplayField(s pluginmodel.State, entity string) string {
 }
 
 func modelValidateRevisions(ctx context.Context, app core.App, s pluginmodel.State) error {
-	for table, revision := range s.Revisions {
-		if err := fieldchange.CheckTableWriteFence(ctx, app, table); err != nil {
-			return err
-		}
-		current, err := schemaexecution.Describe(ctx, app, table)
-		if err != nil || current.Snapshot.SchemaRevision != revision {
+	// One metadata row per bound table detects drift. Loading a full execution
+	// projection of every bound table on every step dominated large installs.
+	catalog := fieldchange.NewCatalog(app)
+	tables := make([]string, 0, len(s.Revisions))
+	for table := range s.Revisions {
+		tables = append(tables, table)
+	}
+	// The lock query does not depend on the table: one read fences every bound table.
+	if err := fieldchange.CheckTableWriteFences(ctx, app, tables); err != nil {
+		return err
+	}
+	for _, table := range tables {
+		current, err := catalog.Revisions(ctx, table)
+		if err != nil || current.Schema != s.Revisions[table] {
 			return pluginDataError("plugin_plan_stale")
 		}
 	}
@@ -707,10 +718,18 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 	if plan.InstallationID != input.InstallationID || plan.InstallationRevision != input.InstallationRevision || !pluginmodel.Equal(plan.Model, *installed.Manifest.Permissions.Model) {
 		return plan.State, pluginDataError("plugin_plan_stale")
 	}
-	states, err := pluginmodel.States(ctx, app, input.ProjectKey, input.PluginID)
+	history, err := pluginmodel.History(ctx, app, input.ProjectKey, input.PluginID)
 	if err != nil {
 		return plan.State, err
 	}
+	states := make([]pluginmodel.State, 0, len(history))
+	for _, progress := range history {
+		states = append(states, progress.State)
+	}
+	// Each installed step re-authenticates against the installation and its
+	// grants. Re-reading this validated history made every step pay for all
+	// earlier steps; the cursor lets those reads cover only later progress.
+	ctx = withModelHistory(ctx, input.ProjectKey, input.PluginID, history)
 	started := false
 	for _, s := range states {
 		if s.RequestID == id {
@@ -795,7 +814,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 						return err
 					}
 					before := next.Completed
-					err := applyModelStep(ctx, &scoped, &next, step, func(_ core.App, state pluginmodel.State) error {
+					err := applyModelStep(ctx, tx, &scoped, &next, step, func(_ core.App, state pluginmodel.State) error {
 						state.Completed++
 						next.State = state
 						return nil
@@ -917,7 +936,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 			plan.State = next
 			return nil
 		}
-		err = applyModelStep(ctx, domain, &plan, step, project)
+		err = applyModelStep(ctx, app, domain, &plan, step, project)
 		if err != nil {
 			break
 		}
@@ -1011,7 +1030,7 @@ func commitSurfaceModel(ctx context.Context, app core.App, workspace string, inp
 	})
 	return plan.State, err
 }
-func applyModelStep(ctx context.Context, domain *schemaFieldChangeDomain, plan *modelPreview, step modelStep, project func(core.App, pluginmodel.State) error) error {
+func applyModelStep(ctx context.Context, app core.App, domain *schemaFieldChangeDomain, plan *modelPreview, step modelStep, project func(core.App, pluginmodel.State) error) error {
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
 	var err error
 	if step.Kind == "table" {
@@ -1041,7 +1060,12 @@ func applyModelStep(ctx context.Context, domain *schemaFieldChangeDomain, plan *
 		if !p.CanApply || p.CreatesMigration || len(p.Confirmations) > 0 {
 			return pluginDataError("plugin_model_schema_rejected")
 		}
-		_, err = domain.ApplyWithCommit(ctx, v2.ApplyRequest{PlanID: p.PlanID, PlanHash: p.PlanHash, OperationID: step.OperationID, Actor: actor, Confirmations: []string{}}, func(tx core.App, r v2.ApplyReceipt) error {
+		var operationID string
+		operationID, err = modelStepAttemptOperationID(ctx, app, plan, step, p)
+		if err != nil {
+			return err
+		}
+		_, err = domain.ApplyWithCommit(ctx, v2.ApplyRequest{PlanID: p.PlanID, PlanHash: p.PlanHash, OperationID: operationID, Actor: actor, Confirmations: []string{}}, func(tx core.App, r v2.ApplyReceipt) error {
 			next := cloneModelState(plan.State)
 			next.Bindings[step.Entity].Fields[step.Field] = r.FieldID
 			next.Revisions[r.TableID] = r.SchemaRevision
@@ -1056,6 +1080,58 @@ func applyModelStep(ctx context.Context, domain *schemaFieldChangeDomain, plan *
 		})
 	}
 	return err
+}
+
+// modelStepRetrySeparator separates a repeated attempt of a model step from
+// the step's own id: "<step id>#<attempt>", where the attempt is counted over
+// the step's audit rows. modelStepRetryBound is the character after the
+// separator, so every id from the step id up to it belongs to the step.
+const (
+	modelStepRetrySeparator = "#"
+	modelStepRetryBound     = "$"
+)
+
+// modelStepAttemptOperationID returns the operation id for applying plan's
+// current field step. The first attempt uses the step's own deterministic id.
+// A repeated attempt gets the next id of the step only when every earlier
+// attempt of exactly this step failed inside the executor and left nothing but
+// its failure receipt: each audit row under the step id must be a failure
+// receipt, without a migration job, for the same action on the same table.
+// Failure receipts are append-only and keep their numbers. Any other row under
+// the step id keeps deciding through the executor's unique operation_id, so an
+// applied, queued or migrated step can never be applied twice.
+func modelStepAttemptOperationID(ctx context.Context, app core.App, plan *modelPreview, step modelStep, p v2.FieldChangePlan) (string, error) {
+	stepID := step.OperationID
+	// Only the step at the request's current progress, planned by this request,
+	// can be a repeated attempt.
+	if step.Kind == "table" || plan.Completed >= len(plan.Steps) || plan.Steps[plan.Completed] != step ||
+		!strings.HasPrefix(stepID, "model-"+plan.RequestID+"-") {
+		return stepID, nil
+	}
+	rows, err := app.FindRecordsByFilter(
+		"vibetable_schema_audit",
+		"operation_id>={:step} && operation_id<{:bound}",
+		"operation_id",
+		0,
+		0,
+		dbx.Params{"step": stepID, "bound": stepID + modelStepRetryBound},
+	)
+	if err != nil {
+		return "", fmt.Errorf("load earlier attempts of model step: %w", err)
+	}
+	for _, row := range rows {
+		id := row.GetString("operation_id")
+		if (id != stepID && !strings.HasPrefix(id, stepID+modelStepRetrySeparator)) ||
+			row.GetString("outcome") != "failed" || row.GetString("migration_job_id") != "" ||
+			row.GetString("action") != string(p.Intent.Action) || row.GetString("table_id") != p.Intent.TableID {
+			return stepID, nil
+		}
+	}
+	// The first attempt has no row under the step id.
+	if len(rows) == 0 {
+		return stepID, nil
+	}
+	return stepID + modelStepRetrySeparator + strconv.Itoa(len(rows)+1), nil
 }
 
 func cloneModelState(s pluginmodel.State) pluginmodel.State {

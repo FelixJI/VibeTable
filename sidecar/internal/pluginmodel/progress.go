@@ -37,6 +37,39 @@ type State struct {
 // States reads only platform model progress in the existing immutable audit log.
 // It deliberately survives disable, uninstall and private-storage cleanup.
 func States(ctx context.Context, app core.App, project, plugin string) ([]State, error) {
+	history, err := History(ctx, app, project, plugin)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]State, 0, len(history))
+	for _, progress := range history {
+		states = append(states, progress.State)
+	}
+	return states, nil
+}
+
+// Progress is one validated model progress state and the audit sequence of its record.
+// The item key is deliberately not part of it: authority never depends on key spelling.
+type Progress struct {
+	Seq   int64 `json:"-"`
+	State State
+}
+
+// History reads all model progress, oldest first, with each record's audit sequence.
+func History(ctx context.Context, app core.App, project, plugin string) ([]Progress, error) {
+	return readProgress(ctx, app, project, plugin, nil)
+}
+
+// StatesAfter reads the model progress recorded after an audit sequence, oldest first.
+// Audit rows are appended with a per-project sequence, so the plugin event index
+// serves the range directly: a caller that already validated the history up to
+// `after` pays only for newer records. Validation is identical to History and no
+// record inside the range is skipped, so a corrupt row still fails the read.
+func StatesAfter(ctx context.Context, app core.App, project, plugin string, after int64) ([]Progress, error) {
+	return readProgress(ctx, app, project, plugin, &after)
+}
+
+func readProgress(ctx context.Context, app core.App, project, plugin string, after *int64) ([]Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -48,6 +81,10 @@ func States(ctx context.Context, app core.App, project, plugin string) ([]State,
 	}
 	filter := "kind='audit' && payload_json.eventType='model.progress'"
 	params := dbx.Params{}
+	if after != nil {
+		filter += " && seq>{:after}"
+		params["after"] = *after
+	}
 	if project != "" {
 		filter += " && project_key={:project}"
 		params["project"] = project
@@ -56,7 +93,7 @@ func States(ctx context.Context, app core.App, project, plugin string) ([]State,
 		filter += " && plugin_id={:plugin}"
 		params["plugin"] = plugin
 	}
-	result := []State{}
+	result := []Progress{}
 	for offset := 0; ; offset += 256 {
 		rows, err := app.FindRecordsByFilter("vibetable_plugin_records", filter, "seq", 256, offset, params)
 		if err != nil {
@@ -73,7 +110,7 @@ func States(ctx context.Context, app core.App, project, plugin string) ([]State,
 			if state.Contract != Contract {
 				return nil, errors.New("plugin model progress contract is invalid")
 			}
-			result = append(result, state)
+			result = append(result, Progress{Seq: int64(row.GetInt("seq")), State: state})
 		}
 		if len(rows) < 256 {
 			return result, nil

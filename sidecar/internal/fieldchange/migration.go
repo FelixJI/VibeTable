@@ -492,7 +492,19 @@ func CheckTableWriteFence(
 	app core.App,
 	tableID string,
 ) error {
-	if app == nil {
+	return CheckTableWriteFences(ctx, app, []string{tableID})
+}
+
+// CheckTableWriteFences applies the table write fence to every listed table with
+// one job read, reporting the lowest-id queued or running field migration that
+// locks one of them. The lock query is the same for every table, so callers that
+// fence many tables per operation do not repeat it.
+func CheckTableWriteFences(
+	ctx context.Context,
+	app core.App,
+	tableIDs []string,
+) error {
+	if app == nil || len(tableIDs) == 0 {
 		return nil
 	}
 	records, err := app.FindRecordsByFilter(
@@ -507,6 +519,10 @@ func CheckTableWriteFence(
 	if err != nil {
 		return err
 	}
+	locked := make(map[string]struct{}, len(tableIDs))
+	for _, tableID := range tableIDs {
+		locked[tableID] = struct{}{}
+	}
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -515,12 +531,14 @@ func CheckTableWriteFence(
 		var cursor struct {
 			TableID string `json:"tableId"`
 		}
-		if json.Unmarshal(raw, &cursor) == nil && cursor.TableID == tableID {
-			return productError(
-				"field.migration.write_locked", "tableId",
-				"table is temporarily write-locked by a field migration",
-				map[string]any{"jobId": record.Id},
-			)
+		if json.Unmarshal(raw, &cursor) == nil {
+			if _, ok := locked[cursor.TableID]; ok {
+				return productError(
+					"field.migration.write_locked", "tableId",
+					"table is temporarily write-locked by a field migration",
+					map[string]any{"jobId": record.Id},
+				)
+			}
 		}
 	}
 	return nil
