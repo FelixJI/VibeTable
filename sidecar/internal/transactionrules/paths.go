@@ -152,6 +152,11 @@ func (r Rule) relationSteps(visit func(string, RelationStep)) {
 		}
 	}
 	if spec := r.Settlement; spec != nil {
+		for _, dimension := range spec.ScopeDimensions {
+			visit(spec.Capacity.Entity, RelationStep{dimension.Capacity, dimension.Target})
+			visit(spec.Request.Entity, RelationStep{dimension.Request, dimension.Target})
+			visit(spec.Actual.Entity, RelationStep{dimension.Actual, dimension.Target})
+		}
 		visit(spec.Request.Entity, RelationStep{spec.Request.Capacity, spec.Capacity.Entity})
 		visit(spec.Actual.Entity, RelationStep{spec.Actual.Request, spec.Request.Entity})
 		visit(spec.Actual.Entity, RelationStep{spec.Actual.Capacity, spec.Capacity.Entity})

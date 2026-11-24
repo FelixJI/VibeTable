@@ -417,17 +417,33 @@ class SettlementAdjustment(TransactionContract):
         return self
 
 
+class SettlementScopeDimension(TransactionContract):
+    capacity: str = Field(min_length=1)
+    request: str = Field(min_length=1)
+    actual: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+
+
 class SettlementSpec(TransactionContract):
     """Closed typed shape of a settlementBalance rule."""
+
+    model_config = ConfigDict(validate_by_name=False)
 
     capacity: SettlementCapacity
     request: SettlementRequest
     actual: SettlementActual
+    scope_dimensions: list[SettlementScopeDimension] | None = Field(
+        default=None, alias="scopeDimensions", min_length=1, max_length=8
+    )
     adjustment: SettlementAdjustment | None = None
     plans: ReservationPlans | None = None
 
     @model_validator(mode="after")
     def validate_shape(self) -> SettlementSpec:
+        if "scope_dimensions" in self.model_fields_set:
+            dimensions = self.scope_dimensions
+            if dimensions is None or any(d in dimensions[:i] for i, d in enumerate(dimensions)):
+                raise ValueError("scopeDimensions must contain distinct relation mappings")
         for names in (
             self.capacity.directions,
             self.request.directions,
@@ -915,6 +931,10 @@ class PluginTransactionsDeclaration(TransactionContract):
                         authority(role_entry.entity, ref)
                     require_relation(role_entry.entity, role_entry.capacity, capacity.entity)
                 authority(request.entity, request.basis)
+                for dimension in settlement.scope_dimensions or []:
+                    require_relation(capacity.entity, dimension.capacity, dimension.target)
+                    require_relation(request.entity, dimension.request, dimension.target)
+                    require_relation(actual.entity, dimension.actual, dimension.target)
                 require_relation(actual.entity, actual.request, request.entity)
                 if settlement.adjustment is not None:
                     adjustment = settlement.adjustment

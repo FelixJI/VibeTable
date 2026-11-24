@@ -2,6 +2,7 @@ package transactionrules
 
 import (
 	"math/big"
+	"slices"
 
 	"github.com/vibetable/vibetable/sidecar/internal/exactdecimal"
 )
@@ -114,10 +115,11 @@ type SettlementAdjustment struct {
 // different reversal reasons naturally share one original blueprint bucket
 // while a separate declaration keeps the normal bucket independent.
 type SettlementSpec struct {
-	Capacity   SettlementCapacity    `json:"capacity"`
-	Request    SettlementRequest     `json:"request"`
-	Actual     SettlementActual      `json:"actual"`
-	Adjustment *SettlementAdjustment `json:"adjustment,omitempty"`
+	ScopeDimensions []SettlementScopeDimension `json:"scopeDimensions,omitempty"`
+	Capacity        SettlementCapacity         `json:"capacity"`
+	Request         SettlementRequest          `json:"request"`
+	Actual          SettlementActual           `json:"actual"`
+	Adjustment      *SettlementAdjustment      `json:"adjustment,omitempty"`
 	// Plans reuses the delivery reservation plan structure for the normal
 	// bucket: current plan buckets reserve their full quantity, direct sources
 	// and executions occupy the obligation directly.
@@ -139,6 +141,16 @@ func (s *SettlementSpec) valid() bool {
 	}
 	if s.Request.Basis.Field != "" && !s.Request.Basis.valid() {
 		return false
+	}
+	if s.ScopeDimensions != nil && (len(s.ScopeDimensions) == 0 || len(s.ScopeDimensions) > 8) {
+		return false
+	}
+	seen := map[SettlementScopeDimension]bool{}
+	for _, dimension := range s.ScopeDimensions {
+		if dimension.Capacity == "" || dimension.Request == "" || dimension.Actual == "" || dimension.Target == "" || seen[dimension] {
+			return false
+		}
+		seen[dimension] = true
 	}
 	for _, refs := range [][3]AuthorityRef{{s.Capacity.Currency, s.Request.Currency, s.Actual.Currency}, {s.Capacity.Unit, s.Request.Unit, s.Actual.Unit}, {s.Capacity.Material, s.Request.Material, s.Actual.Material}} {
 		// request and actual declare a scope dimension as a pair; the capacity
@@ -536,7 +548,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		}
 	}
 	openBefore := func(id string) bool {
-		if before == nil || before[request.Entity][id] == nil || closedBefore[id] {
+		if before[request.Entity][id] == nil {
 			return false
 		}
 		state, err := authorityValue(before, before[request.Entity][id], request.State)
@@ -588,6 +600,15 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	executed := map[string]*big.Int{}
 	planBucketOfActual := map[string]string{}
 	for id, entry := range afterFacts {
+		if len(spec.ScopeDimensions) > 0 {
+			var previous map[string]any
+			if old, ok := beforeFacts[id]; ok && old.capacityID == entry.capacityID {
+				previous = before[actual.Entity][id]
+			}
+			if err := spec.checkScope(before, after, after[actual.Entity][id], previous, entry.capacityID, true); err != nil {
+				return err
+			}
+		}
 		if entry.capacityID != "" {
 			if err := verifyCapacity(entry.capacityID); err != nil {
 				return err
@@ -739,6 +760,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 	closedAmounts := map[string]*settlementBucket{}
 	fulfilledAmounts := map[string]*settlementBucket{}
 	closingNow := map[string]bool{}
+	closedAfter := map[string]bool{}
 	closingScopes := map[string]*settlementBucket{}
 	if adj := spec.Adjustment; adj != nil {
 		for eventID, row := range after[adj.Entity] {
@@ -791,9 +813,18 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 						return failure("settlement_invalid")
 					}
 				}
-				// Only a newly written close captures today's remaining scope.
-				// Admission keeps the fixed scope of historical close events.
-				if before != nil && before[adj.Entity][eventID] == nil {
+				// Scoped releases must capture the current remainder the first
+				// time this event terminates this source, even on an update.
+				// Admission and retained closes keep their historical amounts.
+				capture := before != nil && before[adj.Entity][eventID] == nil
+				if before != nil && len(spec.ScopeDimensions) > 0 {
+					capture = !spec.retainsScopeClose(before, eventID, target, row)
+					if closedAfter[target] && (capture || closingNow[target]) {
+						return failure("settlement_invalid")
+					}
+				}
+				closedAfter[target] = true
+				if capture {
 					if closingNow[target] {
 						return failure("settlement_invalid")
 					}
@@ -1169,6 +1200,25 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		}
 		if !contains(request.OpenStates, state) {
 			continue
+		}
+		if len(spec.ScopeDimensions) > 0 {
+			// A newly confirmed source is checked against the current capacity,
+			// including when it is fully disposed of in this very transaction.
+			// Historical sources release only their own exhausted reservation.
+			var previous map[string]any
+			wasOpen := openBefore(id)
+			if wasOpen && !closedBefore[id] && beforeSourceCapacity[id] == capacityID {
+				previous = before[request.Entity][id]
+			}
+			confirming := before != nil && !wasOpen
+			outstanding := slices.ContainsFunc(remaining[:], func(v *big.Int) bool { return v != nil && v.Sign() > 0 })
+			// closeRemaining releases the reservation, including arithmetic
+			// headroom restored later. Confirmation still binds its scope once.
+			if confirming || (!closedAfter[id] && outstanding) {
+				if err := spec.checkScope(before, after, row, previous, capacityID, false); err != nil {
+					return err
+				}
+			}
 		}
 		if spec.Plans != nil {
 			if planItem != "" {

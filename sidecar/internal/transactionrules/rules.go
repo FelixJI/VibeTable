@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -197,6 +198,21 @@ func (r *Rule) UnmarshalJSON(raw []byte) error {
 			}
 		}
 		if settlement, ok := fields["settlement"].(map[string]any); ok {
+			// Go's decoder folds case even with DisallowUnknownFields. Enforce
+			// the new closed wire shape before persisting the registration.
+			for key := range settlement {
+				if key != "scopeDimensions" && strings.EqualFold(key, "scopeDimensions") {
+					return failure("rules_invalid")
+				}
+			}
+			if dimensions, ok := settlement["scopeDimensions"].([]any); ok {
+				for _, item := range dimensions {
+					d, ok := item.(map[string]any)
+					if !ok || len(d) != 4 || d["capacity"] == nil || d["request"] == nil || d["actual"] == nil || d["target"] == nil {
+						return failure("rules_invalid")
+					}
+				}
+			}
 			removeNull(settlement, "adjustment", "plans")
 			for _, role := range []string{"capacity", "request", "actual"} {
 				if entry, ok := settlement[role].(map[string]any); ok {
@@ -1237,7 +1253,7 @@ func DecimalInputs(ctx context.Context, app core.App, table string) (map[string]
 }
 
 // Retains allows an identical declaration or a strictly newer version that keeps
-// each previously approved rule and exact decimal mapping.
+// each previously approved constraint and exact decimal mapping.
 func (d Declaration) Retains(old Declaration) bool {
 	if old.ModelID != d.ModelID || old.Contract != d.Contract || d.Version < old.Version {
 		return false
@@ -1250,7 +1266,7 @@ func (d Declaration) Retains(old Declaration) bool {
 		rules[rule.ID] = rule
 	}
 	for _, rule := range old.Rules {
-		if !reflect.DeepEqual(rule, rules[rule.ID]) {
+		if !retainsRule(rules[rule.ID], rule) {
 			return false
 		}
 	}
@@ -1264,6 +1280,23 @@ func (d Declaration) Retains(old Declaration) bool {
 		}
 	}
 	return true
+}
+
+// Scope dimensions are conjunctive. Adding a dimension keeps every old
+// constraint; every other part of this rule must still match exactly.
+func retainsRule(next, old Rule) bool {
+	if old.Kind != "settlementBalance" || next.Settlement == nil || old.Settlement == nil {
+		return reflect.DeepEqual(next, old)
+	}
+	for _, dimension := range old.Settlement.ScopeDimensions {
+		if !slices.Contains(next.Settlement.ScopeDimensions, dimension) {
+			return false
+		}
+	}
+	spec := *next.Settlement
+	spec.ScopeDimensions = old.Settlement.ScopeDimensions
+	next.Settlement = &spec
+	return reflect.DeepEqual(next, old)
 }
 
 // Cumulative upgrades keep their immutable registrations. Execute the superset once so

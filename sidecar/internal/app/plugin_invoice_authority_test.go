@@ -395,6 +395,99 @@ func invoiceRequest(id, purpose, basis, q, n, t, g string, original any) transac
 	return invoicePlan(invoiceCreate("requests", id, map[string]any{"status": "open", "direction": "red", "purpose": purpose, "basis": basis, "currency": "CNY"}), invoiceCreate("request_lines", id, line), invoiceCreate("request_sources", id, source))
 }
 
+func TestInvoiceAuthoritySettlementScopeCommitOrderNativeAndRestore(t *testing.T) {
+	const mismatch = "transaction.settlement_invalid"
+	f := newInvoiceAuthorityFixtureWithWire(t, func(d transactionrules.Declaration) any {
+		d.Rules[1].Settlement.ScopeDimensions = []transactionrules.SettlementScopeDimension{
+			{Capacity: "obligation", Request: "obligation", Actual: "obligation", Target: "obligations"},
+		}
+		return d
+	}, true)
+	if _, err := f.call("transaction.configure", map[string]any{"declaration": f.declaration}); err != nil {
+		t.Fatalf("reconfigure persisted dimensions: %v", err)
+	}
+	obligations := f.submit(t, invoicePlan(
+		invoiceCreate("obligations", "a", map[string]any{"quantity": "10", "currency": "CNY", "unit": "piece"}),
+		invoiceCreate("obligations", "b", map[string]any{"quantity": "10", "currency": "CNY", "unit": "piece"}),
+	)).NewIDs["obligations"]
+	blue := invoiceFace("blue", "blue", "", "10", "0.00", "0.00", "0.00", nil, nil, true)
+	blue.Operations[2].Values["obligation"] = obligations["a"]
+	anchor := f.submit(t, blue).NewIDs["allocations"]["blue"]
+	red := invoiceRequest("red", "physicalReturn", "quantity", "10", "0.00", "0.00", "0.00", anchor)
+	red.Operations[0].Values["status"] = "draft"
+	red.Operations[2].Values["obligation"] = obligations["a"]
+	ids := f.submit(t, red).NewIDs
+	request := ids["requests"]["red"]
+	edit := func(entity, id, field string, value any) transactionPlan {
+		_, digest := regressionRow(t, f, entity, id)
+		return invoicePlan(transactionOperation{Kind: "update", Entity: entity, RecordID: id, ExpectedDigest: &digest, Values: map[string]any{field: value}})
+	}
+	prepare := func(plan transactionPlan) string {
+		t.Helper()
+		result, err := f.call("transaction.preview", map[string]any{"plan": plan})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(transactionPreview).RequestID
+	}
+	compete := func(first, second string) {
+		t.Helper()
+		if _, err := f.call("transaction.commit", map[string]any{"requestId": first}); err != nil {
+			t.Fatal(err)
+		}
+		before := transactionBusinessSnapshot(t, f)
+		_, err := f.call("transaction.commit", map[string]any{"requestId": second})
+		var product *mutation.ProductError
+		if !errors.As(err, &product) || product.Code != mismatch || transactionBusinessSnapshot(t, f) != before {
+			t.Fatalf("losing prepared transaction changed facts or audit: %v", err)
+		}
+	}
+	// Both were legal against the draft. After the correction, confirmation
+	// must read the new scope even though it writes only the request header.
+	confirm := prepare(edit("requests", request, "status", "open"))
+	correct := prepare(edit("allocations", anchor, "obligation", obligations["b"]))
+	compete(correct, confirm)
+	table := f.model.Bindings["allocations"].TableID
+	history, err := audit.New(f.pb, f.kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := history.ReadChangeSets(t.Context(), audit.ReadParams{TableID: table, ItemID: &anchor, Scope: "row", Limit: 1})
+	if err != nil || len(page.ChangeSets) == 0 {
+		t.Fatalf("read original scope revision: %v", err)
+	}
+	target := page.ChangeSets[0].RootRevisionID
+	f.submit(t, edit("allocations", anchor, "obligation", obligations["a"]))
+	confirm = prepare(edit("requests", request, "status", "open"))
+	correct = prepare(edit("allocations", anchor, "obligation", obligations["b"]))
+	compete(confirm, correct)
+	before := transactionBusinessSnapshot(t, f)
+	_, digest := regressionRow(t, f, "allocations", anchor)
+	response := reversalNative(t, f, "correct-reserved-scope", "allocations", map[string]any{
+		"kind": "update", "primaryKey": anchor, "expectedDigest": digest, "values": map[string]any{"obligation": obligations["b"]},
+	})
+	requireHTTPNotCommitted(t, response, mismatch)
+	restore, err := history.PreviewRestore(t.Context(), audit.PreviewParams{TableID: table, ItemID: anchor, TargetRevision: target, Scope: "row"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = history.ApplyRestore(t.Context(), audit.ApplyParams{TableID: table, ItemID: anchor, Token: restore.Token})
+	var restoreErr *audit.Error
+	if !errors.As(err, &restoreErr) || restoreErr.Details["mutationCode"] != mismatch || transactionBusinessSnapshot(t, f) != before {
+		t.Fatalf("native write or restore bypassed the open source: %v", err)
+	}
+	source := ids["request_sources"]["red"]
+	closeEvent := invoiceMeasures("10", "0.00", "0.00", "0.00")
+	closeEvent["kind"], closeEvent["source"], closeEvent["close_remaining"] = "sourceClose", source, true
+	closeEvent["note"] = "关闭零价来源的剩余数量"
+	f.submit(t, invoicePlan(invoiceCreate("adjustments", "close", closeEvent)))
+	f.submit(t, edit("allocations", anchor, "obligation", obligations["b"]))
+	row, _ := regressionRow(t, f, "request_sources", source)
+	if row["obligation"] != obligations["a"] {
+		t.Fatal("correcting the capacity rewrote the closed source snapshot")
+	}
+}
+
 func TestInvoiceAuthorityNaturalAtomicAmountSettlement(t *testing.T) {
 	f := newInvoiceAuthorityFixture(t)
 	blue := f.submit(t, invoiceFace("blue", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)).NewIDs["allocations"]["blue"]
@@ -1015,7 +1108,8 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	if len(f.declaration.Decimals) != 64 {
 		t.Fatal("legacy fixture must have 64 mappings")
 	}
-	id := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true))).NewIDs["invoices"]["kept"]
+	applied := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)))
+	id := applied.NewIDs["invoices"]["kept"]
 	oldRow, oldDigest := regressionRow(t, f, "invoices", id)
 	oldRules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil {
@@ -1044,6 +1138,14 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	upgraded := f.declaration
 	upgraded.Version++
 	upgraded.Decimals = append(append([]transactionrules.Decimal{}, upgraded.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "budget_44", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
+	// The same package upgrade strengthens an existing settlement rule. The
+	// receipt from its previous unscoped declaration must remain recoverable.
+	upgraded.Rules = append([]transactionrules.Rule{}, upgraded.Rules...)
+	settlement := *upgraded.Rules[1].Settlement
+	settlement.ScopeDimensions = []transactionrules.SettlementScopeDimension{
+		{Capacity: "original", Request: "original", Actual: "original", Target: "allocations"},
+	}
+	upgraded.Rules[1].Settlement = &settlement
 	installed, err := commitUpgrade(upgraded, "1.0.1", "6")
 	if err != nil {
 		t.Fatalf("real 64 to 65 package upgrade failed: %v", err)
@@ -1085,6 +1187,12 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 		t.Fatal("successful upgrade changed business row")
 	}
 	before := transactionBusinessSnapshot(t, f)
+	for _, method := range []string{"transaction.status", "transaction.commit"} {
+		got, err := f.call(method, map[string]any{"requestId": applied.RequestID})
+		if err != nil || !reflect.DeepEqual(got, applied) {
+			t.Fatalf("%s lost the receipt after adding scope dimensions: %v", method, err)
+		}
+	}
 	oversized := upgraded
 	oversized.Version++
 	oversized.Decimals = append(append([]transactionrules.Decimal{}, oversized.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "number", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}})
