@@ -39,30 +39,36 @@ func TestPluginGrantsUnionFieldsWithoutCrossOperationElevation(t *testing.T) {
 	}
 }
 
+func changeDataGrants(t *testing.T, store *pluginstore.Service, input pluginSurfaceAPIRequest, grants []pluginReadGrant) pluginSurfaceAPIRequest {
+	t.Helper()
+	raw, err := store.GetInstallation(t.Context(), input.ProjectKey, input.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var installation map[string]any
+	if err = json.Unmarshal(raw, &installation); err != nil {
+		t.Fatal(err)
+	}
+	installation["manifest"].(map[string]any)["permissions"].(map[string]any)["data"] = grants
+	previous := input.InstallationRevision
+	input.InstallationRevision++
+	installation["revision"] = input.InstallationRevision
+	raw, _ = json.Marshal(installation)
+	if _, err = store.SaveInstallation(t.Context(), raw, &previous); err != nil {
+		t.Fatal(err)
+	}
+	return input
+}
+
 func TestPluginMappedReadGrantAndExplicitWritesShareTableWithoutElevation(t *testing.T) {
 	pb, workspace, input, domain, preview, mapped := existingModelMapping(t)
 	ctx := context.Background()
 	editable := createSchemaProductField(t, pb, mapped.TableID, v2.LogicalText, "显式可写字段", "grant-editable")
 	store := pluginstore.New(pb, workspace)
-	raw, err := store.GetInstallation(ctx, input.ProjectKey, input.PluginID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var installation map[string]any
-	if err := json.Unmarshal(raw, &installation); err != nil {
-		t.Fatal(err)
-	}
-	installation["manifest"].(map[string]any)["permissions"].(map[string]any)["data"] = []pluginReadGrant{
+	input = changeDataGrants(t, store, input, []pluginReadGrant{
 		{Collection: "$active", Operations: []string{"read", "query", "create", "update"}, Fields: []string{"id"}},
 		{Collection: mapped.TableID, Operations: []string{"read", "query", "create", "update"}, Fields: []string{editable.FieldID}},
-	}
-	previous := input.InstallationRevision
-	input.InstallationRevision++
-	installation["revision"] = input.InstallationRevision
-	raw, _ = json.Marshal(installation)
-	if _, err := store.SaveInstallation(ctx, raw, &previous); err != nil {
-		t.Fatal(err)
-	}
+	})
 	input.ActiveCollection = mapped.TableID
 	result, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "map", Mappings: preview.Bindings})
 	if err != nil || len(result.(modelPreview).Diagnostics) != 0 {

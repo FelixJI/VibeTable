@@ -38,6 +38,7 @@ func TestModelOutputOnlyGrantsArchiveAndReopen(t *testing.T) {
 		f.File.AllowedMIMETypes = []string{xlsxArchiveMIME}
 		f.File.MaxBytesPerFile = 1 << 20
 		m.Entities[0].Fields = append(m.Entities[0].Fields, f)
+		m.Entities[2].Fields = append(m.Entities[2].Fields, pluginmodel.Field{Key: f.Key, Label: f.Label, Type: "text"})
 	})
 	input.SurfaceToken = "surface-a"
 	preview, err := modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "create"})
@@ -48,7 +49,22 @@ func TestModelOutputOnlyGrantsArchiveAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := done.(pluginmodel.State).Bindings["people"]
+	bindings := done.(pluginmodel.State).Bindings
+	owner := bindings["people"]
+	store := pluginstore.New(pb, workspace)
+	input = changeDataGrants(t, store, input, []pluginReadGrant{
+		{Collection: "$active", Operations: []string{"read", "query"}, Fields: []string{"*"}},
+		{Collection: owner.TableID, Operations: []string{"read", "query", "update"}, Fields: []string{owner.Fields["archive_file"]}},
+	})
+	input.ActiveCollection = owner.TableID
+	preview, err = modelCall(t, pb, workspace, input, domain, "model.preview", modelPreviewRequest{Mode: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = modelCall(t, pb, workspace, input, domain, "model.commit", map[string]any{"requestId": preview.(modelPreview).RequestID}); err != nil {
+		t.Fatal(err)
+	}
+	extension := createSchemaProductField(t, pb, owner.TableID, "text", "用户备注", "output-read-extension").FieldID
 	schema, err := schemaexecution.Describe(t.Context(), pb, owner.TableID)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +72,7 @@ func TestModelOutputOnlyGrantsArchiveAndReopen(t *testing.T) {
 	id := "issuedrecord001"
 	manager := mustAttachmentManager(t)
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{}, mutation.WithAttachmentManager(manager))
-	_, err = kernel.Apply(t.Context(), mutation.Request{ContractVersion: "2.0", RequestID: "issued-seed", IdempotencyKey: "issued-seed", TableID: owner.TableID, SchemaRevision: schema.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "user"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &id, Values: map[string]any{owner.Fields["name"]: "synthetic"}}}})
+	_, err = kernel.Apply(t.Context(), mutation.Request{ContractVersion: "2.0", RequestID: "issued-seed", IdempotencyKey: "issued-seed", TableID: owner.TableID, SchemaRevision: schema.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "user"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &id, Values: map[string]any{owner.Fields["name"]: "synthetic", extension: "extra"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +82,8 @@ func TestModelOutputOnlyGrantsArchiveAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, op := range []string{"read", "create", "update"} {
-		grant := installed.grantFor(owner.TableID, "", op)
-		if grant == nil || pluginHas(grant.Fields, field) {
+		grant := installed.grantFor(owner.TableID, input.ActiveCollection, op)
+		if grant == nil || pluginAllowed(*grant, schema.Snapshot)[field] != "" {
 			t.Fatalf("ordinary %s grant: %+v", op, grant)
 		}
 	}
@@ -109,7 +125,66 @@ func TestModelOutputOnlyGrantsArchiveAndReopen(t *testing.T) {
 			t.Fatalf("archive field policy: want %s got %v", tc.code, err)
 		}
 	}
-	checkOutputArchive(t, fileListFixture{pb: pb, manager: manager, tableID: owner.TableID, recordID: id, fieldID: field, content: syntheticLedgerXLSX(t)}, workspace, input, pluginstore.New(pb, workspace), "issued.xlsx", xlsxArchiveMIME)
+	checkOutputArchive(t, fileListFixture{pb: pb, manager: manager, tableID: owner.TableID, recordID: id, fieldID: field, content: syntheticLedgerXLSX(t)}, workspace, input, store, "issued.xlsx", xlsxArchiveMIME)
+	checkOutputDataProjections(t, pb, workspace, input, bindings, extension)
+}
+
+func checkOutputDataProjections(t *testing.T, pb core.App, workspace string, input pluginSurfaceAPIRequest, bindings map[string]pluginmodel.Binding, extension string) {
+	t.Helper()
+	owner := bindings["people"]
+	field := owner.Fields["archive_file"]
+	source, err := queryschema.New(pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(method string, request any) (map[string]any, error) {
+		raw, _ := json.Marshal(request)
+		return executePluginData(t.Context(), pb, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, InstallationRevision: input.InstallationRevision, ProjectKey: input.ProjectKey, PluginID: input.PluginID, ActiveCollection: input.ActiveCollection, Operation: method, Request: raw})
+	}
+	describe, err := read("describe", map[string]any{"collection": owner.TableID, "accepts": []string{pluginDataContract}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := map[string]bool{}
+	for _, f := range describe["fields"].([]any) {
+		visible[f.(map[string]any)["fieldId"].(string)] = true
+	}
+	if visible[field] || !visible[owner.Fields["name"]] || !visible[extension] {
+		t.Fatalf("mixed grant metadata: %v", visible)
+	}
+	q := pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: owner.TableID}
+	for _, op := range []string{"query", "exportQuery"} {
+		q.Fields = []string{field}
+		if _, err := read(op, q); surfaceErrorCode(t, err) != "plugin_read_denied" {
+			t.Fatalf("%s exposed archive file: %v", op, err)
+		}
+		q.Fields = []string{owner.Fields["name"], extension}
+		result, err := read(op, q)
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		rows := result["items"].([]any)
+		if len(rows) != 1 || rows[0].(map[string]any)[owner.Fields["name"]] != "synthetic" || rows[0].(map[string]any)[extension] != "extra" {
+			t.Fatalf("%s lost ordinary data: %v %v", op, result, err)
+		}
+	}
+	// The canonical explicit grant still applies when the wildcard refers to another table.
+	other := bindings["assets"]
+	input.ActiveCollection = other.TableID
+	dataset := func(fieldID string) (map[string]any, error) {
+		q.Fields = []string{fieldID}
+		return read("dataset.open", pluginDatasetRequest{Contract: pluginDatasetContract, Sources: []pluginDatasetSource{{Query: q}}})
+	}
+	if _, err := dataset(field); surfaceErrorCode(t, err) != "plugin_read_denied" {
+		t.Fatalf("dataset exposed explicitly granted archive field: %v", err)
+	}
+	if _, err := dataset(owner.Fields["name"]); err != nil {
+		t.Fatalf("dataset lost ordinary field: %v", err)
+	}
+	q.Collection, q.Fields = other.TableID, []string{other.Fields["archive_file"]}
+	if _, err := read("query", q); err != nil {
+		t.Fatalf("same logical field name in another table: %v", err)
+	}
 }
 
 const xlsxArchiveMIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
