@@ -14,7 +14,7 @@ import (
 )
 
 const Contract = "vibetable.plugin-model.v1"
-const MaxEntities = 44
+const MaxEntities = 45
 
 type Declaration struct {
 	Contract string   `json:"contract"`

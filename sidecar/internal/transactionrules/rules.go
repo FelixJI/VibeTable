@@ -28,7 +28,7 @@ import (
 const Contract = "vibetable.plugin-transactions.v1"
 const MaxRows = 10000
 const MaxBytes = 1 << 20
-const MaxRules = 202
+const MaxRules = 205
 const MaxRegistrations = 64
 const MaxDecimals = 67
 const MaxParentFreezeFields = 64
