@@ -259,7 +259,7 @@ func TestLegacyAcceptedUpgradeResumesAtomically(t *testing.T) {
 				t.Fatal(err)
 			}
 			if completed == 1 {
-				err = applyModelStep(ctx, domain, &plan, plan.Steps[0], func(tx core.App, next pluginmodel.State) error {
+				err = applyModelStep(ctx, pb, domain, &plan, plan.Steps[0], func(tx core.App, next pluginmodel.State) error {
 					next.Completed, next.Status = 1, "partial"
 					return save(tx, next, "step:1")
 				})
