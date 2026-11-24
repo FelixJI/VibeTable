@@ -754,7 +754,7 @@ func transactionRequests(ctx context.Context, app core.App, input pluginSurfaceA
 		for name, value := range op.Values {
 			fieldID := binding.Fields[name]
 			field, ok := table.Field(fieldID)
-			if !ok || fieldID == "" || allowed[fieldID] == "" {
+			if !ok || field.File != nil || fieldID == "" || allowed[fieldID] == "" {
 				return nil, pluginDataError("plugin_write_denied")
 			}
 			if field.Relation != nil {

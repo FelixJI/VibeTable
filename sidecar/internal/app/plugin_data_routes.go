@@ -55,12 +55,13 @@ type pluginComputedRevision struct {
 	Watermark  string `json:"watermark"`
 }
 type pluginInstallation struct {
-	ModelGrants    []pluginReadGrant `json:"-"`
-	InstallationID string            `json:"installationId"`
-	PackageHash    string            `json:"packageHash"`
-	Revision       int64             `json:"revision"`
-	Status         string            `json:"status"`
-	Manifest       struct {
+	ModelOutputFields map[[2]string]*pluginmodel.FilePolicy `json:"-"`
+	ModelGrants       []pluginReadGrant                     `json:"-"`
+	InstallationID    string                                `json:"installationId"`
+	PackageHash       string                                `json:"packageHash"`
+	Revision          int64                                 `json:"revision"`
+	Status            string                                `json:"status"`
+	Manifest          struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
 			Dataset   string `json:"dataset,omitempty"`

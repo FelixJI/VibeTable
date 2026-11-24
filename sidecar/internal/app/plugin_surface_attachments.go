@@ -16,6 +16,7 @@ import (
 type surfaceStagedAttachment struct {
 	owner, table, record, field, fileGrant, run string
 	expires                                     time.Time
+	output                                      bool
 }
 type surfaceAttachmentStages struct {
 	mu    sync.Mutex
@@ -29,10 +30,14 @@ func (ports *pluginSurfaceIO) dropAttachments(input pluginSurfaceAPIRequest) (an
 	if ports == nil || ports.attachments == nil || decodePluginParams(input.Request, &request) != nil || len(request.Handles) > 8 {
 		return nil, pluginDataError("plugin_capability_invalid")
 	}
-	ports.dropOutputs(input, request.Handles)
+	ports.outputs.mu.Lock()
+	defer ports.outputs.mu.Unlock()
 	ports.stages.mu.Lock()
 	defer ports.stages.mu.Unlock()
 	for _, handle := range request.Handles {
+		if output := ports.outputs.items[handle]; output != nil && output.owner == surfaceIOOwner(input) {
+			delete(ports.outputs.items, handle)
+		}
 		if stage, ok := ports.stages.items[handle]; ok && stage.owner == surfaceIOOwner(input) {
 			ports.attachments.Drop(handle)
 			delete(ports.stages.items, handle)
@@ -40,7 +45,7 @@ func (ports *pluginSurfaceIO) dropAttachments(input pluginSurfaceAPIRequest) (an
 	}
 	return map[string]any{"dropped": true}, nil
 }
-func (ports *pluginSurfaceIO) authorizeAttachment(input pluginSurfaceAPIRequest, table, record, field string, handles []string) error {
+func (ports *pluginSurfaceIO) authorizeAttachment(input pluginSurfaceAPIRequest, table, record, field string, handles []string, outputOnly bool) error {
 	if ports == nil || ports.attachments == nil {
 		return pluginDataError("plugin_write_denied")
 	}
@@ -48,7 +53,7 @@ func (ports *pluginSurfaceIO) authorizeAttachment(input pluginSurfaceAPIRequest,
 	defer ports.stages.mu.Unlock()
 	for _, handle := range handles {
 		stage, ok := ports.stages.items[handle]
-		if !ok || stage.owner != surfaceIOOwner(input) || stage.table != table || stage.record != record || stage.field != field || time.Now().After(stage.expires) {
+		if !ok || outputOnly && !stage.output || stage.owner != surfaceIOOwner(input) || stage.table != table || stage.record != record || stage.field != field || time.Now().After(stage.expires) {
 			return pluginDataError("plugin_write_denied")
 		}
 	}
@@ -93,7 +98,7 @@ func executeSurfaceAttachment(ctx context.Context, app core.App, workspace strin
 		}
 		field, ok := table.Field(request.FieldID)
 		allowed := pluginAllowed(*grant, table.Snapshot)
-		if !ok || field.File == nil || allowed[field.Identity.FieldID] == "" || allowed["id"] == "" {
+		if !ok || field.File == nil || installed.ModelOutputFields[[2]string{request.Collection, field.Identity.FieldID}] != nil || allowed[field.Identity.FieldID] == "" || allowed["id"] == "" {
 			return pluginDataError("plugin_read_denied")
 		}
 		if input.Method == "attachment.stage" {
@@ -124,7 +129,7 @@ func executeSurfaceAttachment(ctx context.Context, app core.App, workspace strin
 			if err := ports.attachments.StageOwned(request.Handle, request.Name, data); err != nil {
 				return err
 			}
-			ports.stages.items[request.Handle] = surfaceStagedAttachment{surfaceIOOwner(input), request.Collection, request.RecordID, field.Identity.FieldID, request.FileGrantID, request.RunID, time.Now().Add(5 * time.Minute)}
+			ports.stages.items[request.Handle] = surfaceStagedAttachment{surfaceIOOwner(input), request.Collection, request.RecordID, field.Identity.FieldID, request.FileGrantID, request.RunID, time.Now().Add(5 * time.Minute), false}
 			result = map[string]any{"handle": request.Handle}
 			return nil
 		}
@@ -175,9 +180,12 @@ func executeSurfaceAttachment(ctx context.Context, app core.App, workspace strin
 }
 
 // Keep the canonical attachment kernel's row guard and field authorization in the business transaction.
-func surfaceAttachmentOperation(input pluginSurfaceAPIRequest, ports *pluginSurfaceIO, table string, operation mutation.Operation) error {
+func surfaceAttachmentOperation(input pluginSurfaceAPIRequest, ports *pluginSurfaceIO, table string, operation mutation.Operation, outputOnly bool) error {
 	if operation.RecordID == nil {
 		return pluginDataError("plugin_guard_required")
 	}
-	return ports.authorizeAttachment(input, table, *operation.RecordID, operation.FieldID, operation.UploadHandles)
+	if outputOnly && (len(operation.UploadHandles) != 1 || len(operation.RemoveStoredNames) != 0) {
+		return pluginDataError("plugin_write_denied")
+	}
+	return ports.authorizeAttachment(input, table, *operation.RecordID, operation.FieldID, operation.UploadHandles, outputOnly)
 }

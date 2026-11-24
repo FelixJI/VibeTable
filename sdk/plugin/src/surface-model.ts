@@ -1,3 +1,16 @@
+/** Manifest field for a protected, single-file output archive. Obtain its canonical
+ * field ID from model.read().bindings after the native configuration completes. */
+export interface ModelOutputFileField {
+  readonly key: string;
+  readonly label: string;
+  readonly type: "file";
+  readonly file: {
+    readonly maxFiles: 1;
+    readonly maxBytesPerFile: number;
+    readonly allowedMimeTypes: readonly [string];
+  };
+}
+
 /** Model configuration always uses a native Host picker and exact-plan confirmation. */
 export interface SurfaceModelBinding {
   readonly tableId: string;

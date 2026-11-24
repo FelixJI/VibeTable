@@ -1198,10 +1198,29 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
-    [DataRow(192, 1, true)]
-    [DataRow(193, 0, false)]
-    [DataRow(1, 65, true)]
-    [DataRow(1, 66, false)]
+    [DataRow(1, 4096, "image/png", true, true)]
+    [DataRow(2, 4096, "image/png", true, false)]
+    [DataRow(1, 4097, "image/png", true, false)]
+    [DataRow(1, 4096, "image/jpeg", true, false)]
+    [DataRow(1, 4096, "image/png", false, false)]
+    public void ModelFilePickerMatchesTheProtectedArchivePolicy(int maxFiles, int maxBytesPerFile,
+        string mimeType, bool protectedFile, bool expected)
+    {
+        var declaration = JsonSerializer.SerializeToElement(new {
+            type = "file", file = new { maxFiles = 1, maxBytesPerFile = 4096, allowedMimeTypes = new[] { "image/png" } }
+        });
+        var candidate = JsonSerializer.SerializeToElement(new {
+            logicalType = "file", file = new { maxFiles, maxBytesPerFile, allowedMimeTypes = new[] { mimeType },
+                @protected = protectedFile, thumbs = Array.Empty<string>() }
+        });
+        Assert.AreEqual(expected, NativePluginModelWindow.Compatible(declaration, candidate));
+    }
+
+    [TestMethod]
+    [DataRow(202, 1, true)]
+    [DataRow(203, 0, false)]
+    [DataRow(1, 67, true)]
+    [DataRow(1, 68, false)]
     public async Task TransactionConfigurationBoundsRulesAndDecimalsIndependently(int rules, int decimals, bool permitted)
     {
         using var fixture = new Fixture { Decision = "rejected" };

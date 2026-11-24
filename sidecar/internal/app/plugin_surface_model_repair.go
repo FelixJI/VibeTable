@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"slices"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
@@ -77,6 +78,11 @@ func modelFieldCode(ctx context.Context, app core.App, tableID string, collectio
 		}
 	}
 	switch wanted := expected.Value.(type) {
+	case *core.FileField:
+		actual := physical.(*core.FileField)
+		if actual.MaxSelect != wanted.MaxSelect || actual.MaxSize != wanted.MaxSize || actual.Protected != wanted.Protected || !slices.Equal(actual.MimeTypes, wanted.MimeTypes) || !slices.Equal(actual.Thumbs, wanted.Thumbs) {
+			return "plugin_model_file_policy_mismatch", nil
+		}
 	case *core.NumberField:
 		if physical.(*core.NumberField).OnlyInt != wanted.OnlyInt {
 			return "plugin_model_precision_loss", nil

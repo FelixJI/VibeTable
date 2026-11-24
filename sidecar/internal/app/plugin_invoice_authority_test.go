@@ -25,6 +25,9 @@ import (
 
 // The seven invoice entities use one signed allocation carrier for both
 // allocationBalance and the original-blue settlement capacity.
+// The fixture's five entities each have four real decimal measures.
+const invoiceBudgetFillers = transactionrules.MaxDecimals - 5*4
+
 func newInvoiceAuthorityFixture(t *testing.T, withPlans ...bool) *transactionFixture {
 	t.Helper()
 	return newInvoiceAuthorityFixtureWithWire(t, nil, withPlans...)
@@ -38,7 +41,7 @@ func newInvoiceAuthorityFixtureWithWire(t *testing.T, wire func(transactionrules
 	optionalContracts := len(withPlans) > 3 && withPlans[3]
 	relationCases := len(withPlans) > 4 && withPlans[4]
 	groupContracts := len(withPlans) > 5 && withPlans[5]
-	// Only the decimal-budget tests carry the 45 filler fields/mappings; every
+	// Only decimal-budget tests carry filler fields/mappings; every
 	// other scenario registers just the mappings it really needs (PR565 race
 	// builders: the filler weight multiplied every States/audit step).
 	budget := len(withPlans) > 6 && withPlans[6]
@@ -68,7 +71,7 @@ func newInvoiceAuthorityFixtureWithWire(t *testing.T, wire func(transactionrules
 				entity.Fields = append(entity.Fields, pluginmodel.Field{Key: "close_remaining", Label: "close remaining", Type: v2.LogicalBool})
 			}
 			if budget && entry.key == "invoices" {
-				for i := 0; i < 45; i++ {
+				for i := 0; i < invoiceBudgetFillers; i++ {
 					key := fmt.Sprintf("budget_%d", i)
 					entity.Fields = append(entity.Fields, pluginmodel.Field{Key: key, Label: key, Type: v2.LogicalText})
 				}
@@ -169,12 +172,12 @@ func newInvoiceAuthorityFixtureWithWire(t *testing.T, wire func(transactionrules
 	}
 	fillerCount := 0
 	if budget {
-		fillerCount = 45
+		fillerCount = invoiceBudgetFillers
 		if legacy {
-			fillerCount = 44
+			fillerCount = invoiceBudgetFillers - 1
 		}
 		if normal {
-			fillerCount = 43
+			fillerCount = invoiceBudgetFillers - 2
 		}
 	}
 	for i := 0; i < fillerCount; i++ {
@@ -355,11 +358,11 @@ func invoicePlan(ops ...transactionOperation) transactionPlan {
 	return transactionPlan{Contract: "vibetable.transaction-plan.v1", ModelID: "synthetic", Operations: ops}
 }
 
-// budgetFillerPlan writes the 45 declared filler fields on the one invoice a
+// budgetFillerPlan writes the declared filler fields on the one invoice a
 // decimal-budget fixture keeps, so field admission stays real for the budget
 // scenarios without taxing every other fixture's audit and States passes.
 func budgetFillerPlan(plan transactionPlan) transactionPlan {
-	for i := 0; i < 45; i++ {
+	for i := 0; i < invoiceBudgetFillers; i++ {
 		plan.Operations[0].Values[fmt.Sprintf("budget_%d", i)] = nil
 	}
 	return plan
@@ -743,16 +746,16 @@ func TestInvoiceAuthorityDecimalBudgetRetainsRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	declaration := f.declaration
-	if len(declaration.Decimals) != 65 {
-		t.Fatal("fixture must register exactly 65 mappings")
+	if len(declaration.Decimals) != transactionrules.MaxDecimals {
+		t.Fatal("fixture must register exactly the decimal ceiling")
 	}
 	declaration.Version++
 	declaration.Decimals = append(declaration.Decimals, transactionrules.Decimal{Entity: "invoices", Field: "number", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}})
 	if err := declaration.Validate(); err == nil || err.Error() != "transaction.rules_invalid" {
-		t.Fatalf("66 mapping authority budget accepted: %v", err)
+		t.Fatalf("over-budget declaration accepted: %v", err)
 	}
 	if _, err := f.call("transaction.configure", map[string]any{"declaration": declaration}); err == nil {
-		t.Fatal("66 mappings accepted")
+		t.Fatal("over-budget mappings accepted")
 	}
 	if transactionBusinessSnapshot(t, f) != before {
 		t.Fatal("rejected declaration damaged old data")
@@ -762,7 +765,7 @@ func TestInvoiceAuthorityDecimalBudgetRetainsRegistration(t *testing.T) {
 		t.Fatalf("rejected configure replaced old registration: %v", err)
 	}
 	if _, err := f.call("transaction.configure", map[string]any{"declaration": f.declaration}); err != nil {
-		t.Fatalf("65 mapping registration lost: %v", err)
+		t.Fatalf("ceiling registration lost: %v", err)
 	}
 }
 
@@ -1105,8 +1108,8 @@ func TestInvoiceAuthorityReviewPurposeProjection(t *testing.T) {
 
 func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	f := newInvoiceAuthorityFixture(t, false, false, true, false, false, false, true)
-	if len(f.declaration.Decimals) != 64 {
-		t.Fatal("legacy fixture must have 64 mappings")
+	if len(f.declaration.Decimals) != transactionrules.MaxDecimals-1 {
+		t.Fatal("legacy fixture must have room for one more decimal")
 	}
 	applied := f.submit(t, budgetFillerPlan(invoiceFace("kept", "blue", "", "10", "100.00", "0.00", "100.00", nil, nil, true)))
 	id := applied.NewIDs["invoices"]["kept"]
@@ -1137,7 +1140,7 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	}
 	upgraded := f.declaration
 	upgraded.Version++
-	upgraded.Decimals = append(append([]transactionrules.Decimal{}, upgraded.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "budget_44", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
+	upgraded.Decimals = append(append([]transactionrules.Decimal{}, upgraded.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: fmt.Sprintf("budget_%d", invoiceBudgetFillers-1), Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}, Nullable: true})
 	// The same package upgrade strengthens an existing settlement rule. The
 	// receipt from its previous unscoped declaration must remain recoverable.
 	upgraded.Rules = append([]transactionrules.Rule{}, upgraded.Rules...)
@@ -1148,7 +1151,7 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	upgraded.Rules[1].Settlement = &settlement
 	installed, err := commitUpgrade(upgraded, "1.0.1", "6")
 	if err != nil {
-		t.Fatalf("real 64 to 65 package upgrade failed: %v", err)
+		t.Fatalf("real package upgrade to decimal ceiling failed: %v", err)
 	}
 	var snapshot struct {
 		Revision    int64  `json:"revision"`
@@ -1167,7 +1170,7 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = f.call("transaction.configure", map[string]any{"declaration": upgraded}); err != nil {
-		t.Fatalf("65 mapping registration after package upgrade failed: %v", err)
+		t.Fatalf("decimal ceiling registration after package upgrade failed: %v", err)
 	}
 	rules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil || len(rules) != len(oldRules)+1 {
@@ -1197,7 +1200,7 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	oversized.Version++
 	oversized.Decimals = append(append([]transactionrules.Decimal{}, oversized.Decimals...), transactionrules.Decimal{Entity: "invoices", Field: "number", Format: exactdecimal.Format{Storage: "decimalText", Digits: 38}})
 	if _, err = commitUpgrade(oversized, "1.0.2", "7"); err == nil {
-		t.Fatal("66 mappings entered actual package upgrade")
+		t.Fatal("over-budget mappings entered actual package upgrade")
 	} else {
 		var invalid *pluginstore.Error
 		if !errors.As(err, &invalid) || invalid.Code != "plugin.request_invalid" {
@@ -1210,7 +1213,7 @@ func TestInvoiceAuthorityReviewRealDecimalUpgrade(t *testing.T) {
 	}
 	afterRules, err := transactionrules.Load(t.Context(), f.pb)
 	if err != nil || !reflect.DeepEqual(rules, afterRules) || transactionBusinessSnapshot(t, f) != before {
-		t.Fatalf("failed 66 upgrade changed old rules/data/audit: %v", err)
+		t.Fatalf("failed over-budget upgrade changed old rules/data/audit: %v", err)
 	}
 }
 

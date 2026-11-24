@@ -59,19 +59,6 @@ func (ports *pluginSurfaceIO) pruneOutputsLocked() {
 	}
 }
 
-func (ports *pluginSurfaceIO) dropOutputs(input pluginSurfaceAPIRequest, handles []string) {
-	if ports == nil {
-		return
-	}
-	ports.outputs.mu.Lock()
-	defer ports.outputs.mu.Unlock()
-	for _, handle := range handles {
-		if stage := ports.outputs.items[handle]; stage != nil && stage.owner == surfaceIOOwner(input) {
-			delete(ports.outputs.items, handle)
-		}
-	}
-}
-
 // Host-only staging keeps the ordinary 1 MiB request limit and never accepts a local path.
 func executeSurfaceOutput(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, ports *pluginSurfaceIO) (any, error) {
 	if ports == nil || ports.attachments == nil || input.SurfaceToken == "" {
@@ -138,9 +125,21 @@ func executeSurfaceOutput(ctx context.Context, app core.App, workspace string, i
 			if err != nil {
 				return err
 			}
+			policy := installed.ModelOutputFields[[2]string{request.Collection, field}]
+			if policy != nil {
+				if int64(request.SizeBytes) > policy.MaxBytesPerFile {
+					return pluginDataError("mutation.attachment.too_large")
+				}
+				if request.MediaType != policy.AllowedMIMETypes[0] {
+					return pluginDataError("mutation.attachment.mime_not_allowed")
+				}
+			}
 			refs, err := ports.attachments.RefsByID(ctx, tx, request.Collection, request.RecordID, field)
 			if err != nil {
 				return err
+			}
+			if policy != nil && len(refs) >= policy.MaxFiles {
+				return pluginDataError("mutation.attachment.too_many")
 			}
 			before := map[string]bool{}
 			for _, ref := range refs {
@@ -189,7 +188,7 @@ func executeSurfaceOutput(ctx context.Context, app core.App, workspace string, i
 				ports.stages.items = map[string]surfaceStagedAttachment{}
 			}
 			ports.stages.items[request.Handle] = surfaceStagedAttachment{owner: stage.owner, table: stage.table, record: stage.record, field: stage.field,
-				fileGrant: stage.artifact, run: input.SurfaceToken, expires: stage.expires}
+				fileGrant: stage.artifact, run: input.SurfaceToken, expires: stage.expires, output: true}
 			stage.data = nil // The canonical attachment manager owns the backing slice from here.
 			stage.complete = true
 			result = map[string]any{"handle": request.Handle, "artifactId": stage.artifact}
@@ -217,7 +216,7 @@ func authorizeOutputTarget(ctx context.Context, app core.App, input pluginSurfac
 	}
 	field, ok := table.Field(fieldID)
 	allowed := pluginAllowed(*grant, table.Snapshot)
-	if !ok || field.File == nil || allowed[field.Identity.FieldID] == "" || allowed["id"] == "" {
+	if !ok || field.File == nil || (installed.ModelOutputFields[[2]string{tableID, field.Identity.FieldID}] == nil && allowed[field.Identity.FieldID] == "") || allowed["id"] == "" {
 		return "", pluginDataError("plugin_write_denied")
 	}
 	return field.Identity.FieldID, nil
@@ -229,12 +228,13 @@ func surfaceOutputArchiveFinish(ctx context.Context, tx core.App, workspace stri
 		return nil
 	}
 	ports := ioPorts[0]
+	// Reauthorize staged handles and write their provenance under the same lock as cancellation.
+	ports.outputs.mu.Lock()
+	defer ports.outputs.mu.Unlock()
 	request, err := surfaceMutationRequest(ctx, tx, workspace, input, ports)
 	if err != nil {
 		return err
 	}
-	ports.outputs.mu.Lock()
-	defer ports.outputs.mu.Unlock()
 	for _, operation := range request.Operations {
 		for _, handle := range operation.UploadHandles {
 			stage := ports.outputs.items[handle]

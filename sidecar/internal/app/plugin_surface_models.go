@@ -64,6 +64,13 @@ func resolveModelGrantState(ctx context.Context, app core.App, project, plugin s
 		b := state.Bindings[e.Key]
 		fields := []string{"id"}
 		for _, f := range e.Fields {
+			if f.File != nil {
+				if installed.ModelOutputFields == nil {
+					installed.ModelOutputFields = make(map[[2]string]*pluginmodel.FilePolicy)
+				}
+				installed.ModelOutputFields[[2]string{b.TableID, b.Fields[f.Key]}] = f.File
+				continue
+			}
 			fields = append(fields, b.Fields[f.Key])
 		}
 		installed.ModelGrants = append(installed.ModelGrants, pluginReadGrant{Collection: b.TableID, Fields: fields, Operations: e.Operations})
@@ -262,6 +269,9 @@ func surfaceModelCatalog(ctx context.Context, app core.App, workspace string, in
 						next = index + 1
 					}
 					item := map[string]any{"fieldId": field.Identity.FieldID, "displayName": field.DisplayName, "logicalType": field.LogicalType}
+					if field.File != nil {
+						item["file"] = field.File
+					}
 					if field.LogicalType == v2.LogicalNumber {
 						item["precision"] = "float64"
 						if field.Storage.Options.OnlyInt {
@@ -653,7 +663,7 @@ func modelDisplayField(s pluginmodel.State, entity string) string {
 				}
 			}
 			for _, f := range e.Fields {
-				if f.Type != v2.LogicalRelation {
+				if f.Type != v2.LogicalRelation && f.Type != v2.LogicalFile {
 					return s.Bindings[entity].Fields[f.Key]
 				}
 			}

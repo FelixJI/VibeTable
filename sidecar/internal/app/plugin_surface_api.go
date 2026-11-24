@@ -742,20 +742,21 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 			}
 			if operation.Kind == mutation.OperationSetAttachments {
 				field, ok := table.Field(operation.FieldID)
-				if !ok || field.File == nil || allowed[field.Identity.FieldID] == "" {
+				outputOnly := installed.ModelOutputFields[[2]string{plan.Collection, field.Identity.FieldID}] != nil
+				if !ok || field.File == nil || !outputOnly && allowed[field.Identity.FieldID] == "" {
 					return pluginDataError("plugin_write_denied")
 				}
 				var ports *pluginSurfaceIO
 				if len(ioPorts) > 0 {
 					ports = ioPorts[0]
 				}
-				if err := surfaceAttachmentOperation(input, ports, plan.Collection, operation); err != nil {
+				if err := surfaceAttachmentOperation(input, ports, plan.Collection, operation, outputOnly); err != nil {
 					return err
 				}
 			}
 			for key := range operation.Values {
 				field, found := table.Field(key)
-				if !found || allowed[field.Identity.FieldID] == "" {
+				if !found || installed.ModelOutputFields[[2]string{plan.Collection, field.Identity.FieldID}] != nil || allowed[field.Identity.FieldID] == "" {
 					return pluginDataError("plugin_write_denied")
 				}
 				if field.Relation != nil && installed.grant(field.Relation.TargetTableID, input.ActiveCollection) == nil {
