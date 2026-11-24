@@ -548,7 +548,7 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		}
 	}
 	openBefore := func(id string) bool {
-		if before == nil || before[request.Entity][id] == nil || closedBefore[id] {
+		if before[request.Entity][id] == nil {
 			return false
 		}
 		state, err := authorityValue(before, before[request.Entity][id], request.State)
@@ -1193,20 +1193,20 @@ func (rule Rule) validateSettlement(before, after Images, decimals map[string]ex
 		if !contains(request.OpenStates, state) {
 			continue
 		}
-		// A historical closeRemaining ends future execution even when correcting
-		// an actual later restores arithmetic headroom in the shared budget.
-		if len(spec.ScopeDimensions) > 0 && !closedAfter[id] {
+		if len(spec.ScopeDimensions) > 0 {
 			// A newly confirmed source is checked against the current capacity,
 			// including when it is fully disposed of in this very transaction.
 			// Historical sources release only their own exhausted reservation.
 			var previous map[string]any
 			wasOpen := openBefore(id)
-			if wasOpen && beforeSourceCapacity[id] == capacityID {
+			if wasOpen && !closedBefore[id] && beforeSourceCapacity[id] == capacityID {
 				previous = before[request.Entity][id]
 			}
-			confirming := before != nil && !wasOpen && !closedBefore[id]
+			confirming := before != nil && !wasOpen
 			outstanding := slices.ContainsFunc(remaining[:], func(v *big.Int) bool { return v != nil && v.Sign() > 0 })
-			if confirming || outstanding {
+			// closeRemaining releases the reservation, including arithmetic
+			// headroom restored later. Confirmation still binds its scope once.
+			if confirming || (!closedAfter[id] && outstanding) {
 				if err := spec.checkScope(before, after, row, previous, capacityID, false); err != nil {
 					return err
 				}

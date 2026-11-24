@@ -132,6 +132,22 @@ func TestSettlementScopeUsesEachOutstandingReservation(t *testing.T) {
 			t.Fatalf("lost remaining capacity usage: %v", err)
 		}
 	})
+	t.Run("confirmation validates scope even when fully closed in the same commit", func(t *testing.T) {
+		draft := clone(base)
+		draft["requests"]["r1"]["status"] = "draft"
+		draft["request_sources"]["s1"]["source_project"] = "a"
+		draft["allocations"]["orig"]["anchor_project"] = "b"
+		confirmed := clone(draft)
+		confirmed["requests"]["r1"]["status"] = "open"
+		confirmed["adjustments"]["close"] = map[string]any{"kind": "sourceClose", "source": "s1", "close_remaining": true, "quantity": "10", "net": "100.00", "tax": "0.00", "gross": "100.00"}
+		check(t, draft, confirmed, false)
+		confirmed["allocations"]["orig"]["anchor_project"] = "a"
+		check(t, draft, confirmed, true)
+		corrected := clone(confirmed)
+		corrected["allocations"]["orig"]["anchor_project"] = "b"
+		check(t, confirmed, corrected, true)
+		check(t, nil, corrected, true)
+	})
 	t.Run("unknowns and malformed relations", func(t *testing.T) {
 		before := clone(base)
 		before["allocations"]["orig"]["anchor_project"] = nil
