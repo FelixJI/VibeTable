@@ -311,14 +311,21 @@ internal sealed class NativePluginModelWindow : Window
         return $"{path}{target} — {DiagnosticLabel(diagnostic.GetProperty("code").GetString()!)}";
     }
 
-    private static bool Compatible(JsonElement declaration, JsonElement candidate) =>
+    internal static bool Compatible(JsonElement declaration, JsonElement candidate) =>
         declaration.GetProperty("type").GetString() == candidate.GetProperty("logicalType").GetString()
         && (!declaration.TryGetProperty("precision", out var precision) || candidate.GetProperty("precision").GetString() == precision.GetString())
+        && (!declaration.TryGetProperty("file", out var policy) || candidate.TryGetProperty("file", out var file)
+            && file.GetProperty("protected").GetBoolean() && file.GetProperty("thumbs").GetArrayLength() == 0
+            && file.GetProperty("maxFiles").GetInt32() == policy.GetProperty("maxFiles").GetInt32()
+            && file.GetProperty("maxBytesPerFile").GetInt64() == policy.GetProperty("maxBytesPerFile").GetInt64()
+            && JsonElement.DeepEquals(file.GetProperty("allowedMimeTypes"), policy.GetProperty("allowedMimeTypes")))
         && (!declaration.TryGetProperty("relation", out var relation) || candidate.GetProperty("cardinality").GetString() == relation.GetProperty("cardinality").GetString());
 
     private static string TypeLabel(JsonElement field)
     {
         string type = field.GetProperty("type").GetString()!;
+        if (field.TryGetProperty("file", out var policy))
+            type += $"（签发归档，限 1 份，最多 {policy.GetProperty("maxBytesPerFile").GetInt64()} 字节，{policy.GetProperty("allowedMimeTypes")[0].GetString()}）";
         if (field.TryGetProperty("precision", out var precision)) type += precision.GetString() == "integer" ? "（整数）" : "（64 位浮点）";
         if (field.TryGetProperty("relation", out var relation)) type += $" → {relation.GetProperty("entity").GetString()}.{relation.GetProperty("field").GetString()}（{relation.GetProperty("cardinality").GetString()}）";
         return type;
@@ -333,6 +340,7 @@ internal sealed class NativePluginModelWindow : Window
         "plugin_model_field_missing" => "原字段不存在或物理标识已变化",
         "plugin_model_table_missing" => "原表不存在或物理标识已变化",
         "plugin_model_field_access_denied" => "字段不可访问",
+        "plugin_model_file_policy_mismatch" => "归档文件的数量、大小、类型或访问策略不兼容",
         "plugin_model_precision_loss" => "数字精度不兼容，禁止自动转换或舍入",
         "plugin_model_type_mismatch" => "字段类型不兼容",
         "plugin_model_relation_mismatch" => "关联两端、基数或登记信息不一致",

@@ -18,7 +18,7 @@ export type { CellDisplay, CellValueKind } from "./display.js";
 
 export { SURFACE_UI_METHODS, SURFACE_UI_UNSUPPORTED } from "./surface-ui.js";
 export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from "./surface-ui.js";
-export type { SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
+export type { ModelOutputFileField, SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
 export { SURFACE_DATASET_CONTRACT } from "./surface-dataset.js";
 export type { DatasetSource, DatasetVersion, DatasetInfo, DatasetPage, DatasetSum, DatasetSummary, SurfaceDataset, SurfaceDatasets } from "./surface-dataset.js";
 export type { SurfaceTransaction, TransactionDeclaration, TransactionDecimal, TransactionRule, GroupTarget, GroupReference, StateRelationCase, ReversalSpec, AuthorityRef, AllocationSpec, SettlementSpec, ChangeEvidenceSpec, TransactionReference, TransactionValue,

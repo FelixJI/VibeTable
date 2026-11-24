@@ -16,8 +16,8 @@ from backend.contracts.plugin_model import PluginModelDeclaration
 
 CONTRACT = "vibetable.plugin-transactions.v1"
 # Go transactionrules/exactdecimal budgets; plugins cannot raise them.
-MAX_RULES = 192
-MAX_DECIMALS = 65
+MAX_RULES = 202
+MAX_DECIMALS = 67
 MAX_UNIQUE_FIELDS = 8
 MAX_STATE_FIELDS = 64
 MAX_STATES = 32

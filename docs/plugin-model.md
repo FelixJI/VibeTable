@@ -1,8 +1,10 @@
 # 插件逻辑模型 v1
 
-模型声明位于原生 API 3.x manifest 的 `permissions.model`，合同为 `vibetable.plugin-model.v1`。声明包含稳定 `modelId`、递增整数 `version` 和最多 40 个实体；每个实体最多 64 个字段。实体与字段使用稳定逻辑 `key`、用户可读 `label`。同一模型版本不能改变定义。
+模型声明位于原生 API 3.x manifest 的 `permissions.model`，合同为 `vibetable.plugin-model.v1`。声明包含稳定 `modelId`、递增整数 `version` 和最多 44 个实体；每个实体最多 64 个字段。实体与字段使用稳定逻辑 `key`、用户可读 `label`。同一模型版本不能改变定义。
 
 支持 `text`、`number`、`bool`、`date`、`dateTime`、`email`、`url`、`relation`。数字显式选择 `integer` 或 `float64`，沿用原生数字存储语义，不承诺任意精度整数或精确十进制。关系两端均须声明目标 `entity`、反向 `field` 与自身 `cardinality`；创建时使用原生双向关系、`restrict` 删除策略。每个实体须有至少一个标量字段，优先使用首个文本字段作为关系显示字段，否则使用首个标量字段。未知合同、物理字段、SQL 和脚本声明被拒绝。
+
+产物实体可声明受保护的单附件字段，例如 `{"key":"archive_file","label":"签发文件","type":"file","file":{"maxFiles":1,"maxBytesPerFile":33554432,"allowedMimeTypes":["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]}}`。实体必须允许 update，并有独立标量显示字段。大小范围为 1–33,554,432 字节，MIME 只接受一种具体的小写类型。宿主创建受保护且无缩略图的文件字段，映射时核对相同策略。插件从已确认的模型绑定取得字段 ID，经 `output.previewArchive` 和原生确认追加文件，再以签发回执的 artifactId 调用 `output.reopen`。模型授权不授予普通事务附件写入、附件列表或任意文件下载。
 
 `client.model.configure({mode:"create"})` 请求原生精确预览；`mode:"map"` 先由原生窗口选择现有表与字段。插件不能获取未授权工作区目录，也不能提交映射或批准参数。预览显示具体表、字段、操作、数字精度和关系。名称冲突、类型、精度损失或关系不兼容以字段路径诊断，拒绝写入；映射不会转换原值。
 
@@ -18,7 +20,7 @@
 
 部分初始化后禁用再启用，新的确认计划只继承已提交表与字段的 canonical ID；尚未创建的表重新进入精确计划，确认之前不会补建。已提交对象丢失会报缺失诊断，不能用空表替代。并发请求的失败状态在写事务内读取最新进度，不能覆盖另一个请求已完成的结果。映射接受与完成均检查原生字段迁移写锁；迁移切换权威字段时也重新检查模型核心保护。
 
-绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 192 条规则、65 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
+绑定使用 canonical table/field ID；用户修改显示名称不会失联。绑定核心表、字段的删除、退役、转换及不兼容定义修改在原生 schema authority 拒绝，用户扩展字段仍可正常编辑。禁用、卸载与清理插件私有存储不会移除已建立绑定或核心保护。业务余额和跨表写入由单独确认的 `permissions.transactions` 规则保护。每份声明最多 202 条规则、67 个十进制字段，工作区最多 64 条规则登记。新版本完整包含旧规则、十进制格式且复用其绑定时，写入只执行覆盖旧版本的规则集。其它旧登记继续约束写入。验证的前后镜像合计受 10,000 行和 1 MiB 限制。登记前按原生插入或删除的源表及其反向关系字段计算同一写入会触发的有效规则集合；超出上述预算会拒绝登记，并保留旧规则。
 
 `sameTarget` 比较一行业务记录的两条关系路径，例如 `left:[{field:"version",target:"versions"},{field:"series",target:"series"}]` 与 `right:[{field:"item",target:"items"},{field:"series",target:"series"}]`。每条路径包含 1–4 个单值关系，两端必须抵达同一实体的同一条实际记录。`sameTarget` 的 `right:[]` 表示本行身份，左路径必须抵达本行所属实体。可选 `whenPresent` 只能等于左路径首字段：该单值指针尚为空时跳过；一旦赋值，后续每一跳均须存在。这样可在系列行上验证 `current → version.series` 恰好回到本系列，即使版本还没有明细。多值跳转、悬空引用、跨系列记录都被拒绝。每条来源分配可使用独立规则核对多个来源。
 

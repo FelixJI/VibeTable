@@ -18,7 +18,9 @@ from pydantic import ValidationError
 
 from backend._version import __version__
 from backend.contracts.plugin import PluginManifest
+from backend.contracts.plugin_model import MAX_ENTITIES
 from backend.contracts.plugin_transactions import (
+    MAX_DECIMALS,
     MAX_RULES,
     PluginTransactionsDeclaration,
     TransactionRule,
@@ -348,7 +350,7 @@ def test_transactions_reject_unknown_or_cross_kind_declarations(case: str) -> No
 def test_package_capacity_and_closed_relation_paths() -> None:
     manifest = transactions_manifest()
     entities = manifest["permissions"]["model"]["entities"]
-    for index in range(38):
+    for index in range(MAX_ENTITIES - len(entities)):
         entities.append(
             {
                 "key": f"e{index}",
@@ -396,7 +398,9 @@ def test_package_capacity_and_closed_relation_paths() -> None:
         invalid = copy.deepcopy(manifest)
         dest = (invalid["permissions"]["model"] if key == "entities" else declaration(invalid))[key]
         if key == "decimals":
-            dest.extend({**collection[0], "field": f"n{i}"} for i in range(66 - len(dest)))
+            dest.extend(
+                {**collection[0], "field": f"n{i}"} for i in range(MAX_DECIMALS + 1 - len(dest))
+            )
         else:
             dest.append({**collection[-1], ("key" if key == "entities" else "id"): "extra"})
             if key == "entities":
@@ -844,10 +848,10 @@ def test_delivery_guard_quantity_and_purpose_validation() -> None:
             validate_plugin_manifest(package_entries(invalid))
 
 
-def test_model_capacity_allows_forty_entities() -> None:
+def test_model_capacity_accepts_ceiling() -> None:
     manifest = transactions_manifest()
     model = manifest["permissions"]["model"]
-    for index in range(40 - len(model["entities"])):
+    for index in range(MAX_ENTITIES - len(model["entities"])):
         model["entities"].append(
             {
                 "key": f"extra_{index}",
@@ -1024,11 +1028,12 @@ def test_invoice_guard_corpus_rules_form_closed_manifest_declarations() -> None:
             "settlementBalance",
             "changeEvidence",
         )
-    # The 65th decimal registers and the 66th is rejected with data intact.
     manifest = transactions_manifest()
     decimals = declaration(manifest)["decimals"]
-    decimals.extend({**decimals[0], "field": f"n{index}"} for index in range(65 - len(decimals)))
-    assert len(decimals) == 65
+    decimals.extend(
+        {**decimals[0], "field": f"n{index}"} for index in range(MAX_DECIMALS - len(decimals))
+    )
+    assert len(decimals) == MAX_DECIMALS
     assert PluginManifest.model_validate(manifest)
     decimals.append({**decimals[0], "field": "over"})
     with pytest.raises(ValidationError):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,12 +18,26 @@ class ModelRelation(ModelContract):
     cardinality: Literal["one", "many"]
 
 
+MAX_ENTITIES = 44
+
+
+class ModelFile(ModelContract):
+    max_files: Annotated[int, Field(alias="maxFiles", ge=1, le=1)]
+    max_bytes_per_file: int = Field(alias="maxBytesPerFile", ge=1, le=32 * 1024 * 1024)
+    allowed_mime_types: list[
+        Annotated[
+            str, Field(max_length=128, pattern=r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
+        ]
+    ] = Field(alias="allowedMimeTypes", min_length=1, max_length=1)
+
+
 class ModelField(ModelContract):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     label: str = Field(min_length=1, max_length=100)
-    type: Literal["text", "number", "bool", "date", "dateTime", "email", "url", "relation"]
+    type: Literal["text", "number", "bool", "date", "dateTime", "email", "url", "relation", "file"]
     precision: Literal["integer", "float64"] | None = None
     relation: ModelRelation | None = None
+    file: ModelFile | None = None
 
     @model_validator(mode="after")
     def validate_field(self) -> ModelField:
@@ -33,6 +47,8 @@ class ModelField(ModelContract):
             or any(unicodedata.category(char) == "Cc" for char in self.label)
         ):
             raise ValueError("invalid logical key or label")
+        if (self.type == "file") != (self.file is not None):
+            raise ValueError("file requires an explicit output archive policy")
         if (self.type == "number") != (self.precision is not None):
             raise ValueError("number requires explicit integer or float64 precision")
         if (self.type == "relation") != (self.relation is not None):
@@ -60,7 +76,9 @@ class ModelEntity(ModelContract):
             {f.label for f in self.fields}
         ) != len(self.fields):
             raise ValueError("logical fields and labels must be unique")
-        if all(field.type == "relation" for field in self.fields):
+        if any(field.file for field in self.fields) and "update" not in self.operations:
+            raise ValueError("output archiving requires update on the declared entity")
+        if all(field.type in {"relation", "file"} for field in self.fields):
             raise ValueError("an entity requires a scalar field for its relation label")
         return self
 
@@ -69,7 +87,7 @@ class PluginModelDeclaration(ModelContract):
     contract: Literal["vibetable.plugin-model.v1"]
     model_id: str = Field(alias="modelId", pattern=r"^[a-z][a-z0-9_]{0,63}$")
     version: int = Field(ge=1, le=2_147_483_647)
-    entities: list[ModelEntity] = Field(min_length=1, max_length=40)
+    entities: list[ModelEntity] = Field(min_length=1, max_length=MAX_ENTITIES)
 
     @model_validator(mode="after")
     def validate_relations(self) -> PluginModelDeclaration:

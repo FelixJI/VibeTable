@@ -18,6 +18,33 @@ def model_manifest() -> dict:
     )
 
 
+def test_archive_policy_is_checked_at_manifest_boundary() -> None:
+    model = model_manifest()["permissions"]["model"]
+    entity = model["entities"][0]
+    entity["operations"] = ["read", "query", "update"]
+    file = {"maxFiles": 1, "maxBytesPerFile": 32 << 20, "allowedMimeTypes": ["image/png"]}
+    archive = {"key": "issued", "label": "签发归档", "type": "file", "file": file}
+    entity["fields"].append(archive)
+    assert PluginModelDeclaration.model_validate(model)
+    for patch in [
+        {"maxFiles": 0},
+        {"maxFiles": 2},
+        {"maxBytesPerFile": 0},
+        {"maxBytesPerFile": (32 << 20) + 1},
+        {"allowedMimeTypes": []},
+        {"allowedMimeTypes": ["image/*"]},
+        {"allowedMimeTypes": ["image/png", "image/jpeg"]},
+        {"protected": False},
+    ]:
+        archive["file"] = {**file, **patch}
+        with pytest.raises(ValidationError):
+            PluginModelDeclaration.model_validate(model)
+    archive["file"] = file
+    entity["operations"].remove("update")
+    with pytest.raises(ValidationError):
+        PluginModelDeclaration.model_validate(model)
+
+
 def test_native_manifest_accepts_closed_symmetric_model() -> None:
     manifest = model_manifest()
     parsed = PluginManifest.model_validate(manifest)

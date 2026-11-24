@@ -55,12 +55,13 @@ type pluginComputedRevision struct {
 	Watermark  string `json:"watermark"`
 }
 type pluginInstallation struct {
-	ModelGrants    []pluginReadGrant `json:"-"`
-	InstallationID string            `json:"installationId"`
-	PackageHash    string            `json:"packageHash"`
-	Revision       int64             `json:"revision"`
-	Status         string            `json:"status"`
-	Manifest       struct {
+	ModelOutputFields map[[2]string]*pluginmodel.FilePolicy `json:"-"`
+	ModelGrants       []pluginReadGrant                     `json:"-"`
+	InstallationID    string                                `json:"installationId"`
+	PackageHash       string                                `json:"packageHash"`
+	Revision          int64                                 `json:"revision"`
+	Status            string                                `json:"status"`
+	Manifest          struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
 			Dataset   string `json:"dataset,omitempty"`
@@ -75,9 +76,11 @@ type pluginInstallation struct {
 	} `json:"manifest"`
 }
 type pluginReadGrant struct {
-	Collection string   `json:"collection"`
-	Operations []string `json:"operations"`
-	Fields     []string `json:"fields"`
+	// Derived from the current native binding only; manifest fields cannot override archive access.
+	outputFields map[[2]string]*pluginmodel.FilePolicy
+	Collection   string   `json:"collection"`
+	Operations   []string `json:"operations"`
+	Fields       []string `json:"fields"`
 }
 
 func pluginDataError(code string) error {
@@ -109,7 +112,7 @@ func (installation pluginInstallation) grantFor(table, active string, operations
 			continue
 		}
 		if merged == nil {
-			merged = &pluginReadGrant{Collection: table, Operations: operations, Fields: []string{}}
+			merged = &pluginReadGrant{Collection: table, Operations: operations, outputFields: installation.ModelOutputFields, Fields: []string{}}
 		}
 		for _, field := range grant.Fields {
 			if !pluginHas(merged.Fields, field) {
@@ -309,6 +312,9 @@ func pluginAllowed(grant pluginReadGrant, schema v2.SchemaSnapshot) map[string]s
 		result["id"] = "id"
 	}
 	for _, field := range schema.Fields {
+		if grant.outputFields[[2]string{schema.TableID, field.Identity.FieldID}] != nil {
+			continue
+		}
 		if all || pluginHas(grant.Fields, field.Identity.PhysicalName) || pluginHas(grant.Fields, field.Identity.FieldID) {
 			result[field.Identity.FieldID] = field.Identity.PhysicalName
 		}

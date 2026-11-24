@@ -14,6 +14,7 @@ import (
 )
 
 const Contract = "vibetable.plugin-model.v1"
+const MaxEntities = 44
 
 type Declaration struct {
 	Contract string   `json:"contract"`
@@ -33,13 +34,30 @@ type Field struct {
 	Type      v2.LogicalType `json:"type"`
 	Precision string         `json:"precision,omitempty"`
 	Relation  *Relation      `json:"relation,omitempty"`
+	File      *FilePolicy    `json:"file,omitempty"`
 }
+type FilePolicy struct {
+	MaxFiles         int      `json:"maxFiles"`
+	MaxBytesPerFile  int64    `json:"maxBytesPerFile"`
+	AllowedMIMETypes []string `json:"allowedMimeTypes"`
+}
+
+func (p *FilePolicy) valid() bool {
+	return p != nil && p.MaxFiles == 1 && p.MaxBytesPerFile >= 1 && p.MaxBytesPerFile <= 32<<20 &&
+		len(p.AllowedMIMETypes) == 1 && len(p.AllowedMIMETypes[0]) <= 128 && mimePattern.MatchString(p.AllowedMIMETypes[0])
+}
+
+func (p FilePolicy) spec() *v2.FileSpec {
+	return &v2.FileSpec{MaxFiles: p.MaxFiles, MaxBytesPerFile: p.MaxBytesPerFile, AllowedMIMETypes: p.AllowedMIMETypes, Protected: true, Thumbs: []string{}}
+}
+
 type Relation struct {
 	Entity      string `json:"entity"`
 	Field       string `json:"field"`
 	Cardinality string `json:"cardinality"`
 }
 
+var mimePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$`)
 var keyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 func Decode(raw []byte) (*Declaration, error) {
@@ -54,7 +72,7 @@ func Decode(raw []byte) (*Declaration, error) {
 }
 func (d Declaration) Validate() error {
 	bad := func(path string) error { return fmt.Errorf("plugin.model.declaration_invalid: %s", path) }
-	if d.Contract != Contract || !keyPattern.MatchString(d.ModelID) || d.Version < 1 || d.Version > 2147483647 || len(d.Entities) < 1 || len(d.Entities) > 40 {
+	if d.Contract != Contract || !keyPattern.MatchString(d.ModelID) || d.Version < 1 || d.Version > 2147483647 || len(d.Entities) < 1 || len(d.Entities) > MaxEntities {
 		return bad("model")
 	}
 	entities, labels := map[string]bool{}, map[string]bool{}
@@ -81,7 +99,7 @@ func (d Declaration) Validate() error {
 		fields, names := map[string]bool{}, map[string]bool{}
 		hasScalar := false
 		for _, f := range e.Fields {
-			if f.Type != v2.LogicalRelation {
+			if f.Type != v2.LogicalRelation && f.Type != v2.LogicalFile {
 				hasScalar = true
 			}
 			p := "entities." + e.Key + ".fields." + f.Key
@@ -90,9 +108,16 @@ func (d Declaration) Validate() error {
 			}
 			fields[f.Key], names[f.Label] = true, true
 			switch f.Type {
-			case v2.LogicalText, v2.LogicalBool, v2.LogicalDate, v2.LogicalDateTime, v2.LogicalEmail, v2.LogicalURL, v2.LogicalNumber, v2.LogicalRelation:
+			case v2.LogicalFile, v2.LogicalText, v2.LogicalBool, v2.LogicalDate, v2.LogicalDateTime, v2.LogicalEmail, v2.LogicalURL, v2.LogicalNumber, v2.LogicalRelation:
 			default:
 				return bad(p + ".type")
+			}
+			if f.Type == v2.LogicalFile {
+				if !ops["update"] || !f.File.valid() {
+					return bad(p + ".file")
+				}
+			} else if f.File != nil {
+				return bad(p + ".file")
 			}
 			if f.Type == v2.LogicalNumber {
 				if f.Precision != "integer" && f.Precision != "float64" {
@@ -156,6 +181,9 @@ func (f Field) Draft(tables map[string]string) (v2.FieldDraft, error) {
 	if f.Type == v2.LogicalNumber {
 		d.Storage.Options.OnlyInt = f.Precision == "integer"
 	}
+	if f.File != nil {
+		d.File = f.File.spec()
+	}
 	if f.Relation != nil {
 		d.Relation = &v2.RelationSpec{TargetTableID: tables[f.Relation.Entity], Cardinality: f.Relation.Cardinality, DeletePolicy: "restrict", DisplayField: "id"}
 	}
@@ -166,6 +194,9 @@ func (f Field) Draft(tables map[string]string) (v2.FieldDraft, error) {
 func (f Field) Compatibility(existing v2.FieldDefinition, tables map[string]string) string {
 	if existing.Lifecycle.State != v2.LifecycleActive || existing.LogicalType != f.Type {
 		return "plugin_model_type_mismatch"
+	}
+	if f.File != nil && (existing.File == nil || !existing.File.Protected || len(existing.File.Thumbs) != 0 || existing.File.MaxFiles != f.File.MaxFiles || existing.File.MaxBytesPerFile != f.File.MaxBytesPerFile || !slices.Equal(existing.File.AllowedMIMETypes, f.File.AllowedMIMETypes)) {
+		return "plugin_model_file_policy_mismatch"
 	}
 	if f.Type == v2.LogicalNumber && existing.Storage.Options.OnlyInt != (f.Precision == "integer") {
 		return "plugin_model_precision_loss"
