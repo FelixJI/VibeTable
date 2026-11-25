@@ -18,7 +18,7 @@ class ModelRelation(ModelContract):
     cardinality: Literal["one", "many"]
 
 
-MAX_ENTITIES = 44
+MAX_ENTITIES = 45
 
 
 class ModelFile(ModelContract):

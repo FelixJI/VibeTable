@@ -102,7 +102,7 @@
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "model": {
     "contract": "vibetable.plugin-model.v1",
-    "declaration": "closed permissions.model logical entities (at most 44) and fields (64 per entity); no arbitrary scripts or SQL",
+    "declaration": "closed permissions.model logical entities (at most 45) and fields (64 per entity); no arbitrary scripts or SQL",
     "outputFile": "protected single file, maxBytesPerFile 1..33554432, one exact allowedMimeTypes entry, no thumbs; requires entity update and native archive confirmation; excluded from ordinary model data grants",
     "configuration": "create/map/repair through native selection and exact confirmation; manual review follows surface lifetime, with bounded authority I/O and commit",
     "hostOnly": ["model.catalog", "model.preview", "model.commit"],
@@ -126,7 +126,7 @@
     "numbers": "model-bound Text stores canonical fixed-scale decimal text; verified Number fields may use safe integer minor units; shared bounded integer coefficients parse, compare and sum; no float aggregation or implicit rounding",
     "limits": {
       "declarationBytes": 1048576,
-      "rulesPerDeclaration": 202,
+      "rulesPerDeclaration": 205,
       "relationPathHops": 4,
       "registrationHistory": 64,
       "decimalsPerDeclaration": 67,
