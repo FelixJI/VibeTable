@@ -72,7 +72,9 @@ export interface DataSnapshotChunk {
   readonly collection: string;
   /** Rows in request order; every item carries exactly the projected fields. */
   readonly items: readonly JsonObject[];
-  /** Opaque per-row digest keyed by row id when `id` is projected (same contract as data.query); otherwise `{}`. */
+  /** Opaque per-row digest keyed by row id (same contract as data.query): present for every
+   * served row while the authority still lets the plugin read `id`, whether or not `id` is
+   * projected; `{}` once that read is revoked. Items never gain an unprojected `id`. */
   readonly rowGuards: Readonly<Record<string, unknown>>;
   /** Offset of this source's next row inside the snapshot; null once the source is exhausted. */
   readonly nextOffset: number | null;
@@ -166,6 +168,18 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
   return {
     async open(request, signal) {
       if (closed) throw new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed.");
+      // Strict input, same line as Go: a snapshot query is an ordinary data.query request
+      // without cursor/pageSize, and the mere presence of either member (null or not) or an
+      // explicit null for ids/filters/sorts is plugin_capability_invalid. Answered here before
+      // any round trip, so no handle is ever created for such a request.
+      if (!Array.isArray(request.sources)) throw new PluginCapabilityError("plugin_capability_invalid", "Snapshot request is invalid.");
+      for (const source of request.sources) {
+        const query: unknown = object(source) ? source.query : undefined;
+        if (!object(query) || Object.hasOwn(query, "cursor") || Object.hasOwn(query, "pageSize")
+          || ["ids", "filters", "sorts"].some(key => Object.hasOwn(query, key) && query[key] === null)) {
+          throw new PluginCapabilityError("plugin_capability_invalid", "Snapshot query is invalid.");
+        }
+      }
       const info = await call<DataSnapshotInfo>("snapshot.open", structuredClone(request), signal);
       if (closed || signal?.aborted) {
         release("snapshot.release", { snapshotId: object(info) ? info.snapshotId : undefined });

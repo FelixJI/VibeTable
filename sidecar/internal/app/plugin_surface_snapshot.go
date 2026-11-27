@@ -24,8 +24,10 @@ import (
 // handle; pages are slices of that materialization. Every page is revalidated
 // in Go against the current installation, grants and schema revision, so a
 // narrowed grant, a remapped model binding or a schema change fails the page
-// instead of serving rows the plugin may no longer read. Data revisions and
-// clock periods deliberately stay out of the page check: an open snapshot is a
+// instead of serving rows the plugin may no longer read. A narrowed id grant
+// alone fails only pages that use id; for the others validate reports per
+// source whether row guards keyed by row id may still be served. Data revisions
+// and clock periods deliberately stay out of the page check: an open snapshot is a
 // fixed read point, later row writes never mix into it and never extend it.
 const (
 	pluginSnapshotContract    = "vibetable.plugin-snapshot.v1"
@@ -53,20 +55,30 @@ func pluginSnapshotWildcard(grant *pluginReadGrant) bool {
 	return grant == nil || pluginHas(grant.Fields, "*") || pluginHas(grant.Fields, "$configured")
 }
 
-// snapshotUsedFields lists every field ID the query reads: projection, filter
-// and sort fields. They all need a current grant on every page.
+// snapshotUsedFields lists every field ID the query reads with exactly the
+// data.query normalization semantics: the projection, the sorts, the leaves of
+// the filter tree (an AND/OR group is structure only and contributes no field
+// of its own) and, whenever ids is set, "id", because the id filter needs a
+// current grant like any other filter field. They all need a current grant at
+// open and again before every page.
 func snapshotUsedFields(r pluginQueryRequest) []string {
 	used := append([]string{}, r.Fields...)
 	var visit func([]query.FilterExpression)
 	visit = func(filters []query.FilterExpression) {
 		for _, f := range filters {
+			if len(f.Filters) > 0 {
+				visit(f.Filters)
+				continue
+			}
 			used = append(used, f.Field)
-			visit(f.Filters)
 		}
 	}
 	visit(r.Filters)
 	for _, sort := range r.Sorts {
 		used = append(used, sort.Field)
+	}
+	if r.IDs != nil {
+		used = append(used, "id")
 	}
 	return used
 }
@@ -122,13 +134,17 @@ func validatePluginSnapshotRequest(request pluginSnapshotRequest, operation stri
 	return known, nil
 }
 
-// snapshotRequestHasNulls rejects explicit nulls the same way data.query does:
-// a decoded nil slice cannot be told apart from an absent key.
-func snapshotRequestHasNulls(raw json.RawMessage) bool {
+// snapshotRequestMalformed rejects the two things the decoded request cannot
+// tell apart: explicit nulls exactly where data.query rejects them (ids, filters,
+// sorts and pageSize: a decoded nil is indistinguishable from an absent key) and
+// the mere presence of versions on an open, null or not, because that member
+// belongs to validate only.
+func snapshotRequestMalformed(raw json.RawMessage, operation string) bool {
 	var envelope struct {
-		Sources []json.RawMessage `json:"sources"`
+		Sources  []json.RawMessage `json:"sources"`
+		Versions json.RawMessage   `json:"versions"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil {
+	if json.Unmarshal(raw, &envelope) != nil || operation == "snapshot.open" && len(envelope.Versions) != 0 {
 		return true
 	}
 	for _, source := range envelope.Sources {
@@ -140,7 +156,7 @@ func snapshotRequestHasNulls(raw json.RawMessage) bool {
 		if json.Unmarshal(outer["query"], &inner) != nil {
 			return true
 		}
-		for _, key := range []string{"ids", "filters", "sorts"} {
+		for _, key := range []string{"ids", "filters", "sorts", "pageSize"} {
 			if value, ok := inner[key]; ok && string(value) == "null" {
 				return true
 			}
@@ -152,7 +168,7 @@ func snapshotRequestHasNulls(raw json.RawMessage) bool {
 func executeSurfaceSnapshot(ctx context.Context, app core.App, source *queryschema.Source, workspace string, input pluginSurfaceAPIRequest) (any, error) {
 	operation := input.Method
 	var request pluginSnapshotRequest
-	if jsonv2.Unmarshal(input.Request, &request, jsonv2.RejectUnknownMembers(true)) != nil || snapshotRequestHasNulls(input.Request) {
+	if jsonv2.Unmarshal(input.Request, &request, jsonv2.RejectUnknownMembers(true)) != nil || snapshotRequestMalformed(input.Request, operation) {
 		return nil, pluginDataError("plugin_capability_invalid")
 	}
 	known, err := validatePluginSnapshotRequest(request, operation)
@@ -164,6 +180,9 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 	// like data.versions, so snapshot.versions equals the versions reply.
 	ctx = relatedcomputation.WithSameRowClockCache(pluginVersionsEvaluationTime(ctx))
 	var result map[string]any
+	// validate: per requested collection, whether the plugin may currently read
+	// id, i.e. whether row guards keyed by row id may be served from the corpus.
+	var identity map[string]bool
 	err = app.RunInTransaction(func(tx core.App) error {
 		// Authorization is resolved exactly once and held by this transaction.
 		installed, err := surfaceInstallation(ctx, tx, workspace, input)
@@ -171,7 +190,8 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 			return err
 		}
 		if operation == "snapshot.validate" {
-			return validatePluginSnapshot(ctx, tx, installed, input.ActiveCollection, request, known)
+			identity, err = validatePluginSnapshot(ctx, tx, installed, input.ActiveCollection, request, known)
+			return err
 		}
 		result, err = openPluginSnapshot(ctx, tx, source, installed, input.ActiveCollection, request)
 		return err
@@ -180,7 +200,7 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 		return nil, err
 	}
 	if operation == "snapshot.validate" {
-		return map[string]any{"valid": true}, nil
+		return map[string]any{"valid": true, "identity": identity}, nil
 	}
 	return result, nil
 }
@@ -228,7 +248,13 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 		}
 		remainingRows -= len(rows)
 		items := []map[string]any{}
-		guards := map[string]any{}
+		// Row guards are the data.query contract: one digest per row, keyed by
+		// row id, for every row the plugin may address (id granted) whether or
+		// not id is projected. The corpus keeps them aligned with items as
+		// [id, digest] pairs (null where the plugin may not address the row) so
+		// the Host slices any offset without the public rows carrying the id;
+		// whether they may be served is re-decided by every validate.
+		guards := make([]any, 0, len(rows))
 		computedFields := []string{}
 		complete := true
 		for _, id := range r.Fields {
@@ -240,9 +266,11 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 			}
 		}
 		for _, row := range rows {
+			var guard any
 			if id, ok := row["id"].(string); ok && scoped.names["id"] != "" {
-				guards[id] = row[productrow.DigestField]
+				guard = []any{id, row[productrow.DigestField]}
 			}
+			guards = append(guards, guard)
 			projected := map[string]any{}
 			for _, id := range r.Fields {
 				value := row[scoped.names[id]]
@@ -276,13 +304,16 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 	return result, ctx.Err()
 }
 
-// validatePluginSnapshot re-checks every source before a page is served.
-// Plain sources (no computed projection, no model binding, every used field
-// granted by its canonical ID) are proven by one batched schema-revision read
-// plus in-memory grant checks; anything else falls back to the full
-// Describe + pluginAllowed + formula-closure authorization. A missing batch
-// answer never fails the page: it only moves sources to the slow path.
-func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest, known map[string]pluginDatasetVersion) error {
+// validatePluginSnapshot re-checks every source before a page is served and
+// reports, per collection, whether the plugin may currently read id (the
+// precondition for serving row guards keyed by row id). Plain sources (no
+// computed projection, no model binding, every used field granted by its
+// canonical ID) are proven by one batched schema-revision read plus in-memory
+// grant checks; anything else falls back to the full Describe + pluginAllowed +
+// formula-closure authorization. A missing batch answer never fails the page:
+// it only moves sources to the slow path.
+func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest, known map[string]pluginDatasetVersion) (map[string]bool, error) {
+	identity := map[string]bool{}
 	plain := pluginSnapshotPlainGrants(installed)
 	fast := []string{}
 	slow := []pluginSnapshotSource{}
@@ -290,11 +321,11 @@ func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSu
 		r := item.Query
 		grant := installed.grant(r.Collection, active)
 		if pluginSnapshotWildcard(grant) {
-			return pluginDataError("plugin_read_denied")
+			return nil, pluginDataError("plugin_read_denied")
 		}
 		version, ok := known[r.Collection]
 		if !ok {
-			return pluginDataError("plugin_snapshot_stale")
+			return nil, pluginDataError("plugin_snapshot_stale")
 		}
 		covered := plain && len(version.Computed) == 0
 		for _, id := range snapshotUsedFields(r) {
@@ -302,6 +333,7 @@ func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSu
 		}
 		if covered {
 			fast = append(fast, r.Collection)
+			identity[r.Collection] = pluginHas(grant.Fields, "id")
 		} else {
 			slow = append(slow, item)
 		}
@@ -312,16 +344,18 @@ func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSu
 	} else {
 		for _, collection := range fast {
 			if revisions[collection] != known[collection].Schema {
-				return pluginDataError("plugin_snapshot_stale")
+				return nil, pluginDataError("plugin_snapshot_stale")
 			}
 		}
 	}
 	for _, item := range slow {
-		if err := pluginSnapshotProjectionCurrent(ctx, tx, installed, active, item.Query, known[item.Query.Collection]); err != nil {
-			return err
+		readable, err := pluginSnapshotProjectionCurrent(ctx, tx, installed, active, item.Query, known[item.Query.Collection])
+		if err != nil {
+			return nil, err
 		}
+		identity[item.Query.Collection] = readable
 	}
-	return nil
+	return identity, nil
 }
 
 func pluginSnapshotPlainGrants(installed pluginSurfaceInstallation) bool {
@@ -382,28 +416,29 @@ func snapshotSchemaRevisions(ctx context.Context, tx core.App, collections []str
 
 // pluginSnapshotProjectionCurrent is the authoritative page check for sources
 // the fast path cannot prove: current grant, current schema revision and the
-// authorization of every used field including same-row formula closure.
-func pluginSnapshotProjectionCurrent(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, r pluginQueryRequest, version pluginDatasetVersion) error {
+// authorization of every used field including same-row formula closure. It
+// also reports whether id is currently readable, i.e. row guards may be served.
+func pluginSnapshotProjectionCurrent(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, r pluginQueryRequest, version pluginDatasetVersion) (bool, error) {
 	grant := installed.grant(r.Collection, active)
 	if pluginSnapshotWildcard(grant) {
-		return pluginDataError("plugin_read_denied")
+		return false, pluginDataError("plugin_read_denied")
 	}
 	table, err := schemaexecution.Describe(ctx, tx, r.Collection)
 	if err != nil || table.Snapshot.TableID != r.Collection {
-		return pluginDataError("plugin_query_failed")
+		return false, pluginDataError("plugin_query_failed")
 	}
 	if table.Snapshot.SchemaRevision != version.Schema {
-		return pluginDataError("plugin_snapshot_stale")
+		return false, pluginDataError("plugin_snapshot_stale")
 	}
 	allowed := pluginAllowed(*grant, table.Snapshot)
 	authorize := pluginComputedAuthorizer(table, allowed, "plugin_query_computed_unsupported", nil)
 	for _, id := range snapshotUsedFields(r) {
 		if allowed[id] == "" {
-			return pluginDataError("plugin_read_denied")
+			return false, pluginDataError("plugin_read_denied")
 		}
 		if err := authorize(id); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return allowed["id"] != "", nil
 }

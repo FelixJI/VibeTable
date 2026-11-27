@@ -336,7 +336,8 @@ try {
   失败保留所有权以便重试，Host 回报 stale 时本地丢弃所有权。`api.dispose` 与页面离开/撤权会回收句柄。
 - 每页回执：`{snapshotId, collection, items, rowGuards, nextOffset, versions, complete}`。`items` 的键恰好
   等于投影字段；`versions` 是读取点的完整向量原样中继（SDK 逐页用 `sameDataVersion` 全量核对）；
-  `rowGuards` 与 `data.query` 同一契约（按行 id 键入的不透明摘要），仅在投影含 `id` 时按页行过滤，否则为 `{}`。
+  `rowGuards` 与 `data.query` 同一契约（按行 id 键入的不透明摘要）：只要插件**现行**可读 `id`，就按页/批行键入，投影是否含 `id` 无关；
+  不可读时为 `{}`；`items` 永远不会多出未投影的 `id`。
   SDK 对回执做 fail-closed 校验：身份回显、字段顺序、行键集合、`nextOffset` 恰好前进 `items.length`、
   最后一页恰好到达 `filteredRows`，任何不一致报 `plugin_transport_failed`。
 - 每批回执（`DataSnapshotBatch`，导出类型 `DataSnapshotChunk` / `DataSnapshotPosition` / `DataSnapshotBatch`）：
@@ -354,14 +355,22 @@ try {
   并比对每来源 `schemaRevision`；**不比对** `dataRevision` 与 `clockPeriod`（它们依赖求值时刻，比对会产生
   伪失效）。因此：单纯数据写入不会使句柄失效，也不会让合法分页拿到新行；结构变更报 `plugin_snapshot_stale`；
   授权收窄报 `plugin_read_denied`；安装修订过期报 `plugin_cursor_stale`；会话/页面离开报 `plugin_session_stale`。
+  validate 回复必须是显式 `valid: true`，否则 Host 视为 `plugin_snapshot_stale` 并丢弃句柄；回复同时携带 `identity`
+  （按来源的“现行可读 `id`”布尔表），Host 据此决定本页/本批是否交付 `rowGuards`——与 `data.query` 一致：只要 `id`
+  当前可读就按行 id 键入，不管投影是否含 `id`；Go 物化的语料里每个来源保存与 `items` 对齐的 `[id, digest]` 数组
+  （open 时未获 `id` 授权的行为 null），所以任意 offset 都能同步切片行与守卫，而 `items` 永远不会多出未投影的 `id`。
+  Host 在 validate 往返之后再次核对句柄仍在且未过绝对过期才切片；在背书之后、切片交付之前发生的取消同样回收**已存在**的句柄。
   任一失败整页失败、不返回部分结果，并释放该句柄。普通来源（无模型绑定、无计算投影、所用字段全部按
-  canonical ID 授权）走一条批量 SQL 的快路径（40 来源 0 次 Describe）；其它来源回退完整 Describe+授权路径。
+  canonical ID 授权且含 `id`）走一条批量 SQL 的快路径（40 来源 0 次 Describe）；其它来源回退完整 Describe+授权路径。
+  所用字段与 `data.query` 归一化完全相同：投影、排序、筛选叶子字段需授权（筛选组只是结构，不是读取），
+  显式 `ids` 还要求 `id` 授权，且每次校验都重新核对。
 - 限制（在任何读取之前拒绝）：1–64 个来源、每来源 1–64 字段、ID ≤128 字节、ids ≤200、
   总行 ≤4096、编码 ≤512 KiB（Go 终检 + Host 计量）、每批 ≤200 行且 items ≤256 KiB、每 surface 2 个句柄、全局 8 个、
   打开后 300 秒绝对过期。两个句柄限额把在途 `snapshot.open` 也计入：Host 从开始物化即预留配额，发布句柄或
   失败/取消/关会话时归还，因此并发打开不会先让 Go 物化再被拒绝发布。
   行/字节/句柄预算报 `plugin_snapshot_limit`；ids 超限报 `plugin_query_limit`；形状错误（未知键、重复来源、
-  `$` 别名、关系路径、显式 null、open 带 versions / validate 缺 versions）报 `plugin_capability_invalid`。
+  `$` 别名、关系路径、显式 null、来源 query 内出现 `cursor`/`pageSize`（SDK 本地以同一错误码先行拒绝，不上 wire）、
+  open 带 versions / validate 缺 versions）报 `plugin_capability_invalid`。
   授权与计算规则与 `data.versions` 相同（通配授权整批 `plugin_read_denied`，未就绪计算 `plugin_query_failed`）。
 - 旧 Host 报 `plugin_api_unsupported`；SDK 不做任何本地模拟，离线宿主需显式 `snapshotAdapter`。
 - 与 `data.versions` 的关系：`snapshot.versions` 深等于同一时刻、同一投影的 `data.versions` 回复；快照

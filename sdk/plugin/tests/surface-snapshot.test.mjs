@@ -122,6 +122,55 @@ test("snapshot page and batch bounds are validated locally and a failed release 
   client.dispose();
 });
 
+test("snapshot queries are strict like data.query: cursor/pageSize presence and explicit nulls never reach the wire", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const base = { contract: "vibetable.plugin-query.v2", collection: "alpha", fields: ["id", "name"] };
+  const open = query => client.data.openSnapshot({ ...request, sources: [{ query }] });
+  for (const query of [{ ...base, pageSize: null }, { ...base, pageSize: 50 }, { ...base, cursor: "c" }, { ...base, cursor: null }, { ...base, ids: null }, { ...base, filters: null }, { ...base, sorts: null }, null, undefined])
+    await assert.rejects(open(query), error => error.code === "plugin_capability_invalid");
+  await assert.rejects(client.data.openSnapshot({ ...request, sources: "alpha" }), error => error.code === "plugin_capability_invalid");
+  assert.equal(transport.calls.length, 0);
+  // Absent members stay legal: the ordinary request reaches the wire unchanged.
+  const opening = client.data.openSnapshot(request);
+  assert.equal(transport.calls.length, 1);
+  assert.deepEqual(transport.calls.at(-1).params, request);
+  transport.reply(transport.calls.at(-1), info());
+  await opening;
+  client.dispose();
+});
+
+test("snapshot row guards follow row ids without the projection: keyed by unprojected ids, empty once revoked, items never gain a field", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const narrow = { ...request, sources: [{ query: { contract: "vibetable.plugin-query.v2", collection: "alpha", fields: ["name"] } }] };
+  const opening = client.data.openSnapshot(narrow);
+  assert.deepEqual(transport.calls.at(-1).params, narrow);
+  const reply = info({ versions: { alpha: structuredClone(version) }, sources: [{ collection: "alpha", fields: ["name"], computedFields: [], filteredRows: 2, totalRows: 2, complete: true }] });
+  transport.reply(transport.calls.at(-1), reply);
+  const snapshot = await opening;
+  // Guards are keyed by ids the plugin may read although no row projects id: served as they are.
+  const guarded = snapshot.page("alpha");
+  transport.reply(transport.calls.at(-1), { ...page("owned", "alpha", [{ name: "x" }, { name: "y" }], null, reply.versions), rowGuards: { a1: "digest", a2: "digest" } });
+  const served = await guarded;
+  assert.deepEqual(Object.keys(served.rowGuards), ["a1", "a2"]);
+  assert.deepEqual(served.items, [{ name: "x" }, { name: "y" }]);
+  // Revoked id: an empty guard map is still a well-formed page and batch.
+  const revoked = snapshot.page("alpha");
+  transport.reply(transport.calls.at(-1), { ...page("owned", "alpha", [{ name: "x" }, { name: "y" }], null, reply.versions), rowGuards: {} });
+  assert.deepEqual((await revoked).rowGuards, {});
+  const batched = snapshot.readBatch();
+  transport.reply(transport.calls.at(-1), batch([{ ...chunk("alpha", [{ name: "x" }, { name: "y" }], null), rowGuards: {} }], null, reply.versions));
+  assert.deepEqual((await batched).chunks[0].rowGuards, {});
+  // An item that gains the unprojected id is not a page of this snapshot.
+  const leaked = snapshot.page("alpha");
+  transport.reply(transport.calls.at(-1), page("owned", "alpha", [{ id: "a1", name: "x" }, { id: "a2", name: "y" }], null, reply.versions));
+  await assert.rejects(leaked, error => error.code === "plugin_transport_failed");
+  const closing = snapshot.close();
+  assert.equal(transport.calls.at(-1).method, "snapshot.release");
+  transport.reply(transport.calls.at(-1), { released: true });
+  await closing;
+  client.dispose();
+});
+
 test("snapshot stale from the Host drops local ownership: no re-open, no further wire calls for that handle", async () => {
   const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
   const { snapshot } = await openSnapshot(transport, client);

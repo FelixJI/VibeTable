@@ -96,6 +96,18 @@ func snapshotSource(t *testing.T, open map[string]any, collection string) map[st
 	return nil
 }
 
+// snapshotGuards folds a corpus source's aligned [id, digest] pairs back into the
+// data.query rowGuards map (rows the plugin may not address carry null).
+func snapshotGuards(source map[string]any) map[string]any {
+	guards := map[string]any{}
+	for _, entry := range source["rowGuards"].([]any) {
+		if pair, ok := entry.([]any); ok {
+			guards[pair[0].(string)] = pair[1]
+		}
+	}
+	return guards
+}
+
 // legacyQuery walks the ordinary data.query cursor pages exactly like the SDK
 // does and returns every item and row guard in order.
 func (f *versionsFixture) legacyQuery(t *testing.T, app core.App, r pluginQueryRequest, pageSize int) ([]any, map[string]any) {
@@ -176,7 +188,7 @@ func TestPluginSurfaceSnapshotMatchesLegacyQueryRowsGuardsAndVersions(t *testing
 			projection = []string{"id"}
 		}
 		items, guards := f.legacyQuery(t, f.pb, snapshotQuery(table, projection...), 2)
-		if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(source["rowGuards"], guards) {
+		if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) {
 			t.Fatalf("source %s diverged from data.query:\n%v\n%v", table.id, source["items"], items)
 		}
 		if fmt.Sprint(source["fields"]) != fmt.Sprint(projection) || fmt.Sprint(source["computedFields"]) != "[]" || source["complete"] != true {
@@ -206,7 +218,7 @@ func TestPluginSurfaceSnapshotMatchesLegacyQueryRowsGuardsAndVersions(t *testing
 	}
 	items, guards := f.legacyQuery(t, f.pb, filtered, 1)
 	source := snapshotSource(t, open, f.tables[0].id)
-	if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(source["rowGuards"], guards) || source["filteredRows"] != int64(2) || source["totalRows"] != int64(5) {
+	if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) || source["filteredRows"] != int64(2) || source["totalRows"] != int64(5) {
 		t.Fatalf("filtered snapshot diverged: %+v vs %v", source, items)
 	}
 	byID := snapshotQuery(f.tables[0], full(f.tables[0])...)
@@ -227,8 +239,34 @@ func TestPluginSurfaceSnapshotMatchesLegacyQueryRowsGuardsAndVersions(t *testing
 	}
 	items, guards = f.legacyQuery(t, f.pb, byID, 1)
 	source = snapshotSource(t, open, f.tables[0].id)
-	if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(source["rowGuards"], guards) || source["filteredRows"] != int64(2) || source["totalRows"] != int64(5) {
+	if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) || source["filteredRows"] != int64(2) || source["totalRows"] != int64(5) {
 		t.Fatalf("ids snapshot diverged: %+v vs %v", source, items)
+	}
+	// data.query guards every row by id whenever id is granted, projected or
+	// not. The corpus keeps the same guards aligned with items (one pair per
+	// row, no id added to the public rows) so the Host can slice them at any
+	// offset without exposing an unprojected id.
+	bare := snapshotQuery(f.tables[0], f.tables[0].nameID)
+	bare.Filters = filtered.Filters
+	bare.Sorts = filtered.Sorts
+	open, code = f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(bare))
+	if code != "" {
+		t.Fatal(code)
+	}
+	source = snapshotSource(t, open, f.tables[0].id)
+	bareItems, guards := f.legacyQuery(t, f.pb, bare, 1)
+	addressed, _ := f.legacyQuery(t, f.pb, filtered, 1)
+	pairs := source["rowGuards"].([]any)
+	rows := source["items"].([]map[string]any)
+	if !reflect.DeepEqual(fmt.Sprint(rows), fmt.Sprint(bareItems)) || len(pairs) != len(rows) || len(rows) != 2 || len(addressed) != 2 || !reflect.DeepEqual(snapshotGuards(source), guards) {
+		t.Fatalf("unprojected id snapshot diverged: %+v vs %v", rows, bareItems)
+	}
+	for i, row := range rows {
+		id := addressed[i].(map[string]any)["id"].(string)
+		pair := pairs[i].([]any)
+		if _, leaked := row["id"]; leaked || pair[0] != id || pair[1] != guards[id] {
+			t.Fatalf("row %d leaked id or lost its guard: %+v %v", i, row, pair)
+		}
 	}
 }
 
@@ -314,6 +352,165 @@ func TestPluginSurfaceSnapshotValidateIgnoresWritesButNotSchemaOrGrants(t *testi
 	}
 }
 
+// Groups are structure, not reads: exactly like data.query only the leaves of a
+// filter tree need a grant, a group node's own field is ignored, and a leaf's
+// grant is checked at open and again by the fast path before every page.
+func TestPluginSurfaceSnapshotGroupedFiltersFollowQueryGrants(t *testing.T) {
+	f := newVersionsFixture(t, 1)
+	f.grantAll(t)
+	table := f.tables[0]
+	for i := 1; i <= 4; i++ {
+		f.addRow(t, table, fmt.Sprintf("row-%d", i), fmt.Sprintf("secret-%d", i))
+	}
+	// name in (row-2, row-4) AND (secret = secret-2 OR secret = secret-4),
+	// nested two levels: the shape data.query normalizes.
+	grouped := snapshotQuery(table, "id", table.nameID)
+	grouped.Filters = []query.FilterExpression{{Filters: []query.FilterExpression{
+		{Field: table.nameID, Operator: query.OperatorIn, Value: []any{"row-2", "row-4"}},
+		{GroupLogic: query.LogicOr, Filters: []query.FilterExpression{
+			{Field: table.secretID, Operator: query.OperatorEqual, Value: "secret-2"},
+			{Field: table.secretID, Operator: query.OperatorEqual, Value: "secret-4"},
+		}},
+	}}}
+	recorder, hook := snapshotRecorder(f)
+	open, code := f.snapshot(t, hook, "snapshot.open", snapshotRequest(grouped))
+	if code != "" {
+		t.Fatal(code)
+	}
+	items, guards := f.legacyQuery(t, f.pb, grouped, 1)
+	source := snapshotSource(t, open, table.id)
+	if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) || source["filteredRows"] != int64(2) {
+		t.Fatalf("grouped snapshot diverged from data.query: %+v vs %v", source, items)
+	}
+	// Every leaf is granted, so the plain grouped source stays on the fast
+	// path (no per-source describe) and reports readable row identity.
+	before := len(recorder.snapshot())
+	if result, code := f.snapshot(t, hook, "snapshot.validate", snapshotEchoRequest(snapshotRequest(grouped), open)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != true {
+		t.Fatalf("grouped validate: %+v %q", result, code)
+	}
+	for _, statement := range recorder.snapshot()[before:] {
+		if strings.Contains(statement.statement, "`vibetable_fields`") || strings.Contains(statement.statement, "`vibetable_formulas`") {
+			t.Fatalf("grouped filter took the describe path: %s", statement.statement)
+		}
+	}
+	// Narrowing a leaf's grant anywhere in the tree fails the page.
+	f.regrant(t, []pluginReadGrant{{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{"id", table.nameID}}})
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", snapshotEchoRequest(snapshotRequest(grouped), open)); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("narrowed leaf grant returned %+v, %q", result, code)
+	}
+	// A hidden leaf denies the open at any depth.
+	deep := snapshotQuery(table, "id", table.nameID)
+	deep.Filters = []query.FilterExpression{{Filters: []query.FilterExpression{{GroupLogic: query.LogicOr, Filters: []query.FilterExpression{
+		{Field: table.nameID, Operator: query.OperatorEqual, Value: "row-1"},
+		{Field: table.secretID, Operator: query.OperatorEqual, Value: "secret-1"},
+	}}}}}
+	if result, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(deep)); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("hidden nested leaf returned %+v, %q", result, code)
+	}
+	// A group node cannot double as a predicate: the shared query compiler
+	// rejects it, so a group's own field is never a read to authorize.
+	stray := snapshotQuery(table, "id", table.nameID)
+	stray.Filters = []query.FilterExpression{{Field: table.secretID, Filters: []query.FilterExpression{{Field: table.nameID, Operator: query.OperatorEqual, Value: "row-1"}}}}
+	if result, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(stray)); result != nil || code != "query.filter.invalid_group" {
+		t.Fatalf("group with a predicate returned %+v, %q", result, code)
+	}
+}
+
+// ids is an id filter: it needs the id grant at open (like data.query) and,
+// because snapshotUsedFields now lists it, again before every page even when
+// id is not projected and the source takes the fast path.
+func TestPluginSurfaceSnapshotIdsNeedTheIdGrantOnEveryPage(t *testing.T) {
+	f := newVersionsFixture(t, 1)
+	table := f.tables[0]
+	for i := 1; i <= 3; i++ {
+		f.addRow(t, table, fmt.Sprintf("row-%d", i), fmt.Sprintf("secret-%d", i))
+	}
+	ids := []string{}
+	for _, row := range f.rows(t, table) {
+		ids = append(ids, row.Id)
+	}
+	byID := snapshotQuery(table, table.nameID)
+	byID.IDs = &ids
+	// Without the id grant the open is denied: the ids filter reads id.
+	f.regrant(t, []pluginReadGrant{{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{table.nameID}}})
+	if result, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(byID)); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("ids without id grant returned %+v, %q", result, code)
+	}
+	f.grantAll(t)
+	open, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(byID))
+	if code != "" || snapshotSource(t, open, table.id)["filteredRows"] != int64(4) {
+		t.Fatalf("ids open: %+v %q", open, code)
+	}
+	// Revoking only id leaves the projection (name) readable but fails the
+	// page: the ids filter may not be evaluated without a current id grant.
+	f.regrant(t, []pluginReadGrant{{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{table.nameID}}})
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", snapshotEchoRequest(snapshotRequest(byID), open)); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("revoked id grant returned %+v, %q", result, code)
+	}
+	// Granting id back validates the same handle again.
+	f.grantAll(t)
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", snapshotEchoRequest(snapshotRequest(byID), open)); code != "" || result["valid"] != true {
+		t.Fatalf("restored id grant: %+v %q", result, code)
+	}
+}
+
+// validate reports, per source, whether the plugin may currently address rows
+// by id. A projection that does not use id keeps serving pages after id is
+// revoked, but without row guards; the fast path (canonical grants) and the
+// slow path (physical-name grants) agree.
+func TestPluginSurfaceSnapshotValidateReportsRowIdentityPerSource(t *testing.T) {
+	f := newVersionsFixture(t, 2)
+	f.grantAll(t)
+	f.addRow(t, f.tables[0], "later", "later-secret")
+	bare := snapshotRequest(snapshotQuery(f.tables[0], f.tables[0].nameID), snapshotQuery(f.tables[1], "id"))
+	open, code := f.snapshot(t, f.pb, "snapshot.open", bare)
+	if code != "" {
+		t.Fatal(code)
+	}
+	// The corpus keeps one guard per row although no row projects id.
+	source := snapshotSource(t, open, f.tables[0].id)
+	if pairs := source["rowGuards"].([]any); len(pairs) != 2 || pairs[0] == nil || pairs[1] == nil {
+		t.Fatalf("guards for unprojected id: %+v", pairs)
+	}
+	_, guards := f.legacyQuery(t, f.pb, snapshotQuery(f.tables[0], f.tables[0].nameID), 1)
+	if !reflect.DeepEqual(snapshotGuards(source), guards) {
+		t.Fatalf("unprojected guards diverged from data.query: %v vs %v", snapshotGuards(source), guards)
+	}
+	echo := snapshotEchoRequest(bare, open)
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); code != "" || !reflect.DeepEqual(result["identity"], map[string]bool{f.tables[0].id: true, f.tables[1].id: true}) {
+		t.Fatalf("identity with full grants: %+v %q", result, code)
+	}
+	// Revoking id on table 0 keeps its pages valid (name only) but leaves no
+	// row identity to serve; table 1, which projects id, is unaffected.
+	f.regrant(t, []pluginReadGrant{{Collection: f.tables[0].id, Operations: []string{"read", "query"}, Fields: []string{f.tables[0].nameID}},
+		{Collection: f.tables[1].id, Operations: []string{"read", "query"}, Fields: []string{"id"}}})
+	result, code := f.snapshot(t, f.pb, "snapshot.validate", echo)
+	if code != "" || result["valid"] != true || !reflect.DeepEqual(result["identity"], map[string]bool{f.tables[0].id: false, f.tables[1].id: true}) {
+		t.Fatalf("identity with revoked id: %+v %q", result, code)
+	}
+	// A corpus opened under the narrowed grant carries no identity at all.
+	open, code = f.snapshot(t, f.pb, "snapshot.open", bare)
+	if code != "" {
+		t.Fatal(code)
+	}
+	if pairs := snapshotSource(t, open, f.tables[0].id)["rowGuards"].([]any); pairs[0] != nil || pairs[1] != nil {
+		t.Fatalf("guards without id grant: %+v", pairs)
+	}
+	echo = snapshotEchoRequest(bare, open)
+	// A physical-name grant takes the slow path and reports the same answer.
+	nameColumn := f.physical(t, f.tables[0], f.tables[0].nameID)
+	f.regrant(t, []pluginReadGrant{{Collection: f.tables[0].id, Operations: []string{"read", "query"}, Fields: []string{"id", nameColumn}},
+		{Collection: f.tables[1].id, Operations: []string{"read", "query"}, Fields: []string{"id"}}})
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); code != "" || !reflect.DeepEqual(result["identity"], map[string]bool{f.tables[0].id: true, f.tables[1].id: true}) {
+		t.Fatalf("slow-path identity: %+v %q", result, code)
+	}
+	f.regrant(t, []pluginReadGrant{{Collection: f.tables[0].id, Operations: []string{"read", "query"}, Fields: []string{nameColumn}},
+		{Collection: f.tables[1].id, Operations: []string{"read", "query"}, Fields: []string{"id"}}})
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); code != "" || !reflect.DeepEqual(result["identity"], map[string]bool{f.tables[0].id: false, f.tables[1].id: true}) {
+		t.Fatalf("slow-path identity with revoked id: %+v %q", result, code)
+	}
+}
+
 // grantAll gives every fixture table the same explicit read+query grant on id,
 // name and secret so a snapshot of any projection of those columns is readable.
 func (f *versionsFixture) grantAll(t *testing.T) {
@@ -362,6 +559,10 @@ func TestPluginSurfaceSnapshotMalformedRequestsFailBeforeAnyTransaction(t *testi
 		"active alias":   `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"$active","fields":["id"]}}]}`,
 		"wrong contract": `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v1","collection":"` + table.id + `","fields":["id"]}}]}`,
 		"open versions":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{}}`,
+		"null versions":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":null}`,
+		"null ids":       `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"ids":null}}]}`,
+		"null sorts":     `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"sorts":null}}]}`,
+		"null pageSize":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"pageSize":null}}]}`,
 	} {
 		if result, code := f.snapshot(t, hook, "snapshot.open", json.RawMessage(raw)); result != nil || code != "plugin_capability_invalid" {
 			t.Fatalf("%s returned %+v, %q", name, result, code)
@@ -377,9 +578,14 @@ func TestPluginSurfaceSnapshotMalformedRequestsFailBeforeAnyTransaction(t *testi
 	if result, code := f.snapshot(t, hook, "snapshot.open", snapshotRequest(many)); result != nil || code != "plugin_query_limit" {
 		t.Fatalf("too many ids returned %+v, %q", result, code)
 	}
-	// validate without versions, or with a missing/null member, is invalid.
+	// validate without versions, or with a missing/null member, is invalid, and
+	// the query-level null rules apply to validate exactly like open.
 	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(valid)); result != nil || code != "plugin_capability_invalid" {
 		t.Fatalf("validate without versions returned %+v, %q", result, code)
+	}
+	nullPage := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"pageSize":null}}],"versions":{}}`
+	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(nullPage)); result != nil || code != "plugin_capability_invalid" {
+		t.Fatalf("validate with null pageSize returned %+v, %q", result, code)
 	}
 	incomplete := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{"` + table.id + `":{"schemaRevision":"schema_0001","clockPeriod":"","computed":{}}}}`
 	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(incomplete)); result != nil || code != "plugin_capability_invalid" {
@@ -473,7 +679,7 @@ func TestPluginSurfaceSnapshotByteBudgetAndEmptySources(t *testing.T) {
 	if code != "" {
 		t.Fatal(code)
 	}
-	if source := snapshotSource(t, open, f.tables[1].id); source["filteredRows"] != int64(0) || len(source["items"].([]map[string]any)) != 0 || source["complete"] != true || len(source["rowGuards"].(map[string]any)) != 0 {
+	if source := snapshotSource(t, open, f.tables[1].id); source["filteredRows"] != int64(0) || len(source["items"].([]map[string]any)) != 0 || source["complete"] != true || len(source["rowGuards"].([]any)) != 0 {
 		t.Fatalf("empty source: %+v", source)
 	}
 	// Bytes are bounded across all sources: 110 maximal text rows encode past

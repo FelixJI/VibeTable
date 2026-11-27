@@ -17,7 +17,7 @@ public sealed class PluginSurfaceApiTests
 {
     internal const string DatasetBody = """{"contract":"vibetable.plugin-dataset.v1","scope":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]},"groupBy":[],"sums":[]}],"versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"filteredRows":2,"totalRows":2,"complete":true,"summary":{"count":2,"complete":true,"sums":[{"field":"amount","value":"9007199254740993.02","complete":true}],"groups":[]}}]}""";
     private const string DatasetRequest = """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""";
-    internal const string SnapshotBody = """{"contract":"vibetable.plugin-snapshot.v1","versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}},"notes":{"schemaRevision":"s1","dataRevision":0,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"rowGuards":{"a":"ga","b":"gb"},"filteredRows":2,"totalRows":2,"complete":true},{"collection":"notes","fields":["body"],"computedFields":[],"items":[{"body":"hello"}],"rowGuards":{"n1":"gn"},"filteredRows":1,"totalRows":1,"complete":true}]}""";
+    internal const string SnapshotBody = """{"contract":"vibetable.plugin-snapshot.v1","versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}},"notes":{"schemaRevision":"s1","dataRevision":0,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"rowGuards":[["a","ga"],["b","gb"]],"filteredRows":2,"totalRows":2,"complete":true},{"collection":"notes","fields":["body"],"computedFields":[],"items":[{"body":"hello"}],"rowGuards":[["n1","gn"]],"filteredRows":1,"totalRows":1,"complete":true}]}""";
     private const string SnapshotRequest = """{"contract":"vibetable.plugin-snapshot.v1","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]}},{"query":{"contract":"vibetable.plugin-query.v2","collection":"notes","fields":["body"]}}]}""";
 
     [TestMethod]
@@ -126,12 +126,22 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(JsonValueKind.Null, second.GetProperty("nextOffset").ValueKind);
         Assert.AreEqual(first.GetProperty("versions").GetRawText(), second.GetProperty("versions").GetRawText());
         Assert.AreEqual(first.GetProperty("versions").GetRawText(), opened.GetProperty("versions").GetRawText());
-        // A source without id in its projection serves no guards (the plugin cannot address them).
+        // data.query parity: guards are keyed by row id for every row whenever id is currently
+        // readable, projected (orders) or not (notes projects body only and gains no id field).
         var notes = (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "notes", offset = 0, pageSize = 200 }))).GetProperty("result");
         Assert.AreEqual("hello", notes.GetProperty("items")[0].GetProperty("body").GetString());
+        Assert.IsFalse(notes.GetProperty("items")[0].TryGetProperty("id", out _));
+        Assert.AreEqual("gn", notes.GetProperty("rowGuards").GetProperty("n1").GetString());
+        Assert.AreEqual(1, notes.GetProperty("rowGuards").EnumerateObject().Count());
+        // Revoking id without touching the projection keeps the page readable but serves no row identity.
+        f.Http.SnapshotIdentityDenied.Add("notes");
+        notes = (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "notes", offset = 0, pageSize = 200 }))).GetProperty("result");
         Assert.AreEqual(0, notes.GetProperty("rowGuards").EnumerateObject().Count());
+        Assert.AreEqual("hello", notes.GetProperty("items")[0].GetProperty("body").GetString());
+        Assert.AreEqual("ga", (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "orders", offset = 0, pageSize = 1 }))).GetProperty("result").GetProperty("rowGuards").GetProperty("a").GetString());
+        f.Http.SnapshotIdentityDenied.Clear();
         var validations = f.Http.Calls.Where(call => call.GetProperty("method").GetString() == "snapshot.validate").ToArray();
-        Assert.AreEqual(3, validations.Length);
+        Assert.AreEqual(5, validations.Length);
         foreach (var validation in validations)
         {
             var request = validation.GetProperty("request");
@@ -316,7 +326,8 @@ public sealed class PluginSurfaceApiTests
             string[] fields = source.Fields.Split(',');
             string Cell(string field, int index) => field switch { "id" => $"\"{source.Collection}-{index}\"", "amount" => "\"0.01\"", "body" => "\"hello\"", _ => JsonSerializer.Serialize(new string('x', source.Blob)) };
             string items = string.Join(",", Enumerable.Range(0, source.Rows).Select(index => "{" + string.Join(",", fields.Select(field => $"\"{field}\":{Cell(field, index)}")) + "}"));
-            string guards = fields.Contains("id") ? "{" + string.Join(",", Enumerable.Range(0, source.Rows).Select(index => $"\"{source.Collection}-{index}\":\"g\"")) + "}" : "{}";
+            // The Go corpus guards every row by id, projected or not: one [id, digest] pair per row aligned with items.
+            string guards = "[" + string.Join(",", Enumerable.Range(0, source.Rows).Select(index => $"[\"{source.Collection}-{index}\",\"g\"]")) + "]";
             return $"{{\"collection\":\"{source.Collection}\",\"fields\":[{string.Join(",", fields.Select(field => $"\"{field}\""))}],\"computedFields\":[],\"items\":[{items}],\"rowGuards\":{guards},\"filteredRows\":{source.Rows},\"totalRows\":{source.Rows},\"complete\":true}}";
         }));
         return $"{{\"contract\":\"vibetable.plugin-snapshot.v1\",\"versions\":{{{version}}},\"sources\":[{listed}]}}";
@@ -349,7 +360,12 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("orders-0", orders.GetProperty("items")[0].GetProperty("id").GetString());
         Assert.AreEqual("g", orders.GetProperty("rowGuards").GetProperty("orders-149").GetString());
         Assert.IsFalse(orders.GetProperty("rowGuards").TryGetProperty("notes-0", out _));
-        Assert.AreEqual(0, notes.GetProperty("rowGuards").EnumerateObject().Count());
+        Assert.AreEqual(150, orders.GetProperty("rowGuards").EnumerateObject().Count());
+        // notes projects body only; its guards still follow its rows by id, sliced to this chunk's range.
+        Assert.AreEqual(50, notes.GetProperty("rowGuards").EnumerateObject().Count());
+        Assert.AreEqual("g", notes.GetProperty("rowGuards").GetProperty("notes-49").GetString());
+        Assert.IsFalse(notes.GetProperty("rowGuards").TryGetProperty("notes-50", out _));
+        Assert.IsFalse(notes.GetProperty("items")[0].TryGetProperty("id", out _));
         Assert.IsTrue(notes.GetProperty("complete").GetBoolean());
         Assert.AreEqual(first.GetProperty("versions").GetRawText(), opened.GetProperty("versions").GetRawText());
         Assert.AreEqual("notes", first.GetProperty("next").GetProperty("collection").GetString());
@@ -365,6 +381,7 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(3, Validations());
         Assert.AreSequenceEqual(new[] { ("notes", 3, (int?)null), ("empty", 0, (int?)null), ("tail", 1, (int?)null) }, Chunks(partial));
         Assert.AreEqual(JsonValueKind.Null, partial.GetProperty("next").ValueKind);
+        Assert.AreEqual("[\"notes-97\",\"notes-98\",\"notes-99\"]", JsonSerializer.Serialize(partial.GetProperty("chunks")[0].GetProperty("rowGuards").EnumerateObject().Select(guard => guard.Name).ToArray()));
         // The handle stays open: a single-source page and a re-read from the start still work.
         var page = (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "tail", offset = 0, pageSize = 200 }))).GetProperty("result");
         Assert.AreEqual(1, page.GetProperty("items").GetArrayLength());
@@ -398,6 +415,125 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("plugin_snapshot_stale", Code(await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = reopened, next = (object?)null }))));
         Assert.AreEqual("plugin_snapshot_stale", Code(await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = reopened, collection = "orders", offset = 0, pageSize = 1 }))));
         Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() is "data.query" or "dataset.open"));
+    }
+
+    [TestMethod]
+    public async Task SnapshotGuardsFollowDataQueryWithoutLeakingUnprojectedIdsAndOnlyWhileIdIsReadable()
+    {
+        using var f = new Fixture();
+        async Task<string> Open() => (await f.Call("snapshot.open", SnapshotQuery(("notes", "body")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Task<JsonElement> Page(string handle) => f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = handle, collection = "notes", offset = 0, pageSize = 200 }));
+        // Opened while id was granted: the corpus guards every row although no row projects id,
+        // and any offset slices both together.
+        f.Http.SnapshotResultBody = SnapshotCorpus(("notes", "body", 3, 0));
+        string id = await Open();
+        var page = (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "notes", offset = 1, pageSize = 1 }))).GetProperty("result");
+        Assert.AreEqual("hello", page.GetProperty("items")[0].GetProperty("body").GetString());
+        Assert.IsFalse(page.GetProperty("items")[0].TryGetProperty("id", out _));
+        Assert.AreEqual("g", page.GetProperty("rowGuards").GetProperty("notes-1").GetString());
+        Assert.AreEqual(1, page.GetProperty("rowGuards").EnumerateObject().Count());
+        Assert.IsFalse(page.GetProperty("rowGuards").TryGetProperty("notes-0", out _));
+        // Revoked id: the page stays readable, row identity stops, no id reaches the reply anywhere.
+        f.Http.SnapshotIdentityDenied.Add("notes");
+        page = (await Page(id)).GetProperty("result");
+        Assert.AreEqual(3, page.GetProperty("items").GetArrayLength());
+        Assert.AreEqual(0, page.GetProperty("rowGuards").EnumerateObject().Count());
+        Assert.IsFalse(page.GetRawText().Contains("notes-", StringComparison.Ordinal));
+        // A reply without an identity map serves no row identity either.
+        f.Http.SnapshotIdentityDenied.Clear();
+        f.Http.SnapshotValidationBody = """{"valid":true}""";
+        Assert.AreEqual(0, (await Page(id)).GetProperty("result").GetProperty("rowGuards").EnumerateObject().Count());
+        f.Http.SnapshotValidationBody = null;
+        // Opened while id was not granted: the corpus carries null pairs, so a later id grant
+        // never conjures guards the corpus does not hold.
+        f.Http.SnapshotResultBody = SnapshotCorpus(("notes", "body", 2, 0)).Replace("[\"notes-0\",\"g\"]", "null").Replace("[\"notes-1\",\"g\"]", "null");
+        string bare = await Open();
+        Assert.AreEqual(2, (await Page(bare)).GetProperty("result").GetProperty("items").GetArrayLength());
+        Assert.AreEqual(0, (await Page(bare)).GetProperty("result").GetProperty("rowGuards").EnumerateObject().Count());
+        foreach (string handle in new[] { id, bare }) Assert.IsTrue((await f.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = handle }))).GetProperty("result").GetProperty("released").GetBoolean());
+        // A corpus whose guards are not aligned with items is never published and frees its capacity;
+        // one without the member at all is not even a capability reply.
+        string aligned = SnapshotCorpus(("notes", "body", 2, 0));
+        var guards = "\"rowGuards\":[[\"notes-0\",\"g\"],[\"notes-1\",\"g\"]]";
+        foreach (var (malformed, expected) in new[]
+        {
+            (aligned.Replace(guards, "\"rowGuards\":{}"), "plugin_snapshot_limit"),
+            (aligned.Replace(guards, "\"rowGuards\":[[\"notes-0\",\"g\"]]"), "plugin_snapshot_limit"),
+            (aligned.Replace("\"rowGuards\":", "\"guards\":"), "plugin_capability_invalid"),
+        })
+        {
+            f.Http.SnapshotResultBody = malformed;
+            Assert.AreEqual(expected, Code(await f.Call("snapshot.open", SnapshotQuery(("notes", "body")))), malformed);
+        }
+        f.Http.SnapshotResultBody = aligned;
+        Assert.IsTrue((await f.Call("snapshot.open", SnapshotQuery(("notes", "body")))).TryGetProperty("result", out _));
+        Assert.IsTrue((await f.Call("snapshot.open", SnapshotQuery(("notes", "body")))).TryGetProperty("result", out _));
+    }
+
+    [TestMethod]
+    public async Task SnapshotCancellationDuringTheEndorsementRoundTripReleasesTheExistingHandleNotOnlyNewOpens()
+    {
+        using var f = new Fixture();
+        f.Http.SnapshotResultBody = SnapshotCorpus(("orders", "id,amount", 3, 0));
+        string request = SnapshotQuery(("orders", "id,amount"));
+        foreach (string method in new[] { "snapshot.page", "snapshot.readBatch" })
+        {
+            string id = (await f.Call("snapshot.open", request)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            string parameters = method == "snapshot.page" ? JsonSerializer.Serialize(new { snapshotId = id, collection = "orders", offset = 0, pageSize = 1 }) : JsonSerializer.Serialize(new { snapshotId = id, next = (object?)null });
+            string wire = f.Wire(method, parameters);
+            string requestId = JsonDocument.Parse(wire).RootElement.GetProperty("requestId").GetString()!;
+            // The plugin cancels while the authority endorses the request, i.e. after the handle
+            // existed and before the slice was delivered.
+            f.Http.OnSnapshotValidate = async _ => { await f.Api.HandleAsync(f.Surface.SurfaceToken, f.Source, f.Wire("request.cancel", JsonSerializer.Serialize(new { requestId }))); };
+            JsonElement reply = JsonDocument.Parse(await f.Api.HandleAsync(f.Surface.SurfaceToken, f.Source, wire)).RootElement;
+            f.Http.OnSnapshotValidate = null;
+            Assert.AreEqual("plugin_cancel_requested", Code(reply), method);
+            // The pre-existing handle is gone: no authority round trip and no re-service of the
+            // page that was never delivered ...
+            int calls = f.Http.Calls.Count;
+            Assert.AreEqual("plugin_snapshot_stale", Code(await f.Call(method, parameters)), method);
+            Assert.AreEqual(calls, f.Http.Calls.Count, method);
+            // ... and its capacity is free again.
+            string first = (await f.Call("snapshot.open", request)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            string second = (await f.Call("snapshot.open", request)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", request)), method);
+            foreach (string handle in new[] { first, second }) Assert.IsTrue((await f.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = handle }))).GetProperty("result").GetProperty("released").GetBoolean());
+        }
+    }
+
+    [TestMethod]
+    public async Task SnapshotValidateReplyMustEndorseTheHandleAndExpiryIsRecheckedAfterTheAuthorityRoundTrip()
+    {
+        using var f = new Fixture();
+        async Task<string> Open() => (await f.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Task<JsonElement> Page(string handle) => f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = handle, collection = "orders", offset = 0, pageSize = 1 }));
+        // Only an explicit valid === true endorses a handle; anything else is stale, drops the
+        // handle and never slices.
+        foreach (string reply in new[] { """{"valid":false}""", "{}", """{"valid":"true"}""", "[]" })
+        {
+            string id = await Open();
+            f.Http.SnapshotValidationBody = reply;
+            Assert.AreEqual("plugin_snapshot_stale", Code(await Page(id)), reply);
+            int calls = f.Http.Calls.Count;
+            Assert.AreEqual("plugin_snapshot_stale", Code(await Page(id)), reply);
+            Assert.AreEqual(calls, f.Http.Calls.Count, reply);
+            f.Http.SnapshotValidationBody = null;
+        }
+        // Absolute expiry is re-checked after the await: a handle that expires while the
+        // authority endorses it is never sliced from.
+        f.Api.SnapshotLifetime = TimeSpan.FromMilliseconds(300);
+        string shortLived = await Open();
+        f.Http.OnSnapshotValidate = async token => await Task.Delay(700, token);
+        Assert.AreEqual("plugin_snapshot_stale", Code(await Page(shortLived)));
+        f.Http.OnSnapshotValidate = null;
+        Assert.AreEqual(5, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate"));
+        // Released while the authority endorses it: stale after the await, nothing sliced.
+        f.Api.SnapshotLifetime = TimeSpan.FromMinutes(5);
+        string released = await Open();
+        f.Http.OnSnapshotValidate = async _ => { await f.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = released })); };
+        Assert.AreEqual("plugin_snapshot_stale", Code(await Page(released)));
+        f.Http.OnSnapshotValidate = null;
+        Assert.AreEqual(6, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate"));
     }
 
     [TestMethod]
@@ -1920,6 +2056,11 @@ public sealed class PluginSurfaceApiTests
         internal Func<CancellationToken, Task>? OnQuery { get; set; }
         internal Func<CancellationToken, Task>? OnDatasetOpen { get; set; }
         internal Func<CancellationToken, Task>? OnSnapshotOpen { get; set; }
+        internal Func<CancellationToken, Task>? OnSnapshotValidate { get; set; }
+        /// <summary>Overrides the validate reply wholesale (missing endorsement, missing identity map).</summary>
+        internal string? SnapshotValidationBody { get; set; }
+        /// <summary>Collections whose id grant the authority reports as revoked: validate answers identity=false for them.</summary>
+        internal HashSet<string> SnapshotIdentityDenied { get; } = new(StringComparer.Ordinal);
         /// <summary>Observes every authority call (method, principal, request) before any other hook replies.</summary>
         internal Func<JsonElement, CancellationToken, Task>? OnCall { get; set; }
         internal string SnapshotResultBody { get; set; } = SnapshotBody;
@@ -1961,6 +2102,7 @@ public sealed class PluginSurfaceApiTests
             if (method == "data.query" && OnQuery is { } onQuery) await onQuery(token);
             if (method == "dataset.open" && OnDatasetOpen is { } onDataset) await onDataset(token);
             if (method == "snapshot.open" && OnSnapshotOpen is { } onSnapshot) await onSnapshot(token);
+            if (method == "snapshot.validate" && OnSnapshotValidate is { } onSnapshotValidate) await onSnapshotValidate(token);
             if (method == "snapshot.open" && SnapshotOpenCode is { } snapshotOpenCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = snapshotOpenCode })) };
             if (method == "snapshot.validate" && SnapshotValidationCode is { } snapshotCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = snapshotCode })) };
             if (method == "data.versions" && VersionsErrorCode is { } versionsCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = versionsCode })) };
@@ -1990,7 +2132,13 @@ public sealed class PluginSurfaceApiTests
                 "dataset.open" => DatasetResultBody,
                 "dataset.validate" => """{"valid":true}""",
                 "snapshot.open" => SnapshotResultBody,
-                "snapshot.validate" => """{"valid":true}""",
+                "snapshot.validate" => SnapshotValidationBody ?? JsonSerializer.Serialize(new
+                {
+                    valid = true,
+                    // Per collection: whether the plugin may currently read id (row guards may be served).
+                    identity = JsonDocument.Parse(SnapshotResultBody).RootElement.GetProperty("sources").EnumerateArray()
+                        .ToDictionary(source => source.GetProperty("collection").GetString()!, source => !SnapshotIdentityDenied.Contains(source.GetProperty("collection").GetString()!)),
+                }),
                 "data.versions" when VersionsResultBody is not null => VersionsResultBody,
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",

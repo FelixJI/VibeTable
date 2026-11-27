@@ -743,7 +743,9 @@ func (port *Port) queryRows(
 // AttachRowDigests is the single row-guard contract: it hashes the raw product
 // values of each listed row server-side and never returns those values. Ports
 // and bounded snapshot readers share it so every plugin read path produces the
-// same opaque digest for the same stored row.
+// same opaque digest for the same stored row. It is all-or-nothing: rows only
+// receive their digests once every row has been hashed, so a cancelled, missing
+// or unencodable row never leaves a half guarded page behind.
 func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescriptor, rows []map[string]any) error {
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
@@ -781,11 +783,13 @@ func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescrip
 			records[record.Id] = record
 		}
 	}
-	for index, row := range rows {
+	// Hash into a side table first; the rows are published only as a complete set.
+	digests := make([]any, len(rows))
+	for index, id := range recordIDs {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		record := records[recordIDs[index]]
+		record := records[id]
 		if record == nil {
 			return errors.New("query row record could not be read")
 		}
@@ -809,7 +813,10 @@ func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescrip
 		if err != nil {
 			return err
 		}
-		row[productrow.DigestField] = digest
+		digests[index] = digest
+	}
+	for index, row := range rows {
+		row[productrow.DigestField] = digests[index]
 	}
 	return nil
 }

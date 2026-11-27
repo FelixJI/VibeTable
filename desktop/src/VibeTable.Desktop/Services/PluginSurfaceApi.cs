@@ -74,6 +74,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         string? createdCursor = null;
         string? createdDataset = null;
         string? createdSnapshot = null;
+        string? usedSnapshot = null;
         try
         {
             if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
@@ -177,7 +178,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                     break;
                 case "snapshot.page":
                 case "snapshot.readBatch":
-                    result = await UseSnapshotAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    (usedSnapshot, result) = await UseSnapshotAsync(surface, state, request.Method, request.Params, deadline.Token);
                     break;
                 case "output.create":
                 case "output.write":
@@ -464,6 +465,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             if (createdCursor is not null) state?.Cursors.TryRemove(createdCursor, out _);
             if (createdDataset is not null) state?.Datasets.TryRemove(createdDataset, out _);
             if (createdSnapshot is not null) state?.Snapshots.TryRemove(createdSnapshot, out _);
+            // A cancellation that landed between the endorsed slice and its delivery ends the
+            // existing handle too: a page the plugin never received is not re-served from it.
+            if (usedSnapshot is not null && ex is OperationCanceledException) state?.Snapshots.TryRemove(usedSnapshot, out _);
             string code = committing ? "plugin_commit_unknown" : ex switch
             {
                 PluginSurfacePolicyException policy => policy.Code,

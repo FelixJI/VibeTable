@@ -3,8 +3,10 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,6 +126,158 @@ func TestQueryDigestReadsRecordsInBoundedBatches(t *testing.T) {
 		if !errors.Is(err, context.Canceled) || len(page.Rows) != 0 || projected != 1 {
 			t.Fatalf("cancelled projection returned page=%+v error=%v projected=%d",
 				page, err, projected)
+		}
+	})
+}
+
+// AttachRowDigests is the row-guard contract shared by query pages and
+// snapshot corpora. Each failure below is a realistic one (a row deleted
+// between the page read and the digest read, a projection that cannot be
+// encoded, a cancelled caller, a collection that went away) and must propagate
+// its error while leaving the caller's rows without a single digest: a page is
+// guarded completely or not at all.
+func TestAttachRowDigestsFailuresNeverLeavePartialGuards(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	collection := core.NewBaseCollection("query_digest_rows")
+	collection.Fields.Add(&core.NumberField{Name: "amount"}, &core.TextField{Name: "private_value"})
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"", "", ""}
+	var ghost *core.Record
+	if err := app.RunInTransaction(func(tx core.App) error {
+		for i := range ids {
+			record := core.NewRecord(collection)
+			record.Set("amount", i)
+			record.Set("private_value", "private")
+			if err := tx.Save(record); err != nil {
+				return err
+			}
+			ids[i] = record.Id
+		}
+		ghost = core.NewRecord(collection)
+		ghost.Set("amount", 99)
+		ghost.Set("private_value", "private")
+		return tx.Save(ghost)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project := func(record *core.Record) map[string]any {
+		original := record.Original()
+		return map[string]any{"amount": original.GetFloat("amount"), "private_value": original.GetString("private_value")}
+	}
+	descriptor := query.TableDescriptor{
+		DatabaseID: "local", TableID: "digest", PhysicalName: collection.Name,
+		PrimaryKey: "id", SchemaRevision: "schema-1", DataRevision: 1,
+		Fields: map[string]query.FieldDescriptor{
+			"id":     {PhysicalName: "id", Type: query.FieldTypeText},
+			"amount": {PhysicalName: "amount", Type: query.FieldTypeNumber},
+		},
+		DigestFields:    []string{"amount", "private_value"},
+		DigestProjector: project,
+	}
+	page := func(id ...string) []map[string]any {
+		rows := []map[string]any{}
+		for _, value := range id {
+			rows = append(rows, map[string]any{"id": value, "amount": float64(len(rows))})
+		}
+		return rows
+	}
+	// failing attaches the digests, requires an error and checks that no row
+	// of the page was guarded anyway.
+	failing := func(t *testing.T, ctx context.Context, descriptor query.TableDescriptor, rows []map[string]any) error {
+		t.Helper()
+		err := query.AttachRowDigests(ctx, app, descriptor, rows)
+		if err == nil {
+			t.Fatal("failure was swallowed")
+		}
+		for index, row := range rows {
+			if _, partial := row[productrow.DigestField]; partial {
+				t.Fatalf("row %d guarded after a failed attach: %#v", index, row)
+			}
+		}
+		return err
+	}
+	// The success contract first: every row guarded with the projected digest.
+	rows := page(ids...)
+	if err := query.AttachRowDigests(context.Background(), app, descriptor, rows); err != nil {
+		t.Fatal(err)
+	}
+	for index, row := range rows {
+		want, err := productrow.Digest(map[string]any{"amount": float64(index), "private_value": "private"})
+		if err != nil || row[productrow.DigestField] != want {
+			t.Fatalf("row %d digest=%v error=%v", index, row[productrow.DigestField], err)
+		}
+		if _, leaked := row["private_value"]; leaked {
+			t.Fatal("digest-only value leaked into the page")
+		}
+	}
+	t.Run("cancelled before reading", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := failing(t, ctx, descriptor, page(ids...)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("row without primary key", func(t *testing.T) {
+		if err := failing(t, context.Background(), descriptor, page(ids[0], "", ids[2])); err.Error() != "query row omitted its primary key" {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("record deleted after the page read", func(t *testing.T) {
+		if err := app.Delete(ghost); err != nil {
+			t.Fatal(err)
+		}
+		if err := failing(t, context.Background(), descriptor, page(ids[0], ghost.Id, ids[2])); err.Error() != "query row record could not be read" {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("projection cannot be encoded", func(t *testing.T) {
+		broken := descriptor
+		broken.DigestProjector = func(record *core.Record) map[string]any {
+			row := project(record)
+			if row["amount"] == float64(1) {
+				row["amount"] = math.NaN()
+			}
+			return row
+		}
+		var unsupported *json.UnsupportedValueError
+		if err := failing(t, context.Background(), broken, page(ids...)); !errors.As(err, &unsupported) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("cancelled during projection", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		projected := 0
+		slow := descriptor
+		slow.DigestProjector = func(record *core.Record) map[string]any {
+			projected++
+			cancel()
+			return project(record)
+		}
+		// Not even the first row, whose digest was already computed, is
+		// published: the page is guarded completely or not at all.
+		if err := failing(t, ctx, slow, page(ids...)); !errors.Is(err, context.Canceled) || projected != 1 {
+			t.Fatalf("error=%v projected=%d", err, projected)
+		}
+	})
+	t.Run("collection went away", func(t *testing.T) {
+		missing := descriptor
+		missing.PhysicalName = "query_digest_missing"
+		if err := failing(t, context.Background(), missing, page(ids...)); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("records unreadable", func(t *testing.T) {
+		// The collection stays cached; only its records table is gone, which
+		// is exactly the state a concurrent schema teardown leaves behind.
+		if _, err := app.DB().NewQuery("DROP TABLE `query_digest_rows`").Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if err := failing(t, context.Background(), descriptor, page(ids...)); err == nil || !strings.Contains(err.Error(), "no such table") {
+			t.Fatalf("error=%v", err)
 		}
 	})
 }
