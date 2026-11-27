@@ -133,22 +133,12 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 	defer delete(visiting, key)
 	fields, ok := cache.fields[key.table]
 	if !ok {
-		if cache.full != nil {
-			cache.full.mu.Lock()
-			fields, ok = cache.full.fields[key.table]
-			cache.full.mu.Unlock()
-		}
-		if !ok {
-			var err error
-			fields, err = describeTableFields(ctx, app, key.table)
-			if err != nil {
-				return nil, err
-			}
-			if cache.full != nil {
-				cache.full.mu.Lock()
-				cache.keepFields(key.table, fields)
-				cache.full.mu.Unlock()
-			}
+		// Entry points seed the source fields. Only a full traversal can reach
+		// another table, whose description stays in that transaction's cache.
+		var err error
+		fields, err = describeTableFields(ctx, app, key.table)
+		if err != nil {
+			return nil, err
 		}
 		cache.fields[key.table] = fields
 	}
