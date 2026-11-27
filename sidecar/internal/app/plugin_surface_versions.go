@@ -205,11 +205,21 @@ func executeSurfaceDataVersions(ctx context.Context, app core.App, workspace str
 // narrowed grant (for example only `id` left) fails the batch instead of letting
 // previously authorized columns be reused.
 func pluginSourceDataVersion(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, item pluginVersionsSource) (pluginDatasetVersion, error) {
-	var version pluginDatasetVersion
 	grant := installed.grant(item.Collection, active)
 	if grant == nil {
-		return version, pluginDataError("plugin_read_denied")
+		return pluginDatasetVersion{}, pluginDataError("plugin_read_denied")
 	}
+	return pluginSourceDataVersionUnder(ctx, tx, grant, item)
+}
+
+// pluginSourceDataVersionUnder is the #589 vector computed under a grant the
+// caller has already resolved and admitted, so the authorization of the
+// projection and of every same-row formula dependency is exactly the one the
+// rows are read under: data.versions passes the merged read/query grant, and
+// snapshot.open passes the explicit grant alone instead of letting this
+// function re-resolve a merged one that may carry a wildcard.
+func pluginSourceDataVersionUnder(ctx context.Context, tx core.App, grant *pluginReadGrant, item pluginVersionsSource) (pluginDatasetVersion, error) {
+	var version pluginDatasetVersion
 	table, err := schemaexecution.Describe(ctx, tx, item.Collection)
 	if err != nil || table.Snapshot.TableID != item.Collection {
 		return version, pluginDataError("plugin_query_failed")
