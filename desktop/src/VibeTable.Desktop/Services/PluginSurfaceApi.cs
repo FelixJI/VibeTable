@@ -59,7 +59,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         _subscriptionSource = subscriptionSource;
         _surfaces.Closed += RetireState;
         _http = new HttpClient(handler ?? new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
-        _datasetExpiry = new Timer(_ => SweepDatasets(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+        _datasetExpiry = new Timer(_ => { SweepDatasets(); SweepSnapshots(); }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     internal async Task<string> HandleAsync(string frameToken, string source, string raw)
@@ -73,6 +73,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         bool admitted = false;
         string? createdCursor = null;
         string? createdDataset = null;
+        string? createdSnapshot = null;
         try
         {
             if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
@@ -108,6 +109,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 // The query checks its token before publishing; an already delivered handle is reclaimed here.
                 foreach (var pair in state.Cursors.Where(pair => pair.Value.RequestId == target)) state.Cursors.TryRemove(pair.Key, out _);
                 foreach (var pair in state.Datasets.Where(pair => pair.Value.RequestId == target)) state.Datasets.TryRemove(pair.Key, out _);
+                foreach (var pair in state.Snapshots.Where(pair => pair.Value.RequestId == target)) state.Snapshots.TryRemove(pair.Key, out _);
                 return Reply(requestId, new { cancelRequested = true });
             }
             if (request.Method == "data.io.cancel")
@@ -147,6 +149,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 state.Datasets.TryRemove(ReadHandle(request.Params, "datasetId"), out _);
                 return Reply(requestId, new { released = true });
             }
+            if (request.Method == "snapshot.release")
+            {
+                state.Snapshots.TryRemove(ReadHandle(request.Params, "snapshotId"), out _);
+                return Reply(requestId, new { released = true });
+            }
             if (!state.Pending.TryAdd(requestId, deadline)) throw Error("plugin_request_duplicate");
             admitted = true;
             if (state.Pending.Count > 8) throw Error("plugin_concurrency_limit");
@@ -164,6 +171,13 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "dataset.export":
                     result = await UseDatasetAsync(surface, state, request.Method, request.Params, deadline.Token);
                     if (request.Method == "dataset.export" && result is JsonElement datasetReceipt && datasetReceipt.TryGetProperty("committed", out var savedDataset) && savedDataset.GetBoolean()) committed = true;
+                    break;
+                case "snapshot.open":
+                    (createdSnapshot, result) = await OpenSnapshotAsync(surface, state, requestId, request.Params, deadline.Token);
+                    break;
+                case "snapshot.page":
+                case "snapshot.readBatch":
+                    result = await UseSnapshotAsync(surface, state, request.Method, request.Params, deadline.Token);
                     break;
                 case "output.create":
                 case "output.write":
@@ -438,7 +452,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                     }
                 default: throw Error("plugin_api_unsupported");
             }
-            if (!committed && (request.Method == "data.query" || request.Method.StartsWith("dataset.", StringComparison.Ordinal))) deadline.Token.ThrowIfCancellationRequested();
+            if (!committed && (request.Method == "data.query" || request.Method.StartsWith("dataset.", StringComparison.Ordinal) || request.Method.StartsWith("snapshot.", StringComparison.Ordinal))) deadline.Token.ThrowIfCancellationRequested();
             if (!committed && !printOpened) CurrentSurface(frameToken, source);
             string response = request.Method is "file.read" or "attachments.read"
                 ? ReadBlockReply(requestId, result) : Reply(requestId, result);
@@ -449,6 +463,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         {
             if (createdCursor is not null) state?.Cursors.TryRemove(createdCursor, out _);
             if (createdDataset is not null) state?.Datasets.TryRemove(createdDataset, out _);
+            if (createdSnapshot is not null) state?.Snapshots.TryRemove(createdSnapshot, out _);
             string code = committing ? "plugin_commit_unknown" : ex switch
             {
                 PluginSurfacePolicyException policy => policy.Code,
@@ -644,7 +659,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         ReleaseOutputs(token);
         _attachmentRefs.TryRemove(token, out _);
         if (_states.TryRemove(token, out var state))
-        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); state.Datasets.Clear(); }
+        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); state.Datasets.Clear(); state.Snapshots.Clear(); }
     }
     public void Dispose() { _datasetExpiry.Dispose(); _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _ = DisposeHttpAsync(); }
     private void TrackCleanup(Task cleanup)
@@ -680,6 +695,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         internal ConcurrentQueue<string> Order { get; } = new();
         internal ConcurrentDictionary<string, Cursor> Cursors { get; } = new();
         internal ConcurrentDictionary<string, Dataset> Datasets { get; } = new();
+        internal ConcurrentDictionary<string, Snapshot> Snapshots { get; } = new();
+        /// <summary>In-flight snapshot.open reservations; guarded by the snapshot gate, never by this object.</summary>
+        internal int SnapshotOpens { get; set; }
         internal ConcurrentDictionary<string, Plan> Plans { get; } = new();
     }
 }

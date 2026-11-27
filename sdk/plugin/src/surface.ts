@@ -7,6 +7,8 @@ import { createSurfaceModel, type SurfaceModel } from "./surface-model.js";
 import { createSurfaceTransaction, type SurfaceTransaction } from "./surface-transaction.js";
 import { createSurfaceOutputClient, type SurfaceOutputClient } from "./surface-output.js";
 import { createSurfaceDatasets, type SurfaceDatasets } from "./surface-dataset.js";
+import { createSurfaceSnapshot } from "./surface-snapshot.js";
+import type { DataSnapshot, DataSnapshotRequest } from "./surface-snapshot.js";
 import { createSurfaceVersions, type DataVersions, type DataVersionsRequest } from "./surface-versions.js";
 
 export const SURFACE_API_CONTRACT = "vibetable.plugin-api.v1";
@@ -91,6 +93,13 @@ export interface SurfaceCapabilities {
      * dataset page or cursor is read; any unauthorized source, field or malformed
      * prior version fails the whole batch without partial results. */
     versions(request: DataVersionsRequest, signal?: AbortSignal): Promise<DataVersions>;
+    /** One bounded read point over up to 64 authorized sources (#590): every source is materialized
+     * inside one Go transaction (rows, row guards, the #589 version vector) and the handle is
+     * handed out only after that transaction closed. Pages come from that immutable snapshot;
+     * the Host re-checks handle, session, current authorization and schema revisions before every
+     * page. Plain data writes never invalidate the handle or leak newer rows. Any unauthorized
+     * source, over-limit batch or malformed request fails the open without partial results. */
+    openSnapshot(request: DataSnapshotRequest, signal?: AbortSignal): Promise<DataSnapshot>;
     previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only"; readonly upsertKey?: string;
       readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] } | {
       /** Upsert matches rows by the approved unique key before preview starts; the key must be non-empty. */
@@ -181,8 +190,8 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   channel.addEventListener("message", receive);
   function call<T>(method: string, params: unknown, signal?: AbortSignal, onSent?: () => void): Promise<T> {
     if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
-    const releaseMethod = method === "data.unsubscribe" || method === "data.releaseCursor" || method === "dataset.release";
-    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe" || request.method === "data.releaseCursor" || request.method === "dataset.release").length;
+    const releaseMethod = method === "data.unsubscribe" || method === "data.releaseCursor" || method === "dataset.release" || method === "snapshot.release";
+    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe" || request.method === "data.releaseCursor" || request.method === "dataset.release" || request.method === "snapshot.release").length;
     const ioCancels = [...pending.values()].filter(request => request.method === "data.io.cancel").length;
     if (releaseMethod ? releases >= 8 : method === "data.io.cancel" ? ioCancels >= 8 : pending.size - releases - ioCancels >= 8)
       return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
@@ -459,6 +468,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   }
   const outputs = createSurfaceOutputClient(call, release);
   const datasets = createSurfaceDatasets(call, release);
+  const snapshots = createSurfaceSnapshot(call, release);
   return {
     dataset: datasets,
     model: createSurfaceModel(call),
@@ -495,7 +505,8 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
         return startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] });
       },
       export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }),
-      versions: createSurfaceVersions(call) },
+      versions: createSurfaceVersions(call),
+      openSnapshot: (request, signal) => snapshots.open(request, signal) },
     file: { pickRead: options => pick(false, { mediaTypes: options?.mediaTypes ?? [] }) as Promise<ReadGrant | null>,
       pickWrite: options => pick(true, options) as Promise<WriteGrant | null> },
     attachments: { list: async target => (await call<{ items: SurfaceAttachment[] }>("attachments.list", target)).items,
@@ -507,6 +518,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       if (closed) return;
       closed = true;
       datasets.dispose();
+      snapshots.dispose();
       outputs.dispose();
       presentation.dispose();
       for (const [subscriptionId, subscription] of subscriptions) {
@@ -522,7 +534,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       channel.removeEventListener("message", receive);
       // A sent submit may already be committing; dispose reports unknown and resends nothing.
       for (const [requestId, request] of pending) {
-        if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "dataset.open", "dataset.export", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
+        if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "dataset.open", "dataset.export", "snapshot.open", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
         request.reject((request.method === "mutation.submit" || request.method === "transaction.submit" || request.method === "transaction.configure" || request.method === "file.write" || request.method === "model.configure" || request.method === "output.save" || request.method === "dataset.export")

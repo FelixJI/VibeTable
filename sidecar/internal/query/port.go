@@ -734,21 +734,32 @@ func (port *Port) queryRows(
 	if err := projectRelationLabels(ctx, app, descriptor, rows); err != nil {
 		return nil, err
 	}
+	if err := AttachRowDigests(ctx, app, descriptor, rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// AttachRowDigests is the single row-guard contract: it hashes the raw product
+// values of each listed row server-side and never returns those values. Ports
+// and bounded snapshot readers share it so every plugin read path produces the
+// same opaque digest for the same stored row.
+func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescriptor, rows []map[string]any) error {
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
 	// DigestFields; an empty list explicitly opts out of row-digest projection.
 	if len(descriptor.DigestFields) == 0 || len(rows) == 0 {
-		return rows, nil
+		return nil
 	}
 	collection, err := app.FindCollectionByNameOrId(descriptor.PhysicalName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	recordIDs := make([]string, len(rows))
 	for index, row := range rows {
 		recordIDs[index] = fmt.Sprint(row[descriptor.PrimaryKey])
 		if recordIDs[index] == "" {
-			return nil, errors.New("query row omitted its primary key")
+			return errors.New("query row omitted its primary key")
 		}
 	}
 	// Keep complete PocketBase records (including Original) for the existing
@@ -756,7 +767,7 @@ func (port *Port) queryRows(
 	records := make(map[string]*core.Record, len(rows))
 	for start := 0; start < len(recordIDs); start += 256 {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		batch, err := app.FindRecordsByIds(collection, recordIDs[start:min(start+256, len(recordIDs))],
 			func(statement *dbx.SelectQuery) error {
@@ -764,7 +775,7 @@ func (port *Port) queryRows(
 				return nil
 			})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, record := range batch {
 			records[record.Id] = record
@@ -772,11 +783,11 @@ func (port *Port) queryRows(
 	}
 	for index, row := range rows {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		record := records[recordIDs[index]]
 		if record == nil {
-			return nil, errors.New("query row record could not be read")
+			return errors.New("query row record could not be read")
 		}
 		var digestRow map[string]any
 		if descriptor.DigestProjector != nil {
@@ -796,11 +807,11 @@ func (port *Port) queryRows(
 		}
 		digest, err := productrow.Digest(digestRow)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		row[productrow.DigestField] = digest
 	}
-	return rows, nil
+	return nil
 }
 
 func truthyPresence(value any) bool {

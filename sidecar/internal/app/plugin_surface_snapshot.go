@@ -1,0 +1,409 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	jsonv2 "encoding/json/v2"
+	"errors"
+	"strings"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/productrow"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+)
+
+// snapshot.open / snapshot.validate (#590): one authoritative transaction
+// resolves the installation, every source grant, the exact #589 version vector
+// and the bounded row projection of up to 64 sources, then materializes the
+// whole snapshot in memory. The transaction closes before the Host hands out a
+// handle; pages are slices of that materialization. Every page is revalidated
+// in Go against the current installation, grants and schema revision, so a
+// narrowed grant, a remapped model binding or a schema change fails the page
+// instead of serving rows the plugin may no longer read. Data revisions and
+// clock periods deliberately stay out of the page check: an open snapshot is a
+// fixed read point, later row writes never mix into it and never extend it.
+const (
+	pluginSnapshotContract    = "vibetable.plugin-snapshot.v1"
+	pluginSnapshotMaxSources  = 64
+	pluginSnapshotMaxFields   = 64
+	pluginSnapshotMaxKeyBytes = 128
+	pluginSnapshotMaxIDs      = 200
+	pluginSnapshotRows        = 4096
+	pluginSnapshotBytes       = 512 * 1024
+)
+
+type pluginSnapshotSource struct {
+	Query pluginQueryRequest `json:"query"`
+}
+
+type pluginSnapshotRequest struct {
+	Contract string                 `json:"contract"`
+	Sources  []pluginSnapshotSource `json:"sources"`
+	// validate only: the open result's versions, decoded strictly so a missing
+	// or null member can never pass for a complete known version.
+	Versions pluginPriorVersions `json:"versions,omitempty"`
+}
+
+func pluginSnapshotWildcard(grant *pluginReadGrant) bool {
+	return grant == nil || pluginHas(grant.Fields, "*") || pluginHas(grant.Fields, "$configured")
+}
+
+// snapshotUsedFields lists every field ID the query reads: projection, filter
+// and sort fields. They all need a current grant on every page.
+func snapshotUsedFields(r pluginQueryRequest) []string {
+	used := append([]string{}, r.Fields...)
+	var visit func([]query.FilterExpression)
+	visit = func(filters []query.FilterExpression) {
+		for _, f := range filters {
+			used = append(used, f.Field)
+			visit(f.Filters)
+		}
+	}
+	visit(r.Filters)
+	for _, sort := range r.Sorts {
+		used = append(used, sort.Field)
+	}
+	return used
+}
+
+// validatePluginSnapshotRequest runs before any storage read. Open and validate
+// are distinguished by the presence of versions; both fail the whole request
+// without a single query on duplicates, over-limit batches or malformed keys.
+func validatePluginSnapshotRequest(request pluginSnapshotRequest, operation string) (map[string]pluginDatasetVersion, error) {
+	invalid := pluginDataError("plugin_capability_invalid")
+	if request.Contract != pluginSnapshotContract || len(request.Sources) < 1 || len(request.Sources) > pluginSnapshotMaxSources {
+		return nil, invalid
+	}
+	if operation == "snapshot.open" && request.Versions != nil || operation == "snapshot.validate" && request.Versions == nil {
+		return nil, invalid
+	}
+	seen := map[string]bool{}
+	for _, source := range request.Sources {
+		r := source.Query
+		if r.Contract != "vibetable.plugin-query.v2" || r.Collection == "" || len(r.Collection) > pluginSnapshotMaxKeyBytes || strings.HasPrefix(r.Collection, "$") || seen[r.Collection] || len(r.Fields) < 1 || len(r.Fields) > pluginSnapshotMaxFields || r.PageSize != nil {
+			return nil, invalid
+		}
+		seen[r.Collection] = true
+		if r.IDs != nil && len(*r.IDs) > pluginSnapshotMaxIDs {
+			return nil, pluginDataError("plugin_query_limit")
+		}
+		fields := map[string]bool{}
+		for _, id := range r.Fields {
+			if id == "" || len(id) > pluginSnapshotMaxKeyBytes || fields[id] || strings.Contains(id, ".") {
+				return nil, invalid
+			}
+			fields[id] = true
+		}
+		for _, id := range snapshotUsedFields(r) {
+			if id == "" || len(id) > pluginSnapshotMaxKeyBytes || strings.Contains(id, ".") {
+				return nil, invalid
+			}
+		}
+	}
+	known := map[string]pluginDatasetVersion{}
+	for collection, raw := range request.Versions {
+		if !seen[collection] {
+			return nil, invalid
+		}
+		version, err := decodePluginDatasetVersion(raw)
+		if err != nil || version.Data < 0 || version.Data > pluginVersionsMaxRevision {
+			return nil, invalid
+		}
+		known[collection] = version
+	}
+	if request.Versions != nil && len(known) != len(seen) {
+		return nil, invalid
+	}
+	return known, nil
+}
+
+// snapshotRequestHasNulls rejects explicit nulls the same way data.query does:
+// a decoded nil slice cannot be told apart from an absent key.
+func snapshotRequestHasNulls(raw json.RawMessage) bool {
+	var envelope struct {
+		Sources []json.RawMessage `json:"sources"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return true
+	}
+	for _, source := range envelope.Sources {
+		var outer map[string]json.RawMessage
+		if json.Unmarshal(source, &outer) != nil {
+			return true
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(outer["query"], &inner) != nil {
+			return true
+		}
+		for _, key := range []string{"ids", "filters", "sorts"} {
+			if value, ok := inner[key]; ok && string(value) == "null" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func executeSurfaceSnapshot(ctx context.Context, app core.App, source *queryschema.Source, workspace string, input pluginSurfaceAPIRequest) (any, error) {
+	operation := input.Method
+	var request pluginSnapshotRequest
+	if jsonv2.Unmarshal(input.Request, &request, jsonv2.RejectUnknownMembers(true)) != nil || snapshotRequestHasNulls(input.Request) {
+		return nil, pluginDataError("plugin_capability_invalid")
+	}
+	known, err := validatePluginSnapshotRequest(request, operation)
+	if err != nil {
+		return nil, err
+	}
+	// One evaluation instant and one dependency-graph cache for the whole batch:
+	// clock periods of all sources are derived from the same instant, exactly
+	// like data.versions, so snapshot.versions equals the versions reply.
+	ctx = relatedcomputation.WithSameRowClockCache(pluginVersionsEvaluationTime(ctx))
+	var result map[string]any
+	err = app.RunInTransaction(func(tx core.App) error {
+		// Authorization is resolved exactly once and held by this transaction.
+		installed, err := surfaceInstallation(ctx, tx, workspace, input)
+		if err != nil {
+			return err
+		}
+		if operation == "snapshot.validate" {
+			return validatePluginSnapshot(ctx, tx, installed, input.ActiveCollection, request, known)
+		}
+		result, err = openPluginSnapshot(ctx, tx, source, installed, input.ActiveCollection, request)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if operation == "snapshot.validate" {
+		return map[string]any{"valid": true}, nil
+	}
+	return result, nil
+}
+
+// openPluginSnapshot materializes every source inside the caller's transaction.
+func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.Source, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest) (map[string]any, error) {
+	versions := map[string]pluginDatasetVersion{}
+	outputs := []any{}
+	remainingRows, remainingBytes := pluginSnapshotRows, pluginSnapshotBytes
+	for _, item := range request.Sources {
+		r := item.Query
+		grant := installed.grant(r.Collection, active)
+		if pluginSnapshotWildcard(grant) {
+			return nil, pluginDataError("plugin_read_denied")
+		}
+		// The version vector is the #589 vector verbatim: same authorization of
+		// the projection (including same-row formula closure), same pinned
+		// instant, same completeness rules.
+		version, err := pluginSourceDataVersion(ctx, tx, installed, active, pluginVersionsSource{Collection: r.Collection, Fields: r.Fields})
+		if err != nil {
+			return nil, err
+		}
+		scoped := &pluginQuerySource{source: source, grant: *grant, request: r, readonly: true}
+		d, _, err := scoped.DescribeSelectionTable(ctx, tx, r.Collection)
+		if err != nil {
+			return nil, err
+		}
+		// Digest fields stay: row guards are the data.query digest contract.
+		d.ProjectionFields = []string{"id"}
+		for _, id := range r.Fields {
+			if id != "id" {
+				d.ProjectionFields = append(d.ProjectionFields, scoped.names[id])
+			}
+		}
+		rows, count, total, err := query.ReadBounded(ctx, tx, d, scoped.normalized, remainingRows, &remainingBytes)
+		if err != nil {
+			var product *query.ProductError
+			if errors.As(err, &product) && product.Code == "plugin_dataset_limit" {
+				return nil, pluginDataError("plugin_snapshot_limit")
+			}
+			return nil, err
+		}
+		if err := query.AttachRowDigests(ctx, tx, d, rows); err != nil {
+			return nil, err
+		}
+		remainingRows -= len(rows)
+		items := []map[string]any{}
+		guards := map[string]any{}
+		computedFields := []string{}
+		complete := true
+		for _, id := range r.Fields {
+			if field := scoped.computed[scoped.names[id]]; field.ComputedEnvelope {
+				computedFields = append(computedFields, id)
+				if !field.ComputedReady {
+					complete = false
+				}
+			}
+		}
+		for _, row := range rows {
+			if id, ok := row["id"].(string); ok && scoped.names["id"] != "" {
+				guards[id] = row[productrow.DigestField]
+			}
+			projected := map[string]any{}
+			for _, id := range r.Fields {
+				value := row[scoped.names[id]]
+				if field := scoped.computed[scoped.names[id]]; field.ComputedEnvelope {
+					state, fresh := "updating", false
+					if envelope, ok := value.(map[string]any); ok {
+						if status, exists := envelope["state"].(string); exists {
+							state, fresh = status, field.ComputedReady && status == "ready"
+							value = envelope["value"]
+						}
+					}
+					if !fresh {
+						value = nil
+						complete = false
+					}
+					value = map[string]any{"state": state, "fresh": fresh, "value": value}
+				}
+				projected[id] = value
+			}
+			items = append(items, projected)
+		}
+		versions[r.Collection] = version
+		outputs = append(outputs, map[string]any{"collection": r.Collection, "fields": r.Fields, "computedFields": computedFields, "items": items, "rowGuards": guards,
+			"filteredRows": count, "totalRows": total, "complete": complete})
+	}
+	result := map[string]any{"contract": pluginSnapshotContract, "sources": outputs, "versions": versions}
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded) > pluginSnapshotBytes {
+		return nil, pluginDataError("plugin_snapshot_limit")
+	}
+	return result, ctx.Err()
+}
+
+// validatePluginSnapshot re-checks every source before a page is served.
+// Plain sources (no computed projection, no model binding, every used field
+// granted by its canonical ID) are proven by one batched schema-revision read
+// plus in-memory grant checks; anything else falls back to the full
+// Describe + pluginAllowed + formula-closure authorization. A missing batch
+// answer never fails the page: it only moves sources to the slow path.
+func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest, known map[string]pluginDatasetVersion) error {
+	plain := pluginSnapshotPlainGrants(installed)
+	fast := []string{}
+	slow := []pluginSnapshotSource{}
+	for _, item := range request.Sources {
+		r := item.Query
+		grant := installed.grant(r.Collection, active)
+		if pluginSnapshotWildcard(grant) {
+			return pluginDataError("plugin_read_denied")
+		}
+		version, ok := known[r.Collection]
+		if !ok {
+			return pluginDataError("plugin_snapshot_stale")
+		}
+		covered := plain && len(version.Computed) == 0
+		for _, id := range snapshotUsedFields(r) {
+			covered = covered && pluginHas(grant.Fields, id)
+		}
+		if covered {
+			fast = append(fast, r.Collection)
+		} else {
+			slow = append(slow, item)
+		}
+	}
+	revisions, complete := snapshotSchemaRevisions(ctx, tx, fast)
+	if !complete {
+		slow = append(slow, pluginSnapshotSourcesOf(request, fast)...)
+	} else {
+		for _, collection := range fast {
+			if revisions[collection] != known[collection].Schema {
+				return pluginDataError("plugin_snapshot_stale")
+			}
+		}
+	}
+	for _, item := range slow {
+		if err := pluginSnapshotProjectionCurrent(ctx, tx, installed, active, item.Query, known[item.Query.Collection]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pluginSnapshotPlainGrants(installed pluginSurfaceInstallation) bool {
+	return len(installed.ModelGrants) == 0 && len(installed.ModelOutputFields) == 0
+}
+
+func pluginSnapshotSourcesOf(request pluginSnapshotRequest, collections []string) []pluginSnapshotSource {
+	wanted := map[string]bool{}
+	for _, collection := range collections {
+		wanted[collection] = true
+	}
+	sources := []pluginSnapshotSource{}
+	for _, item := range request.Sources {
+		if wanted[item.Query.Collection] {
+			sources = append(sources, item)
+		}
+	}
+	return sources
+}
+
+// snapshotSchemaRevisions reads the stored schema revision of several tables in
+// one statement. It reports complete=false on any anomaly (missing row, odd
+// storage type, unparsable literal) so the caller falls back to Describe,
+// which owns the exact metadata error.
+func snapshotSchemaRevisions(ctx context.Context, tx core.App, collections []string) (map[string]string, bool) {
+	if len(collections) == 0 {
+		return map[string]string{}, true
+	}
+	ids := make([]any, len(collections))
+	for i, collection := range collections {
+		ids[i] = collection
+	}
+	var rows []dbx.NullStringMap
+	if err := tx.DB().Select("table_id", "schema_revision", "typeof(schema_revision) AS schema_revision_type").From("vibetable_tables").
+		Where(dbx.In("table_id", ids...)).WithContext(ctx).All(&rows); err != nil {
+		return nil, false
+	}
+	revisions := make(map[string]string, len(rows))
+	for _, row := range rows {
+		var revision int64
+		var err error
+		switch row["schema_revision_type"].String {
+		case "integer", "real":
+			revision, err = schemaexecution.ParseStoredRevision(json.Number(row["schema_revision"].String), "schema.metadata.invalid_schema_revision", "schemaRevision")
+		default:
+			err = errPluginVersionIncomplete
+		}
+		if err != nil {
+			return nil, false
+		}
+		revisions[row["table_id"].String] = v2.FormatSchemaRevision(revision)
+	}
+	if len(revisions) != len(collections) {
+		return nil, false
+	}
+	return revisions, true
+}
+
+// pluginSnapshotProjectionCurrent is the authoritative page check for sources
+// the fast path cannot prove: current grant, current schema revision and the
+// authorization of every used field including same-row formula closure.
+func pluginSnapshotProjectionCurrent(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, r pluginQueryRequest, version pluginDatasetVersion) error {
+	grant := installed.grant(r.Collection, active)
+	if pluginSnapshotWildcard(grant) {
+		return pluginDataError("plugin_read_denied")
+	}
+	table, err := schemaexecution.Describe(ctx, tx, r.Collection)
+	if err != nil || table.Snapshot.TableID != r.Collection {
+		return pluginDataError("plugin_query_failed")
+	}
+	if table.Snapshot.SchemaRevision != version.Schema {
+		return pluginDataError("plugin_snapshot_stale")
+	}
+	allowed := pluginAllowed(*grant, table.Snapshot)
+	authorize := pluginComputedAuthorizer(table, allowed, "plugin_query_computed_unsupported", nil)
+	for _, id := range snapshotUsedFields(r) {
+		if allowed[id] == "" {
+			return pluginDataError("plugin_read_denied")
+		}
+		if err := authorize(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}

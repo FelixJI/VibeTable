@@ -43,7 +43,7 @@ export type SurfaceDataVersions = (request: DataVersionsRequest, signal?: AbortS
 /** Exact comparison of two version vectors; an absent side is never equal. */
 export function sameDataVersion(left: DatasetVersion | undefined, right: DatasetVersion | undefined): boolean {
   if (!left || !right || left.schemaRevision !== right.schemaRevision || left.dataRevision !== right.dataRevision || left.clockPeriod !== right.clockPeriod) return false;
-  if (!validVersion(left) || !validVersion(right)) return false;
+  if (!isDataVersion(left) || !isDataVersion(right)) return false;
   const a: ComputedRevisions = left.computed, b: ComputedRevisions = right.computed;
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length) return false;
@@ -63,7 +63,8 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   const names = Object.keys(value);
   return names.length === keys.length && names.every(name => keys.includes(name));
 }
-function validVersion(value: unknown, fields?: readonly string[]): value is DataVersion {
+/** Structural check of one #589/#590 version entry (exact keys, canonical computed IDs). */
+export function isDataVersion(value: unknown, fields?: readonly string[]): value is DataVersion {
   return object(value) && exactKeys(value, ["schemaRevision", "dataRevision", "clockPeriod", "computed"]) &&
     typeof value.schemaRevision === "string" && value.schemaRevision.length > 0 &&
     typeof value.dataRevision === "number" && Number.isSafeInteger(value.dataRevision) && value.dataRevision >= 0 &&
@@ -86,7 +87,7 @@ export function createSurfaceVersions(call: Call): SurfaceDataVersions {
     if (!object(result) || !exactKeys(result, replyKeys) || result.contract !== SURFACE_DATA_VERSIONS_CONTRACT || !object(result.versions) ||
         Object.keys(result.versions).length !== request.sources.length) throw invalid();
     for (const { collection, fields } of request.sources) {
-      if (!Object.hasOwn(result.versions, collection) || !validVersion(result.versions[collection], fields)) throw invalid();
+      if (!Object.hasOwn(result.versions, collection) || !isDataVersion(result.versions[collection], fields)) throw invalid();
     }
     if (request.versions !== undefined) {
       const expected = request.sources.filter(({ collection }) =>
