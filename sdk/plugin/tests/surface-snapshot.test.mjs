@@ -481,6 +481,39 @@ test("an open reply the SDK refuses releases only the handle it can confirm: a c
   client.dispose();
 });
 
+test("a release refused before the wire keeps the handle for a retry, and dispose releases every handle whose release is unconfirmed, never one it no longer owns", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const releases = id => transport.calls.filter(call => call.method === "snapshot.release" && call.params.snapshotId === id).length;
+  const wire = () => transport.calls.length;
+  // Nine handles; eight releases left unanswered fill the shared release quota of 8.
+  const handles = [];
+  for (let i = 1; i <= 9; i++) handles.push((await openSnapshot(transport, client, { snapshotId: `h${i}` })).snapshot);
+  const closings = handles.slice(0, 8).map(snapshot => { const closing = snapshot.close(); assert.equal(transport.calls.at(-1).method, "snapshot.release"); return closing; });
+  // The ninth close is refused before the wire: the handle stays owned, and a retry would go out.
+  const sent = wire();
+  await assert.rejects(handles[8].close(), error => error.code === "plugin_concurrency_limit");
+  assert.equal(wire(), sent);
+  assert.equal(releases("h9"), 0);
+  // A handle whose release was acknowledged is no longer owned: dispose sends nothing for it, and
+  // close() on it afterwards sends nothing either.
+  transport.reply(transport.calls.find(call => call.method === "snapshot.release" && call.params.snapshotId === "h1"), { released: true });
+  await closings[0];
+  await handles[0].close();
+  assert.equal(releases("h1"), 1);
+  // dispose: the seven releases still in flight and the one never sent are all released again,
+  // fire-and-forget (release is idempotent); the in-flight calls end with the surface closed.
+  const closedByDispose = closings.slice(1).map(closing => assert.rejects(closing, error => error.code === "plugin_surface_closed"));
+  client.dispose();
+  for (const id of ["h2", "h3", "h4", "h5", "h6", "h7", "h8"]) assert.equal(releases(id), 2, id);
+  assert.equal(releases("h9"), 1);
+  assert.equal(releases("h1"), 1);
+  await Promise.all(closedByDispose);
+  // After dispose no snapshot owns anything: close() resolves and sends nothing.
+  const after = wire();
+  for (const snapshot of handles) await snapshot.close();
+  assert.equal(wire(), after);
+});
+
 test("offline surface requires an explicit snapshot authority and forwards the versioned methods", async () => {
   const plain = testing.createOfflineSurfaceHost({ pluginId: "synthetic", workspaceId: "synthetic", surfaceToken: "surface" });
   const plainClient = sdk.createSurfaceClient("surface", plain.transport);

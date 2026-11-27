@@ -106,9 +106,11 @@ export interface DataSnapshot extends DataSnapshotInfo {
   /** One page of one source from the immutable snapshot; one authorization round trip per page. */
   page(collection: string, offset?: number, pageSize?: number, signal?: AbortSignal): Promise<DataSnapshotPage>;
   /**
-   * One authorized cross-source batch: at most batchRows rows and batchBytes of bridge-encoded
-   * content (chunk containers, items, guards, separators) from `next` (default: the first source) in
-   * request order, empty sources included; one authorization round trip per batch. The handle stays
+   * One authorized cross-source batch: normally at most batchRows rows and batchBytes of
+   * bridge-encoded content (chunk containers, items, guards, separators) from `next` (default: the
+   * first source) in request order, empty sources included; only the batch's very first chunk and
+   * very first row may exceed that budget so that every handle keeps progressing, and the complete
+   * reply always fits the 1 MiB frame. One authorization round trip per batch. The handle stays
    * open; the reply's `next` is the argument of the following call. Every delivered batch belongs
    * to the caller as a whole.
    */
@@ -157,12 +159,13 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
     if (entry.closing) return entry.closing;
     entry.closing = call<{ released: boolean }>("snapshot.release", { snapshotId }).then(receipt => {
       if (receipt.released !== true) throw new PluginCapabilityError("plugin_transport_failed", "Snapshot release was not acknowledged.");
-      owned.delete(snapshotId);
+      // Only the ownership this request was issued for is dropped; the entry may have been replaced since.
+      if (owned.get(snapshotId) === entry) owned.delete(snapshotId);
     }).catch(error => {
       delete entry.closing;
       // The Host no longer knows this handle (released, expired, retired):
       // retrying is pointless, so drop the local ownership too.
-      if (isStale(error)) owned.delete(snapshotId);
+      if (isStale(error) && owned.get(snapshotId) === entry) owned.delete(snapshotId);
       throw error;
     });
     return entry.closing;
@@ -329,7 +332,12 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
     dispose() {
       if (closed) return;
       closed = true;
-      for (const [snapshotId, entry] of owned) if (!entry.closing) release("snapshot.release", { snapshotId });
+      // Every handle this surface still owns is released, including one whose release is in flight
+      // and unconfirmed: that queued call may have been refused before the wire (release quota full)
+      // and nothing is left to retry it once the surface is gone. Release is idempotent, so a second
+      // request for a handle the Host is already releasing is harmless; a handle whose release was
+      // acknowledged is no longer owned and gets nothing.
+      for (const snapshotId of owned.keys()) release("snapshot.release", { snapshotId });
       owned.clear();
     },
   };
