@@ -347,9 +347,9 @@ try {
 - 每批回执（`DataSnapshotBatch`，导出类型 `DataSnapshotChunk` / `DataSnapshotPosition` / `DataSnapshotBatch`）：
   `{snapshotId, chunks, next, versions}`。`chunks` 从 `next` 指向的位置起按请求顺序连续铺满来源（空来源作为零行
   chunk 保留；chunk 形状 `{collection, items, rowGuards, nextOffset, complete}` 与页相同，`rowGuards` 按 chunk 行过滤），
-  整批合计 ≤200 行、items+rowGuards 按 bridge 实际编码 ≤256 KiB，且整条回复（含 envelope 与版本向量）不超 1 MiB 帧——字节预算属于整批，
-  跨来源边界同样生效，只有整批的第一行
-  无条件返回，因此放不下下一行的来源整段留给下一批。`next` 是下一次调用必须原样回传的精确位置
+  整批合计 ≤200 行、整批承载内容（每个 chunk 的两个容器与固定成员、每行的 item/守卫成员/分隔符）按 bridge 实际编码 ≤256 KiB，且整条回复（含 envelope 与版本向量）不超 1 MiB 帧——字节预算属于整批，
+  跨来源边界同样生效，只有整批的第一个 chunk 与第一行
+  无条件返回，因此放不下 chunk 或下一行的来源整段留给下一批。`next` 是下一次调用必须原样回传的精确位置
   （`{collection, offset}`），全部来源读完为 `null`；一批可以在来源边界结束（预算用尽），SDK 不假定批次最大化。
   SDK 先在本地校验位置形状（未知 collection 同样报 `plugin_capability_invalid`，不发起 wire）；Host 侧对位置的
   校验发生在该批 `snapshot.validate` 之后（未知 collection 报 `plugin_read_denied`）且不丢句柄。SDK 对回执
@@ -375,10 +375,12 @@ try {
   所用字段与 `data.query` 归一化完全相同：投影、排序、筛选叶子字段需授权（筛选组只是结构，不是读取），
   显式 `ids` 还要求 `id` 授权，且每次校验都重新核对。
 - 限制（在任何读取之前拒绝）：1–64 个来源、每来源 1–64 字段、ID ≤128 字节、ids ≤200、
-  总行 ≤4096、语料编码 ≤512 KiB（items+rowGuards+versions）、每批 ≤200 行且 items+rowGuards ≤256 KiB、每 surface 2 个句柄、全局 8 个、
+  总行 ≤4096、语料编码 ≤512 KiB（items+rowGuards+versions）、每批 ≤200 行且整批（chunk 容器与固定成员 + items+rowGuards + 分隔符）≤256 KiB、每 surface 2 个句柄、全局 8 个、
   打开后 300 秒绝对过期。字节预算以 **bridge 实际编码**计量（默认 JSON 编码器把 CJK 与 HTML 敏感字符转义为
   `\uXXXX`，可达原始 JSON 的 6 倍；不改全局编码器）：Go 以原始字节数做内存上限，Host 以 Reply 的实际编码字节做权威
   判定，并且 open 时每一行连同其守卫都必须能单独放进一条 bridge 回复，否则整次 open 报 `plugin_snapshot_limit`。
+  Host 在发布句柄前还以每次权威调用相同的编码预检该句柄的 validate 请求（插件 sources + 版本向量 + binding）能否放进 1 MiB 帧：
+  放不下则整次 open 报 `plugin_snapshot_limit`，不发布句柄，预留配额归还。
   两个句柄限额把在途 `snapshot.open` 也计入：Host 从开始物化即预留配额，发布句柄或
   失败/取消/关会话时归还，因此并发打开不会先让 Go 物化再被拒绝发布；每次准入都先清扫已过绝对过期的句柄，
   不等清理定时器。

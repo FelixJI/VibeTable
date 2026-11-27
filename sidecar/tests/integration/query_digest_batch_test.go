@@ -356,3 +356,108 @@ func TestAttachRowDigestsGuardsRepeatedIDsAcrossBatches(t *testing.T) {
 		}
 	}
 }
+
+// A source without a schema projector (provider-neutral descriptors, virtual
+// sources) keeps the row-guard contract through the default projection: the
+// digest covers the row id and the listed digest fields as stored, a field whose
+// presence companion is off digests as null whatever its stale cell holds, and a
+// computed digest field digests as its decoded value — never the stored envelope.
+// The query itself shows the same product values and never the digest-only field.
+func TestQueryDigestWithoutProjectorGuardsStoredValuesPresenceAndDecodedFields(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	collection := core.NewBaseCollection("query_digest_default_projection")
+	collection.Fields.Add(
+		&core.NumberField{Name: "amount"},
+		&core.TextField{Name: "title"},
+		&core.BoolField{Name: "present_title"},
+		&core.TextField{Name: "total"},
+	)
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	type stored struct {
+		id, title, total string
+		amount           int
+		present          bool
+	}
+	rows := []stored{
+		{id: "present00000000", amount: 7, title: "kept", present: true,
+			total: `{"state":"ready","value":12.5,"version":{"definitionVersion":2,"sourceDataRevision":1,"dependencyWatermark":"sha256:dependency"}}`},
+		{id: "missing00000000", amount: 0, title: "stale cell", present: false,
+			total: `{"state":"updating","value":12.5,"diagnostic":{"code":"calculation.pending"}}`},
+	}
+	if err := app.RunInTransaction(func(tx core.App) error {
+		for _, row := range rows {
+			record := core.NewRecord(collection)
+			record.Id = row.id
+			record.Set("amount", row.amount)
+			record.Set("title", row.title)
+			record.Set("present_title", row.present)
+			record.Set("total", row.total)
+			if err := tx.Save(record); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := query.TableDescriptor{
+		DatabaseID: "local", TableID: "digest", PhysicalName: collection.Name,
+		PrimaryKey: "id", SchemaRevision: "schema-1", DataRevision: 1,
+		Fields: map[string]query.FieldDescriptor{
+			"id":     {PhysicalName: "id", Type: query.FieldTypeText},
+			"amount": {PhysicalName: "amount", Type: query.FieldTypeNumber},
+			"title":  {PhysicalName: "title", Type: query.FieldTypeText},
+			// Digest-only: the stored envelope is never projected, the guard hashes its decoded value.
+			"total": {PhysicalName: "total", Type: query.FieldTypeNumber, ComputedEnvelope: true, ComputedReady: true,
+				ComputedDefinitionVersion: 2, ComputedDependencyWatermark: "sha256:dependency"},
+		},
+		PresenceFields:   map[string]string{"title": "present_title"},
+		DigestFields:     []string{"amount", "title", "total"},
+		ProjectionFields: []string{"id", "amount", "title"},
+	}
+	port := query.NewPort(app, &staticQuerySource{descriptor: descriptor})
+	page, err := port.QueryPage(context.Background(), "digest", query.TableQuery{
+		Sorts: []query.SortCondition{{Field: "amount", Direction: query.SortDescending}},
+	})
+	if err != nil || len(page.Rows) != len(rows) {
+		t.Fatalf("page rows=%d want=%d error=%v", len(page.Rows), len(rows), err)
+	}
+	digest := func(row map[string]any) string {
+		t.Helper()
+		want, err := productrow.Digest(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return want
+	}
+	updating := map[string]any{"state": "updating", "value": nil,
+		"diagnostic": map[string]any{"code": "calculation.pending"}}
+	want := []string{
+		digest(map[string]any{"id": "present00000000", "amount": float64(7), "title": "kept", "total": 12.5}),
+		digest(map[string]any{"id": "missing00000000", "amount": float64(0), "title": nil, "total": updating}),
+	}
+	// The guard must not follow the stale cell of a missing value nor the raw envelope text.
+	wrong := []string{
+		digest(map[string]any{"id": "present00000000", "amount": float64(7), "title": "kept", "total": rows[0].total}),
+		digest(map[string]any{"id": "missing00000000", "amount": float64(0), "title": "stale cell", "total": updating}),
+	}
+	for index, row := range page.Rows {
+		if got := row[productrow.DigestField]; got != want[index] || got == wrong[index] {
+			t.Fatalf("row %d digest=%v want=%v (not %v)", index, got, want[index], wrong[index])
+		}
+		if row["id"] != rows[index].id || fmt.Sprint(row["amount"]) != fmt.Sprint(rows[index].amount) {
+			t.Fatalf("row %d lost its stored values: %#v", index, row)
+		}
+		if index == 1 && row["title"] != nil {
+			t.Fatalf("missing value showed its stale cell: %#v", row["title"])
+		}
+		for _, leaked := range []string{"total", "present_title"} {
+			if _, exists := row[leaked]; exists {
+				t.Fatalf("internal field %q leaked into the query: %#v", leaked, row)
+			}
+		}
+	}
+}

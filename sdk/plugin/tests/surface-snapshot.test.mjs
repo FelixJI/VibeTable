@@ -387,6 +387,100 @@ test("dispose cancels an outstanding snapshot open, releases a late handle fire-
   assert.ok(transport2.calls.some(call => call.method === "snapshot.release" && call.params.snapshotId === "owned"));
 });
 
+test("pages() decides delivery in the turn the page resolves: an abort that lands as the next microtask, queued by the very read that checked it, never yields a page after it", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const { snapshot, reply } = await openSnapshot(transport, client);
+  const last = method => transport.calls.findLast(call => call.method === method);
+  // The signal reports "not aborted" to the first read after the reply and aborts as a microtask
+  // queued by that read. A check that awaits once more before delivering resumes after that
+  // microtask and yields the page; a synchronous check has already yielded, and the generator's own
+  // re-check right before the yield refuses it.
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const real = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted");
+  let replied = false, armed = true;
+  Object.defineProperty(signal, "aborted", { get() {
+    const value = real.get.call(this);
+    if (replied && armed && !value) { armed = false; queueMicrotask(() => controller.abort()); }
+    return value;
+  } });
+  const stepping = snapshot.pages(signal).next();
+  transport.reply(last("snapshot.page"), page("owned", "alpha", [rows.a1], 1, reply.versions));
+  replied = true;
+  const settled = await stepping.then(value => ({ value }), error => ({ error }));
+  assert.ok(settled.error, "no page may be yielded once the abort landed");
+  assert.equal(settled.error.code, "plugin_cancel_requested");
+  assert.equal(controller.signal.aborted, true);
+  assert.deepEqual(transport.calls.filter(call => call.method === "snapshot.release").map(call => call.params), [{ snapshotId: "owned" }]);
+  await assert.rejects(snapshot.page("alpha"), error => error.code === "plugin_snapshot_stale");
+  client.dispose();
+});
+
+test("snapshot open sends one stable copy of the request and checks the reply against that copy, not against the caller's object", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const mutable = structuredClone(request);
+  const opening = client.data.openSnapshot(mutable);
+  const sent = transport.calls.at(-1);
+  // The caller keeps mutating its request while the round trip is in flight.
+  mutable.sources[0].query.fields.push("extra");
+  mutable.sources.push({ query: { contract: "vibetable.plugin-query.v2", collection: "gamma", fields: ["id"] } });
+  mutable.contract = "changed";
+  transport.reply(sent, info());
+  const snapshot = await opening;
+  assert.deepEqual(sent.params, request);
+  assert.equal(snapshot.snapshotId, "owned");
+  assert.deepEqual(snapshot.sources.map(source => source.collection), ["alpha", "beta"]);
+  const closing = snapshot.close();
+  assert.equal(transport.calls.at(-1).method, "snapshot.release");
+  transport.reply(transport.calls.at(-1), { released: true });
+  await closing;
+  client.dispose();
+});
+
+test("an open reply the SDK refuses releases only the handle it can confirm: a colliding or malformed id releases nothing", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const last = method => transport.calls.findLast(call => call.method === method);
+  const releases = () => transport.calls.filter(call => call.method === "snapshot.release").map(call => call.params);
+  const { snapshot, reply } = await openSnapshot(transport, client);
+  // A reply naming the handle this surface already owns, but inconsistent otherwise, never releases it.
+  const colliding = client.data.openSnapshot(request);
+  transport.reply(transport.calls.at(-1), info({ sources: [] }));
+  await assert.rejects(colliding, error => error.code === "plugin_transport_failed");
+  assert.deepEqual(releases(), []);
+  // A refused reply with a fresh id hands that handle back, exactly once.
+  const fresh = client.data.openSnapshot(request);
+  transport.reply(transport.calls.at(-1), info({ snapshotId: "fresh", versions: { alpha: structuredClone(version) } }));
+  await assert.rejects(fresh, error => error.code === "plugin_transport_failed");
+  assert.deepEqual(releases(), [{ snapshotId: "fresh" }]);
+  // No confirmable id, nothing to release: no undefined or empty id ever reaches the wire.
+  for (const malformed of [info({ snapshotId: 42 }), info({ snapshotId: "" }), { ...info(), extra: 1 }]) {
+    const opening = client.data.openSnapshot(request);
+    transport.reply(transport.calls.at(-1), malformed);
+    await assert.rejects(opening, error => error.code === "plugin_transport_failed");
+  }
+  assert.deepEqual(releases(), [{ snapshotId: "fresh" }]);
+  // An open cancelled before its reply releases the late handle it confirms, and nothing for a malformed one.
+  const abort = new AbortController();
+  const cancelled = client.data.openSnapshot(request, abort.signal);
+  const refused = assert.rejects(cancelled, error => error.code === "plugin_cancel_requested");
+  abort.abort();
+  transport.reply(last("snapshot.open"), info({ snapshotId: "late" }));
+  await refused;
+  const raced = new AbortController();
+  const racing = client.data.openSnapshot(request, raced.signal);
+  const racingRefused = assert.rejects(racing, error => error.code === "plugin_cancel_requested");
+  raced.abort();
+  transport.reply(last("snapshot.open"), info({ snapshotId: "" }));
+  await racingRefused;
+  assert.deepEqual(releases(), [{ snapshotId: "fresh" }, { snapshotId: "late" }]);
+  // The handle that was kept still serves.
+  const reading = snapshot.page("alpha");
+  transport.reply(last("snapshot.page"), page("owned", "alpha", [rows.a1, rows.a2, rows.a3], null, reply.versions));
+  assert.equal((await reading).items.length, 3);
+  assert.equal(releases().length, 2);
+  client.dispose();
+});
+
 test("offline surface requires an explicit snapshot authority and forwards the versioned methods", async () => {
   const plain = testing.createOfflineSurfaceHost({ pluginId: "synthetic", workspaceId: "synthetic", surfaceToken: "surface" });
   const plainClient = sdk.createSurfaceClient("surface", plain.transport);

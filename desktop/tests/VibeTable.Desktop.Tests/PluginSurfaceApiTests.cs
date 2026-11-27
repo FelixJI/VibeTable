@@ -594,6 +594,131 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task SnapshotBatchBudgetCountsEveryChunkContainerAndSeparatorTheBridgeEncodes()
+    {
+        static int Enc(string json) => Encoding.UTF8.GetByteCount(json);
+        // What one batch carries, as the bridge encodes it: per chunk its two containers and fixed
+        // members plus the separator in front of it, per row its item, its separator and the guard
+        // member it becomes ("id":digest) with its own separator.
+        static int Chunk(string name) => Enc(JsonSerializer.Serialize(new { collection = name, items = Array.Empty<string>(), rowGuards = new Dictionary<string, string>(), nextOffset = 1000, complete = true })) + 1;
+        static int Row(string id, int blob) => Enc(JsonSerializer.Serialize(new { id, blob = new string('x', blob) })) + 1 + Enc(JsonSerializer.Serialize(new Dictionary<string, string> { [id] = "g" })) - 2 + 1;
+        const int budget = 262144;
+        static int Encoded(JsonElement batch) => batch.GetProperty("chunks").EnumerateArray().Sum(chunk => Enc(chunk.GetProperty("items").GetRawText()) + Enc(chunk.GetProperty("rowGuards").GetRawText()));
+        static async Task<(JsonElement First, string Next, JsonElement Second)> Read(Fixture f, string id)
+        {
+            var first = (await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = id, next = (object?)null }))).GetProperty("result");
+            var second = (await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = id, next = first.GetProperty("next") }))).GetProperty("result");
+            return (first, first.GetProperty("next").GetRawText(), second);
+        }
+        using (var f = new Fixture())
+        {
+            // Four rows that fill the budget exactly are served together; one byte more per row
+            // moves the fourth to the following batch although its item alone would still fit.
+            int blob = (budget - Chunk("big") - 4 * Row("big-0", 0)) / 4;
+            Assert.IsTrue(Chunk("big") + 4 * Row("big-0", blob) <= budget, $"four rows of {blob} = {Chunk("big") + 4 * Row("big-0", blob)}");
+            Assert.IsTrue(Chunk("big") + 4 * Row("big-0", blob + 1) > budget);
+            f.Http.SnapshotResultBody = SnapshotCorpus(("big", "id,blob", 5, blob));
+            string id = (await f.Call("snapshot.open", SnapshotQuery(("big", "id,blob")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var (first, _, second) = await Read(f, id);
+            Assert.AreSequenceEqual(new[] { ("big", 4, (int?)4) }, Chunks(first));
+            Assert.AreEqual("null", second.GetProperty("next").GetRawText());
+            Assert.AreSequenceEqual(new[] { ("big", 1, (int?)null) }, Chunks(second));
+            // The real items and guards fill the budget up to the chunk's own fixed members.
+            Assert.IsTrue(Encoded(first) <= budget && Encoded(first) > budget - Chunk("big") - 8, $"encoded batch = {Encoded(first)}");
+            Assert.IsTrue(Encoded(second) <= budget);
+            f.Http.SnapshotResultBody = SnapshotCorpus(("big", "id,blob", 5, blob + 1));
+            string tighter = (await f.Call("snapshot.open", SnapshotQuery(("big", "id,blob")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var (cut, next, rest) = await Read(f, tighter);
+            Assert.AreSequenceEqual(new[] { ("big", 3, (int?)3) }, Chunks(cut));
+            Assert.AreEqual("""{"collection":"big","offset":3}""", next);
+            Assert.AreSequenceEqual(new[] { ("big", 2, (int?)null) }, Chunks(rest));
+            Assert.IsTrue(Encoded(cut) <= budget && Encoded(rest) <= budget);
+        }
+        using (var f = new Fixture())
+        {
+            // Across sources the chunk itself (containers and fixed members) is charged before its
+            // rows: an empty source rides along only while its whole chunk fits the remaining budget.
+            int blob = (budget - 2 * Chunk("a")) / 3 - Row("a-0", 0);
+            Assert.IsTrue(Chunk("a") + 3 * Row("a-0", blob) + Chunk("a") <= budget);
+            Assert.IsTrue(Chunk("a") + 3 * Row("a-0", blob + 1) + Chunk("a") > budget);
+            f.Http.SnapshotResultBody = SnapshotCorpus(("a", "id,blob", 3, blob), ("e", "body", 0, 0), ("c", "body", 1, 0));
+            string id = (await f.Call("snapshot.open", SnapshotQuery(("a", "id,blob"), ("e", "body"), ("c", "body")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var (first, next, second) = await Read(f, id);
+            Assert.AreSequenceEqual(new[] { ("a", 3, (int?)null), ("e", 0, (int?)null) }, Chunks(first));
+            Assert.AreEqual("""{"collection":"c","offset":0}""", next);
+            Assert.AreSequenceEqual(new[] { ("c", 1, (int?)null) }, Chunks(second));
+            Assert.AreEqual("null", second.GetProperty("next").GetRawText());
+            Assert.IsTrue(Encoded(first) <= budget && Encoded(second) <= budget);
+            f.Http.SnapshotResultBody = SnapshotCorpus(("a", "id,blob", 3, blob + 1), ("e", "body", 0, 0), ("c", "body", 1, 0));
+            string tighter = (await f.Call("snapshot.open", SnapshotQuery(("a", "id,blob"), ("e", "body"), ("c", "body")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var (cut, resume, rest) = await Read(f, tighter);
+            Assert.AreSequenceEqual(new[] { ("a", 3, (int?)null) }, Chunks(cut));
+            Assert.AreEqual("""{"collection":"e","offset":0}""", resume);
+            Assert.AreSequenceEqual(new[] { ("e", 0, (int?)null), ("c", 1, (int?)null) }, Chunks(rest));
+            Assert.AreEqual("null", rest.GetProperty("next").GetRawText());
+            Assert.IsTrue(Encoded(cut) <= budget && Encoded(rest) <= budget);
+        }
+        using (var f = new Fixture())
+        {
+            // Unchanged: the batch's very first row is unconditional even above the batch budget;
+            // the next source's chunk then no longer fits and starts the following batch.
+            f.Http.SnapshotResultBody = SnapshotCorpus(("huge", "id,blob", 1, 300_000), ("c", "body", 1, 0));
+            string id = (await f.Call("snapshot.open", SnapshotQuery(("huge", "id,blob"), ("c", "body")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var (first, next, second) = await Read(f, id);
+            Assert.AreSequenceEqual(new[] { ("huge", 1, (int?)null) }, Chunks(first));
+            Assert.AreEqual("""{"collection":"c","offset":0}""", next);
+            Assert.AreSequenceEqual(new[] { ("c", 1, (int?)null) }, Chunks(second));
+            Assert.AreEqual("null", second.GetProperty("next").GetRawText());
+            Assert.AreEqual(2, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate"));
+        }
+    }
+
+    [TestMethod]
+    public async Task SnapshotOpenWhoseValidateEnvelopeCannotFitTheFrameIsRefusedAsAWhole()
+    {
+        using var f = new Fixture();
+        // A source named by one long id and a version vector padded to size: the open reply returns
+        // two rows and fits the frame easily, while the validate request every page and batch of
+        // the handle starts with carries the plugin's own sources plus that vector.
+        static string Open(string ids) => JsonSerializer.Serialize(new
+        {
+            contract = "vibetable.plugin-snapshot.v1",
+            sources = new[] { new { query = new { contract = "vibetable.plugin-query.v2", collection = "orders", fields = new[] { "id" }, ids = new[] { ids } } } },
+        });
+        static string Padded(int pad) => SnapshotBody.Replace("\"notes\":{\"schemaRevision\":\"s1\"", "\"notes\":{\"schemaRevision\":\"s1" + new string('x', pad) + "\"", StringComparison.Ordinal);
+        int Validations() => f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate");
+        int Sent() => Encoding.UTF8.GetByteCount(f.Http.Calls.Last(call => call.GetProperty("method").GetString() == "snapshot.validate").GetRawText());
+        string handle = (await f.Call("snapshot.open", Open(""))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = handle, collection = "orders", offset = 0, pageSize = 1 }));
+        int baseline = Sent();
+        await f.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = handle }));
+        // Sized so the validate envelope is exactly the frame limit: measured with the real
+        // encoding, it is sent and the handle serves.
+        const int pad = 440_000;
+        string ids = new('x', 1_048_576 - baseline - pad);
+        f.Http.SnapshotResultBody = Padded(pad);
+        string exact = (await f.Call("snapshot.open", Open(ids))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.IsTrue((await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = exact, collection = "orders", offset = 0, pageSize = 1 }))).GetProperty("result").GetProperty("items").GetArrayLength() == 1);
+        Assert.IsTrue(Sent() == 1_048_576, $"validate envelope = {Sent()} bytes, baseline {baseline}");
+        // One byte more: the authority answers the open, then no handle is published, so no validate
+        // is ever attempted for it and the capacity it reserved is handed back (both slots still
+        // take an open afterwards).
+        f.Http.SnapshotResultBody = Padded(pad + 1);
+        int calls = f.Http.Calls.Count;
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", Open(ids))));
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", Open(ids))));
+        Assert.AreEqual(calls + 2, f.Http.Calls.Count);
+        Assert.AreEqual(2, Validations());
+        await f.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = exact }));
+        f.Http.SnapshotResultBody = SnapshotBody;
+        string second = (await f.Call("snapshot.open", Open(ids))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        string third = (await f.Call("snapshot.open", Open(""))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.AreNotEqual(second, third);
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", Open(""))));
+        Assert.AreEqual(2, Validations());
+    }
+
+    [TestMethod]
     public async Task SnapshotBindingIsHostOnlyReplayedOnValidateAndItsShapeIsCheckedBeforeTheHandleExists()
     {
         using var f = new Fixture();

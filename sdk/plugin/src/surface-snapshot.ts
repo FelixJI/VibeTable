@@ -34,7 +34,7 @@ export const SNAPSHOT_LIMITS = Object.freeze({
   pageRows: 200,
   /** One readBatch crosses sources but carries at most this many rows; empty sources ride along. */
   batchRows: 200,
-  /** Bridge-encoded item and guard budget of one batch across source boundaries (the whole reply also stays inside the frame); only the batch's very first row is unconditional. */
+  /** Bridge-encoded budget of one batch across source boundaries: every chunk's containers and fixed members plus every row's item, guard and separators (the whole reply also stays inside the frame); only the batch's very first chunk and very first row are unconditional. */
   batchBytes: 256 * 1024,
 });
 
@@ -106,10 +106,11 @@ export interface DataSnapshot extends DataSnapshotInfo {
   /** One page of one source from the immutable snapshot; one authorization round trip per page. */
   page(collection: string, offset?: number, pageSize?: number, signal?: AbortSignal): Promise<DataSnapshotPage>;
   /**
-   * One authorized cross-source batch: at most batchRows rows and batchBytes of bridge-encoded items
-   * and guards from `next` (default: the first source) in request order, empty sources included; one
-   * authorization round trip per batch. The handle stays open; the reply's `next` is the
-   * argument of the following call. Every delivered batch belongs to the caller as a whole.
+   * One authorized cross-source batch: at most batchRows rows and batchBytes of bridge-encoded
+   * content (chunk containers, items, guards, separators) from `next` (default: the first source) in
+   * request order, empty sources included; one authorization round trip per batch. The handle stays
+   * open; the reply's `next` is the argument of the following call. Every delivered batch belongs
+   * to the caller as a whole.
    */
   readBatch(next?: DataSnapshotPosition | null, signal?: AbortSignal): Promise<DataSnapshotBatch>;
   /** Every page of every source in request order through page(): each yielded page is one
@@ -181,24 +182,38 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
           throw new PluginCapabilityError("plugin_capability_invalid", "Snapshot query is invalid.");
         }
       }
-      const info = await call<DataSnapshotInfo>("snapshot.open", structuredClone(request), signal);
+      // The authority sees and the reply is checked against one stable copy of the request: the
+      // caller's object may change while the round trip is in flight without changing what was sent.
+      const stable = structuredClone(request);
+      const info = await call<DataSnapshotInfo>("snapshot.open", stable, signal);
+      const invalid = () => new PluginCapabilityError("plugin_transport_failed", "Incomplete or inconsistent snapshot reply.");
+      // A handle the Host created for an open this surface will not keep is released only once its
+      // id is confirmable and not one this surface already owns (a colliding or malformed reply
+      // never releases somebody else's handle).
+      const discard = (): void => {
+        if (!object(info) || typeof info.snapshotId !== "string" || !info.snapshotId || owned.has(info.snapshotId)) return;
+        release("snapshot.release", { snapshotId: info.snapshotId });
+      };
+      const refused = (): never => {
+        discard();
+        throw invalid();
+      };
       if (closed || signal?.aborted) {
-        release("snapshot.release", { snapshotId: object(info) ? info.snapshotId : undefined });
+        discard();
         throw new PluginCapabilityError("plugin_cancel_requested", "Snapshot cancelled.");
       }
-      const invalid = () => new PluginCapabilityError("plugin_transport_failed", "Incomplete or inconsistent snapshot reply.");
-      if (!object(info) || !exactKeys(info, ["contract", "snapshotId", "versions", "sources", "expiresAt"]) || info.contract !== SURFACE_SNAPSHOT_CONTRACT) throw invalid();
+      if (!object(info) || !exactKeys(info, ["contract", "snapshotId", "versions", "sources", "expiresAt"]) || info.contract !== SURFACE_SNAPSHOT_CONTRACT) throw refused();
       if (typeof info.snapshotId !== "string" || !info.snapshotId || !Array.isArray(info.sources) || !object(info.versions) ||
-          typeof info.expiresAt !== "string" || !Number.isFinite(Date.parse(info.expiresAt))) throw invalid();
-      const requested = request.sources.map(source => source.query);
-      if (info.sources.length !== requested.length || Object.keys(info.versions).length !== requested.length) throw invalid();
+          typeof info.expiresAt !== "string" || !Number.isFinite(Date.parse(info.expiresAt))) throw refused();
+      const requested = stable.sources.map(source => source.query);
+      if (info.sources.length !== requested.length || Object.keys(info.versions).length !== requested.length) throw refused();
       for (const [index, source] of requested.entries()) {
         const meta = info.sources[index];
-        if (!object(meta) || !exactKeys(meta, ["collection", "fields", "computedFields", "filteredRows", "totalRows", "complete"])) throw invalid();
-        if (meta.collection !== source.collection || !Array.isArray(meta.fields) || meta.fields.length !== source.fields.length || !meta.fields.every((field, i) => field === source.fields[i])) throw invalid();
-        if (!Array.isArray(meta.computedFields) || !meta.computedFields.every(field => typeof field === "string" && source.fields.includes(field))) throw invalid();
-        if (!count(meta.filteredRows) || !count(meta.totalRows) || meta.filteredRows > meta.totalRows || typeof meta.complete !== "boolean") throw invalid();
-        if (!Object.hasOwn(info.versions, source.collection) || !isDataVersion(info.versions[source.collection], source.fields)) throw invalid();
+        if (!object(meta) || !exactKeys(meta, ["collection", "fields", "computedFields", "filteredRows", "totalRows", "complete"])) throw refused();
+        if (meta.collection !== source.collection || !Array.isArray(meta.fields) || meta.fields.length !== source.fields.length || !meta.fields.every((field, i) => field === source.fields[i])) throw refused();
+        if (!Array.isArray(meta.computedFields) || !meta.computedFields.every(field => typeof field === "string" && source.fields.includes(field))) throw refused();
+        if (!count(meta.filteredRows) || !count(meta.totalRows) || meta.filteredRows > meta.totalRows || typeof meta.complete !== "boolean") throw refused();
+        if (!Object.hasOwn(info.versions, source.collection) || !isDataVersion(info.versions[source.collection], source.fields)) throw refused();
       }
       const snapshotId = info.snapshotId;
       const metas = info.sources as DataSnapshotSourceInfo[];
@@ -239,10 +254,11 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
           throw error;
         }
       };
-      // A reply that arrives after the caller stopped waiting (or the surface closed) is never
-      // delivered; the handle it was sliced from ends here too, so nothing is ever served from it again.
-      const afterReply = async (token?: AbortSignal): Promise<void> => {
-        if (!closed && !token?.aborted) return;
+      // Nothing lands after the caller stopped waiting or the surface closed, and the handle it
+      // came from ends right there. Checked synchronously in the turn the reply resolves, never a
+      // microtask later, so no callback queued by the caller can run in between.
+      const deliver = <T>(result: T, token?: AbortSignal): T => {
+        if (!closed && !token?.aborted) return result;
         owned.delete(snapshotId);
         if (!closed) release("snapshot.release", { snapshotId });
         throw new PluginCapabilityError(closed ? "plugin_surface_closed" : "plugin_cancel_requested", closed ? "Plugin surface closed." : "Snapshot cancelled.");
@@ -251,8 +267,7 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
         const meta = metas.find(source => source.collection === collection);
         if (!meta) throw new PluginCapabilityError("plugin_capability_invalid", "Collection is not part of this snapshot.");
         if (!count(offset) || !count(pageSize) || pageSize < 1 || pageSize > SNAPSHOT_LIMITS.pageRows) throw new PluginCapabilityError("plugin_capability_invalid", "Snapshot page bounds are invalid.");
-        const result = await use<DataSnapshotPage>("snapshot.page", { snapshotId, collection, offset, pageSize }, token);
-        await afterReply(token);
+        const result = deliver(await use<DataSnapshotPage>("snapshot.page", { snapshotId, collection, offset, pageSize }, token), token);
         if (!object(result) || !exactKeys(result, ["snapshotId", "collection", "items", "rowGuards", "nextOffset", "versions", "complete"])) throw invalid();
         if (result.snapshotId !== snapshotId || !checkSlice(result, meta, offset) || result.items.length > pageSize || !relayVersions(result.versions)) throw invalid();
         return result;
@@ -267,8 +282,7 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
           if (from.offset > meta.filteredRows) throw shape();
           offset = from.offset;
         }
-        const result = await use<DataSnapshotBatch>("snapshot.readBatch", { snapshotId, next: from ?? null }, token);
-        await afterReply(token);
+        const result = deliver(await use<DataSnapshotBatch>("snapshot.readBatch", { snapshotId, next: from ?? null }, token), token);
         if (!object(result) || !exactKeys(result, ["snapshotId", "chunks", "next", "versions"])) throw invalid();
         if (result.snapshotId !== snapshotId || !Array.isArray(result.chunks) || !relayVersions(result.versions)) throw invalid();
         // Chunks tile the sources consecutively from the requested position: no source is
@@ -301,7 +315,8 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
               let offset: number | null = 0;
               do {
                 const current = await page(collection, offset ?? 0, SNAPSHOT_LIMITS.pageRows, token);
-                yield current;
+                // The generator resumes a turn after page() resolved: re-check right before the yield.
+                yield deliver(current, token);
                 offset = current.nextOffset;
               } while (offset !== null);
             }

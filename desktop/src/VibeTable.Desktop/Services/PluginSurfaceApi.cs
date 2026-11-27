@@ -550,17 +550,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         bool terminalAudit = (method is "audit.finish" or "attachment.drop" or "import.drop" or "import.settle") && auditGeneration is not null;
         if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         var generation = auditGeneration ?? _generation() ?? throw Error("plugin_session_stale");
-        var payload = SurfacePrincipal(surface);
-        payload["method"] = method;
-        payload["requestId"] = commitId ?? Guid.NewGuid().ToString("N");
-        payload["request"] = JsonNode.Parse(parameters.GetRawText());
-        if (cursor is not null) payload["cursor"] = cursor;
-        if (dependencies is not null) payload["dependencies"] = JsonNode.Parse(dependencies.Value.GetRawText());
-        if (method == "context.read" && surface.InvocationContext is { } invocation)
-            payload["invocationContext"] = JsonSerializer.SerializeToNode(new
-            { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
-        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(method is "attachment.stage" or "output.stage.write" ? AttachmentStageJson : null));
-        if (bytes.Length > (method == "attachment.stage" ? AttachmentStageRequestBytes : MaxBytes)) throw Error("plugin_message_too_large");
+        byte[] bytes = EncodeCall(surface, method, parameters, commitId ?? Guid.NewGuid().ToString("N"), cursor, dependencies,
+            method == "context.read" && surface.InvocationContext is { } invocation ? JsonSerializer.SerializeToNode(new
+            { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json) : null);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
         request.Headers.Add(generation.Context.SessionHeaderName, generation.Context.SessionSecret);
         request.Content = new ByteArrayContent(bytes);
@@ -593,6 +585,26 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         else if (method == "transaction.configure") ValidateTransactionConfiguration(document.RootElement, parameters);
         else if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         return document.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// The request envelope every authority call sends — principal, method, request id and the
+    /// request — encoded and checked against the frame limit in exactly one place. snapshot.open
+    /// runs its validate envelope through this same check before it publishes a handle.
+    /// </summary>
+    private static byte[] EncodeCall(PluginSurfaceSession surface, string method, JsonElement parameters, string requestId,
+        string? cursor, JsonElement? dependencies, JsonNode? invocationContext)
+    {
+        var payload = SurfacePrincipal(surface);
+        payload["method"] = method;
+        payload["requestId"] = requestId;
+        payload["request"] = JsonNode.Parse(parameters.GetRawText());
+        if (cursor is not null) payload["cursor"] = cursor;
+        if (dependencies is not null) payload["dependencies"] = JsonNode.Parse(dependencies.Value.GetRawText());
+        if (invocationContext is not null) payload["invocationContext"] = invocationContext;
+        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(method is "attachment.stage" or "output.stage.write" ? AttachmentStageJson : null));
+        if (bytes.Length > (method == "attachment.stage" ? AttachmentStageRequestBytes : MaxBytes)) throw Error("plugin_message_too_large");
+        return bytes;
     }
 
     private void Finish(string taskId, string state, PluginRuntimeResult? result = null, PluginRuntimeSafeError? error = null)

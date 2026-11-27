@@ -23,9 +23,9 @@ internal sealed partial class PluginSurfaceApi
     private const string SnapshotContract = "vibetable.plugin-snapshot.v1";
     /// <summary>One snapshot.readBatch crosses sources but carries at most this many rows (empty sources ride along).</summary>
     private const int SnapshotBatchRows = 200;
-    /// <summary>Item JSON budget of one batch across source boundaries; only the batch's very first row is unconditional.</summary>
+    /// <summary>Budget of one batch across source boundaries as the bridge encodes the reply: every chunk it takes from a source (its two containers and fixed members) and every row (item, served guard, separators); only the batch's very first chunk and very first row are unconditional.</summary>
     private const int SnapshotBatchBytes = 256 * 1024;
-    /// <summary>Upper bound of the fixed members of a snapshot reply (envelope, ids, collection names, position) that accompany the version vector and the rows.</summary>
+    /// <summary>Upper bound of the fixed members of a snapshot reply (envelope, ids, position) outside the version vector, the rows and the collection names, which are measured where they appear.</summary>
     private const int SnapshotEnvelopeBytes = 1024;
     /// <summary>Absolute lifetime of a handle from its open; the validate round trip re-checks it after every await.</summary>
     internal TimeSpan SnapshotLifetime { get; set; } = TimeSpan.FromMinutes(5);
@@ -36,10 +36,13 @@ internal sealed partial class PluginSurfaceApi
     /// Binding is the one Host-only value Go fixed inside the open transaction: the audit sequence of the
     /// completed model record the corpus was authorized under (null without one). Validate replays it and Go
     /// compares it with what it resolves now, so a legitimate remap that kept every projection readable
-    /// still ends the handle; it never reaches the plugin. RowBytes holds, per source and row, the
-    /// Reply-encoded size of the row plus its guard; VersionBytes the Reply-encoded size of the version vector.
+    /// still ends the handle; it never reaches the plugin. ChunkBytes holds, per source, the
+    /// Reply-encoded cost of every chunk a batch may take from it (containers and fixed members
+    /// included); RowBytes, per source and row, the Reply-encoded cost of the row plus the guard it
+    /// may be served with; VersionBytes and EnvelopeBytes the Reply-encoded size of the version
+    /// vector and the upper bound of everything else outside chunks and rows.
     /// </summary>
-    private sealed record Snapshot(JsonElement Content, JsonElement Validation, DateTimeOffset Expires, string RequestId, long? Binding, int[][] RowBytes, int VersionBytes);
+    private sealed record Snapshot(JsonElement Content, JsonElement Validation, DateTimeOffset Expires, string RequestId, long? Binding, int[][] RowBytes, int[] ChunkBytes, int VersionBytes, int EnvelopeBytes);
 
     /// <summary>
     /// Exact UTF-8 size of a JSON value as the bridge reply encodes it: strings go through the default
@@ -105,31 +108,51 @@ internal sealed partial class PluginSurfaceApi
             // stays within SnapshotBytes and each row fits one reply on its own, because a batch's
             // first row is unconditional.
             int versionBytes = ReplyBytes(content.GetProperty("versions"));
-            int corpus = versionBytes;
+            int corpus = versionBytes, nameBytes = 0;
             var rowBytes = new List<int[]>();
+            var chunkBytes = new List<int>();
             foreach (var source in content.GetProperty("sources").EnumerateArray())
             {
                 var guards = source.GetProperty("rowGuards");
                 var items = source.GetProperty("items");
                 if (guards.ValueKind != JsonValueKind.Array || guards.GetArrayLength() != items.GetArrayLength()) throw Error("plugin_snapshot_limit");
+                var collection = source.GetProperty("collection");
+                nameBytes = Math.Max(nameBytes, ReplyBytes(collection));
+                // Every chunk a batch may take from this source, empty or not, costs its two containers,
+                // its fixed members and the separator in front of it (1000 is as wide as any nextOffset
+                // of a corpus of at most 4096 rows, null included).
+                chunkBytes.Add(JsonSerializer.SerializeToUtf8Bytes(new { collection, items = Array.Empty<JsonElement>(), rowGuards = new Dictionary<string, JsonElement>(), nextOffset = 1000, complete = source.GetProperty("complete") }, Json).Length + 1);
                 var sizes = new int[items.GetArrayLength()];
                 for (int index = 0; index < sizes.Length; index++)
-                {
-                    sizes[index] = ReplyBytes(items[index]) + ReplyBytes(guards[index]);
-                    if (SnapshotEnvelopeBytes + versionBytes + sizes[index] > MaxBytes) throw Error("plugin_snapshot_limit");
-                    corpus += sizes[index];
-                }
+                    // The row as a batch reply carries it: the item and its separator plus, when its
+                    // guard can be served, the member it becomes ("id":digest) with its own separator.
+                    sizes[index] = ReplyBytes(items[index]) + 1 + (TryGuard(guards[index], out var id, out var digest) ? ReplyBytes(id) + ReplyBytes(digest) + 2 : 0);
+                corpus += sizes.Sum();
                 rowBytes.Add(sizes);
             }
+            // Fixed members outside the rows: the reply envelope, ids, keys and the position, plus the
+            // one collection name a page or a batch's `next` repeats (chunk names are charged with
+            // their chunk). Each row must fit one reply on its own: a batch's first row is unconditional.
+            int envelope = SnapshotEnvelopeBytes + nameBytes;
+            for (int i = 0; i < chunkBytes.Count; i++)
+                foreach (int size in rowBytes[i])
+                    if (envelope + versionBytes + chunkBytes[i] + size > MaxBytes) throw Error("plugin_snapshot_limit");
             if (corpus > SnapshotBytes) throw Error("plugin_snapshot_limit");
             // The validation request replays the plugin's own sources, the version vector Go produced
             // and the binding Go fixed; Go re-authorizes the projections, compares schema revisions and
             // checks that the same completed record still applies.
             var validation = JsonSerializer.SerializeToElement(new { contract = SnapshotContract, sources = parameters.GetProperty("sources"), versions = content.GetProperty("versions"), binding = bound });
+            // Every page and batch of this handle starts with that request. An open reply may sit near
+            // the frame limit while returning few rows, and the plugin's sources plus the version
+            // vector can push the validate request past it: checked with the very encoding CallAsync
+            // applies, so such a corpus is refused as a whole here, before a handle that could never
+            // have served a page is published.
+            try { EncodeCall(surface, "snapshot.validate", validation, Guid.NewGuid().ToString("N"), null, null, null); }
+            catch (PluginSurfacePolicyException e) when (e.Code == "plugin_message_too_large") { throw Error("plugin_snapshot_limit"); }
             var sources = content.GetProperty("sources").EnumerateArray().Select(item => new
             { collection = item.GetProperty("collection"), fields = item.GetProperty("fields"), computedFields = item.GetProperty("computedFields"), filteredRows = item.GetProperty("filteredRows"), totalRows = item.GetProperty("totalRows"), complete = item.GetProperty("complete") }).ToArray();
             string handle = Guid.NewGuid().ToString("N");
-            var snapshot = new Snapshot(content, validation, DateTimeOffset.UtcNow.Add(SnapshotLifetime), requestId, bound, rowBytes.ToArray(), versionBytes);
+            var snapshot = new Snapshot(content, validation, DateTimeOffset.UtcNow.Add(SnapshotLifetime), requestId, bound, rowBytes.ToArray(), chunkBytes.ToArray(), versionBytes, envelope);
             var generation = _generation() ?? throw Error("plugin_session_stale");
             if (!generation.TryUseCurrent(() => _surfaces.TryUseCurrent(surface, () => published = PublishSnapshot(state, handle, snapshot, token)))) throw Error("plugin_session_stale");
             return (handle, new { contract = SnapshotContract, snapshotId = handle, versions = content.GetProperty("versions"), sources, expiresAt = snapshot.Expires });
@@ -216,12 +239,13 @@ internal sealed partial class PluginSurfaceApi
     /// <summary>
     /// Cross-source bounded read: consecutive source chunks in request order from the
     /// requested position, at most SnapshotBatchRows rows. The whole reply stays within the
-    /// frame: the version vector plus the rows of the batch (items and guards, measured the way
-    /// the bridge encodes them) stay within SnapshotBatchBytes on top of each other across source
-    /// boundaries too; only the batch's very first row is unconditional, so every batch makes
-    /// progress while a source whose next row no longer fits starts the following batch with a
-    /// fresh budget. Empty sources are kept as zero-row chunks. The reply's `next` is the explicit
-    /// position the following call must pass back (null once every source is exhausted).
+    /// frame: the version vector plus everything the batch carries (every chunk's containers and
+    /// fixed members, every row's item, served guard and separators, measured the way the bridge
+    /// encodes them) stays within SnapshotBatchBytes on top of each other across source boundaries
+    /// too; only the batch's very first chunk and very first row are unconditional, so every batch
+    /// makes progress while a source whose chunk or next row no longer fits starts the following
+    /// batch as a whole. Empty sources are kept as zero-row chunks. The reply's `next` is the
+    /// explicit position the following call must pass back (null once every source is exhausted).
     /// </summary>
     private object ReadSnapshotBatch(Snapshot snapshot, string handle, JsonElement[] sources, JsonElement next, HashSet<string> identity)
     {
@@ -239,6 +263,10 @@ internal sealed partial class PluginSurfaceApi
         int rows = 0, bytes = 0, last = -1;
         string? pendingCollection = null;
         int pendingOffset = 0;
+        // One budget for the whole batch, counted as the bridge encodes the reply: the batch budget
+        // and the frame (envelope, version vector and everything counted so far). Chunk and row costs
+        // were fixed at open; nothing counted ever crosses a budget.
+        bool Fits(int cost) => bytes + cost <= SnapshotBatchBytes && snapshot.EnvelopeBytes + snapshot.VersionBytes + bytes + cost <= MaxBytes;
         for (int i = index; i < sources.Length; i++)
         {
             JsonElement source = sources[i];
@@ -247,15 +275,23 @@ internal sealed partial class PluginSurfaceApi
             int total = corpus.GetArrayLength();
             int offset = i == index ? from : 0;
             if (offset > total) throw Error("plugin_capability_invalid");
+            if (chunks.Count > 0 && !Fits(snapshot.ChunkBytes[i]))
+            {
+                // Not even this source's chunk fits any more: it starts the following batch as a whole.
+                pendingCollection = collection;
+                pendingOffset = offset;
+                break;
+            }
+            bytes += snapshot.ChunkBytes[i];
             int end = offset;
             bool cut = false;
             for (int position = offset; position < total; position++)
             {
-                // Row, item and frame budgets belong to the whole batch. Only the batch's very
-                // first row is unconditional; every further row, across source boundaries too,
-                // must fit the remaining budgets (its size is the Reply-encoded one fixed at open).
+                // Row budgets belong to the whole batch. Only the batch's very first row is
+                // unconditional; every further row, across source boundaries too, must fit the
+                // remaining budgets.
                 int size = snapshot.RowBytes[i][position];
-                if (rows >= SnapshotBatchRows || rows > 0 && (bytes + size > SnapshotBatchBytes || SnapshotEnvelopeBytes + snapshot.VersionBytes + bytes + size > MaxBytes)) { cut = true; break; }
+                if (rows >= SnapshotBatchRows || rows > 0 && !Fits(size)) { cut = true; break; }
                 bytes += size;
                 rows++;
                 end++;
@@ -284,6 +320,16 @@ internal sealed partial class PluginSurfaceApi
         return new { snapshotId = handle, chunks, next = following, versions };
     }
 
+    /// <summary>A corpus guard that may be served: a [id, digest] pair with a non-empty string id and a string digest.</summary>
+    private static bool TryGuard(JsonElement pair, out JsonElement id, out JsonElement digest)
+    {
+        id = digest = default;
+        if (pair.ValueKind != JsonValueKind.Array || pair.GetArrayLength() != 2 || pair[0].ValueKind != JsonValueKind.String || !(pair[0].GetString() is { Length: > 0 }) || pair[1].ValueKind != JsonValueKind.String) return false;
+        id = pair[0];
+        digest = pair[1];
+        return true;
+    }
+
     /// <summary>
     /// Rows [offset, end) of one snapshot source plus the row guards of exactly that range. Guards
     /// follow the data.query contract: keyed by row id for every row, projected or not, whenever
@@ -303,9 +349,7 @@ internal sealed partial class PluginSurfaceApi
         foreach (var pair in guards.EnumerateArray())
         {
             if (index >= end) break;
-            if (index >= offset && pair.ValueKind == JsonValueKind.Array && pair.GetArrayLength() == 2
-                && pair[0].ValueKind == JsonValueKind.String && pair[0].GetString() is { Length: > 0 } id && pair[1].ValueKind == JsonValueKind.String)
-                rowGuards[id] = pair[1].Clone();
+            if (index >= offset && TryGuard(pair, out var id, out var digest)) rowGuards[id.GetString()!] = digest.Clone();
             index++;
         }
         return (page, rowGuards);
