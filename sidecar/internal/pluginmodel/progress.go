@@ -69,6 +69,42 @@ func StatesAfter(ctx context.Context, app core.App, project, plugin string, afte
 	return readProgress(ctx, app, project, plugin, &after)
 }
 
+// CompletedStates reads the completed model progress, oldest first, validating
+// every listed record exactly like History. In a context scoped by
+// WithProgressCache it reuses the result of an unchanged history.
+func CompletedStates(ctx context.Context, app core.App, project, plugin string) ([]State, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := app.FindCollectionByNameOrId("vibetable_plugin_records"); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []State{}, nil
+		}
+		return nil, err
+	}
+	if cache, ok := ctx.Value(progressCacheKey{}).(*progressCache); ok {
+		return cache.completedStates(ctx, app, project, plugin)
+	}
+	completed := []State{}
+	err := listProgress(ctx, app, project, plugin, nil, func(_ string, _ int64, payload any) error {
+		state, err := decodeProgress(payload)
+		if err != nil {
+			return err
+		}
+		if state.Contract != Contract {
+			return errors.New("plugin model progress contract is invalid")
+		}
+		if state.Status == "completed" {
+			completed = append(completed, state)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return completed, nil
+}
+
 func readProgress(ctx context.Context, app core.App, project, plugin string, after *int64) ([]Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -79,6 +115,27 @@ func readProgress(ctx context.Context, app core.App, project, plugin string, aft
 		}
 		return nil, err
 	}
+	result := []Progress{}
+	err := listProgress(ctx, app, project, plugin, after, func(_ string, seq int64, payload any) error {
+		state, err := decodeProgress(payload)
+		if err != nil {
+			return err
+		}
+		if state.Contract != Contract {
+			return errors.New("plugin model progress contract is invalid")
+		}
+		result = append(result, Progress{Seq: seq, State: state})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// listProgress pages through the model progress records the current snapshot
+// lists, oldest first, and visits each with its record id, sequence and payload.
+func listProgress(ctx context.Context, app core.App, project, plugin string, after *int64, visit func(id string, seq int64, payload any) error) error {
 	filter := "kind='audit' && payload_json.eventType='model.progress'"
 	params := dbx.Params{}
 	if after != nil {
@@ -93,27 +150,21 @@ func readProgress(ctx context.Context, app core.App, project, plugin string, aft
 		filter += " && plugin_id={:plugin}"
 		params["plugin"] = plugin
 	}
-	result := []Progress{}
 	for offset := 0; ; offset += 256 {
 		rows, err := app.FindRecordsByFilter("vibetable_plugin_records", filter, "seq", 256, offset, params)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, row := range rows {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return err
 			}
-			state, err := decodeProgress(row.GetRaw("payload_json"))
-			if err != nil {
-				return nil, err
+			if err := visit(row.Id, int64(row.GetInt("seq")), row.GetRaw("payload_json")); err != nil {
+				return err
 			}
-			if state.Contract != Contract {
-				return nil, errors.New("plugin model progress contract is invalid")
-			}
-			result = append(result, Progress{Seq: int64(row.GetInt("seq")), State: state})
 		}
 		if len(rows) < 256 {
-			return result, nil
+			return nil
 		}
 	}
 }

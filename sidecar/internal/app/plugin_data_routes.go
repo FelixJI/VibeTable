@@ -156,6 +156,9 @@ func registerPluginDataRoutes(r *router.Router[*core.RequestEvent], app core.App
 }
 func executePluginData(ctx context.Context, app core.App, source *queryschema.Source, workspaceID string, input pluginDataRequest) (map[string]any, error) {
 	var result map[string]any
+	if input.Operation == "query" || input.Operation == "dataset.open" {
+		ctx = pluginmodel.WithProgressCache(ctx, app)
+	}
 	err := app.RunInTransaction(func(tx core.App) error {
 		store := pluginstore.New(tx, workspaceID)
 		raw, err := store.GetInstallation(ctx, input.ProjectKey, input.PluginID)

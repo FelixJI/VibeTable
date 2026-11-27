@@ -44,20 +44,13 @@ func (c *modelHistoryCursor) observe(progress pluginmodel.Progress) {
 // Without a matching cursor it reads the whole history; with one it reads only
 // the progress recorded after the cursor's sequence. Item key spelling plays no
 // part either way, so legacy and non-standard completed keys keep their authority.
+// A read method that scoped the per-app history cache (pluginmodel.WithProgressCache)
+// still lists every record here; the completed states are reused only when the
+// listed records match the cached ones byte for byte.
 func completedModelHistory(ctx context.Context, app core.App, project, plugin string) ([]pluginmodel.State, error) {
 	cursor, _ := ctx.Value(modelHistoryKey{}).(*modelHistoryCursor)
 	if cursor == nil || cursor.project != project || cursor.plugin != plugin {
-		states, err := pluginmodel.States(ctx, app, project, plugin)
-		if err != nil {
-			return nil, err
-		}
-		completed := []pluginmodel.State{}
-		for _, state := range states {
-			if state.Status == "completed" {
-				completed = append(completed, state)
-			}
-		}
-		return completed, nil
+		return pluginmodel.CompletedStates(ctx, app, project, plugin)
 	}
 	newer, err := pluginmodel.StatesAfter(ctx, app, project, plugin, cursor.seq)
 	if err != nil {
