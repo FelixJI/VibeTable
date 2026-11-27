@@ -68,12 +68,6 @@ func (source *Source) DescribeProjectionTable(ctx context.Context, app core.App,
 	if err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
 	}
-	return source.DescribeResolvedProjectionTable(relatedcomputation.WithClockCache(ctx), app, table, ids)
-}
-
-// DescribeResolvedProjectionTable builds the projection from the same schema used
-// to check field grants. The caller owns the transaction and its clock cache.
-func (source *Source) DescribeResolvedProjectionTable(ctx context.Context, app core.App, table schemaexecution.Table, ids []string) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	selected := map[string]bool{}
 	for _, id := range ids {
 		if field, ok := table.Field(id); ok {
@@ -85,7 +79,7 @@ func (source *Source) DescribeResolvedProjectionTable(ctx context.Context, app c
 			selected[field.Identity.PhysicalName] = true
 		}
 	}
-	return source.describeSelectionWithCache(relatedcomputation.EnsureClockCache(ctx), app, table.Snapshot.TableID, &table, selected)
+	return source.describeSelectionTable(ctx, app, tableID, &table, selected)
 }
 
 // DescribeResolvedMatchTable describes only predicate and archive fields for
@@ -117,11 +111,8 @@ func (source *Source) describeSelectionTable(
 	resolved *schemaexecution.Table,
 	selected map[string]bool,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
-	return source.describeSelectionWithCache(relatedcomputation.WithClockCache(ctx), app, tableID, resolved, selected)
-}
-
-func (source *Source) describeSelectionWithCache(ctx context.Context, app core.App, tableID string, resolved *schemaexecution.Table, selected map[string]bool) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	ctx = formula.EnsureEvaluationTime(ctx)
+	ctx = relatedcomputation.WithClockCache(ctx)
 	if err := ctx.Err(); err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
@@ -254,55 +245,14 @@ func (source *Source) describeField(
 	if err != nil {
 		return query.FieldDescriptor{}, err
 	}
-	computed := isComputed(field)
-	computedReady := field.LogicalType != v2.LogicalFormula
-	formulaStatus := ""
-	if field.LogicalType == v2.LogicalFormula {
-		formulaStatus = table.FormulaRuntime[field.Identity.FieldID].Status
-		computedReady = formulaStatus == "ready"
+	result, err := DescribeComputedField(ctx, app, table, field)
+	if err != nil {
+		return query.FieldDescriptor{}, err
 	}
-	result := query.FieldDescriptor{
-		PhysicalName:     field.Identity.PhysicalName,
-		Type:             fieldType,
-		AutoDate:         field.LogicalType == v2.LogicalAutoDate,
-		Searchable:       isSearchable(field),
-		ComputedEnvelope: computed,
-		ComputedReady:    computedReady,
-	}
-	if result.ComputedEnvelope && result.ComputedReady {
-		expectation, expectationErr := relatedcomputation.ExpectationFor(
-			ctx, app, table.Snapshot.TableID, table.Snapshot.Fields,
-			field.Identity.FieldID, 1,
-		)
-		if expectationErr != nil {
-			if errors.Is(expectationErr, context.Canceled) || errors.Is(expectationErr, context.DeadlineExceeded) {
-				return query.FieldDescriptor{}, expectationErr
-			}
-			return query.FieldDescriptor{}, &query.ProductError{
-				Code:    "query.computed.version_unavailable",
-				Path:    "fields." + field.Identity.PhysicalName,
-				Message: "computed field version is unavailable",
-			}
-		}
-		result.ComputedDefinitionVersion = expectation.DefinitionVersion
-		result.ComputedDependencyWatermark = expectation.DependencyWatermark
-	}
-	if field.LogicalType == v2.LogicalFormula && !result.ComputedReady {
-		result.ComputedStatus = "updating"
-		result.ComputedError = &query.ComputedDiagnostic{
-			Code: "calculation.pending", Path: "fields." + field.Identity.PhysicalName,
-			Message: "formula value is being recalculated", Details: map[string]any{},
-		}
-		if formulaStatus == "failed" {
-			result.ComputedStatus = "failed"
-			result.ComputedError.Code = "calculation.failed"
-			result.ComputedError.Message = "formula recalculation failed"
-		} else if formulaStatus == "cancelled" {
-			result.ComputedStatus = "cancelled"
-			result.ComputedError.Code = "calculation.cancelled"
-			result.ComputedError.Message = "formula recalculation was cancelled"
-		}
-	}
+	result.PhysicalName = field.Identity.PhysicalName
+	result.Type = fieldType
+	result.AutoDate = field.LogicalType == v2.LogicalAutoDate
+	result.Searchable = isSearchable(field)
 	if field.LogicalType == v2.LogicalSelect ||
 		field.LogicalType == v2.LogicalMultiSelect {
 		if field.Select == nil {
@@ -359,6 +309,49 @@ func (source *Source) describeField(
 		RowRevisionName: relatedcomputation.RowRevisionField,
 		Fields:          targetFields,
 		Multiple:        field.Relation.Cardinality == "many",
+	}
+	return result, nil
+}
+
+// DescribeComputedField returns just computation status and version metadata.
+func DescribeComputedField(ctx context.Context, app core.App, table schemaexecution.Table, field v2.FieldDefinition) (query.FieldDescriptor, error) {
+	computedReady := field.LogicalType != v2.LogicalFormula
+	formulaStatus := ""
+	if field.LogicalType == v2.LogicalFormula {
+		formulaStatus = table.FormulaRuntime[field.Identity.FieldID].Status
+		computedReady = formulaStatus == "ready"
+	}
+	result := query.FieldDescriptor{ComputedEnvelope: isComputed(field), ComputedReady: computedReady}
+	if result.ComputedEnvelope && result.ComputedReady {
+		expectation, err := relatedcomputation.ExpectationFor(ctx, app, table.Snapshot.TableID, table.Snapshot.Fields, field.Identity.FieldID, 1)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return query.FieldDescriptor{}, err
+			}
+			return query.FieldDescriptor{}, &query.ProductError{
+				Code:    "query.computed.version_unavailable",
+				Path:    "fields." + field.Identity.PhysicalName,
+				Message: "computed field version is unavailable",
+			}
+		}
+		result.ComputedDefinitionVersion = expectation.DefinitionVersion
+		result.ComputedDependencyWatermark = expectation.DependencyWatermark
+	}
+	if field.LogicalType == v2.LogicalFormula && !result.ComputedReady {
+		result.ComputedStatus = "updating"
+		result.ComputedError = &query.ComputedDiagnostic{
+			Code: "calculation.pending", Path: "fields." + field.Identity.PhysicalName,
+			Message: "formula value is being recalculated", Details: map[string]any{},
+		}
+		if formulaStatus == "failed" {
+			result.ComputedStatus = "failed"
+			result.ComputedError.Code = "calculation.failed"
+			result.ComputedError.Message = "formula recalculation failed"
+		} else if formulaStatus == "cancelled" {
+			result.ComputedStatus = "cancelled"
+			result.ComputedError.Code = "calculation.cancelled"
+			result.ComputedError.Message = "formula recalculation was cancelled"
+		}
 	}
 	return result, nil
 }

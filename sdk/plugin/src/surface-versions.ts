@@ -24,8 +24,7 @@ export interface DataVersionsRequest {
   readonly contract: typeof SURFACE_DATA_VERSIONS_CONTRACT;
   /** 1-64 distinct sources. */
   readonly sources: readonly DataVersionSource[];
-  /** Prior versions keyed by exactly the requested collections, passed back exactly
-   * as returned (every key present, never null: a missing dataRevision is not 0).
+  /** Echo the previous data.versions response's versions for the same projection.
    * Omit to only read. When present the reply also carries `stale`. */
   readonly versions?: Readonly<Record<string, DataVersion>>;
 }
@@ -56,14 +55,22 @@ export function sameDataVersion(left: DatasetVersion | undefined, right: Dataset
 
 type Call = <T>(method: string, params: unknown, signal?: AbortSignal) => Promise<T>;
 function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
-function validVersion(value: unknown): value is DataVersion {
-  return object(value) && typeof value.schemaRevision === "string" && value.schemaRevision.length > 0 &&
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const names = Object.keys(value);
+  return names.length === keys.length && names.every(name => keys.includes(name));
+}
+function validVersion(value: unknown, fields?: readonly string[]): value is DataVersion {
+  return object(value) && exactKeys(value, ["schemaRevision", "dataRevision", "clockPeriod", "computed"]) &&
+    typeof value.schemaRevision === "string" && value.schemaRevision.length > 0 &&
     typeof value.dataRevision === "number" && Number.isSafeInteger(value.dataRevision) && value.dataRevision >= 0 &&
     typeof value.clockPeriod === "string" && object(value.computed) &&
-    Object.entries(value.computed).every(([field, entry]) => field.length > 0 && object(entry) &&
-      Number.isSafeInteger(entry.definition) && typeof entry.watermark === "string" &&
+    Object.entries(value.computed).every(([field, entry]) => field.length > 0 && (fields === undefined || fields.includes(field)) &&
+      object(entry) && exactKeys(entry, ["definition", "watermark", "ready", "status"]) &&
+      typeof entry.definition === "number" && Number.isSafeInteger(entry.definition) && entry.definition >= 0 && typeof entry.watermark === "string" &&
       typeof entry.ready === "boolean" && typeof entry.status === "string");
 }
 export function createSurfaceVersions(call: Call): SurfaceDataVersions {
@@ -75,14 +82,13 @@ export function createSurfaceVersions(call: Call): SurfaceDataVersions {
     // Old Hosts reject the method explicitly; a reply that is not the versions
     // contract is never reinterpreted as another capability or a partial result.
     const invalid = () => new PluginCapabilityError("plugin_transport_failed", "Incomplete or inconsistent data versions reply.");
-    if (!result || result.contract !== SURFACE_DATA_VERSIONS_CONTRACT || !object(result.versions) ||
+    const replyKeys = request.versions === undefined ? ["contract", "versions"] : ["contract", "versions", "stale"];
+    if (!object(result) || !exactKeys(result, replyKeys) || result.contract !== SURFACE_DATA_VERSIONS_CONTRACT || !object(result.versions) ||
         Object.keys(result.versions).length !== request.sources.length) throw invalid();
-    for (const { collection } of request.sources) {
-      if (!Object.hasOwn(result.versions, collection) || !validVersion(result.versions[collection])) throw invalid();
+    for (const { collection, fields } of request.sources) {
+      if (!Object.hasOwn(result.versions, collection) || !validVersion(result.versions[collection], fields)) throw invalid();
     }
-    if (request.versions === undefined) {
-      if (result.stale !== undefined) throw invalid();
-    } else {
+    if (request.versions !== undefined) {
       const expected = request.sources.filter(({ collection }) =>
         !sameDataVersion(request.versions?.[collection], result.versions[collection])).map(source => source.collection);
       if (!Array.isArray(result.stale) || result.stale.length !== expected.length ||

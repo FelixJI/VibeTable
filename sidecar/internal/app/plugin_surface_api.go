@@ -284,7 +284,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 	if input.Method == "data.versions" {
 		// #589: installation, action/entry binding and every source version are read
 		// in exactly one transaction; nothing is resolved on the raw app first.
-		return executeSurfaceDataVersions(ctx, app, source, workspace, input)
+		return executeSurfaceDataVersions(ctx, app, workspace, input)
 	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	switch input.Method {

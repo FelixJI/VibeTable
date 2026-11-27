@@ -39,12 +39,12 @@ test("data.versions is exactly one bridge request carrying projections and prior
 
 test("data.versions failures keep their own code, return nothing partial and never retry", async () => {
   const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
-  for (const code of ["plugin_read_denied", "plugin_capability_invalid", "plugin_cursor_stale", "plugin_query_failed", "plugin_api_unsupported"]) {
+  for (const code of ["plugin_read_denied", "plugin_capability_invalid", "plugin_cursor_stale", "plugin_query_failed", "plugin_query_computed_unsupported", "plugin_api_unsupported"]) {
     const rejected = assert.rejects(client.data.versions(request), error => error.code === code);
     transport.reply(transport.calls.at(-1), null, code);
     await rejected;
   }
-  assert.equal(transport.calls.length, 5);
+  assert.equal(transport.calls.length, 6);
   // Only the explicit Host error denotes an unsupported capability.
   const rejected = assert.rejects(client.data.versions(request), error => error.code === "plugin_transport_failed");
   transport.reply(transport.calls.at(-1), { contract: "vibetable.plugin-dataset.v1", versions: {} });
@@ -54,7 +54,7 @@ test("data.versions failures keep their own code, return nothing partial and nev
   transport.reply(transport.calls.at(-1), result);
   await incomplete;
   client.dispose();
-  assert.equal(transport.calls.length, 7);
+  assert.equal(transport.calls.length, 8);
 });
 
 test("incomplete versions and contradictory comparison results fail closed", async () => {
@@ -66,6 +66,27 @@ test("incomplete versions and contradictory comparison results fail closed", asy
     { ...result, stale: ["orders"] },
   ]) {
     const rejected = assert.rejects(client.data.versions({ ...request, versions: result.versions }), error => error.code === "plugin_transport_failed");
+    transport.reply(transport.calls.at(-1), reply);
+    await rejected;
+  }
+  client.dispose();
+});
+
+test("only a closed, projected, JS-safe reply can be echoed as prior versions", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const lines = patch => ({ ...result, versions: { ...result.versions, lines: { ...computedVersion, ...patch } } });
+  const entry = patch => lines({ computed: { fld_minute: { ...computed, ...patch } } });
+  for (const reply of [
+    { ...result, extra: true },
+    { ...result, stale: undefined },
+    lines({ extra: true }),
+    lines({ dataRevision: Number.MAX_SAFE_INTEGER + 1 }),
+    lines({ computed: { physical_minute: computed } }),
+    entry({ extra: true }),
+    entry({ definition: -1 }),
+    entry({ definition: Number.MAX_SAFE_INTEGER + 1 }),
+  ]) {
+    const rejected = assert.rejects(client.data.versions(request), error => error.code === "plugin_transport_failed");
     transport.reply(transport.calls.at(-1), reply);
     await rejected;
   }

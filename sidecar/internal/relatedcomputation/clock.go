@@ -19,6 +19,7 @@ type computedDefinitionReference struct {
 }
 type clockCache struct {
 	mu          sync.Mutex
+	sameRowOnly bool
 	fields      map[string][]v2.FieldDefinition
 	references  map[clockFieldKey][]formula.ClockReference
 	tables      map[clockFieldKey][]string
@@ -31,6 +32,15 @@ type clockCache struct {
 func WithClockCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, clockCacheKey{}, newClockCache())
 }
+
+// WithSameRowClockCache rejects stored relationship edges when the caller only
+// authorized same-row inputs from the formula definitions.
+func WithSameRowClockCache(ctx context.Context) context.Context {
+	cache := newClockCache()
+	cache.sameRowOnly = true
+	return context.WithValue(ctx, clockCacheKey{}, cache)
+}
+
 func newClockCache() *clockCache {
 	return &clockCache{fields: map[string][]v2.FieldDefinition{}, references: map[clockFieldKey][]formula.ClockReference{}, tables: map[clockFieldKey][]string{}, inputs: map[clockFieldKey][]clockFieldKey{}, definitions: map[clockFieldKey][]computedDefinitionReference{}}
 }
@@ -82,6 +92,9 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 	tables, err := directDependencyTables(ctx, app, key.table, fields, *current)
 	if err != nil {
 		return nil, err
+	}
+	if cache.sameRowOnly && len(tables) != 0 {
+		return nil, fmt.Errorf("computed dependency is not same-row")
 	}
 	seenTables := map[string]bool{}
 	definitions := []computedDefinitionReference{{key: key, field: *current}}
@@ -144,6 +157,9 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 		dbx.Params{"table": key.table, "field": key.field})
 	if err != nil {
 		return nil, err
+	}
+	if cache.sameRowOnly && len(dependencies) != 0 {
+		return nil, fmt.Errorf("computed dependency is not same-row")
 	}
 	if len(dependencies) > 4096 {
 		return nil, fmt.Errorf("computed clock dependency graph exceeds 4096 fields")

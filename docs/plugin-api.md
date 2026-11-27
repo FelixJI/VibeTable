@@ -277,23 +277,24 @@ const request = {
   })),
 };
 const current = await api.data.versions(request, signal);
-// 之后每次复用前把上一轮 versions 原样回传（键必须完整、不能为 null）。
+// 之后每次复用前，原样回传同一投影的上一轮 data.versions 响应中的 versions。
 const check = await api.data.versions({ ...request, versions: current.versions }, signal);
 if (check.stale!.length) await reload(check.stale!); // 仅 stale 列出的来源需要重读
 ```
 
-- `versions` 按来源 collection 键入，值与 dataset 的版本向量同构：`schemaRevision`、JS 安全整数
-  `dataRevision`（≤ 2^53−1）、`clockPeriod`（无时钟引用时为空字符串）、`computed`（仅含投影中的
-  computed 字段，按 canonical 字段 ID 键入，始终为非 null 对象）。结果可直接用 `sameDataVersion`
-  深比较；回传时必须原样、键齐全：缺失或 `null` 的 `dataRevision` 不会被视为 0。
+- `versions` 按来源 collection 键入。每来源包含 `schemaRevision`、`dataRevision`、`clockPeriod` 和
+  `computed`。数据和公式定义版本使用非负 JS 安全整数（≤ 2^53−1）。`computed` 始终是对象，
+  只包含投影中的计算字段，键为 canonical 字段 ID。dataset 仍按物理字段名返回计算元数据。
+  可用 `sameDataVersion` 深比较。同一投影的回传值须来自上一轮 `data.versions`，各键齐全且值非 null。
 - `versions` 省略时只读取；传入时回复额外带 `stale`（与传入版本不同的来源列表）。失败不返回部分结果。
-- 每来源 1–64 个字段、ID ≤128 字节；重复 collection/字段、关系路径（含 `.`）、未知键、超限或
-  不完整的 prior 版本在**任何读取之前**整批报 `plugin_capability_invalid`。
-- 任一来源或字段缺少当前 `read`+`query` 授权（含未知字段、仅写授权）整批报 `plugin_read_denied`；
+- 每来源 1–64 个字段、ID ≤128 字节。重复 JSON 成员、重复 collection 或字段、关系路径（含 `.`）、
+  键名大小写不符、未知键、超限或不完整的 prior 版本在**任何读取之前**整批报 `plugin_capability_invalid`。
+- 任一来源、投影字段或同表公式依赖缺少当前 `read`+`query` 授权（含未知字段、仅写授权）整批报 `plugin_read_denied`。
   授权在存在性检查之前核对，因此未授权的表与不存在的表失败方式相同，不能用于探测表是否存在。
-  已授权但表已消失报 `plugin_query_failed`；安装修订过期报 `plugin_cursor_stale`。
-- 整批只固定一次公式求值时刻并共享一个依赖图缓存：所有来源的 `NOW()` 时钟周期来自同一时刻，
-  不会因逐表重新取时而跨越分钟边界。
+  Lookup 或无法确认依赖授权的公式（例如跨表公式）整批报 `plugin_query_computed_unsupported`。
+  已授权但表或版本元数据不可用时报 `plugin_query_failed`，安装修订过期报 `plugin_cursor_stale`。
+- 整批固定一次公式求值时刻并共享依赖图缓存。`clockPeriod` 只反映投影中公式及其同表依赖引用的时钟。
+  单个来源没有时钟引用时为 `""`。
 
 ## 导出与任务
 

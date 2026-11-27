@@ -413,22 +413,29 @@ func TestPluginSurfaceDataVersionsFortyTablesAndBatchLimits(t *testing.T) {
 	// null scalar must never be read as its Go zero value: a fresh table whose
 	// dataRevision really is 0 would then compare equal to an "unknown" one.
 	for name, raw := range map[string]string{
-		"null-prior":             "null",
-		"missing-data-revision":  `{"` + f.tables[0].id + `":{"schemaRevision":"x","clockPeriod":"c","computed":{}}}`,
-		"null-data-revision":     `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":null,"clockPeriod":"c","computed":{}}}`,
-		"fractional-revision":    `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0.5,"clockPeriod":"c","computed":{}}}`,
-		"negative-revision":      `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":-1,"clockPeriod":"c","computed":{}}}`,
-		"missing-schema":         `{"` + f.tables[0].id + `":{"dataRevision":0,"clockPeriod":"c","computed":{}}}`,
-		"null-clock":             `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":null,"computed":{}}}`,
-		"null-computed":          `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":null}}`,
-		"missing-computed":       `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c"}}`,
-		"unknown-key":            `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{},"fields":["id"]}}`,
-		"null-version":           `{"` + f.tables[0].id + `":null}`,
-		"computed-missing-ready": `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","status":"ready"}}}}`,
-		"computed-null-ready":    `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","ready":null,"status":"ready"}}}}`,
-		"computed-unknown-key":   `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","ready":true,"status":"ready","extra":1}}}}`,
+		"null-prior":                  "null",
+		"duplicate-prior-source":      `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"","computed":{}},"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"","computed":{}}}`,
+		"duplicate-revision":          `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"dataRevision":0,"clockPeriod":"","computed":{}}}`,
+		"wrong-revision-case":         `{"` + f.tables[0].id + `":{"schemaRevision":"x","DataRevision":0,"clockPeriod":"","computed":{}}}`,
+		"missing-data-revision":       `{"` + f.tables[0].id + `":{"schemaRevision":"x","clockPeriod":"c","computed":{}}}`,
+		"null-data-revision":          `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":null,"clockPeriod":"c","computed":{}}}`,
+		"fractional-revision":         `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0.5,"clockPeriod":"c","computed":{}}}`,
+		"negative-revision":           `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":-1,"clockPeriod":"c","computed":{}}}`,
+		"missing-schema":              `{"` + f.tables[0].id + `":{"dataRevision":0,"clockPeriod":"c","computed":{}}}`,
+		"null-clock":                  `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":null,"computed":{}}}`,
+		"null-computed":               `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":null}}`,
+		"missing-computed":            `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c"}}`,
+		"unknown-key":                 `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{},"fields":["id"]}}`,
+		"null-version":                `{"` + f.tables[0].id + `":null}`,
+		"computed-missing-ready":      `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","status":"ready"}}}}`,
+		"computed-null-ready":         `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","ready":null,"status":"ready"}}}}`,
+		"computed-unknown-key":        `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","ready":true,"status":"ready","extra":1}}}}`,
+		"computed-duplicate-key":      `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":1,"watermark":"w","ready":true,"ready":true,"status":"ready"}}}}`,
+		"computed-unsafe-definition":  `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"fld":{"definition":9007199254740992,"watermark":"w","ready":true,"status":"ready"}}}}`,
+		"computed-outside-projection": `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0,"clockPeriod":"c","computed":{"other":{"definition":1,"watermark":"w","ready":true,"status":"ready"}}}}`,
 	} {
-		request := versionsRawRequest([]pluginVersionsSource{{Collection: f.tables[0].id, Fields: []string{"id"}}}, raw)
+		raw = strings.ReplaceAll(raw, `"fld"`, `"`+f.tables[0].nameID+`"`)
+		request := versionsRawRequest([]pluginVersionsSource{{Collection: f.tables[0].id, Fields: []string{"id", f.tables[0].nameID}}}, raw)
 		if result, code := f.call(t, f.pb, request); code != "plugin_capability_invalid" || result != nil {
 			t.Fatalf("%s: %+v %q", name, result, code)
 		}
@@ -449,6 +456,10 @@ func TestPluginSurfaceDataVersionsFortyTablesAndBatchLimits(t *testing.T) {
 	}
 	for _, raw := range []string{
 		`{"contract":"vibetable.plugin-data-versions.v1","sources":[],"extra":1}`,
+		`{"Contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","fields":["id"]}]}`,
+		`{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","Fields":["id"]}]}`,
+		`{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","fields":["id"],"fields":["id"]}]}`,
+		`{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","fields":["id",null]}]}`,
 		`{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","fields":["id"]}]} {}`,
 		`{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"` + f.tables[0].id + `","fields":["id"],"unknown":true}]}`,
 	} {
@@ -596,9 +607,7 @@ func TestPluginSurfaceDataVersionsConcurrentWritesKeepOneConsistentVector(t *tes
 	}
 }
 
-// createVersionsClockFormula adds a NOW() formula field whose computed version
-// carries the minute clock period derived from the evaluation instant.
-func createVersionsClockFormula(t *testing.T, pb *pocketbase.PocketBase, tableID, operationID string) v2.FieldDefinition {
+func createVersionsFormula(t *testing.T, pb *pocketbase.PocketBase, tableID, operationID, name, expression string) v2.FieldDefinition {
 	t.Helper()
 	ctx := context.Background()
 	defaults, err := v2.RecommendedDefaults(v2.LogicalFormula)
@@ -614,7 +623,7 @@ func createVersionsClockFormula(t *testing.T, pb *pocketbase.PocketBase, tableID
 	}
 	plans := fieldchange.NewPocketBasePlanStore(pb)
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
-	intent := v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: tableID, ExpectedSchemaRev: revisions.Schema, Actor: actor, Draft: &v2.FieldDraft{DisplayName: "Minute", LogicalType: v2.LogicalFormula, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display, Formula: &v2.FormulaDraftSpec{Language: "cel-v2", Source: "NOW()"}}}
+	intent := v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: tableID, ExpectedSchemaRev: revisions.Schema, Actor: actor, Draft: &v2.FieldDraft{DisplayName: name, LogicalType: v2.LogicalFormula, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display, Formula: &v2.FormulaDraftSpec{Language: "cel-v2", Source: expression}}}
 	plan, err := fieldchange.NewPlanner(catalog, catalog, plans, v2.NewIdentityAllocator(nil)).Plan(ctx, intent)
 	if err != nil {
 		t.Fatal(err)
@@ -623,7 +632,7 @@ func createVersionsClockFormula(t *testing.T, pb *pocketbase.PocketBase, tableID
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := pb.FindFirstRecordByFilter("vibetable_formulas", "table_id={:table}", map[string]any{"table": tableID})
+	runtime, err := pb.FindFirstRecordByFilter("vibetable_formulas", "table_id={:table} && field_id={:field}", dbx.Params{"table": tableID, "field": receipt.Definition.Identity.FieldID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,6 +641,49 @@ func createVersionsClockFormula(t *testing.T, pb *pocketbase.PocketBase, tableID
 		t.Fatal(err)
 	}
 	return *receipt.Definition
+}
+
+func TestPluginSurfaceDataVersionsAuthorizesSameRowFormulaClosure(t *testing.T) {
+	f := newVersionsFixture(t, 2)
+	local, other := f.tables[0], f.tables[1]
+	input := createVersionsFormula(t, f.pb, local.id, "version-local-input", "Local input", local.secretPhysical)
+	output := createVersionsFormula(t, f.pb, local.id, "version-local-output", "Local output", input.Identity.PhysicalName)
+	number := createSchemaProductField(t, f.pb, other.id, v2.LogicalNumber, "Quantity", "version-foreign-input").Definition
+	foreign := createVersionsFormula(t, f.pb, local.id, "version-foreign-output", "Foreign output",
+		fmt.Sprintf(`SUM(PROJECT(TABLE("%s"), CurrentValue.%s))`, other.id, number.Identity.PhysicalName))
+	grant := func(fields ...string) {
+		f.regrant(t, []pluginReadGrant{{Collection: local.id, Operations: []string{"read", "query"}, Fields: fields}})
+	}
+	project := func(id string) []pluginVersionsSource {
+		return []pluginVersionsSource{{Collection: local.id, Fields: []string{id}}}
+	}
+	grant(output.Identity.FieldID, input.Identity.FieldID, local.secretID)
+	result, code := f.call(t, f.pb, versionsRequest(project(output.Identity.FieldID), nil))
+	if code != "" {
+		t.Fatal(code)
+	}
+	version := versionsOf(t, result, local.id)
+	computed := version.Computed[output.Identity.FieldID]
+	if len(version.Computed) != 1 || !computed.Ready || !strings.Contains(computed.Watermark, "|definitions:") || version.Clock != "" {
+		t.Fatalf("local formula version or nonvolatile clock: %+v", version)
+	}
+	if echoed, code := f.call(t, f.pb, versionsEchoRequest(project(output.Identity.FieldID), result)); code != "" || fmt.Sprint(echoed["stale"]) != "[]" {
+		t.Fatalf("canonical projected prior: %+v %q", echoed, code)
+	}
+	// Dataset keys computed fields by their physical names. A data.versions
+	// response keys them by canonical field IDs, as its request projection does.
+	version.Computed = map[string]pluginDatasetComputedRevision{output.Identity.PhysicalName: computed}
+	if _, code := f.call(t, f.pb, versionsRequest(project(output.Identity.FieldID), map[string]pluginDatasetVersion{local.id: version})); code != "plugin_capability_invalid" {
+		t.Fatalf("physical computed key admitted as prior: %q", code)
+	}
+	grant(output.Identity.FieldID, input.Identity.FieldID)
+	if _, code := f.call(t, f.pb, versionsRequest(project(output.Identity.FieldID), nil)); code != "plugin_read_denied" {
+		t.Fatalf("missing transitive same-row grant: %q", code)
+	}
+	grant(foreign.Identity.FieldID)
+	if _, code := f.call(t, f.pb, versionsRequest(project(foreign.Identity.FieldID), nil)); code != "plugin_query_computed_unsupported" {
+		t.Fatalf("unsupported cross-table formula: %q", code)
+	}
 }
 
 func TestPluginSurfaceDataVersionsPinsOneEvaluationTimePerBatch(t *testing.T) {
@@ -668,7 +720,7 @@ func TestPluginSurfaceDataVersionsComputedEntriesShareOneClockPeriod(t *testing.
 	minute := make([]v2.FieldDefinition, len(f.tables))
 	grants := []any{}
 	for i, table := range f.tables {
-		minute[i] = createVersionsClockFormula(t, f.pb, table.id, fmt.Sprintf("versions-minute-%d", i))
+		minute[i] = createVersionsFormula(t, f.pb, table.id, fmt.Sprintf("versions-minute-%d", i), "Minute", "NOW()")
 		grants = append(grants, map[string]any{"collection": table.id, "operations": []string{"read", "query"}, "fields": []string{"id", table.nameID, table.secretID, minute[i].Identity.FieldID}})
 	}
 	// Re-install with the computed field granted on every table.
@@ -703,9 +755,13 @@ func TestPluginSurfaceDataVersionsComputedEntriesShareOneClockPeriod(t *testing.
 		t.Fatal(code)
 	}
 	for i, table := range f.tables {
-		entry, ok := versionsOf(t, result, table.id).Computed[minute[i].Identity.FieldID]
+		version := versionsOf(t, result, table.id)
+		entry, ok := version.Computed[minute[i].Identity.FieldID]
 		if !ok || entry.Definition < 1 || !entry.Ready || !strings.HasSuffix(entry.Watermark, "minute:2025-06-01T12:30:00Z") {
 			t.Fatalf("table %d computed version: %+v", i, versionsOf(t, result, table.id).Computed)
+		}
+		if version.Clock != "minute:2025-06-01T12:30:00Z" {
+			t.Fatalf("table %d clock period: %q", i, version.Clock)
 		}
 	}
 	if versionsOf(t, result, f.tables[0].id).Computed[minute[1].Identity.FieldID].Definition != 0 || len(versionsOf(t, result, f.tables[0].id).Computed) != 1 {
@@ -717,7 +773,7 @@ func TestPluginSurfaceDataVersionsComputedEntriesShareOneClockPeriod(t *testing.
 		t.Fatalf("verbatim computed round trip reported stale: %+v %q", echoed, code)
 	}
 	plain, code := f.callCtx(ctx, t, f.pb, versionsRequest([]pluginVersionsSource{{Collection: f.tables[0].id, Fields: []string{"id"}}}, nil))
-	if code != "" || len(versionsOf(t, plain, f.tables[0].id).Computed) != 0 {
+	if code != "" || len(versionsOf(t, plain, f.tables[0].id).Computed) != 0 || versionsOf(t, plain, f.tables[0].id).Clock != "" {
 		t.Fatalf("non-projected computed field reported: %+v %q", plain, code)
 	}
 	// A later minute is a new version for every source at once.

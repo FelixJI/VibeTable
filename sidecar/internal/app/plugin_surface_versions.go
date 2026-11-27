@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"reflect"
 	"strings"
@@ -29,10 +30,7 @@ const (
 	pluginVersionsMaxRevision = int64(1<<53 - 1)
 )
 
-// pluginVersionsEvaluationTime pins one evaluation instant per batch so every
-// source's clock period derives from the same instant. DescribeProjectionTable
-// re-pins per table only when the context carries no instant, so the whole
-// batch must pin exactly once here instead of once per source.
+// pluginVersionsEvaluationTime pins one evaluation instant for all sources.
 var pluginVersionsEvaluationTime = formula.EnsureEvaluationTime
 
 var errPluginVersionIncomplete = errors.New("plugin data version is incomplete")
@@ -55,7 +53,7 @@ type pluginPriorVersions map[string]json.RawMessage
 
 func (prior *pluginPriorVersions) UnmarshalJSON(raw []byte) error {
 	var versions map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &versions); err != nil || versions == nil {
+	if err := jsonv2.Unmarshal(raw, &versions); err != nil || versions == nil {
 		return errPluginVersionIncomplete
 	}
 	*prior = versions
@@ -70,12 +68,11 @@ func validatePluginVersionsRequest(request pluginVersionsRequest) (map[string]pl
 	if request.Contract != pluginVersionsContract || len(request.Sources) < 1 || len(request.Sources) > pluginVersionsMaxSources {
 		return nil, invalid
 	}
-	seen := map[string]bool{}
+	projections := map[string]map[string]bool{}
 	for _, source := range request.Sources {
-		if source.Collection == "" || len(source.Collection) > pluginVersionsMaxKeyBytes || seen[source.Collection] || len(source.Fields) < 1 || len(source.Fields) > pluginVersionsMaxFields {
+		if source.Collection == "" || len(source.Collection) > pluginVersionsMaxKeyBytes || projections[source.Collection] != nil || len(source.Fields) < 1 || len(source.Fields) > pluginVersionsMaxFields {
 			return nil, invalid
 		}
-		seen[source.Collection] = true
 		fields := map[string]bool{}
 		for _, id := range source.Fields {
 			if id == "" || len(id) > pluginVersionsMaxKeyBytes || fields[id] || strings.Contains(id, ".") {
@@ -83,30 +80,41 @@ func validatePluginVersionsRequest(request pluginVersionsRequest) (map[string]pl
 			}
 			fields[id] = true
 		}
+		projections[source.Collection] = fields
 	}
 	prior := map[string]pluginDatasetVersion{}
 	for collection, raw := range request.Versions {
 		// Known versions must be complete: exactly the requested sources, each
 		// in the exact shape the host emitted.
-		if !seen[collection] {
+		fields := projections[collection]
+		if fields == nil {
 			return nil, invalid
 		}
 		version, err := decodePluginDatasetVersion(raw)
 		if err != nil || version.Data < 0 || version.Data > pluginVersionsMaxRevision {
 			return nil, invalid
 		}
+		for id, computed := range version.Computed {
+			if !fields[id] || !pluginComputedDefinitionValid(computed.Definition) {
+				return nil, invalid
+			}
+		}
 		prior[collection] = version
 	}
-	if request.Versions != nil && len(prior) != len(seen) {
+	if request.Versions != nil && len(prior) != len(projections) {
 		return nil, invalid
 	}
 	return prior, nil
 }
 
+func pluginComputedDefinitionValid(definition int) bool {
+	return definition >= 0 && int64(definition) <= pluginVersionsMaxRevision
+}
+
 // decodePluginDatasetVersion accepts a prior version only as the host emitted
 // it: every key present, non-null and nothing else, recursively for computed
-// entries. The result reuses the dataset version struct so both contracts
-// compare the same exact vector.
+// entries. The result reuses the dataset version struct so callers
+// can compare successive data.versions responses.
 func decodePluginDatasetVersion(raw json.RawMessage) (pluginDatasetVersion, error) {
 	var version pluginDatasetVersion
 	object, err := pluginStrictObject(raw, "schemaRevision", "dataRevision", "clockPeriod", "computed")
@@ -114,7 +122,7 @@ func decodePluginDatasetVersion(raw json.RawMessage) (pluginDatasetVersion, erro
 		return version, err
 	}
 	var computed map[string]json.RawMessage
-	if json.Unmarshal(object["computed"], &computed) != nil {
+	if jsonv2.Unmarshal(object["computed"], &computed) != nil {
 		return version, errPluginVersionIncomplete
 	}
 	for id, entry := range computed {
@@ -127,7 +135,7 @@ func decodePluginDatasetVersion(raw json.RawMessage) (pluginDatasetVersion, erro
 	}
 	// The clock period may legitimately be empty (no clock reference); only a
 	// missing or null key is rejected, which pluginStrictObject already did.
-	if json.Unmarshal(raw, &version) != nil || version.Schema == "" || version.Computed == nil {
+	if jsonv2.Unmarshal(raw, &version, jsonv2.RejectUnknownMembers(true)) != nil || version.Schema == "" || version.Computed == nil {
 		return version, errPluginVersionIncomplete
 	}
 	return version, nil
@@ -136,7 +144,7 @@ func decodePluginDatasetVersion(raw json.RawMessage) (pluginDatasetVersion, erro
 // pluginStrictObject requires exactly the given keys and rejects null values.
 func pluginStrictObject(raw json.RawMessage, keys ...string) (map[string]json.RawMessage, error) {
 	object := map[string]json.RawMessage{}
-	if json.Unmarshal(raw, &object) != nil || len(object) != len(keys) {
+	if jsonv2.Unmarshal(raw, &object) != nil || len(object) != len(keys) {
 		return nil, errPluginVersionIncomplete
 	}
 	for _, key := range keys {
@@ -148,9 +156,9 @@ func pluginStrictObject(raw json.RawMessage, keys ...string) (map[string]json.Ra
 	return object, nil
 }
 
-func executeSurfaceDataVersions(ctx context.Context, app core.App, source *queryschema.Source, workspace string, input pluginSurfaceAPIRequest) (any, error) {
+func executeSurfaceDataVersions(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (any, error) {
 	var request pluginVersionsRequest
-	if decodePluginParams(input.Request, &request) != nil {
+	if jsonv2.Unmarshal(input.Request, &request, jsonv2.RejectUnknownMembers(true)) != nil {
 		return nil, pluginDataError("plugin_capability_invalid")
 	}
 	prior, err := validatePluginVersionsRequest(request)
@@ -159,7 +167,7 @@ func executeSurfaceDataVersions(ctx context.Context, app core.App, source *query
 	}
 	// One evaluation instant and one dependency-graph cache for the whole batch:
 	// clock periods of all sources are derived from the same instant.
-	ctx = relatedcomputation.WithClockCache(pluginVersionsEvaluationTime(ctx))
+	ctx = relatedcomputation.WithSameRowClockCache(pluginVersionsEvaluationTime(ctx))
 	var result map[string]any
 	err = app.RunInTransaction(func(tx core.App) error {
 		// Authorization is resolved exactly once and held by this transaction.
@@ -170,7 +178,7 @@ func executeSurfaceDataVersions(ctx context.Context, app core.App, source *query
 		versions := make(map[string]pluginDatasetVersion, len(request.Sources))
 		stale := []string{}
 		for _, item := range request.Sources {
-			version, err := pluginSourceDataVersion(ctx, tx, source, installed, input.ActiveCollection, item)
+			version, err := pluginSourceDataVersion(ctx, tx, installed, input.ActiveCollection, item)
 			if err != nil {
 				return err
 			}
@@ -196,7 +204,7 @@ func executeSurfaceDataVersions(ctx context.Context, app core.App, source *query
 // and binds the version to the explicit field projection the plugin reuses: a
 // narrowed grant (for example only `id` left) fails the batch instead of letting
 // previously authorized columns be reused.
-func pluginSourceDataVersion(ctx context.Context, tx core.App, source *queryschema.Source, installed pluginSurfaceInstallation, active string, item pluginVersionsSource) (pluginDatasetVersion, error) {
+func pluginSourceDataVersion(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, item pluginVersionsSource) (pluginDatasetVersion, error) {
 	var version pluginDatasetVersion
 	grant := installed.grant(item.Collection, active)
 	if grant == nil {
@@ -207,26 +215,36 @@ func pluginSourceDataVersion(ctx context.Context, tx core.App, source *querysche
 		return version, pluginDataError("plugin_query_failed")
 	}
 	allowed := pluginAllowed(*grant, table.Snapshot)
+	authorize := pluginComputedAuthorizer(table, allowed, "plugin_query_computed_unsupported", nil)
 	for _, id := range item.Fields {
 		if _, ok := allowed[id]; !ok {
 			return version, pluginDataError("plugin_read_denied")
 		}
+		if err := authorize(id); err != nil {
+			return version, err
+		}
 	}
-	descriptor, _, err := source.DescribeResolvedProjectionTable(ctx, tx, table, item.Fields)
-	if err != nil || descriptor.SchemaRevision == "" || descriptor.DataRevision < 0 || descriptor.DataRevision > pluginVersionsMaxRevision {
+	snapshot := table.Snapshot
+	if snapshot.SchemaRevision == "" || snapshot.DataRevision < 0 || snapshot.DataRevision > pluginVersionsMaxRevision {
 		return version, pluginDataError("plugin_query_failed")
 	}
-	// Computed entries are keyed by canonical field ID; only projected computed
-	// fields appear and the map is always emitted so versions compare exactly.
 	computed := map[string]pluginDatasetComputedRevision{}
+	var references []formula.ClockReference
 	for _, id := range item.Fields {
-		field, ok := descriptor.Fields[allowed[id]]
-		if !ok {
+		field, ok := table.Field(id)
+		if !ok || field.Formula == nil {
+			continue
+		}
+		descriptor, err := queryschema.DescribeComputedField(ctx, tx, table, field)
+		if err != nil || !pluginComputedDefinitionValid(descriptor.ComputedDefinitionVersion) {
 			return version, pluginDataError("plugin_query_failed")
 		}
-		if field.ComputedEnvelope {
-			computed[id] = pluginDatasetComputedRevision{Definition: field.ComputedDefinitionVersion, Watermark: field.ComputedDependencyWatermark, Ready: field.ComputedReady, Status: field.ComputedStatus}
+		clock, err := relatedcomputation.ClockReferencesFor(ctx, tx, snapshot.TableID, snapshot.Fields, id)
+		if err != nil {
+			return version, pluginDataError("plugin_query_failed")
 		}
+		references = append(references, clock...)
+		computed[id] = pluginDatasetComputedRevision{Definition: descriptor.ComputedDefinitionVersion, Watermark: descriptor.ComputedDependencyWatermark, Ready: descriptor.ComputedReady, Status: descriptor.ComputedStatus}
 	}
-	return pluginDatasetVersion{Schema: descriptor.SchemaRevision, Data: descriptor.DataRevision, Clock: descriptor.ClockPeriod, Computed: computed}, nil
+	return pluginDatasetVersion{Schema: snapshot.SchemaRevision, Data: snapshot.DataRevision, Clock: formula.ClockSignature(ctx, references), Computed: computed}, nil
 }
