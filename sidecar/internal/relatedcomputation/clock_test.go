@@ -43,6 +43,19 @@ func TestClockFreshnessTraversesLocalAndRelatedDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A version-only batch authorizes the local dependency chain, while the
+	// ordinary reader can additionally follow the related lookup above.
+	sameRow := relatedcomputation.WithSameRowClockCache(ctx)
+	scoped, err := relatedcomputation.ExpectationFor(sameRow, app, "tbl_clock", fields, "fld_label", 2)
+	if err != nil || scoped != old {
+		t.Fatalf("authorized local dependency version=%+v, want %+v, err=%v", scoped, old, err)
+	}
+	if _, err := relatedcomputation.ClockReferencesFor(sameRow, app, "tbl_other", []v2.FieldDefinition{lookup}, "fld_lookup"); err == nil {
+		t.Fatal("same-row batch followed a lookup dependency")
+	}
+	if _, err := relatedcomputation.ExpectationFor(sameRow, app, "absent", fields, "fld_label", 2); err == nil {
+		t.Fatal("same-row batch accepted a missing stored formula revision")
+	}
 	next := relatedcomputation.WithClockCache(formula.WithEvaluationTime(context.Background(), instant.Add(time.Second)))
 	current, err := relatedcomputation.ExpectationFor(next, app, "tbl_clock", fields, "fld_label", 2)
 	if err != nil {
@@ -84,6 +97,9 @@ func TestClockDependencyMetadataFailsClosed(t *testing.T) {
 	saveInternalRecord(t, app, "vibetable_fields", map[string]any{"table_id": "broken", "field_id": "target", "physical_name": "bad", "display_name": "Bad", "kind": "formula", "data_type": "text", "storage_type": "json", "schema_model_version": 2, "lifecycle_state": "active", "definition_v2_json": map[string]any{"unexpected": true}})
 	if _, err := relatedcomputation.ClockReferencesFor(context.Background(), app, "table", fields, "f"); err == nil {
 		t.Fatal("corrupt related field was silently dropped")
+	}
+	if _, err := relatedcomputation.ClockReferencesFor(relatedcomputation.WithSameRowClockCache(context.Background()), app, "table", fields, "f"); err == nil || !strings.Contains(err.Error(), "not same-row") {
+		t.Fatalf("stored dependency exceeded the authorized scope: %v", err)
 	}
 	if _, err := app.DB().NewQuery("DROP TABLE vibetable_computation_dependencies").Execute(); err != nil {
 		t.Fatal(err)
