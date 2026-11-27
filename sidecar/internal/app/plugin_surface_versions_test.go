@@ -834,6 +834,21 @@ func TestPluginSurfaceDataVersionsReuseProgressCacheAndModelGrantsInsideTransact
 	if version := versionsOf(t, first, f.mapped.TableID); version.Schema == "" || version.Data != 0 || version.Computed == nil {
 		t.Fatalf("mapped table version: %+v", version)
 	}
+	table, err := schemaexecution.Describe(t.Context(), f.pb, f.mapped.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := f.pb.FindCollectionByNameOrId(table.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection.Fields.GetByName(f.mapped.Definition.Identity.PhysicalName).SetHidden(true)
+	if err := f.pb.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	if result, code := call("id", f.mapped.FieldID); result != nil || code != "plugin_model_binding_stale" {
+		t.Fatalf("changed binding returned %+v, %s", result, code)
+	}
 }
 
 func TestPluginSurfaceDataVersionsHTTPWirePath(t *testing.T) {

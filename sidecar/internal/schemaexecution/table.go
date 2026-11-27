@@ -281,8 +281,12 @@ func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name st
 	if err != nil {
 		return nil, err
 	}
+	columns := []string{"*"}
+	if collection.Name == tablesCollectionName {
+		columns = append(columns, "typeof(schema_revision) AS schema_revision_type", "typeof(data_revision) AS data_revision_type")
+	}
 	var rows []dbx.NullStringMap
-	if err := db.Select("*").From(collection.Name).Where(where).OrderBy(order...).
+	if err := db.Select(columns...).From(collection.Name).Where(where).OrderBy(order...).
 		WithContext(ctx).All(&rows); err != nil {
 		return nil, err
 	}
@@ -294,7 +298,12 @@ func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name st
 			// dbx exposes the SQL column as text. Preserve the numeric literal
 			// for ParseStoredRevision before PocketBase normalizes invalid input.
 			if collection.Name == tablesCollectionName && (name == "schema_revision" || name == "data_revision") {
-				record.SetRaw(name, json.Number(row[name].String))
+				switch row[name+"_type"].String {
+				case "integer", "real":
+					record.SetRaw(name, json.Number(row[name].String))
+				default:
+					record.SetRaw(name, nil)
+				}
 				continue
 			}
 			var raw any

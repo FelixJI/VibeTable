@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 // ClockRevisionField retains the storage name for derived-cache transactions on the
@@ -212,16 +213,14 @@ func definitionVersion(
 	field v2.FieldDefinition,
 ) (int, error) {
 	if field.Formula != nil {
-		record, err := app.FindFirstRecordByFilter(
-			"vibetable_formulas",
-			"table_id={:table} && field_id={:field}",
-			dbx.Params{"table": tableID, "field": field.Identity.FieldID},
-		)
+		var raw any
+		err := app.DB().Select("version").From("vibetable_formulas").
+			Where(dbx.HashExp{"table_id": tableID, "field_id": field.Identity.FieldID}).Limit(1).Row(&raw)
 		if err != nil {
 			return 0, err
 		}
-		version, valid := storedTableCounter(record.GetRaw("version"))
-		if !valid || version < 1 || int64(int(version)) != version {
+		version, err := schemaexecution.ParseStoredRevision(raw, "schema.metadata.invalid_formula_version", "version")
+		if err != nil || version < 1 || int64(int(version)) != version {
 			return 0, errors.New("computed formula version is invalid")
 		}
 		return int(version), nil
