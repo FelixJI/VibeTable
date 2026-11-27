@@ -7,6 +7,7 @@ import { createSurfaceModel, type SurfaceModel } from "./surface-model.js";
 import { createSurfaceTransaction, type SurfaceTransaction } from "./surface-transaction.js";
 import { createSurfaceOutputClient, type SurfaceOutputClient } from "./surface-output.js";
 import { createSurfaceDatasets, type SurfaceDatasets } from "./surface-dataset.js";
+import { createSurfaceVersions, type DataVersions, type DataVersionsRequest } from "./surface-versions.js";
 
 export const SURFACE_API_CONTRACT = "vibetable.plugin-api.v1";
 export interface SurfaceMutationPlan {
@@ -84,6 +85,12 @@ export interface SurfaceCapabilities {
     /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
      * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
     unsubscribe(subscriptionId: string): Promise<void>;
+    /** Exact schema/data versions of up to 64 authorized sources in one authoritative transaction (#589).
+     * Pass the explicit projection each source is reused for and, optionally, the prior
+     * versions exactly as returned: the reply then also lists `stale` sources. No row,
+     * dataset page or cursor is read; any unauthorized source, field or malformed
+     * prior version fails the whole batch without partial results. */
+    versions(request: DataVersionsRequest, signal?: AbortSignal): Promise<DataVersions>;
     previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only"; readonly upsertKey?: string;
       readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] } | {
       /** Upsert matches rows by the approved unique key before preview starts; the key must be non-empty. */
@@ -487,7 +494,8 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
           throw new PluginCapabilityError("plugin_capability_invalid", "Upsert imports require a non-empty upsertKey.");
         return startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] });
       },
-      export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }) },
+      export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }),
+      versions: createSurfaceVersions(call) },
     file: { pickRead: options => pick(false, { mediaTypes: options?.mediaTypes ?? [] }) as Promise<ReadGrant | null>,
       pickWrite: options => pick(true, options) as Promise<WriteGrant | null> },
     attachments: { list: async target => (await call<{ items: SurfaceAttachment[] }>("attachments.list", target)).items,

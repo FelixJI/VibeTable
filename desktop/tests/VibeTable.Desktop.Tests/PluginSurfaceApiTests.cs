@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -121,6 +122,36 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("data.releaseCursor", "{\"cursor\":\"x\",\"collection\":\"orders\"}")));
         fixture.Surfaces.Close(fixture.Surface.SurfaceToken);
         Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("data.releaseCursor", JsonSerializer.Serialize(new { cursor = next }))));
+    }
+
+    [TestMethod]
+    public async Task DataVersionsIsExactlyOneNormalAuthorityRequestWithAClosedShapeAndNoFallback()
+    {
+        using var fixture = new Fixture();
+        const string version = """{"schemaRevision":"schema_0001","dataRevision":0,"clockPeriod":"","computed":{}}""";
+        const string parameters = """{"contract":"vibetable.plugin-data-versions.v1","sources":[{"collection":"tbl","fields":["id","name"]}],"versions":{"tbl":""" + version + """}}""";
+        fixture.Http.VersionsResultBody = """{"contract":"vibetable.plugin-data-versions.v1","versions":{"tbl":""" + version + """},"stale":[]}""";
+        // The frame request is forwarded verbatim (projections and prior versions
+        // included) as one ordinary authority request; nothing is resolved locally.
+        var result = await fixture.Call("data.versions", parameters);
+        Assert.AreEqual("vibetable.plugin-data-versions.v1", result.GetProperty("result").GetProperty("contract").GetString());
+        string forwarded = fixture.Http.Calls.Single().GetProperty("request").GetRawText();
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(parameters)!["sources"], JsonNode.Parse(forwarded)!["sources"]));
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(parameters)!["versions"], JsonNode.Parse(forwarded)!["versions"]));
+        // Authority rejections keep their own code: a permission failure is never
+        // reported as a missing capability and there is no second request.
+        fixture.Http.VersionsErrorCode = "plugin_read_denied";
+        Assert.AreEqual("plugin_read_denied", Code(await fixture.Call("data.versions", parameters)));
+        Assert.AreEqual(2, fixture.Http.Calls.Count);
+        // Shape violations fail before the authority is contacted.
+        foreach (string malformed in new[]
+        {
+            "[]", "{}", """{"contract":"vibetable.plugin-data-versions.v1"}""", """{"sources":[]}""",
+            """{"contract":"vibetable.plugin-data-versions.v1","sources":[],"extra":1}""",
+            """{"contract":"vibetable.plugin-data-versions.v1","contract":"x","sources":[]}""",
+        })
+            Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("data.versions", malformed)));
+        Assert.AreEqual(2, fixture.Http.Calls.Count);
     }
 
     [TestMethod]
@@ -1536,6 +1567,8 @@ public sealed class PluginSurfaceApiTests
         internal Func<CancellationToken, Task>? OnDatasetOpen { get; set; }
         internal string DatasetResultBody { get; set; } = DatasetBody;
         internal string? DatasetValidationCode { get; set; }
+        internal string? VersionsResultBody { get; set; }
+        internal string? VersionsErrorCode { get; set; }
         internal string? QueryResultBody { get; set; }
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
@@ -1566,6 +1599,7 @@ public sealed class PluginSurfaceApiTests
                 return new(HttpStatusCode.Conflict) { Content = new StringContent(transactionError) };
             if (method == "data.query" && OnQuery is { } onQuery) await onQuery(token);
             if (method == "dataset.open" && OnDatasetOpen is { } onDataset) await onDataset(token);
+            if (method == "data.versions" && VersionsErrorCode is { } versionsCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = versionsCode })) };
             if (method == "dataset.validate" && DatasetValidationCode is { } datasetCode) return new(HttpStatusCode.Conflict) { Content = new StringContent(JsonSerializer.Serialize(new { code = datasetCode })) };
             if (method == "mutation.commit" && OnCommit is { } onCommit)
             {
@@ -1591,6 +1625,7 @@ public sealed class PluginSurfaceApiTests
             {
                 "dataset.open" => DatasetResultBody,
                 "dataset.validate" => """{"valid":true}""",
+                "data.versions" when VersionsResultBody is not null => VersionsResultBody,
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
                 "model.catalog" when ModelCatalogBody is not null => ModelCatalogBody,

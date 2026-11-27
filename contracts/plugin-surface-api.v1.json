@@ -16,6 +16,7 @@
     "data.releaseCursor",
     "data.subscribe",
     "data.unsubscribe",
+    "data.versions",
     "dataset.open",
     "dataset.page",
     "dataset.summary",
@@ -79,6 +80,9 @@
     "pluginImportPlansTotal": 128,
     "ownedDataIoCancelAcknowledgements": 8,
     "attachmentStageRequestBytes": 2097152,
+    "dataVersionsSources": 64,
+    "dataVersionsFieldsPerSource": 64,
+    "dataVersionsKeyBytes": 128,
     "outputBytes": 33554432,
     "outputBlockBytes": 262144,
     "outputsPerSurface": 2,
@@ -98,6 +102,16 @@
     "export": "CSV from the exact immutable source rows and canonical fields, current authorization and versions rechecked before atomic file commit; existing native file picker and ordinary file authorization apply; no implicit newer query",
     "lifecycle": "opaque surface/workspace/session/installation-bound handle; release, cancel, retirement, expiry and stale authorization reclaim it; SDK pages finally and dispose release ownership; existing bounded subscriptions provide invalidation",
     "errors": ["plugin_dataset_stale", "plugin_dataset_limit", "plugin_dataset_pending", "plugin_dataset_computed_unsupported", "plugin_dataset_group_unsupported", "plugin_dataset_decimal_invalid", "plugin_dataset_decimal_overflow", "plugin_read_denied"]
+  },
+  "dataVersions": {
+    "contract": "vibetable.plugin-data-versions.v1",
+    "request": "contract plus 1-64 explicit sources {collection, fields} with canonical field IDs covering the plugin's actual entity projection, and optional versions keyed by exactly the requested collections; duplicate collections or fields, unknown keys, over-limit batches, relation paths and incomplete or null prior versions reject the whole batch before any read",
+    "response": "contract, versions keyed by collection reusing the dataset version vector (schemaRevision, JS-safe dataRevision <= 2^53-1, clockPeriod, computed keyed by canonical field ID for projected computed fields only), and stale (collections whose version differs) only when the request carried versions; versions are directly comparable by deep equality",
+    "snapshot": "current installation (action/entry binding, installation revision, model binding diagnostics) and every source's canonical schema/data versions are read in exactly one short PocketBase transaction with one pinned formula evaluation instant and one dependency-graph cache for the whole batch; only metadata is read, never business rows, dataset pages or cursors; unchanged versions cost no extra reads",
+    "authorization": "every requested source and every projected field must hold current read/query grants or the whole batch fails plugin_read_denied; the grant is checked before any existence lookup, so an unauthorized collection and a missing one fail identically; a narrowed grant never lets previously authorized columns be reused as unchanged",
+    "errors": ["plugin_capability_invalid", "plugin_read_denied", "plugin_query_failed", "plugin_cursor_stale", "plugin_api_unsupported"],
+    "oldHosts": "hosts without the method reject it explicitly with plugin_api_unsupported; permission, corruption and identity failures never claim a missing capability and never fall back to another resolution path",
+    "limits": { "sources": 64, "fieldsPerSource": 64, "keyBytes": 128, "dataRevision": 9007199254740991 }
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "model": {
