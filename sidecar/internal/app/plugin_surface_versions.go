@@ -12,6 +12,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 // data.versions (#589): one authoritative transaction resolves the current
@@ -47,7 +48,18 @@ type pluginVersionsRequest struct {
 	// Prior versions stay raw until validated: decoding straight into the
 	// dataset version struct would read a missing or null dataRevision as 0
 	// and let an incomplete version pass for a complete known one.
-	Versions map[string]json.RawMessage `json:"versions,omitempty"`
+	Versions pluginPriorVersions `json:"versions,omitempty"`
+}
+
+type pluginPriorVersions map[string]json.RawMessage
+
+func (prior *pluginPriorVersions) UnmarshalJSON(raw []byte) error {
+	var versions map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &versions); err != nil || versions == nil {
+		return errPluginVersionIncomplete
+	}
+	*prior = versions
+	return nil
 }
 
 // validatePluginVersionsRequest runs before any storage read: duplicates,
@@ -147,7 +159,7 @@ func executeSurfaceDataVersions(ctx context.Context, app core.App, source *query
 	}
 	// One evaluation instant and one dependency-graph cache for the whole batch:
 	// clock periods of all sources are derived from the same instant.
-	ctx = relatedcomputation.EnsureClockCache(pluginVersionsEvaluationTime(ctx))
+	ctx = relatedcomputation.WithClockCache(pluginVersionsEvaluationTime(ctx))
 	var result map[string]any
 	err = app.RunInTransaction(func(tx core.App) error {
 		// Authorization is resolved exactly once and held by this transaction.
@@ -190,18 +202,27 @@ func pluginSourceDataVersion(ctx context.Context, tx core.App, source *querysche
 	if grant == nil {
 		return version, pluginDataError("plugin_read_denied")
 	}
-	descriptor, schema, err := source.DescribeProjectionTable(ctx, tx, item.Collection, item.Fields)
-	if err != nil || schema.TableID != item.Collection || descriptor.DataRevision < 0 || descriptor.DataRevision > pluginVersionsMaxRevision {
+	table, err := schemaexecution.Describe(ctx, tx, item.Collection)
+	if err != nil || table.Snapshot.TableID != item.Collection {
 		return version, pluginDataError("plugin_query_failed")
 	}
-	allowed := pluginAllowed(*grant, schema)
+	allowed := pluginAllowed(*grant, table.Snapshot)
+	for _, id := range item.Fields {
+		if _, ok := allowed[id]; !ok {
+			return version, pluginDataError("plugin_read_denied")
+		}
+	}
+	descriptor, _, err := source.DescribeResolvedProjectionTable(ctx, tx, table, item.Fields)
+	if err != nil || descriptor.SchemaRevision == "" || descriptor.DataRevision < 0 || descriptor.DataRevision > pluginVersionsMaxRevision {
+		return version, pluginDataError("plugin_query_failed")
+	}
 	// Computed entries are keyed by canonical field ID; only projected computed
 	// fields appear and the map is always emitted so versions compare exactly.
 	computed := map[string]pluginDatasetComputedRevision{}
 	for _, id := range item.Fields {
 		field, ok := descriptor.Fields[allowed[id]]
-		if !ok || strings.Contains(id, ".") {
-			return version, pluginDataError("plugin_read_denied")
+		if !ok {
+			return version, pluginDataError("plugin_query_failed")
 		}
 		if field.ComputedEnvelope {
 			computed[id] = pluginDatasetComputedRevision{Definition: field.ComputedDefinitionVersion, Watermark: field.ComputedDependencyWatermark, Ready: field.ComputedReady, Status: field.ComputedStatus}

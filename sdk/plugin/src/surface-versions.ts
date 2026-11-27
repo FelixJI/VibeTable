@@ -27,9 +27,9 @@ export interface DataVersionsRequest {
   /** Prior versions keyed by exactly the requested collections, passed back exactly
    * as returned (every key present, never null: a missing dataRevision is not 0).
    * Omit to only read. When present the reply also carries `stale`. */
-  readonly versions?: Readonly<Record<string, DatasetVersion>>;
+  readonly versions?: Readonly<Record<string, DataVersion>>;
 }
-/** Same vector as `dataset` versions (`DatasetVersion`): directly comparable with `sameDataVersion`. */
+/** Versions returned by data.versions use canonical computed field IDs. */
 export type DataVersion = DatasetVersion & { readonly computed: NonNullable<DatasetVersion["computed"]> };
 type ComputedRevisions = NonNullable<DatasetVersion["computed"]>;
 export interface DataVersions {

@@ -413,6 +413,7 @@ func TestPluginSurfaceDataVersionsFortyTablesAndBatchLimits(t *testing.T) {
 	// null scalar must never be read as its Go zero value: a fresh table whose
 	// dataRevision really is 0 would then compare equal to an "unknown" one.
 	for name, raw := range map[string]string{
+		"null-prior":             "null",
 		"missing-data-revision":  `{"` + f.tables[0].id + `":{"schemaRevision":"x","clockPeriod":"c","computed":{}}}`,
 		"null-data-revision":     `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":null,"clockPeriod":"c","computed":{}}}`,
 		"fractional-revision":    `{"` + f.tables[0].id + `":{"schemaRevision":"x","dataRevision":0.5,"clockPeriod":"c","computed":{}}}`,

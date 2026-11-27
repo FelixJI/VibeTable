@@ -268,14 +268,15 @@ API 3.x 增量能力 `vibetable.plugin-data-versions.v1` 在**同一个权威事
 旧 Host 明确报 `plugin_api_unsupported`；权限、损坏或身份失败保留各自错误码，不回退到其它解析路径。
 
 ```ts
-const current = await api.data.versions({
-  contract: "vibetable.plugin-data-versions.v1",
+const request = {
+  contract: "vibetable.plugin-data-versions.v1" as const,
   sources: entities.map(entity => ({
     collection: entity.collection,
     // 显式传入该实体实际复用的字段投影；授权收窄后整批失败，而不是让旧列“看似未变”。
     fields: ["id", ...entity.fieldIds],
   })),
-}, signal);
+};
+const current = await api.data.versions(request, signal);
 // 之后每次复用前把上一轮 versions 原样回传（键必须完整、不能为 null）。
 const check = await api.data.versions({ ...request, versions: current.versions }, signal);
 if (check.stale!.length) await reload(check.stale!); // 仅 stale 列出的来源需要重读

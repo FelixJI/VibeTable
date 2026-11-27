@@ -68,6 +68,12 @@ func (source *Source) DescribeProjectionTable(ctx context.Context, app core.App,
 	if err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
 	}
+	return source.DescribeResolvedProjectionTable(relatedcomputation.WithClockCache(ctx), app, table, ids)
+}
+
+// DescribeResolvedProjectionTable builds the projection from the same schema used
+// to check field grants. The caller owns the transaction and its clock cache.
+func (source *Source) DescribeResolvedProjectionTable(ctx context.Context, app core.App, table schemaexecution.Table, ids []string) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	selected := map[string]bool{}
 	for _, id := range ids {
 		if field, ok := table.Field(id); ok {
@@ -79,7 +85,7 @@ func (source *Source) DescribeProjectionTable(ctx context.Context, app core.App,
 			selected[field.Identity.PhysicalName] = true
 		}
 	}
-	return source.describeSelectionTable(ctx, app, tableID, &table, selected)
+	return source.describeSelectionWithCache(relatedcomputation.EnsureClockCache(ctx), app, table.Snapshot.TableID, &table, selected)
 }
 
 // DescribeResolvedMatchTable describes only predicate and archive fields for
@@ -111,8 +117,11 @@ func (source *Source) describeSelectionTable(
 	resolved *schemaexecution.Table,
 	selected map[string]bool,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	return source.describeSelectionWithCache(relatedcomputation.WithClockCache(ctx), app, tableID, resolved, selected)
+}
+
+func (source *Source) describeSelectionWithCache(ctx context.Context, app core.App, tableID string, resolved *schemaexecution.Table, selected map[string]bool) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	ctx = formula.EnsureEvaluationTime(ctx)
-	ctx = relatedcomputation.WithClockCache(ctx)
 	if err := ctx.Err(); err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
