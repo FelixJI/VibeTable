@@ -250,8 +250,8 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 	if err != nil {
 		return Table{}, fmt.Errorf("re-read table execution binding: %w", err)
 	}
-	if int64(current.GetInt("schema_revision")) != initialSchemaRevision ||
-		int64(current.GetInt("data_revision")) != initialDataRevision ||
+	if current.GetRaw("schema_revision") != initial.GetRaw("schema_revision") ||
+		current.GetRaw("data_revision") != initial.GetRaw("data_revision") ||
 		snapshot.SchemaRevision != fmt.Sprintf("schema_%04d", initialSchemaRevision) ||
 		snapshot.DataRevision != initialDataRevision {
 		return Table{}, fmt.Errorf(
@@ -290,6 +290,13 @@ func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name st
 	for _, row := range rows {
 		record := core.NewRecord(collection)
 		for _, field := range collection.Fields {
+			name := field.GetName()
+			// dbx exposes the SQL column as text. Preserve the numeric literal
+			// for ParseStoredRevision before PocketBase normalizes invalid input.
+			if collection.Name == tablesCollectionName && (name == "schema_revision" || name == "data_revision") {
+				record.SetRaw(name, json.Number(row[name].String))
+				continue
+			}
 			var raw any
 			if value := row[field.GetName()]; value.Valid {
 				raw = value.String

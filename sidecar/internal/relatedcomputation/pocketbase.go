@@ -220,11 +220,11 @@ func definitionVersion(
 		if err != nil {
 			return 0, err
 		}
-		version := record.GetInt("version")
-		if version < 1 {
+		version, valid := storedTableCounter(record.GetRaw("version"))
+		if !valid || version < 1 || int64(int(version)) != version {
 			return 0, errors.New("computed formula version is invalid")
 		}
-		return version, nil
+		return int(version), nil
 	}
 	if field.Lookup == nil {
 		return 0, errors.New("field is not computed")

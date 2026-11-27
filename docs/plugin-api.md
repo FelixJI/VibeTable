@@ -276,10 +276,11 @@ const request = {
     fields: ["id", ...entity.fieldIds],
   })),
 };
-const current = await api.data.versions(request, signal);
-// 之后每次复用前，原样回传同一投影的上一轮 data.versions 响应中的 versions。
-const check = await api.data.versions({ ...request, versions: current.versions }, signal);
-if (check.stale!.length) await reload(check.stale!); // 仅 stale 列出的来源需要重读
+const before = await api.data.versions(request, signal);
+const rows = await loadRows(request.sources, signal); // 使用同一批绑定和投影读取业务行
+const after = await api.data.versions({ ...request, versions: before.versions }, signal);
+if (after.stale!.length) throw new Error("读取期间来源已变化，请重新读取");
+// 只有前后核对通过才保存 rows 及 after.versions。之后每次复用前再原样回传。
 ```
 
 - `versions` 按来源 collection 键入。每来源包含 `schemaRevision`、`dataRevision`、`clockPeriod` 和

@@ -167,6 +167,17 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 		!strings.Contains(err.Error(), "formula version is invalid") {
 		t.Fatalf("invalid formula version error = %v", err)
 	}
+	record, err := app.FindFirstRecordByData("vibetable_formulas", "field_id", "fld_formula")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Set("version", 1.5)
+	if err := app.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := relatedcomputation.DefinitionVersionForTest(app, "tbl_orders", formulaField); err == nil {
+		t.Fatal("fractional formula version was accepted as a complete revision")
+	}
 	plainField := v2.FieldDefinition{
 		Identity:    v2.FieldIdentity{FieldID: "fld_plain", PhysicalName: "plain"},
 		LogicalType: v2.LogicalText,
