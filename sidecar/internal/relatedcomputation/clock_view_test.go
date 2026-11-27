@@ -51,7 +51,7 @@ func (c *sqlCounter) count(substring string) int {
 
 // clockViewFixture serves the two policies of one transaction:
 //   - tbl_clock: a same-row chain (label reads now) and a static formula;
-//   - tbl_other: a lookup whose stored edges point at tbl_clock (tables set);
+//   - tbl_other: a lookup whose stored inputs point at tbl_clock;
 //   - tbl_edge: a cel-v1 formula f with a stored same-table edge to g (inputs
 //     set, tables empty).
 type clockViewFixture struct {
@@ -152,6 +152,26 @@ func TestClockCacheViewSharesProvenSameRowEntriesWithTheFullCache(t *testing.T) 
 // A full entry is taken over by the view only without any stored edge: neither
 // a related lookup (tables set) nor a same-table edge (inputs set) crosses
 // into the restricted policy, while a clean entry is reused without a read.
+func TestClockCacheViewRejectsLegacyRelationWithoutStoredInputs(t *testing.T) {
+	f := newClockViewFixture(t)
+	saveInternalRecord(t, f.app, "vibetable_formula_dependencies", map[string]any{
+		"source_table_id": "tbl_clock", "formula_field_id": "fld_static",
+		"relation_field_id": "fld_relation", "target_table_id": "tbl_other",
+		"target_field_id": "fld_lookup", "dependency_kind": "relation",
+	})
+	full := relatedcomputation.WithClockCache(f.context())
+	read := func(ctx context.Context) error {
+		_, err := relatedcomputation.ClockReferencesFor(ctx, f.app, "tbl_clock", f.fields, "fld_static")
+		return err
+	}
+	if err := read(full); err != nil {
+		t.Fatalf("full traversal of a legacy relation: %v", err)
+	}
+	if err := read(relatedcomputation.WithSameRowClockCacheView(full)); err == nil || !strings.Contains(err.Error(), "not same-row") {
+		t.Fatalf("same-row traversal admitted a legacy cross-table dependency: %v", err)
+	}
+}
+
 func TestClockCacheViewNeverTakesStoredEdgesBackFromTheFullCache(t *testing.T) {
 	f := newClockViewFixture(t)
 	base := relatedcomputation.WithClockCache(f.context())
@@ -168,7 +188,7 @@ func TestClockCacheViewNeverTakesStoredEdgesBackFromTheFullCache(t *testing.T) {
 	view := relatedcomputation.WithSameRowClockCacheView(base)
 	f.sql.reset()
 	if _, err := f.lookup(view); err == nil || !strings.Contains(err.Error(), "not same-row") {
-		t.Fatalf("view accepted a full entry with related tables: %v", err)
+		t.Fatalf("view accepted a lookup with stored cross-table inputs: %v", err)
 	}
 	if _, err := f.edge(view); err == nil || !strings.Contains(err.Error(), "not same-row") {
 		t.Fatalf("view accepted a full entry with stored inputs: %v", err)
@@ -224,7 +244,7 @@ func TestClockCacheAfterSameRowSharesOneCacheAcrossProjectionsAndLeavesOthersFre
 	}
 	third := relatedcomputation.WithClockCacheAfterSameRow(view)
 	f.sql.reset()
-	if refs, err := relatedcomputation.ClockReferencesFor(third, f.app, "tbl_clock", f.fields, "fld_label"); err != nil || len(refs) != 1 || f.sql.count("vibetable_computation_dependencies")+f.sql.count("vibetable_fields") != 0 {
+	if refs, err := relatedcomputation.ClockReferencesFor(third, f.app, "tbl_clock", f.fields, "fld_static"); err != nil || len(refs) != 0 || f.sql.count("vibetable_computation_dependencies")+f.sql.count("vibetable_fields") != 0 {
 		t.Fatalf("third projection re-read a resolved entry: %#v %v", refs, err)
 	}
 	// Plain and legacy callers: one fresh cache per description, as before.
@@ -241,7 +261,7 @@ func TestClockCacheAfterSameRowSharesOneCacheAcrossProjectionsAndLeavesOthersFre
 		}
 		b := relatedcomputation.WithClockCacheAfterSameRow(ctx)
 		f.sql.reset()
-		if _, err := f.label(b); err != nil || f.sql.count("vibetable_formulas") == 0 {
+		if _, err := f.label(b); err != nil || f.sql.count("vibetable_computation_dependencies") == 0 {
 			t.Fatalf("%s description shared a cache: %v", name, err)
 		}
 	}
