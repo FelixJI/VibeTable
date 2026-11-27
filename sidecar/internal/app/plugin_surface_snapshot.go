@@ -56,8 +56,39 @@ type pluginSnapshotRequest struct {
 	Binding *int64 `json:"binding,omitempty"`
 }
 
-func pluginSnapshotWildcard(grant *pluginReadGrant) bool {
-	return grant == nil || pluginHas(grant.Fields, "*") || pluginHas(grant.Fields, "$configured")
+// snapshotGrant is the only authority a snapshot reads a table under: the union
+// of the installation's read+query grants that resolve to the table and list
+// explicit fields only. Entries resolve exactly like the merged grant of
+// ordinary reads: the table's own entries, plus `$active` entries while the
+// table is the active table (requests always name a concrete table). An entry
+// carrying `*` or `$configured` is a field wildcard and is skipped whole: it
+// never denies the explicit entries next to it (the user's active table may
+// well be a model table whose manifest grant is `$active: *`), and alone it
+// authorizes nothing. Open, validate, the version vector, the authorization of
+// computed dependencies and the row guards all resolve this one grant, so a
+// wildcard can neither reject nor authorize a source. Losing active-table
+// permission for a field used by the query denies validation. Losing only
+// the id permission used for guards preserves the projection without guards.
+// Ordinary describe/query/versions keep the merged grant.
+func (installation pluginInstallation) snapshotGrant(table, active string) *pluginReadGrant {
+	var merged *pluginReadGrant
+	for _, grant := range installation.grants() {
+		if grant.Collection != table && !(grant.Collection == "$active" && table == active) {
+			continue
+		}
+		if !pluginHas(grant.Operations, "read") || !pluginHas(grant.Operations, "query") || pluginHas(grant.Fields, "*") || pluginHas(grant.Fields, "$configured") {
+			continue
+		}
+		if merged == nil {
+			merged = &pluginReadGrant{Collection: table, Operations: []string{"read", "query"}, outputFields: installation.ModelOutputFields, Fields: []string{}}
+		}
+		for _, field := range grant.Fields {
+			if !pluginHas(merged.Fields, field) {
+				merged.Fields = append(merged.Fields, field)
+			}
+		}
+	}
+	return merged
 }
 
 // snapshotUsedFields lists every field ID the query reads with exactly the
@@ -252,14 +283,15 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 	remainingRows, remainingBytes := pluginSnapshotRows, pluginSnapshotBytes
 	for _, item := range request.Sources {
 		r := item.Query
-		grant := installed.grant(r.Collection, active)
-		if pluginSnapshotWildcard(grant) {
+		grant := installed.snapshotGrant(r.Collection, active)
+		if grant == nil {
 			return nil, pluginDataError("plugin_read_denied")
 		}
 		// The version vector is the #589 vector verbatim: same authorization of
 		// the projection (including same-row formula closure), same pinned
-		// instant, same completeness rules.
-		version, err := pluginSourceDataVersion(ctx, tx, installed, active, pluginVersionsSource{Collection: r.Collection, Fields: r.Fields})
+		// instant, same completeness rules. It is computed under the very grant
+		// the rows below are read under, never the merged one.
+		version, err := pluginSourceDataVersionUnder(ctx, tx, grant, pluginVersionsSource{Collection: r.Collection, Fields: r.Fields})
 		if err != nil {
 			return nil, err
 		}
@@ -382,8 +414,8 @@ func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSu
 	}
 	for _, item := range request.Sources {
 		r := item.Query
-		grant := installed.grant(r.Collection, active)
-		if pluginSnapshotWildcard(grant) {
+		grant := installed.snapshotGrant(r.Collection, active)
+		if grant == nil {
 			return nil, pluginDataError("plugin_read_denied")
 		}
 		version, ok := known[r.Collection]
@@ -482,8 +514,8 @@ func snapshotSchemaRevisions(ctx context.Context, tx core.App, collections []str
 // authorization of every used field including same-row formula closure. It
 // also reports whether id is currently readable, i.e. row guards may be served.
 func pluginSnapshotProjectionCurrent(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, r pluginQueryRequest, version pluginDatasetVersion) (bool, error) {
-	grant := installed.grant(r.Collection, active)
-	if pluginSnapshotWildcard(grant) {
+	grant := installed.snapshotGrant(r.Collection, active)
+	if grant == nil {
 		return false, pluginDataError("plugin_read_denied")
 	}
 	table, err := schemaexecution.Describe(ctx, tx, r.Collection)

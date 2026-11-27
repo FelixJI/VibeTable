@@ -1093,3 +1093,415 @@ func TestPluginSurfaceIdOnlyTableServesTheSameRowGuardOnQueryAndSnapshot(t *test
 		}
 	}
 }
+
+// #590 后续：用户活动表同时是模型表时，清单的 $active:* 与模型的显式授权重叠，grantFor 把两者合并成
+// 带 * 的一个授权，snapshot.open 因此整批 plugin_read_denied。快照只以明确表、明确字段的 read/query 授权
+// 为依据：重叠的通配被忽略，模型字段与清单显式授予的扩展字段都能读出，并与同一投影的普通 data.query
+// 逐行逐守卫一致、版本向量与 data.versions 相同；未授权的同行计算依赖仍整批拒绝（通配不能替代依赖
+// 授权）；模型显式授权消失后的新读干净地拒绝、旧句柄因绑定记录变化报 stale；只剩通配字段时仍拒绝，
+// 而普通 data.query 在纯通配下保持既有；只剩 $active 的逐字段显式授权时沿用 grantFor 既有路径（当前
+// 活动表可读、不绑定模型），用户撤离活动表后续读与新 open 都干净地拒绝。
+func TestPluginSurfaceSnapshotActiveModelTableIgnoresOverlappingWildcardGrant(t *testing.T) {
+	f := newDataReadFixture(t, true)
+	ctx := context.Background()
+	table, mapped, replacement := f.mapped.TableID, f.mapped.FieldID, f.replacement.FieldID
+	extension := createSchemaProductField(t, f.pb, table, v2.LogicalText, "扩展字段", "snapshot-overlap-extension")
+	// 给种子行写入扩展字段的值，让正向读取有可观察的列值。
+	schema, err := schemaexecution.Describe(ctx, f.pb, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := f.pb.FindRecordsByFilter(schema.PhysicalName, "id != ''", "id", 0, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("seeded rows: %d %v", len(rows), err)
+	}
+	rows[0].Set(extension.Definition.Identity.PhysicalName, "扩展值")
+	rows[0].Set(extension.Definition.Value.Presence.PhysicalName, true)
+	if err = f.pb.Save(rows[0]); err != nil {
+		t.Fatal(err)
+	}
+	// 同行公式只引用 replacement 列。
+	dependent := createVersionsFormula(t, f.pb, table, "snapshot-overlap-dependent", "依赖公式", f.replacement.Definition.Identity.PhysicalName)
+	// 另一张表用于模拟用户撤离活动表。
+	lifecycle, err := schemacore.NewTableLifecycle(f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "另一张表", OperationID: "snapshot-overlap-other", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations := []string{"read", "query"}
+	// install 替换清单授权（$active:* 通配始终并存）并推进安装修订；bind 时经产品的 model.preview/commit
+	// 重新完成同一映射，使模型的显式授权（id + 映射字段）重新生效，不 bind 则新修订下没有完成的模型记录。
+	install := func(bind bool, fields ...string) {
+		t.Helper()
+		f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, []pluginReadGrant{
+			{Collection: "$active", Operations: operations, Fields: []string{"*"}},
+			{Collection: table, Operations: operations, Fields: fields},
+		})
+		if bind {
+			f.remap(t, mapped)
+		}
+	}
+	project := func(fields ...string) pluginSnapshotRequest {
+		return snapshotRequest(pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: table, Fields: fields})
+	}
+	legacy := func(fields ...string) map[string]any {
+		t.Helper()
+		result, err := f.call(t, "query", pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: table, Fields: fields})
+		if err != nil {
+			t.Fatalf("data.query %v: %v", fields, err)
+		}
+		return result
+	}
+	open := func(fields ...string) (map[string]any, string) {
+		t.Helper()
+		return f.snapshotCall(t, f.pb, "snapshot.open", project(fields...))
+	}
+	denied := func(step string, result map[string]any, code string) {
+		t.Helper()
+		if result != nil || code != "plugin_read_denied" {
+			t.Fatalf("%s returned %+v, %q", step, result, code)
+		}
+	}
+	// sameProjection 要求快照来源与同一投影的普通 data.query（仍按合并授权）逐行逐守卫一致。
+	sameProjection := func(step string, open map[string]any, fields ...string) map[string]any {
+		t.Helper()
+		source := snapshotSource(t, open, table)
+		queried := legacy(fields...)
+		if !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(queried["items"])) || !reflect.DeepEqual(snapshotGuards(source), queried["rowGuards"]) {
+			t.Fatalf("%s: snapshot diverged from data.query under the same projection: %+v vs %+v", step, source, queried)
+		}
+		return source
+	}
+	validate := func(request pluginSnapshotRequest, open map[string]any) (map[string]any, string) {
+		t.Helper()
+		return f.snapshotCall(t, f.pb, "snapshot.validate", snapshotEchoRequest(request, open))
+	}
+
+	// 重叠授权：按明确授权打开，模型字段与扩展字段都可读，守卫按 id 键入，绑定最新完成记录。
+	install(true, "id", extension.FieldID)
+	request := project("id", mapped, extension.FieldID)
+	handle, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if code != "" {
+		t.Fatalf("overlapping wildcard and explicit grants: %q", code)
+	}
+	items := sameProjection("overlapping grants", handle, "id", mapped, extension.FieldID)["items"].([]map[string]any)
+	if len(items) != 1 || items[0][mapped] != dataReadSeedValue || items[0][extension.FieldID] != "扩展值" {
+		t.Fatalf("model/extension values: %+v", items)
+	}
+	latest := f.latestCompleted(t).Seq
+	if seq, bound := snapshotBinding(t, handle); !bound || seq != latest {
+		t.Fatalf("binding %d (%v) is not the latest completed record %d", seq, bound, latest)
+	}
+	// 版本向量与同一投影的 data.versions（仍按合并授权）逐字相同；validate 原样回传有效且 identity 为真。
+	versions, code := f.snapshotCall(t, f.pb, "data.versions", versionsRequest([]pluginVersionsSource{{Collection: table, Fields: []string{"id", mapped, extension.FieldID}}}, nil))
+	if code != "" || !reflect.DeepEqual(handle["versions"], versions["versions"]) {
+		t.Fatalf("snapshot versions %+v differ from data.versions %+v (%q)", handle["versions"], versions["versions"], code)
+	}
+	if result, code := validate(request, handle); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table] != true {
+		t.Fatalf("validate: %+v %q", result, code)
+	}
+	// 未授权的同行计算依赖：公式本身已明确授予，但它依赖的 replacement 列没有；通配不能替代依赖授权。
+	install(true, "id", extension.FieldID, dependent.Identity.FieldID)
+	result, code := open("id", dependent.Identity.FieldID)
+	denied("ungranted formula dependency", result, code)
+	// 依赖列也明确授予后，同一投影读出计算值，版本向量带该公式的计算条目。
+	install(true, "id", extension.FieldID, dependent.Identity.FieldID, replacement)
+	computed, code := open("id", dependent.Identity.FieldID)
+	if code != "" {
+		t.Fatalf("granted formula dependency: %q", code)
+	}
+	source := sameProjection("granted dependency", computed, "id", dependent.Identity.FieldID)
+	if !reflect.DeepEqual(source["computedFields"], []string{dependent.Identity.FieldID}) || len(computed["versions"].(map[string]pluginDatasetVersion)[table].Computed) != 1 {
+		t.Fatalf("computed projection: %+v / %+v", source["computedFields"], computed["versions"])
+	}
+	// 模型显式授权消失：安装修订推进后没有完成的模型记录。映射字段的新读干净地拒绝（通配不补位），
+	// 旧句柄 validate 报 stale 且不返回部分结果；扩展字段仍按明确授权可读，但不再绑定模型记录。
+	request, handle = project("id", mapped, extension.FieldID), nil
+	if handle, code = open("id", mapped, extension.FieldID); code != "" {
+		t.Fatalf("before the model grant disappears: %q", code)
+	}
+	install(false, "id", extension.FieldID, dependent.Identity.FieldID, replacement)
+	result, code = open("id", mapped, extension.FieldID)
+	denied("model field after its explicit grant disappeared", result, code)
+	if result, code := validate(request, handle); result != nil || code != "plugin_snapshot_stale" {
+		t.Fatalf("stale handle: %+v %q", result, code)
+	}
+	still, code := open("id", extension.FieldID)
+	if code != "" {
+		t.Fatalf("extension field after the model grant disappeared: %q", code)
+	}
+	if pairs := sameProjection("extension only", still, "id", extension.FieldID)["rowGuards"].([]any); len(pairs) != 1 || pairs[0] == nil {
+		t.Fatalf("row guards without a model binding: %+v", pairs)
+	}
+	if _, bound := snapshotBinding(t, still); bound {
+		t.Fatal("extension-only snapshot bound to a model record")
+	}
+	// 只剩通配字段：表上没有明确字段授权，任何投影都拒绝。
+	f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"*"}}})
+	result, code = open("id", extension.FieldID)
+	denied("field wildcard alone", result, code)
+	result, code = open("id")
+	denied("field wildcard alone, id", result, code)
+	// 只剩 $active 的逐字段显式授权：原 grantFor 就能单独满足当前活动表，这条已支持的路径保留——不绑定
+	// 模型记录即可读 id + 扩展字段，模型字段仍需模型授权，通配不参与。
+	f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"id", extension.FieldID}}})
+	result, code = open("id", mapped, extension.FieldID)
+	denied("$active explicit fields do not cover the model field", result, code)
+	handle, code = open("id", extension.FieldID)
+	if code != "" {
+		t.Fatalf("$active explicit fields on the active table: %q", code)
+	}
+	if pairs := sameProjection("$active explicit fields", handle, "id", extension.FieldID)["rowGuards"].([]any); len(pairs) != 1 || pairs[0] == nil {
+		t.Fatalf("row guards under $active explicit fields: %+v", pairs)
+	}
+	if _, bound := snapshotBinding(t, handle); bound {
+		t.Fatal("$active snapshot bound to a model record")
+	}
+	// Go 收到不同的 activeCollection（WPF Host 会先对插件报 plugin_session_stale）：$active 不再解析到这张表，
+	// 用到 $active 所授 id 的句柄续读与新 open 都干净地拒绝。
+	f.input.ActiveCollection = other.TableID
+	if result, code = validate(project("id", extension.FieldID), handle); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("validate after leaving the active table: %+v %q", result, code)
+	}
+	result, code = open("id", extension.FieldID)
+	denied("open after leaving the active table", result, code)
+	f.input.ActiveCollection = table
+	// 普通 data.query 在纯通配下照常可读：合并授权保持既有。
+	f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"*"}}})
+	if items := legacy("id", mapped, extension.FieldID)["items"].([]any); len(items) != 1 {
+		t.Fatalf("data.query under a pure wildcard: %+v", items)
+	}
+}
+
+// 普通表上的通配规则（活动表即来源表，没有模型）：$active:* 与明确授权并存时按明确授权打开且与
+// data.query 一致；通配不补明确授权没有的列，混合通配条目里独有的字段也不补权；$active 的逐字段显式授权
+// 与同表授权共同生效（原 grantFor 路径保留），Go 收到不同 activeCollection 后按新活动表重解析：用到 id 的
+// 投影续读拒绝、只失去 id 的投影 validate 仍为 valid/identity false（含经慢路径重算的计算投影），依赖只经
+// $active 授予的计算投影续读拒绝；明确表上的字段通配、缺少 query 的授权、纯通配都拒绝，而普通
+// describe/query/versions 在纯通配下保持既有；明确授权收窄或消失后，已打开句柄的 validate 与新 open 都
+// 干净地拒绝。
+func TestPluginSurfaceSnapshotWildcardGrantsNeverAuthorizeOrdinarySources(t *testing.T) {
+	f := newVersionsFixture(t, 2)
+	table := f.tables[0]
+	operations := []string{"read", "query"}
+	wildcard := pluginReadGrant{Collection: "$active", Operations: operations, Fields: []string{"*"}}
+	explicit := func(fields ...string) pluginReadGrant {
+		return pluginReadGrant{Collection: table.id, Operations: operations, Fields: fields}
+	}
+	open := func(fields ...string) (map[string]any, string) {
+		t.Helper()
+		return f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(snapshotQuery(table, fields...)))
+	}
+	denied := func(step string, result map[string]any, code string) {
+		t.Helper()
+		if result != nil || code != "plugin_read_denied" {
+			t.Fatalf("%s returned %+v, %q", step, result, code)
+		}
+	}
+	// snapshot 辅助只是把方法名与请求交给 surface API，这里也用来调用普通的 data.* 方法。
+	call := func(method string, request any) (map[string]any, string) {
+		t.Helper()
+		return f.snapshot(t, f.pb, method, request)
+	}
+	projection := snapshotQuery(table, "id", table.nameID)
+
+	// 重叠：按明确授权打开，逐行逐守卫等于普通 data.query（后者仍按合并授权），validate 为真。
+	f.regrant(t, []pluginReadGrant{wildcard, explicit("id", table.nameID)})
+	handle, code := open("id", table.nameID)
+	if code != "" {
+		t.Fatalf("overlapping wildcard and explicit grants: %q", code)
+	}
+	items, guards := f.legacyQuery(t, f.pb, projection, 2)
+	if source := snapshotSource(t, handle, table.id); !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) {
+		t.Fatalf("snapshot diverged from data.query: %+v", source)
+	}
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(projection), handle)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != true {
+		t.Fatalf("validate: %+v %q", result, code)
+	}
+	// 通配不补明确授权没有的列。
+	result, code := open("id", table.nameID, table.secretID)
+	denied("ungranted column next to a wildcard", result, code)
+	// $active 的逐字段显式授权与同表授权共同生效（原 grantFor 路径保留）：id 来自 $active、name 来自表条目，
+	// 并集打开且逐行逐守卫等于普通 data.query，守卫按 id 键入，validate 的 identity 为真。
+	f.regrant(t, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"id"}}, explicit(table.nameID)})
+	union, code := open("id", table.nameID)
+	if code != "" {
+		t.Fatalf("$active explicit fields next to a table grant: %q", code)
+	}
+	items, guards = f.legacyQuery(t, f.pb, projection, 2)
+	if source := snapshotSource(t, union, table.id); !reflect.DeepEqual(fmt.Sprint(source["items"]), fmt.Sprint(items)) || !reflect.DeepEqual(snapshotGuards(source), guards) || len(guards) != 1 {
+		t.Fatalf("$active union diverged from data.query: %+v", source)
+	}
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(projection), union)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != true {
+		t.Fatalf("validate: %+v %q", result, code)
+	}
+	// 只投影 name 的句柄在活动表下同样按 id 键入守卫（identity 为真）。
+	plain, code := open(table.nameID)
+	if code != "" {
+		t.Fatalf("name-only projection on the active table: %q", code)
+	}
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(snapshotQuery(table, table.nameID)), plain)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != true {
+		t.Fatalf("validate on the active table: %+v %q", result, code)
+	}
+	// Go 收到不同的 activeCollection（WPF Host 把 activeCollection 绑在会话身份上，绑定变化先对插件报
+	// plugin_session_stale，不会走到这里）：$active 不再解析到这张表。用到 id 的投影续读与需要 id 的新 open
+	// 都拒绝；表自己的 name 授权仍可读，只失去 id 的句柄 validate 仍为 valid 且 identity 为 false（守卫不再下发）。
+	f.input.ActiveCollection = f.tables[1].id
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(projection), union)); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("validate after leaving the active table: %+v %q", result, code)
+	}
+	result, code = open("id", table.nameID)
+	denied("open after leaving the active table", result, code)
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(snapshotQuery(table, table.nameID)), plain)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != false {
+		t.Fatalf("validate after losing only id: %+v %q", result, code)
+	}
+	bare, code := open(table.nameID)
+	if code != "" {
+		t.Fatalf("table grant after leaving the active table: %q", code)
+	}
+	if pairs := snapshotSource(t, bare, table.id)["rowGuards"].([]any); len(pairs) != 1 || pairs[0] != nil {
+		t.Fatalf("row guards without the id grant: %+v", pairs)
+	}
+	if result, code := call("snapshot.validate", snapshotEchoRequest(snapshotRequest(snapshotQuery(table, table.nameID)), bare)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != false {
+		t.Fatalf("validate: %+v %q", result, code)
+	}
+	f.input.ActiveCollection = table.id
+	// 明确表上的字段通配被忽略，只剩它时拒绝；授权缺少 query 同样不是依据。
+	f.regrant(t, []pluginReadGrant{explicit("*")})
+	result, code = open("id")
+	denied("field wildcard on the explicit table", result, code)
+	f.regrant(t, []pluginReadGrant{wildcard, {Collection: table.id, Operations: []string{"read"}, Fields: []string{"id", table.nameID}}})
+	result, code = open("id", table.nameID)
+	denied("grant without query", result, code)
+	// 混合通配条目里独有的字段不能补权：条目因含 * 整体被跳过，其中的字段不构成授权（表条目与 $active 条目
+	// 同理），也不拖累旁边仍明确的条目。
+	f.regrant(t, []pluginReadGrant{wildcard, {Collection: table.id, Operations: operations, Fields: []string{"*", table.nameID}}, explicit("id")})
+	result, code = open("id", table.nameID)
+	denied("field unique to a mixed wildcard entry", result, code)
+	f.regrant(t, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"*", "id"}}, explicit(table.nameID)})
+	result, code = open("id", table.nameID)
+	denied("id unique to a mixed $active wildcard entry", result, code)
+	if kept, code := open(table.nameID); code != "" || len(snapshotGuards(snapshotSource(t, kept, table.id))) != 0 {
+		t.Fatalf("explicit entry next to a mixed wildcard entry: %+v %q", kept, code)
+	}
+	// 纯通配：快照拒绝，普通 describe/query/versions 保持既有（合并授权照常生效）。
+	f.regrant(t, []pluginReadGrant{wildcard})
+	result, code = open("id")
+	denied("pure wildcard", result, code)
+	result, code = open(table.nameID)
+	denied("pure wildcard name", result, code)
+	if items, _ := f.legacyQuery(t, f.pb, projection, 2); len(items) != 1 {
+		t.Fatalf("data.query under a pure wildcard: %+v", items)
+	}
+	if result, code := call("data.versions", versionsRequest([]pluginVersionsSource{{Collection: table.id, Fields: []string{"id", table.nameID, table.secretID}}}, nil)); code != "" || len(result["versions"].(map[string]pluginDatasetVersion)) != 1 {
+		t.Fatalf("data.versions under a pure wildcard: %+v %q", result, code)
+	}
+	if result, code := call("data.describe", pluginDescribeRequest{Accepts: []string{pluginDataContract}, Collection: table.id}); code != "" || len(result["fields"].([]any)) != 3 {
+		t.Fatalf("data.describe under a pure wildcard: %+v %q", result, code)
+	}
+	// 明确授权收窄或消失后的后续读取：已打开句柄的 validate 与新 open 都干净地拒绝。
+	f.regrant(t, []pluginReadGrant{wildcard, explicit("id", table.nameID)})
+	if handle, code = open("id", table.nameID); code != "" {
+		t.Fatalf("before the explicit grant narrows: %q", code)
+	}
+	echo := snapshotEchoRequest(snapshotRequest(projection), handle)
+	f.regrant(t, []pluginReadGrant{wildcard, explicit("id")})
+	if result, code = call("snapshot.validate", echo); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("narrowed grant, old handle: %+v %q", result, code)
+	}
+	result, code = open("id", table.nameID)
+	denied("narrowed grant, fresh open", result, code)
+	if narrowed, code := open("id"); code != "" || len(snapshotGuards(snapshotSource(t, narrowed, table.id))) != 1 {
+		t.Fatalf("id under the narrowed grant: %+v %q", narrowed, code)
+	}
+	f.regrant(t, []pluginReadGrant{wildcard})
+	if result, code = call("snapshot.validate", echo); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("removed grant, old handle: %+v %q", result, code)
+	}
+	result, code = open("id")
+	denied("removed grant, fresh open", result, code)
+	// 计算依赖经慢路径重算：含公式的投影不走快速路径，validate 以切换后的显式授权重做同行依赖闭包。
+	dependent := createVersionsFormula(t, f.pb, table.id, "snapshot-wildcard-dependent", "依赖公式", table.secretPhysical).Identity.FieldID
+	computedProjection := snapshotQuery(table, dependent)
+	// 依赖列 secret 只经 $active 授予：切换后依赖不再有授权，续读与新 open 都拒绝。
+	f.regrant(t, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"id", table.secretID}}, explicit(dependent)})
+	computed, code := open(dependent)
+	if code != "" || len(snapshotSource(t, computed, table.id)["computedFields"].([]string)) != 1 {
+		t.Fatalf("computed projection via $active: %+v %q", computed, code)
+	}
+	computedEcho := snapshotEchoRequest(snapshotRequest(computedProjection), computed)
+	if result, code := call("snapshot.validate", computedEcho); code != "" || result["identity"].(map[string]bool)[table.id] != true {
+		t.Fatalf("validate computed projection on the active table: %+v %q", result, code)
+	}
+	f.input.ActiveCollection = f.tables[1].id
+	if result, code := call("snapshot.validate", computedEcho); result != nil || code != "plugin_read_denied" {
+		t.Fatalf("computed dependency via $active after leaving the active table: %+v %q", result, code)
+	}
+	result, code = open(dependent)
+	denied("computed open via $active after leaving the active table", result, code)
+	// 依赖列在表条目上：切换后只失去 id，计算投影 validate 仍为 valid、identity 为 false。
+	f.input.ActiveCollection = table.id
+	f.regrant(t, []pluginReadGrant{{Collection: "$active", Operations: operations, Fields: []string{"id"}}, explicit(dependent, table.secretID)})
+	if computed, code = open(dependent); code != "" {
+		t.Fatalf("computed projection with the dependency on the table: %q", code)
+	}
+	computedEcho = snapshotEchoRequest(snapshotRequest(computedProjection), computed)
+	f.input.ActiveCollection = f.tables[1].id
+	if result, code := call("snapshot.validate", computedEcho); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != false {
+		t.Fatalf("computed projection after losing only id: %+v %q", result, code)
+	}
+	f.input.ActiveCollection = table.id
+}
+
+// snapshotGrant 是快照唯一的授权依据：并集解析到该表（表自身条目，以及该表为活动表时的 $active 条目，
+// 与 grantFor 一致）、明确字段且同时含 read 与 query 的授权条目；含 * 或 $configured 的条目、缺少 query 的
+// 条目整体忽略，其中独有的字段也不补权；普通读取的合并授权不受影响。
+func TestPluginSnapshotGrantSkipsOnlyWildcardFieldEntries(t *testing.T) {
+	operations := []string{"read", "query"}
+	var installed pluginSurfaceInstallation
+	installed.Manifest.Permissions.Data = []pluginReadGrant{
+		{Collection: "$active", Operations: operations, Fields: []string{"*", "active_wildcard_only"}},
+		{Collection: "$active", Operations: operations, Fields: []string{"active_read"}},
+		{Collection: "items", Operations: operations, Fields: []string{"*", "table_wildcard_only"}},
+		{Collection: "items", Operations: []string{"read"}, Fields: []string{"id"}},
+		{Collection: "items", Operations: operations, Fields: []string{"id", "private_read"}},
+		{Collection: "items", Operations: operations, Fields: []string{"$configured"}},
+	}
+	installed.ModelGrants = []pluginReadGrant{{Collection: "items", Operations: operations, Fields: []string{"id", "name"}}}
+	// items 是活动表：$active 的显式字段、表自身的显式字段与模型授权并集；通配条目与缺少 query 的条目不参与，
+	// 混合通配条目里独有的字段也不补权。
+	grant := installed.snapshotGrant("items", "items")
+	if grant == nil || grant.Collection != "items" || len(grant.Fields) != 4 || !pluginHas(grant.Fields, "active_read") || !pluginHas(grant.Fields, "id") || !pluginHas(grant.Fields, "private_read") || !pluginHas(grant.Fields, "name") || pluginHas(grant.Fields, "*") || pluginHas(grant.Fields, "active_wildcard_only") || pluginHas(grant.Fields, "table_wildcard_only") || !pluginHas(grant.Operations, "read") || !pluginHas(grant.Operations, "query") {
+		t.Fatalf("explicit union on the active table: %+v", grant)
+	}
+	// items 不再是活动表（或没有活动表）：$active 条目不再解析到它，只剩表自身与模型的显式字段。
+	for _, active := range []string{"other", ""} {
+		if grant := installed.snapshotGrant("items", active); grant == nil || len(grant.Fields) != 3 || pluginHas(grant.Fields, "active_read") || !pluginHas(grant.Fields, "name") {
+			t.Fatalf("explicit union with active %q: %+v", active, grant)
+		}
+	}
+	if installed.snapshotGrant("other", "items") != nil {
+		t.Fatal("a grant for another table resolved")
+	}
+	// 普通读取的合并授权保持既有：仍含 $active 的 * 、混合通配条目里独有的字段与全部显式字段。
+	merged := installed.grant("items", "items")
+	if merged == nil || !pluginHas(merged.Fields, "*") || !pluginHas(merged.Fields, "active_wildcard_only") || !pluginHas(merged.Fields, "table_wildcard_only") || !pluginHas(merged.Fields, "active_read") || !pluginHas(merged.Fields, "name") || !pluginHas(merged.Fields, "private_read") {
+		t.Fatalf("merged read grant: %+v", merged)
+	}
+	// 只剩字段通配（$active 与表自身的混合通配条目）：普通读取仍有授权（含其中独有的字段），快照没有。
+	installed.Manifest.Permissions.Data = append(append([]pluginReadGrant{}, installed.Manifest.Permissions.Data[:1]...), installed.Manifest.Permissions.Data[2:4]...)
+	installed.ModelGrants = nil
+	if merged := installed.grant("items", "items"); merged == nil || !pluginHas(merged.Fields, "*") {
+		t.Fatalf("wildcard-only read grant: %+v", merged)
+	}
+	if grant := installed.snapshotGrant("items", "items"); grant != nil {
+		t.Fatalf("wildcard-only snapshot grant: %+v", grant)
+	}
+	installed.Manifest.Permissions.Data = nil
+	if installed.grant("items", "items") != nil || installed.snapshotGrant("items", "items") != nil {
+		t.Fatal("a grant without any entry resolved")
+	}
+}

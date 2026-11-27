@@ -387,7 +387,16 @@ try {
   行/字节/句柄预算报 `plugin_snapshot_limit`；ids 超限报 `plugin_query_limit`；形状错误（未知键、重复来源、
   `$` 别名、关系路径、显式 null、来源 query 内出现 `cursor`/`pageSize`（SDK 本地以同一错误码先行拒绝，不上 wire）、
   open 带 versions / open 带 binding / validate 缺 versions / validate 缺 binding）报 `plugin_capability_invalid`。
-  授权与计算规则与 `data.versions` 相同（通配授权整批 `plugin_read_denied`，未就绪计算 `plugin_query_failed`）。
+  授权与计算规则与 `data.versions` 相同（未就绪计算 `plugin_query_failed`），但快照只以**明确字段**的 read/query 授权为依据：
+  按来源的具体表解析（表自身条目，加上该表为当前活动表时的 `$active` 条目，与普通读取的合并规则一致；请求里的
+  `collection` 始终是具体表），含 `*`/`$configured` 的条目整体忽略（其中独有的字段也不补权）——它既不会与同表明确
+  授权合并后整批 `plugin_read_denied`（活动表同时是模型表、清单给的是 `$active: *` 时，按模型的显式授权打开），
+  单独存在时也不构成授权。open、validate、版本向量、同行公式依赖授权与行守卫都基于这同一份授权；普通
+  `describe`/`query`/`data.versions` 仍按合并授权。
+  活动表切换：WPF Host 把 `activeCollection` 绑在会话身份上，绑定变化先对插件报 `plugin_session_stale`；只有 Go 实际
+  收到不同 `activeCollection` 时才按新活动表重新解析——用到因此失去显式授权字段的投影（含经慢路径重算的同行公式
+  依赖）在 open 与 validate 都报 `plugin_read_denied`，仅失去 `id` 的投影 validate 仍为 `valid: true`、`identity: false`
+  （守卫不再下发）。
 - 旧 Host 报 `plugin_api_unsupported`；SDK 不做任何本地模拟，离线宿主需显式 `snapshotAdapter`。
 - 与 `data.versions` 的关系：`snapshot.versions` 深等于同一时刻、同一投影的 `data.versions` 回复；快照
   关闭后需要复用已加载数据时，仍按 `data.versions` 回传核对。
