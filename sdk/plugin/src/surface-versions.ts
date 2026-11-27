@@ -70,8 +70,8 @@ function validVersion(value: unknown, fields?: readonly string[]): value is Data
     typeof value.clockPeriod === "string" && object(value.computed) &&
     Object.entries(value.computed).every(([field, entry]) => field.length > 0 && (fields === undefined || fields.includes(field)) &&
       object(entry) && exactKeys(entry, ["definition", "watermark", "ready", "status"]) &&
-      typeof entry.definition === "number" && Number.isSafeInteger(entry.definition) && entry.definition >= 0 && typeof entry.watermark === "string" &&
-      typeof entry.ready === "boolean" && typeof entry.status === "string");
+      typeof entry.definition === "number" && Number.isSafeInteger(entry.definition) && entry.definition > 0 &&
+      typeof entry.watermark === "string" && entry.watermark.length > 0 && entry.ready === true && typeof entry.status === "string");
 }
 export function createSurfaceVersions(call: Call): SurfaceDataVersions {
   return async (request, signal) => {

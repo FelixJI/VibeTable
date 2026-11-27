@@ -295,6 +295,7 @@ if (after.stale!.length) throw new Error("读取期间来源已变化，请重�
   Lookup 或无法确认依赖授权的公式（例如跨表公式）整批报 `plugin_query_computed_unsupported`。
   已授权但表或版本元数据不可用时报 `plugin_query_failed`，安装修订过期报 `plugin_cursor_stale`。
   当前模型绑定与宿主字段不再匹配时，整批报 `plugin_model_binding_stale`。
+  投影公式尚未就绪或缺少有效的定义版本时，整批报 `plugin_query_failed`；读取方可在计算完成后重新核对。
 - 整批固定一次公式求值时刻并共享依赖图缓存。`clockPeriod` 只反映投影中公式及其同表依赖引用的时钟。
   单个来源没有时钟引用时为 `""`。
 

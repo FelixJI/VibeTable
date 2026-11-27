@@ -95,7 +95,7 @@ func validatePluginVersionsRequest(request pluginVersionsRequest) (map[string]pl
 			return nil, invalid
 		}
 		for id, computed := range version.Computed {
-			if !fields[id] || !pluginComputedDefinitionValid(computed.Definition) {
+			if !fields[id] || !computed.Ready || computed.Watermark == "" || !pluginComputedDefinitionValid(computed.Definition) {
 				return nil, invalid
 			}
 		}
@@ -108,13 +108,13 @@ func validatePluginVersionsRequest(request pluginVersionsRequest) (map[string]pl
 }
 
 func pluginComputedDefinitionValid(definition int) bool {
-	return definition >= 0 && int64(definition) <= pluginVersionsMaxRevision
+	return definition > 0 && int64(definition) <= pluginVersionsMaxRevision
 }
 
 // decodePluginDatasetVersion accepts a prior version only as the host emitted
 // it: every key present, non-null and nothing else, recursively for computed
-// entries. The result reuses the dataset version struct so callers
-// can compare successive data.versions responses.
+// entries. The result reuses the dataset version struct so both contracts
+// compare the same exact vector.
 func decodePluginDatasetVersion(raw json.RawMessage) (pluginDatasetVersion, error) {
 	var version pluginDatasetVersion
 	object, err := pluginStrictObject(raw, "schemaRevision", "dataRevision", "clockPeriod", "computed")
@@ -236,7 +236,7 @@ func pluginSourceDataVersion(ctx context.Context, tx core.App, installed pluginS
 			continue
 		}
 		descriptor, err := queryschema.DescribeComputedField(ctx, tx, table, field)
-		if err != nil || !pluginComputedDefinitionValid(descriptor.ComputedDefinitionVersion) {
+		if err != nil || !descriptor.ComputedReady || descriptor.ComputedDependencyWatermark == "" || !pluginComputedDefinitionValid(descriptor.ComputedDefinitionVersion) {
 			return version, pluginDataError("plugin_query_failed")
 		}
 		clock, err := relatedcomputation.ClockReferencesFor(ctx, tx, snapshot.TableID, snapshot.Fields, id)

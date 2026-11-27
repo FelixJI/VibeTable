@@ -792,6 +792,23 @@ func TestPluginSurfaceDataVersionsComputedEntriesShareOneClockPeriod(t *testing.
 	if code != "" || fmt.Sprint(compared["stale"]) != fmt.Sprint([]string{f.tables[0].id, f.tables[1].id}) {
 		t.Fatalf("clock change must mark every computed source stale: %+v %q", compared["stale"], code)
 	}
+	runtime, err := f.pb.FindFirstRecordByData("vibetable_formulas", "field_id", minute[1].Identity.FieldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Set("status", "backfilling")
+	if err := f.pb.Save(runtime); err != nil {
+		t.Fatal(err)
+	}
+	if incomplete, code := f.callCtx(ctx, t, f.pb, versionsRequest(sources, prior)); incomplete != nil || code != "plugin_query_failed" {
+		t.Fatalf("unready projection returned %+v, %q", incomplete, code)
+	}
+	if err := f.pb.Delete(runtime); err != nil {
+		t.Fatal(err)
+	}
+	if incomplete, code := f.callCtx(ctx, t, f.pb, versionsRequest(sources, prior)); incomplete != nil || code != "plugin_query_failed" {
+		t.Fatalf("missing runtime returned %+v, %q", incomplete, code)
+	}
 }
 
 func TestPluginSurfaceDataVersionsReuseProgressCacheAndModelGrantsInsideTransaction(t *testing.T) {
