@@ -250,8 +250,8 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 	if err != nil {
 		return Table{}, fmt.Errorf("re-read table execution binding: %w", err)
 	}
-	if int64(current.GetInt("schema_revision")) != initialSchemaRevision ||
-		int64(current.GetInt("data_revision")) != initialDataRevision ||
+	if current.GetRaw("schema_revision") != initial.GetRaw("schema_revision") ||
+		current.GetRaw("data_revision") != initial.GetRaw("data_revision") ||
 		snapshot.SchemaRevision != fmt.Sprintf("schema_%04d", initialSchemaRevision) ||
 		snapshot.DataRevision != initialDataRevision {
 		return Table{}, fmt.Errorf(
@@ -281,8 +281,12 @@ func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name st
 	if err != nil {
 		return nil, err
 	}
+	columns := []string{"*"}
+	if collection.Name == tablesCollectionName {
+		columns = append(columns, "typeof(schema_revision) AS schema_revision_type", "typeof(data_revision) AS data_revision_type")
+	}
 	var rows []dbx.NullStringMap
-	if err := db.Select("*").From(collection.Name).Where(where).OrderBy(order...).
+	if err := db.Select(columns...).From(collection.Name).Where(where).OrderBy(order...).
 		WithContext(ctx).All(&rows); err != nil {
 		return nil, err
 	}
@@ -290,6 +294,18 @@ func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name st
 	for _, row := range rows {
 		record := core.NewRecord(collection)
 		for _, field := range collection.Fields {
+			name := field.GetName()
+			// dbx exposes the SQL column as text. Preserve the numeric literal
+			// for ParseStoredRevision before PocketBase normalizes invalid input.
+			if collection.Name == tablesCollectionName && (name == "schema_revision" || name == "data_revision") {
+				switch row[name+"_type"].String {
+				case "integer", "real":
+					record.SetRaw(name, json.Number(row[name].String))
+				default:
+					record.SetRaw(name, nil)
+				}
+				continue
+			}
 			var raw any
 			if value := row[field.GetName()]; value.Valid {
 				raw = value.String

@@ -225,6 +225,19 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
                     break;
+                case "data.versions":
+                    {
+                        // Host only checks the closed shape; Go validates limits, duplicates,
+                        // prior versions and every grant inside its single transaction.
+                        if (request.Params.ValueKind != JsonValueKind.Object) throw Error("plugin_capability_invalid");
+                        var keys = request.Params.EnumerateObject().Select(property => property.Name).ToList();
+                        if (!keys.Contains("contract") || !keys.Contains("sources")
+                            || keys.Any(key => key is not ("contract" or "sources" or "versions"))
+                            || keys.Count != keys.Distinct(StringComparer.Ordinal).Count())
+                            throw Error("plugin_capability_invalid");
+                        result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
+                        break;
+                    }
                 case "model.configure":
                 case "model.read":
                 case "model.status":

@@ -12,6 +12,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -44,6 +45,42 @@ type pluginDatasetRequest struct {
 	Contract string                          `json:"contract"`
 	Sources  []pluginDatasetSource           `json:"sources"`
 	Versions map[string]pluginDatasetVersion `json:"versions,omitempty"`
+}
+
+// A projected computed value or watermark can disclose its entire dependency
+// closure. Only a same-row formula with grants for every operand is provable here.
+func pluginComputedAuthorizer(table schemaexecution.Table, allowed map[string]string, unsupported string, onRelation func(v2.FieldDefinition) error) func(string) error {
+	checked := map[string]bool{}
+	var authorize func(string) error
+	authorize = func(id string) error {
+		if id == "id" || checked[id] {
+			return nil
+		}
+		checked[id] = true
+		field, ok := table.Field(id)
+		if !ok || allowed[field.Identity.FieldID] == "" {
+			return pluginDataError("plugin_read_denied")
+		}
+		if field.Lookup != nil {
+			return pluginDataError(unsupported)
+		}
+		if field.Formula != nil {
+			compiled, err := formula.NewCompiler(formula.Limits{}).Compile(table, field)
+			if err != nil || len(compiled.CollectionDependencies) > 0 || len(compiled.ReferencePaths) > 0 || len(compiled.RelationAggregatePaths) > 0 || len(compiled.RelationCountNames) > 0 {
+				return pluginDataError(unsupported)
+			}
+			for _, dependency := range compiled.Dependencies {
+				if err := authorize(dependency); err != nil {
+					return err
+				}
+			}
+		}
+		if field.Relation != nil && onRelation != nil {
+			return onRelation(field)
+		}
+		return nil
+	}
+	return authorize
 }
 
 // This executes only inside executePluginData's single authority transaction.
@@ -97,47 +134,21 @@ func executePluginDataset(ctx context.Context, tx core.App, source *queryschema.
 		if err != nil {
 			return nil, err
 		}
-		checked := map[string]bool{}
-		var authorize func(string) error
-		authorize = func(id string) error {
-			if id == "id" || checked[id] {
-				return nil
-			}
-			checked[id] = true
-			field, ok := table.Field(id)
-			if !ok || scoped.names[field.Identity.FieldID] == "" {
+		authorize := pluginComputedAuthorizer(table, scoped.names, "plugin_dataset_computed_unsupported", func(field v2.FieldDefinition) error {
+			target := field.Relation.TargetTableID
+			targetGrant := installed.grant(target, active)
+			if targetGrant == nil {
 				return pluginDataError("plugin_read_denied")
 			}
-			if field.Lookup != nil {
-				return pluginDataError("plugin_dataset_computed_unsupported")
+			t, err := schemaexecution.Describe(ctx, tx, target)
+			if err != nil || pluginAllowed(*targetGrant, t.Snapshot)["id"] == "" {
+				return pluginDataError("plugin_read_denied")
 			}
-			if field.Formula != nil {
-				compiled, err := formula.NewCompiler(formula.Limits{}).Compile(table, field)
-				if err != nil || len(compiled.CollectionDependencies) > 0 || len(compiled.ReferencePaths) > 0 || len(compiled.RelationAggregatePaths) > 0 || len(compiled.RelationCountNames) > 0 {
-					return pluginDataError("plugin_dataset_computed_unsupported")
-				}
-				for _, dependency := range compiled.Dependencies {
-					if err := authorize(dependency); err != nil {
-						return err
-					}
-				}
-			}
-			if field.Relation != nil {
-				target := field.Relation.TargetTableID
-				targetGrant := installed.grant(target, active)
-				if targetGrant == nil {
-					return pluginDataError("plugin_read_denied")
-				}
-				t, err := schemaexecution.Describe(ctx, tx, target)
-				if err != nil || pluginAllowed(*targetGrant, t.Snapshot)["id"] == "" {
-					return pluginDataError("plugin_read_denied")
-				}
-				if _, exists := versions[target]; !exists {
-					versions[target] = pluginDatasetVersion{Schema: t.Snapshot.SchemaRevision, Data: t.Snapshot.DataRevision}
-				}
+			if _, exists := versions[target]; !exists {
+				versions[target] = pluginDatasetVersion{Schema: t.Snapshot.SchemaRevision, Data: t.Snapshot.DataRevision}
 			}
 			return nil
-		}
+		})
 		// scoped.computed also contains predicate dependencies; all receive closure checks.
 		for name := range d.Fields {
 			if name == d.ArchiveField {

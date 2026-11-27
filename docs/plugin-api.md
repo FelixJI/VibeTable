@@ -49,6 +49,7 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `data.releaseCursor(cursor)` | `Promise<void>` | 放弃手动分页时释放句柄 |
 | `data.subscribe({collection}, listener, signal?)` | `{subscriptionId}` | 失效通知，不是数据；先订阅再查询 |
 | `data.unsubscribe(subscriptionId)` | `Promise<void>` | 释放本页面订阅 |
+| `data.versions(request, signal?)` | `DataVersions` | 一次事务批量读取 1–64 个授权来源的精确版本；`read` + `query`，显式字段投影；不读行 |
 | `mutation.preview(plan)` | `{planId, affectedCount}` | 单表 create/update/delete 计划；不会写入 |
 | `mutation.submit(planId, signal?)` | `{status, taskId}` | 请求原生确认；`status` 为 `succeeded` 或 `rejected` |
 | `transaction.configure({declaration}, signal?)` | 配置回执或 null | 已安装声明与已确认模型；精确原生确认后登记持久保护规则 |
@@ -257,6 +258,46 @@ CSV 直接消费同一不可变数据集，继续使用 `files:["pickWrite"]` �
 `examples/plugins/transaction-conformance` 与 S57 以同一 SDK/CLI/Host/Go 组合串联公开建模、受保护
 三表提交、两表各 201 行、精确汇总和同源原生 CSV；独立 Python CSV/Decimal 读取器逐行对账。
 S57 只在受控真实桌面 runner 执行，本地合同测试不替代真实桌面结果。
+
+## 批量版本核对：data.versions
+
+API 3.x 增量能力 `vibetable.plugin-data-versions.v1` 在**同一个权威事务**内完成当前安装校验
+（action/entry 绑定、安装修订、模型绑定诊断）、全部来源授权以及每来源的 canonical 表/数据版本，
+最多 64 个来源（现有 40 表场景单批完成）。它只读元数据：不读业务行、不翻 dataset 页、不碰游标；
+版本未变时不产生额外读取，因此适合插件在复用已加载数据前一次核对“是否仍然一致”。
+旧 Host 明确报 `plugin_api_unsupported`；权限、损坏或身份失败保留各自错误码，不回退到其它解析路径。
+
+```ts
+const request = {
+  contract: "vibetable.plugin-data-versions.v1" as const,
+  sources: entities.map(entity => ({
+    collection: entity.collection,
+    // 显式传入该实体实际复用的字段投影；授权收窄后整批失败，而不是让旧列“看似未变”。
+    fields: ["id", ...entity.fieldIds],
+  })),
+};
+const before = await api.data.versions(request, signal);
+const rows = await loadRows(request.sources, signal); // 使用同一批绑定和投影读取业务行
+const after = await api.data.versions({ ...request, versions: before.versions }, signal);
+if (after.stale!.length) throw new Error("读取期间来源已变化，请重新读取");
+// 只有前后核对通过才保存 rows 及 after.versions。之后每次复用前再原样回传。
+```
+
+- `versions` 按来源 collection 键入。每来源包含 `schemaRevision`、`dataRevision`、`clockPeriod` 和
+  `computed`。数据和公式定义版本使用非负 JS 安全整数（≤ 2^53−1）。`computed` 始终是对象，
+  只包含投影中的计算字段，键为 canonical 字段 ID。dataset 仍按物理字段名返回计算元数据。
+  可用 `sameDataVersion` 深比较。同一投影的回传值须来自上一轮 `data.versions`，各键齐全且值非 null。
+- `versions` 省略时只读取；传入时回复额外带 `stale`（与传入版本不同的来源列表）。失败不返回部分结果。
+- 每来源 1–64 个字段、ID ≤128 字节。重复 JSON 成员、重复 collection 或字段、关系路径（含 `.`）、
+  键名大小写不符、未知键、超限或不完整的 prior 版本在**任何读取之前**整批报 `plugin_capability_invalid`。
+- 任一来源、投影字段或同表公式依赖缺少当前 `read`+`query` 授权（含未知字段、仅写授权）整批报 `plugin_read_denied`。
+  授权在存在性检查之前核对，因此未授权的表与不存在的表失败方式相同，不能用于探测表是否存在。
+  Lookup 或无法确认依赖授权的公式（例如跨表公式）整批报 `plugin_query_computed_unsupported`。
+  已授权但表或版本元数据不可用时报 `plugin_query_failed`，安装修订过期报 `plugin_cursor_stale`。
+  当前模型绑定与宿主字段不再匹配时，整批报 `plugin_model_binding_stale`。
+  投影公式尚未就绪或缺少有效的定义版本时，整批报 `plugin_query_failed`；读取方可在计算完成后重新核对。
+- 整批固定一次公式求值时刻并共享依赖图缓存。`clockPeriod` 只反映投影中公式及其同表依赖引用的时钟。
+  单个来源没有时钟引用时为 `""`。
 
 ## 导出与任务
 

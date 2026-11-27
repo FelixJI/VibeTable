@@ -283,6 +283,22 @@ func TestDescribeRejectsRevisionChangedWhileLoading(t *testing.T) {
 	}
 }
 
+func TestDescribeValidatesPersistedRevisionBeforeNumericConversion(t *testing.T) {
+	ctx := context.Background()
+	app := newTestApp(t)
+	table := createTestExecutionTable(t, ctx, app, "Revision metadata", "revision-metadata")
+	for _, invalid := range []any{"invalid", []byte("0")} {
+		_, err := app.DB().Update("vibetable_tables", dbx.Params{"data_revision": invalid},
+			dbx.HashExp{"table_id": table.TableID}).Execute()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := schemaexecution.Describe(ctx, app, table.TableID); err == nil {
+			t.Fatal("invalid persisted revision was read as zero")
+		}
+	}
+}
+
 // A legitimate business write that advances data_revision between Describe's
 // first and last metadata reads must not surface as a revision conflict: the
 // execution snapshot has to stay a coherent read while business data

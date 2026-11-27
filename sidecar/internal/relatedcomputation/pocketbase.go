@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 // ClockRevisionField retains the storage name for derived-cache transactions on the
@@ -37,7 +38,7 @@ func ExpectationFor(
 	if !ok {
 		return Expectation{}, fmt.Errorf("computed field %q is unavailable", fieldID)
 	}
-	version, err := definitionVersion(app, tableID, field)
+	version, err := definitionVersionForRead(ctx, app, tableID, field)
 	if err != nil {
 		return Expectation{}, err
 	}
@@ -103,7 +104,7 @@ func ExpectationFor(
 		if definition.key == (clockFieldKey{tableID, fieldID}) {
 			continue
 		}
-		version, err := definitionVersion(app, definition.key.table, definition.field)
+		version, err := definitionVersionForRead(ctx, app, definition.key.table, definition.field)
 		if err != nil {
 			return Expectation{}, err
 		}
@@ -206,25 +207,36 @@ func ProjectStored(value any) any {
 	return value
 }
 
-func definitionVersion(
-	app core.App,
-	tableID string,
-	field v2.FieldDefinition,
-) (int, error) {
-	if field.Formula != nil {
-		record, err := app.FindFirstRecordByFilter(
-			"vibetable_formulas",
-			"table_id={:table} && field_id={:field}",
-			dbx.Params{"table": tableID, "field": field.Identity.FieldID},
-		)
+func formulaVersion(raw any) (int, error) {
+	version, err := schemaexecution.ParseStoredRevision(raw, "schema.metadata.invalid_formula_version", "version")
+	if err != nil || version < 1 || int64(int(version)) != version {
+		return 0, errors.New("computed formula version is invalid")
+	}
+	return int(version), nil
+}
+
+func definitionVersionForRead(ctx context.Context, app core.App, tableID string, field v2.FieldDefinition) (int, error) {
+	cache, _ := ctx.Value(clockCacheKey{}).(*clockCache)
+	if cache != nil && cache.sameRowOnly && field.Formula != nil {
+		var raw any
+		err := app.DB().Select("version").From("vibetable_formulas").
+			Where(dbx.HashExp{"table_id": tableID, "field_id": field.Identity.FieldID}).Limit(1).WithContext(ctx).Row(&raw)
 		if err != nil {
 			return 0, err
 		}
-		version := record.GetInt("version")
-		if version < 1 {
-			return 0, errors.New("computed formula version is invalid")
+		return formulaVersion(raw)
+	}
+	return definitionVersion(app, tableID, field)
+}
+
+func definitionVersion(app core.App, tableID string, field v2.FieldDefinition) (int, error) {
+	if field.Formula != nil {
+		record, err := app.FindFirstRecordByFilter("vibetable_formulas", "table_id={:table} && field_id={:field}",
+			dbx.Params{"table": tableID, "field": field.Identity.FieldID})
+		if err != nil {
+			return 0, err
 		}
-		return version, nil
+		return formulaVersion(record.GetRaw("version"))
 	}
 	if field.Lookup == nil {
 		return 0, errors.New("field is not computed")

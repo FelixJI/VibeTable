@@ -77,7 +77,11 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 ```
 
 公开合同是 `contracts/plugin-surface-api.v1.json`。方法闭集为 `context.read`、`data.describe/query`、
-`data.subscribe/unsubscribe`、`storage.get/set/delete`、`mutation.preview/submit`、`output.print` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+`data.subscribe/unsubscribe`、`data.versions`、`storage.get/set/delete`、`mutation.preview/submit`、`output.print` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+`data.versions` 是复用已加载数据前的整批版本核对。请求显式携带每表字段投影，可回传同一投影的上一轮
+`data.versions` 响应中的 `versions`。
+Go 在同一事务内校验安装、全部授权与精确版本，只读元数据不读行；旧 Host 报 `plugin_api_unsupported`，
+未授权/不存在来源同样报 `plugin_read_denied`，不提供存在性探测，失败不返回部分结果。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
 只有获准读取 `id` 时才返回 rowGuards，按 ID 更新或删除也要求该授权。`context.read` 保留绑定的用户上下文；
