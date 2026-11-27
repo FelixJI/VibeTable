@@ -351,8 +351,8 @@ func TestPluginDataQueryIgnoresRolledBackAndEqualLengthReplacedHistory(t *testin
 	}
 	f.readField(t, f.mapped.FieldID)
 	afterRollback := pluginmodel.ProgressCacheStatsFor(f.pb)
-	if afterRollback.Hits != inTransaction.Hits || afterRollback.Decoded != inTransaction.Decoded+total {
-		t.Fatalf("history shorter than the cached one must be decoded again: in-transaction=%+v after=%+v total=%d", inTransaction, afterRollback, total)
+	if afterRollback.Hits != inTransaction.Hits+1 || afterRollback.Decoded != inTransaction.Decoded {
+		t.Fatalf("rollback must reuse only the visible prefix: in-transaction=%+v after=%+v total=%d", inTransaction, afterRollback, total)
 	}
 	if _, err = f.query(t, f.replacement.FieldID); err == nil || !strings.Contains(err.Error(), "plugin_read_denied") {
 		t.Fatalf("rolled-back progress leaked into the next read: %v", err)
@@ -383,8 +383,8 @@ func TestPluginDataQueryIgnoresRolledBackAndEqualLengthReplacedHistory(t *testin
 	result, err := f.query(t, f.replacement.FieldID)
 	requireProjected(t, result, err, f.replacement.FieldID, dataReadOtherSeedValue)
 	final := pluginmodel.ProgressCacheStatsFor(f.pb)
-	if final.Hits != afterDenied.Hits || final.Decoded != afterDenied.Decoded+total {
-		t.Fatalf("replaced history must be decoded again: before=%+v final=%+v total=%d", afterDenied, final, total)
+	if final.Hits != afterDenied.Hits+1 || final.Decoded != afterDenied.Decoded+1 {
+		t.Fatalf("only the replaced record must be decoded again: before=%+v final=%+v total=%d", afterDenied, final, total)
 	}
 	if _, err = f.query(t, f.mapped.FieldID); err == nil || !strings.Contains(err.Error(), "plugin_read_denied") {
 		t.Fatalf("equal-length replacement was served as a cache hit: %v", err)
