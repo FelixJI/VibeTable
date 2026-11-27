@@ -281,3 +281,78 @@ func TestAttachRowDigestsFailuresNeverLeavePartialGuards(t *testing.T) {
 		}
 	})
 }
+
+// A page may list the same record more than once (a join fan-out). Every
+// occurrence receives the digest of its record, including the ones that fall
+// into a later batch than the first occurrence.
+func TestAttachRowDigestsGuardsRepeatedIDsAcrossBatches(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	collection := core.NewBaseCollection("query_digest_repeats")
+	collection.Fields.Add(&core.NumberField{Name: "amount"})
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, 150)
+	if err := app.RunInTransaction(func(tx core.App) error {
+		for i := range 150 {
+			record := core.NewRecord(collection)
+			record.Set("amount", i)
+			if err := tx.Save(record); err != nil {
+				return err
+			}
+			ids = append(ids, record.Id)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int64
+	for _, database := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		previous := database.QueryLogFunc
+		database.QueryLogFunc = func(ctx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, err error) {
+			if strings.Contains(statement, "SELECT `query_digest_repeats`.*") {
+				reads.Add(1)
+			}
+			if previous != nil {
+				previous(ctx, elapsed, statement, rows, err)
+			}
+		}
+		defer func() { database.QueryLogFunc = previous }()
+	}
+	descriptor := query.TableDescriptor{
+		DatabaseID: "local", TableID: "digest", PhysicalName: collection.Name,
+		PrimaryKey: "id", SchemaRevision: "schema-1", DataRevision: 1,
+		Fields:       map[string]query.FieldDescriptor{"id": {PhysicalName: "id", Type: query.FieldTypeText}},
+		DigestFields: []string{"amount"},
+		DigestProjector: func(record *core.Record) map[string]any {
+			return map[string]any{"amount": record.Original().GetFloat("amount")}
+		},
+	}
+	// 300 rows: the first 150 distinct records, then the same 150 again in
+	// reverse order, so the second batch repeats ids of the first.
+	page := make([]map[string]any, 0, 300)
+	for step := 0; step < 300; step++ {
+		index := step
+		if step >= 150 {
+			index = 299 - step
+		}
+		page = append(page, map[string]any{"id": ids[index], "amount": float64(index)})
+	}
+	if err := query.AttachRowDigests(context.Background(), app, descriptor, page); err != nil {
+		t.Fatal(err)
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("digest record reads=%d want=2 for 300 rows", reads.Load())
+	}
+	for position, row := range page {
+		index := position
+		if position >= 150 {
+			index = 299 - position
+		}
+		want, err := productrow.Digest(map[string]any{"amount": float64(index)})
+		if err != nil || row[productrow.DigestField] != want {
+			t.Fatalf("row %d digest=%v want=%v error=%v", position, row[productrow.DigestField], want, err)
+		}
+	}
+}

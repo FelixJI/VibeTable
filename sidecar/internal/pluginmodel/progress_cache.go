@@ -74,15 +74,18 @@ func (c *progressCache) prior(scope historyScope) *verifiedHistory {
 
 // Compare each row with the same position in the previous read, retaining
 // only records visible at this read point. Older snapshots, rolls back and
-// equal-length replacements therefore cannot substitute another binding.
-func (c *progressCache) completedStates(ctx context.Context, app core.App, project, plugin string) ([]State, error) {
+// equal-length replacements therefore cannot substitute another binding. The
+// sequence always comes from the current listing: audit rows are immutable
+// and listed in sequence order, so a byte-equal row at the same position is
+// the same record, and the cached copy needs not carry it.
+func (c *progressCache) completedProgress(ctx context.Context, app core.App, project, plugin string) ([]Progress, error) {
 	scope := historyScope{project, plugin}
 	prior := c.prior(scope)
 	next := &verifiedHistory{scope: scope}
 	var decoded uint64
 	index, reused := 0, 0
-	completed := []State{}
-	err := listProgress(ctx, app, project, plugin, nil, func(_ string, _ int64, payload any) error {
+	completed := []Progress{}
+	err := listProgress(ctx, app, project, plugin, nil, func(_ string, seq int64, payload any) error {
 		raw, comparable := payload.(types.JSONRaw)
 		var row verifiedProgress
 		matched := comparable && prior != nil && index < len(prior.rows) && bytes.Equal(prior.rows[index].raw, raw)
@@ -104,7 +107,7 @@ func (c *progressCache) completedStates(ctx context.Context, app core.App, proje
 			}
 		}
 		if row.completed != nil {
-			completed = append(completed, *row.completed)
+			completed = append(completed, Progress{Seq: seq, State: *row.completed})
 		}
 		if next != nil {
 			// Charge record metadata and an allowance for each parsed completion.

@@ -211,12 +211,15 @@ func transactionModel(ctx context.Context, app core.App, workspace string, input
 	if reads != nil && reads.installed != nil {
 		state, revisions = reads.grantModel, reads.schemaRevisions
 	} else {
-		state, err = loadCompletedModel(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation, nil)
+		progress, err := loadCompletedModel(ctx, app, input.ProjectKey, input.PluginID, &installed.pluginInstallation, nil)
 		if err != nil {
-			if state != nil {
-				return *state, err
+			if progress != nil {
+				return progress.State, err
 			}
 			return pluginmodel.State{}, err
+		}
+		if progress != nil {
+			state = &progress.State
 		}
 	}
 	if state == nil || state.Revisions == nil {

@@ -17,7 +17,7 @@ type modelHistoryKey struct{}
 type modelHistoryCursor struct {
 	project, plugin string
 	seq             int64
-	completed       []pluginmodel.State
+	completed       []pluginmodel.Progress
 }
 
 // withModelHistory scopes a validated history to ctx. Only model commits that
@@ -36,21 +36,22 @@ func (c *modelHistoryCursor) observe(progress pluginmodel.Progress) {
 		c.seq = progress.Seq
 	}
 	if progress.State.Status == "completed" {
-		c.completed = append(c.completed, progress.State)
+		c.completed = append(c.completed, progress)
 	}
 }
 
-// completedModelHistory returns the validated completed states, oldest first.
-// Without a matching cursor it reads the whole history; with one it reads only
-// the progress recorded after the cursor's sequence. Item key spelling plays no
-// part either way, so legacy and non-standard completed keys keep their authority.
-// A read method that scoped the per-app history cache (pluginmodel.WithProgressCache)
-// still lists every record here; the completed states are reused only when the
-// listed records match the cached ones byte for byte.
-func completedModelHistory(ctx context.Context, app core.App, project, plugin string) ([]pluginmodel.State, error) {
+// completedModelHistory returns the validated completed progress, oldest first,
+// each with the audit sequence of its record. Without a matching cursor it reads
+// the whole history; with one it reads only the progress recorded after the
+// cursor's sequence. Item key spelling plays no part either way, so legacy and
+// non-standard completed keys keep their authority. A read method that scoped
+// the per-app history cache (pluginmodel.WithProgressCache) still lists every
+// record here; the completed states are reused only when the listed records
+// match the cached ones byte for byte.
+func completedModelHistory(ctx context.Context, app core.App, project, plugin string) ([]pluginmodel.Progress, error) {
 	cursor, _ := ctx.Value(modelHistoryKey{}).(*modelHistoryCursor)
 	if cursor == nil || cursor.project != project || cursor.plugin != plugin {
-		return pluginmodel.CompletedStates(ctx, app, project, plugin)
+		return pluginmodel.CompletedProgress(ctx, app, project, plugin)
 	}
 	newer, err := pluginmodel.StatesAfter(ctx, app, project, plugin, cursor.seq)
 	if err != nil {

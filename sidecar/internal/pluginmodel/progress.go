@@ -69,24 +69,26 @@ func StatesAfter(ctx context.Context, app core.App, project, plugin string, afte
 	return readProgress(ctx, app, project, plugin, &after)
 }
 
-// CompletedStates reads the completed model progress, oldest first, validating
-// every listed record exactly like History. In a context scoped by
-// WithProgressCache it reuses the result of an unchanged history.
-func CompletedStates(ctx context.Context, app core.App, project, plugin string) ([]State, error) {
+// CompletedProgress reads the completed model progress, oldest first, each with
+// the audit sequence of its record (the per-project number pluginstore assigns
+// when it appends the row; never reused), validating every listed record
+// exactly like History. In a context scoped by WithProgressCache it reuses the
+// result of an unchanged history.
+func CompletedProgress(ctx context.Context, app core.App, project, plugin string) ([]Progress, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if _, err := app.FindCollectionByNameOrId("vibetable_plugin_records"); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return []State{}, nil
+			return []Progress{}, nil
 		}
 		return nil, err
 	}
 	if cache, ok := ctx.Value(progressCacheKey{}).(*progressCache); ok {
-		return cache.completedStates(ctx, app, project, plugin)
+		return cache.completedProgress(ctx, app, project, plugin)
 	}
-	completed := []State{}
-	err := listProgress(ctx, app, project, plugin, nil, func(_ string, _ int64, payload any) error {
+	completed := []Progress{}
+	err := listProgress(ctx, app, project, plugin, nil, func(_ string, seq int64, payload any) error {
 		state, err := decodeProgress(payload)
 		if err != nil {
 			return err
@@ -95,7 +97,7 @@ func CompletedStates(ctx context.Context, app core.App, project, plugin string) 
 			return errors.New("plugin model progress contract is invalid")
 		}
 		if state.Status == "completed" {
-			completed = append(completed, state)
+			completed = append(completed, Progress{Seq: seq, State: state})
 		}
 		return nil
 	})
@@ -103,6 +105,21 @@ func CompletedStates(ctx context.Context, app core.App, project, plugin string) 
 		return nil, err
 	}
 	return completed, nil
+}
+
+// CompletedStates reads the completed model progress, oldest first, validating
+// every listed record exactly like History. In a context scoped by
+// WithProgressCache it reuses the result of an unchanged history.
+func CompletedStates(ctx context.Context, app core.App, project, plugin string) ([]State, error) {
+	progress, err := CompletedProgress(ctx, app, project, plugin)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]State, len(progress))
+	for i, item := range progress {
+		states[i] = item.State
+	}
+	return states, nil
 }
 
 func readProgress(ctx context.Context, app core.App, project, plugin string, after *int64) ([]Progress, error) {

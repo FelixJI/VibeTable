@@ -17,7 +17,7 @@ public sealed class PluginSurfaceApiTests
 {
     internal const string DatasetBody = """{"contract":"vibetable.plugin-dataset.v1","scope":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]},"groupBy":[],"sums":[]}],"versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"filteredRows":2,"totalRows":2,"complete":true,"summary":{"count":2,"complete":true,"sums":[{"field":"amount","value":"9007199254740993.02","complete":true}],"groups":[]}}]}""";
     private const string DatasetRequest = """{"contract":"vibetable.plugin-dataset.v1","sources":[]}""";
-    internal const string SnapshotBody = """{"contract":"vibetable.plugin-snapshot.v1","versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}},"notes":{"schemaRevision":"s1","dataRevision":0,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"rowGuards":[["a","ga"],["b","gb"]],"filteredRows":2,"totalRows":2,"complete":true},{"collection":"notes","fields":["body"],"computedFields":[],"items":[{"body":"hello"}],"rowGuards":[["n1","gn"]],"filteredRows":1,"totalRows":1,"complete":true}]}""";
+    internal const string SnapshotBody = """{"contract":"vibetable.plugin-snapshot.v1","versions":{"orders":{"schemaRevision":"s1","dataRevision":1,"clockPeriod":"","computed":{}},"notes":{"schemaRevision":"s1","dataRevision":0,"clockPeriod":"","computed":{}}},"sources":[{"collection":"orders","fields":["id","amount"],"computedFields":[],"items":[{"id":"a","amount":"9007199254740993.01"},{"id":"b","amount":"0.01"}],"rowGuards":[["a","ga"],["b","gb"]],"filteredRows":2,"totalRows":2,"complete":true},{"collection":"notes","fields":["body"],"computedFields":[],"items":[{"body":"hello"}],"rowGuards":[["n1","gn"]],"filteredRows":1,"totalRows":1,"complete":true}],"binding":7}""";
     private const string SnapshotRequest = """{"contract":"vibetable.plugin-snapshot.v1","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","amount"]}},{"query":{"contract":"vibetable.plugin-query.v2","collection":"notes","fields":["body"]}}]}""";
 
     [TestMethod]
@@ -110,9 +110,11 @@ public sealed class PluginSurfaceApiTests
         var opened = (await f.Call("snapshot.open", SnapshotRequest)).GetProperty("result");
         Assert.AreEqual("vibetable.plugin-snapshot.v1", opened.GetProperty("contract").GetString());
         string id = opened.GetProperty("snapshotId").GetString()!;
-        // The handle reply carries metadata only; rows live in the Host-side corpus.
+        // The handle reply carries metadata only; rows live in the Host-side corpus, and the
+        // Host-only binding record never reaches the plugin.
         Assert.AreEqual(2, opened.GetProperty("sources").GetArrayLength());
         Assert.IsFalse(opened.GetProperty("sources")[0].TryGetProperty("items", out _));
+        Assert.IsFalse(opened.TryGetProperty("binding", out _));
         Assert.AreEqual("orders", opened.GetProperty("sources")[0].GetProperty("collection").GetString());
         Assert.IsTrue(DateTimeOffset.Parse(opened.GetProperty("expiresAt").GetString()!) > DateTimeOffset.UtcNow.AddMinutes(4));
         var first = (await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "orders", offset = 0, pageSize = 1 }))).GetProperty("result");
@@ -149,6 +151,8 @@ public sealed class PluginSurfaceApiTests
             Assert.AreEqual("orders", request.GetProperty("sources")[0].GetProperty("query").GetProperty("collection").GetString());
             Assert.AreEqual("notes", request.GetProperty("sources")[1].GetProperty("query").GetProperty("collection").GetString());
             Assert.AreEqual("s1", request.GetProperty("versions").GetProperty("orders").GetProperty("schemaRevision").GetString());
+            // The validate request replays the binding record the open fixed, exactly.
+            Assert.AreEqual(7, request.GetProperty("binding").GetInt64());
         }
         Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() is "data.query" or "dataset.open"));
         // Page bounds and unknown members are rejected locally.
@@ -330,7 +334,7 @@ public sealed class PluginSurfaceApiTests
             string guards = "[" + string.Join(",", Enumerable.Range(0, source.Rows).Select(index => $"[\"{source.Collection}-{index}\",\"g\"]")) + "]";
             return $"{{\"collection\":\"{source.Collection}\",\"fields\":[{string.Join(",", fields.Select(field => $"\"{field}\""))}],\"computedFields\":[],\"items\":[{items}],\"rowGuards\":{guards},\"filteredRows\":{source.Rows},\"totalRows\":{source.Rows},\"complete\":true}}";
         }));
-        return $"{{\"contract\":\"vibetable.plugin-snapshot.v1\",\"versions\":{{{version}}},\"sources\":[{listed}]}}";
+        return $"{{\"contract\":\"vibetable.plugin-snapshot.v1\",\"versions\":{{{version}}},\"sources\":[{listed}],\"binding\":7}}";
     }
 
     private static string SnapshotQuery(params (string Collection, string Fields)[] sources) => JsonSerializer.Serialize(new
@@ -587,6 +591,102 @@ public sealed class PluginSurfaceApiTests
             Assert.IsTrue(second.GetProperty("chunks").EnumerateArray().Sum(chunk => Encoding.UTF8.GetByteCount(chunk.GetProperty("items").GetRawText())) <= 262144);
             Assert.AreEqual(2, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate"));
         }
+    }
+
+    [TestMethod]
+    public async Task SnapshotBindingIsHostOnlyReplayedOnValidateAndItsShapeIsCheckedBeforeTheHandleExists()
+    {
+        using var f = new Fixture();
+        // The authority must name the record the corpus was authorized under: a positive audit
+        // sequence or null. Anything else is a capability error after that one authority call:
+        // no handle is published and no capacity is consumed.
+        foreach (string malformed in new[]
+        {
+            SnapshotBody.Replace(",\"binding\":7", "", StringComparison.Ordinal),
+            SnapshotBody.Replace("\"binding\":7", "\"binding\":\"7\"", StringComparison.Ordinal),
+            SnapshotBody.Replace("\"binding\":7", "\"binding\":0", StringComparison.Ordinal),
+            SnapshotBody.Replace("\"binding\":7", "\"binding\":-1", StringComparison.Ordinal),
+            SnapshotBody.Replace("\"binding\":7", "\"binding\":1.5", StringComparison.Ordinal),
+            SnapshotBody.Replace("\"binding\":7", "\"binding\":[7]", StringComparison.Ordinal),
+        })
+        {
+            f.Http.SnapshotResultBody = malformed;
+            Assert.AreEqual("plugin_capability_invalid", Code(await f.Call("snapshot.open", SnapshotRequest)), malformed);
+        }
+        Assert.AreEqual(6, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.open"));
+        f.Http.SnapshotResultBody = SnapshotBody;
+        for (int i = 0; i < 2; i++) Assert.IsTrue((await f.Call("snapshot.open", SnapshotRequest)).TryGetProperty("result", out _));
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", SnapshotRequest)));
+        // null is a legitimate binding (no completed model record) and is replayed as null.
+        using var g = new Fixture();
+        g.Http.SnapshotResultBody = SnapshotBody.Replace("\"binding\":7", "\"binding\":null", StringComparison.Ordinal);
+        var opened = (await g.Call("snapshot.open", SnapshotRequest)).GetProperty("result");
+        string id = opened.GetProperty("snapshotId").GetString()!;
+        Assert.IsFalse(opened.TryGetProperty("binding", out _));
+        Assert.IsTrue((await g.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = id, collection = "orders", offset = 0, pageSize = 1 }))).TryGetProperty("result", out _));
+        var validation = g.Http.Calls.Single(call => call.GetProperty("method").GetString() == "snapshot.validate").GetProperty("request");
+        Assert.AreEqual(JsonValueKind.Null, validation.GetProperty("binding").ValueKind);
+        Assert.AreEqual("vibetable.plugin-snapshot.v1", validation.GetProperty("contract").GetString());
+    }
+
+    [TestMethod]
+    public async Task SnapshotBudgetsCountTheBytesTheBridgeActuallyEncodes()
+    {
+        // The bridge's default JSON encoder escapes every non-ASCII character to \uXXXX: a CJK
+        // run is three bytes in Go's raw reply and six on the wire, '<' is one and six. The corpus
+        // and batch budgets are measured on the encoded form, never on the raw JSON length.
+        using (var f = new Fixture())
+        {
+            // 180k '<' = 180 KB raw, well inside Go's budget, but 1.08 MB encoded: over the frame on its own.
+            f.Http.SnapshotResultBody = SnapshotCorpus(("markup", "id,blob", 1, 180_000)).Replace(new string('x', 180_000), new string('<', 180_000), StringComparison.Ordinal);
+            Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", SnapshotQuery(("markup", "id,blob")))));
+            // 80k CJK = 240 KB raw and 480 KB encoded: one row fits the corpus and a reply, two do not.
+            string Rows(int rows) => SnapshotCorpus(("cjk", "id,blob", rows, 80_000)).Replace(new string('x', 80_000), new string('字', 80_000), StringComparison.Ordinal);
+            f.Http.SnapshotResultBody = Rows(2);
+            Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", SnapshotQuery(("cjk", "id,blob")))));
+            f.Http.SnapshotResultBody = Rows(1);
+            string id = (await f.Call("snapshot.open", SnapshotQuery(("cjk", "id,blob")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var batch = await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = id, next = (object?)null }));
+            Assert.AreSequenceEqual(new[] { ("cjk", 1, (int?)null) }, Chunks(batch.GetProperty("result")));
+            var row = batch.GetProperty("result").GetProperty("chunks")[0].GetProperty("items")[0];
+            Assert.AreEqual(80_000, row.GetProperty("blob").GetString()!.Length);
+            Assert.IsTrue(Encoding.UTF8.GetByteCount(batch.GetRawText()) is > 400_000 and <= 1024 * 1024, "the row is served whole, escaped the way the bridge encodes it");
+            Assert.IsTrue(batch.GetRawText().Contains("\\u5B57", StringComparison.Ordinal));
+        }
+        using (var f = new Fixture())
+        {
+            // Two 40k-CJK rows are 240 KB raw (one batch under raw accounting) but 480 KB encoded:
+            // the batch budget cuts after the first row and the following batch serves the second.
+            f.Http.SnapshotResultBody = SnapshotCorpus(("cjk", "id,blob", 2, 40_000)).Replace(new string('x', 40_000), new string('字', 40_000), StringComparison.Ordinal);
+            string id = (await f.Call("snapshot.open", SnapshotQuery(("cjk", "id,blob")))).GetProperty("result").GetProperty("snapshotId").GetString()!;
+            var first = (await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = id, next = (object?)null }))).GetProperty("result");
+            Assert.AreSequenceEqual(new[] { ("cjk", 1, (int?)1) }, Chunks(first));
+            Assert.AreEqual("""{"collection":"cjk","offset":1}""", first.GetProperty("next").GetRawText());
+            var second = (await f.Call("snapshot.readBatch", JsonSerializer.Serialize(new { snapshotId = id, next = first.GetProperty("next") }))).GetProperty("result");
+            Assert.AreSequenceEqual(new[] { ("cjk", 1, (int?)null) }, Chunks(second));
+            Assert.AreEqual("null", second.GetProperty("next").GetRawText());
+            Assert.AreEqual(2, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "snapshot.validate"));
+        }
+    }
+
+    [TestMethod]
+    public async Task SnapshotAdmissionSweepsExpiredHandlesInsteadOfWaitingForTheTimer()
+    {
+        using var f = new Fixture();
+        f.Api.SnapshotLifetime = TimeSpan.FromMilliseconds(150);
+        string first = (await f.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.IsTrue((await f.Call("snapshot.open", SnapshotRequest)).TryGetProperty("result", out _));
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", SnapshotRequest)));
+        await Task.Delay(400);
+        // The cleanup timer runs every 30 s; admission cannot wait for it. Both handles are past
+        // their absolute lifetime, so the surface admits fresh opens without reaching the limit.
+        f.Api.SnapshotLifetime = TimeSpan.FromMinutes(5);
+        Assert.IsTrue((await f.Call("snapshot.open", SnapshotRequest)).TryGetProperty("result", out _));
+        Assert.IsTrue((await f.Call("snapshot.open", SnapshotRequest)).TryGetProperty("result", out _));
+        Assert.AreEqual("plugin_snapshot_limit", Code(await f.Call("snapshot.open", SnapshotRequest)));
+        // An expired handle is stale with or without a sweep, and never costs an authority round trip.
+        Assert.AreEqual("plugin_snapshot_stale", Code(await f.Call("snapshot.page", JsonSerializer.Serialize(new { snapshotId = first, collection = "orders", offset = 0, pageSize = 1 }))));
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "snapshot.validate"));
     }
 
     [TestMethod]

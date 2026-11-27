@@ -49,6 +49,11 @@ type pluginSnapshotRequest struct {
 	// validate only: the open result's versions, decoded strictly so a missing
 	// or null member can never pass for a complete known version.
 	Versions pluginPriorVersions `json:"versions,omitempty"`
+	// validate only: the audit sequence of the completed model record the open
+	// reported, or null for none. Decoded strictly (a string or a fraction is
+	// rejected); presence is checked on the raw request, because a decoded nil
+	// is indistinguishable from a missing member.
+	Binding *int64 `json:"binding,omitempty"`
 }
 
 func pluginSnapshotWildcard(grant *pluginReadGrant) bool {
@@ -137,14 +142,11 @@ func validatePluginSnapshotRequest(request pluginSnapshotRequest, operation stri
 // snapshotRequestMalformed rejects the two things the decoded request cannot
 // tell apart: explicit nulls exactly where data.query rejects them (ids, filters,
 // sorts and pageSize: a decoded nil is indistinguishable from an absent key) and
-// the mere presence of versions on an open, null or not, because that member
-// belongs to validate only.
+// the mere presence of versions or binding on an open, null or not, because
+// both members belong to validate only.
 func snapshotRequestMalformed(raw json.RawMessage, operation string) bool {
-	var envelope struct {
-		Sources  []json.RawMessage `json:"sources"`
-		Versions json.RawMessage   `json:"versions"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || operation == "snapshot.open" && len(envelope.Versions) != 0 {
+	var envelope snapshotRequestEnvelope
+	if json.Unmarshal(raw, &envelope) != nil || operation == "snapshot.open" && (len(envelope.Versions) != 0 || len(envelope.Binding) != 0) {
 		return true
 	}
 	for _, source := range envelope.Sources {
@@ -165,6 +167,36 @@ func snapshotRequestMalformed(raw json.RawMessage, operation string) bool {
 	return false
 }
 
+// snapshotRequestEnvelope is the raw view of a request for the rules the strict
+// decode cannot express: explicit nulls, and members that belong to one
+// operation only (presence, null or not).
+type snapshotRequestEnvelope struct {
+	Sources  []json.RawMessage `json:"sources"`
+	Versions json.RawMessage   `json:"versions"`
+	Binding  json.RawMessage   `json:"binding"`
+}
+
+// snapshotRequestBinding returns the validate-only binding member: the audit
+// sequence the open reported, or nil for none. Its presence is checked on the
+// raw request, so a dropped member can never pass for "no binding"; the value
+// itself was decoded strictly with the request.
+func snapshotRequestBinding(request pluginSnapshotRequest, raw json.RawMessage) (*int64, error) {
+	var envelope snapshotRequestEnvelope
+	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Binding) == 0 || request.Binding != nil && *request.Binding < 1 {
+		return nil, pluginDataError("plugin_capability_invalid")
+	}
+	return request.Binding, nil
+}
+
+// sameSnapshotBinding holds only when the record the open named still is the
+// authoritative one: none equals none, and none never equals a record.
+func sameSnapshotBinding(reported, current *int64) bool {
+	if reported == nil || current == nil {
+		return reported == nil && current == nil
+	}
+	return *reported == *current
+}
+
 func executeSurfaceSnapshot(ctx context.Context, app core.App, source *queryschema.Source, workspace string, input pluginSurfaceAPIRequest) (any, error) {
 	operation := input.Method
 	var request pluginSnapshotRequest
@@ -174,6 +206,12 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 	known, err := validatePluginSnapshotRequest(request, operation)
 	if err != nil {
 		return nil, err
+	}
+	var binding *int64
+	if operation == "snapshot.validate" {
+		if binding, err = snapshotRequestBinding(request, input.Request); err != nil {
+			return nil, err
+		}
 	}
 	// One evaluation instant and one dependency-graph cache for the whole batch:
 	// clock periods of all sources are derived from the same instant, exactly
@@ -190,7 +228,7 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 			return err
 		}
 		if operation == "snapshot.validate" {
-			identity, err = validatePluginSnapshot(ctx, tx, installed, input.ActiveCollection, request, known)
+			identity, err = validatePluginSnapshot(ctx, tx, installed, input.ActiveCollection, request, known, binding)
 			return err
 		}
 		result, err = openPluginSnapshot(ctx, tx, source, installed, input.ActiveCollection, request)
@@ -228,8 +266,14 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 		if err != nil {
 			return nil, err
 		}
-		// Digest fields stay: row guards are the data.query digest contract.
-		d.ProjectionFields = []string{"id"}
+		// Digest fields stay: row guards are the data.query digest contract. Without
+		// the id grant no guard can ever be keyed, so id is neither projected nor
+		// digested and the full business records behind the rows stay unread.
+		idReadable := scoped.names["id"] != ""
+		d.ProjectionFields = []string{}
+		if idReadable {
+			d.ProjectionFields = append(d.ProjectionFields, "id")
+		}
 		for _, id := range r.Fields {
 			if id != "id" {
 				d.ProjectionFields = append(d.ProjectionFields, scoped.names[id])
@@ -243,8 +287,10 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 			}
 			return nil, err
 		}
-		if err := query.AttachRowDigests(ctx, tx, d, rows); err != nil {
-			return nil, err
+		if idReadable {
+			if err := query.AttachRowDigests(ctx, tx, d, rows); err != nil {
+				return nil, err
+			}
 		}
 		remainingRows -= len(rows)
 		items := []map[string]any{}
@@ -267,7 +313,7 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 		}
 		for _, row := range rows {
 			var guard any
-			if id, ok := row["id"].(string); ok && scoped.names["id"] != "" {
+			if id, ok := row["id"].(string); ok && idReadable {
 				guard = []any{id, row[productrow.DigestField]}
 			}
 			guards = append(guards, guard)
@@ -301,22 +347,37 @@ func openPluginSnapshot(ctx context.Context, tx core.App, source *queryschema.So
 	if err != nil || len(encoded) > pluginSnapshotBytes {
 		return nil, pluginDataError("plugin_snapshot_limit")
 	}
+	// Host-only: the audit sequence of the completed model record this handle
+	// was opened under (null without one), fixed inside this transaction. The
+	// Host keeps it with the handle, never shows it to the plugin and echoes it
+	// on every validate.
+	result["binding"] = installed.ModelBindingSeq
 	return result, ctx.Err()
 }
 
 // validatePluginSnapshot re-checks every source before a page is served and
 // reports, per collection, whether the plugin may currently read id (the
-// precondition for serving row guards keyed by row id). Plain sources (no
-// computed projection, no model binding, every used field granted by its
-// canonical ID) are proven by one batched schema-revision read plus in-memory
-// grant checks; anything else falls back to the full Describe + pluginAllowed +
-// formula-closure authorization. A missing batch answer never fails the page:
-// it only moves sources to the slow path.
-func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest, known map[string]pluginDatasetVersion) (map[string]bool, error) {
+// precondition for serving row guards keyed by row id). The completed model
+// record the handle was opened under must still be the authoritative one. Plain
+// sources (no computed projection, no model binding, every used field granted
+// by its canonical ID) are proven by one batched schema-revision read plus
+// in-memory grant checks; anything else falls back to the full Describe +
+// pluginAllowed + formula-closure authorization. A missing batch answer never
+// fails the page: it only moves sources to the slow path.
+func validatePluginSnapshot(ctx context.Context, tx core.App, installed pluginSurfaceInstallation, active string, request pluginSnapshotRequest, known map[string]pluginDatasetVersion, binding *int64) (map[string]bool, error) {
 	identity := map[string]bool{}
 	plain := pluginSnapshotPlainGrants(installed)
 	fast := []string{}
 	slow := []pluginSnapshotSource{}
+	// One value for the whole handle: the audit sequence of the newest completed
+	// model record, fixed by the open inside its authorization transaction and
+	// compared here inside this one. Any later completed record (a remap of any
+	// table or field, even one this projection never reads, and even A→B→A)
+	// carries a new never-reused sequence, and so does none becoming bound; the
+	// authority is re-resolved by surfaceInstallation, never replayed here.
+	if !sameSnapshotBinding(binding, installed.ModelBindingSeq) {
+		return nil, pluginDataError("plugin_snapshot_stale")
+	}
 	for _, item := range request.Sources {
 		r := item.Query
 		grant := installed.grant(r.Collection, active)

@@ -740,12 +740,19 @@ func (port *Port) queryRows(
 	return rows, nil
 }
 
+// digestBatchRows bounds how many complete PocketBase records AttachRowDigests holds at
+// once while hashing a page.
+const digestBatchRows = 256
+
 // AttachRowDigests is the single row-guard contract: it hashes the raw product
 // values of each listed row server-side and never returns those values. Ports
 // and bounded snapshot readers share it so every plugin read path produces the
 // same opaque digest for the same stored row. It is all-or-nothing: rows only
 // receive their digests once every row has been hashed, so a cancelled, missing
-// or unencodable row never leaves a half guarded page behind.
+// or unencodable row never leaves a half guarded page behind. Complete records
+// (unprojected fields included) exist only one bounded batch at a time: a batch
+// is read, hashed into the side array and dropped before the next one loads, so
+// a 4096-row page never accumulates 4096 full records beside its digests.
 func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescriptor, rows []map[string]any) error {
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
@@ -764,14 +771,17 @@ func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescrip
 			return errors.New("query row omitted its primary key")
 		}
 	}
-	// Keep complete PocketBase records (including Original) for the existing
-	// digest contract, but load each bounded page once within this transaction.
-	records := make(map[string]*core.Record, len(rows))
-	for start := 0; start < len(recordIDs); start += 256 {
+	// Hash into a side array first; the rows are published only as a complete set.
+	digests := make([]any, len(rows))
+	for start := 0; start < len(recordIDs); start += digestBatchRows {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		batch, err := app.FindRecordsByIds(collection, recordIDs[start:min(start+256, len(recordIDs))],
+		end := min(start+digestBatchRows, len(recordIDs))
+		// Complete PocketBase records (including Original) for the existing
+		// digest contract, loaded once within this transaction and dropped at
+		// the end of the loop iteration.
+		batch, err := app.FindRecordsByIds(collection, recordIDs[start:end],
 			func(statement *dbx.SelectQuery) error {
 				statement.WithContext(ctx)
 				return nil
@@ -779,46 +789,52 @@ func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescrip
 		if err != nil {
 			return err
 		}
+		records := make(map[string]*core.Record, len(batch))
 		for _, record := range batch {
 			records[record.Id] = record
 		}
-	}
-	// Hash into a side table first; the rows are published only as a complete set.
-	digests := make([]any, len(rows))
-	for index, id := range recordIDs {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		record := records[id]
-		if record == nil {
-			return errors.New("query row record could not be read")
-		}
-		var digestRow map[string]any
-		if descriptor.DigestProjector != nil {
-			digestRow = descriptor.DigestProjector(record)
-		} else {
-			digestRow = productrow.FromRecord(descriptor.DigestFields, record)
-			for name, presence := range descriptor.PresenceFields {
-				if !record.GetBool(presence) {
-					digestRow[name] = nil
-				}
+		for index := start; index < end; index++ {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			for name, field := range descriptor.Fields {
-				if value, exists := digestRow[name]; exists {
-					digestRow[name] = decodeFieldValue(value, field)
-				}
+			record := records[recordIDs[index]]
+			if record == nil {
+				return errors.New("query row record could not be read")
 			}
+			digest, err := rowDigest(descriptor, record)
+			if err != nil {
+				return err
+			}
+			digests[index] = digest
 		}
-		digest, err := productrow.Digest(digestRow)
-		if err != nil {
-			return err
-		}
-		digests[index] = digest
 	}
 	for index, row := range rows {
 		row[productrow.DigestField] = digests[index]
 	}
 	return nil
+}
+
+// rowDigest projects one stored record the way its descriptor's digest contract
+// reads it (product values, presence flags and decoded field values) and
+// returns the opaque digest; the raw values never leave this function.
+func rowDigest(descriptor TableDescriptor, record *core.Record) (any, error) {
+	var digestRow map[string]any
+	if descriptor.DigestProjector != nil {
+		digestRow = descriptor.DigestProjector(record)
+	} else {
+		digestRow = productrow.FromRecord(descriptor.DigestFields, record)
+		for name, presence := range descriptor.PresenceFields {
+			if !record.GetBool(presence) {
+				digestRow[name] = nil
+			}
+		}
+		for name, field := range descriptor.Fields {
+			if value, exists := digestRow[name]; exists {
+				digestRow[name] = decodeFieldValue(value, field)
+			}
+		}
+	}
+	return productrow.Digest(digestRow)
 }
 
 func truthyPresence(value any) bool {

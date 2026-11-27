@@ -164,6 +164,10 @@ test("snapshot row guards follow row ids without the projection: keyed by unproj
   const leaked = snapshot.page("alpha");
   transport.reply(transport.calls.at(-1), page("owned", "alpha", [{ id: "a1", name: "x" }, { id: "a2", name: "y" }], null, reply.versions));
   await assert.rejects(leaked, error => error.code === "plugin_transport_failed");
+  // Unprojected or not, a guard is a string digest: nothing else passes.
+  const malformed = snapshot.page("alpha");
+  transport.reply(transport.calls.at(-1), { ...page("owned", "alpha", [{ name: "x" }, { name: "y" }], null, reply.versions), rowGuards: { a1: 1 } });
+  await assert.rejects(malformed, error => error.code === "plugin_transport_failed");
   const closing = snapshot.close();
   assert.equal(transport.calls.at(-1).method, "snapshot.release");
   transport.reply(transport.calls.at(-1), { released: true });
@@ -228,6 +232,15 @@ test("snapshot replies are fail-closed: identity, projection, row shape, offsets
     page("owned", "alpha", [rows.a1], 1, { ...reply.versions, alpha: { ...version, dataRevision: 2 } }),
     page("owned", "alpha", [], 0, reply.versions),
     page("owned", "alpha", [rows.a1, rows.a2, rows.a3], 4, reply.versions),
+    // The relayed version vector is exactly the requested collections: no extra key.
+    page("owned", "alpha", [rows.a1], 1, { ...reply.versions, gamma: version }),
+    // A non-null nextOffset always points at a row still to serve; the final slice carries null.
+    page("owned", "alpha", [rows.a1, rows.a2, rows.a3], 3, reply.versions),
+    // Guards are string digests keyed by ids of served rows, at most one per row.
+    { ...page("owned", "alpha", [rows.a1], 1, reply.versions), rowGuards: { a1: 7 } },
+    { ...page("owned", "alpha", [rows.a1], 1, reply.versions), rowGuards: { a9: "digest" } },
+    { ...page("owned", "alpha", [rows.a1], 1, reply.versions), rowGuards: { a1: "digest", a2: "digest" } },
+    { ...page("owned", "alpha", [rows.a1], 1, reply.versions), rowGuards: { "": "digest" } },
   ];
   for (const result of bad) {
     const reading = snapshot.page("alpha");
@@ -235,6 +248,10 @@ test("snapshot replies are fail-closed: identity, projection, row shape, offsets
     transport.reply(transport.calls.at(-1), result);
     await rejected;
   }
+  // A guard map may cover a subset of the served rows; it is still keyed by served ids only.
+  const partial = snapshot.page("alpha");
+  transport.reply(transport.calls.at(-1), { ...page("owned", "alpha", [rows.a1, rows.a2], 2, reply.versions), rowGuards: { a2: "digest" } });
+  assert.deepEqual((await partial).rowGuards, { a2: "digest" });
   client.dispose();
 });
 
@@ -263,6 +280,10 @@ test("snapshot batch replies are fail-closed: identity, tiling across sources, r
     batch([chunk("alpha", all, null), chunk("beta", [], null)], { collection: "beta", offset: 0, extra: 1 }, versions),
     batch([chunk("alpha", all, null), chunk("beta", [], null)], "end", versions),
     batch([chunk("alpha", all, null), chunk("beta", [], null)], { collection: "gamma", offset: 0 }, versions),
+    batch([{ ...chunk("alpha", all, null), rowGuards: { a1: 1 } }, chunk("beta", [], null)], null, versions),
+    batch([{ ...chunk("alpha", all, null), rowGuards: { a9: "digest" } }, chunk("beta", [], null)], null, versions),
+    batch([chunk("alpha", [rows.a1, rows.a2, rows.a3], 3), chunk("beta", [], null)], { collection: "alpha", offset: 3 }, versions),
+    batch([chunk("alpha", all, null), chunk("beta", [], null)], null, { ...versions, gamma: version }),
   ];
   for (const result of bad) {
     const reading = snapshot.readBatch();
@@ -301,6 +322,50 @@ test("snapshot batch replies are fail-closed: identity, tiling across sources, r
   const limit = batch([chunk("alpha", many.slice(0, 200), 200)], { collection: "alpha", offset: 200 }, versions, "wide");
   transport.reply(transport.calls.at(-1), limit);
   assert.deepEqual(await exact, limit);
+  client.dispose();
+});
+
+test("snapshot replies that land after cancellation are never delivered: the handle is released and dropped", async () => {
+  const transport = channel(), client = sdk.createSurfaceClient("surface", transport);
+  const last = method => transport.calls.findLast(call => call.method === method);
+  // page: the Host's reply wins the race against request.cancel; the page is still not delivered.
+  const { snapshot, reply } = await openSnapshot(transport, client);
+  const controller = new AbortController();
+  const reading = snapshot.page("alpha", 0, 200, controller.signal);
+  const rejected = assert.rejects(reading, error => error.code === "plugin_cancel_requested");
+  controller.abort();
+  assert.equal(last("request.cancel").params.requestId, last("snapshot.page").requestId);
+  transport.reply(last("snapshot.page"), page("owned", "alpha", [rows.a1], 1, reply.versions));
+  await rejected;
+  assert.equal(transport.calls.at(-1).method, "snapshot.release");
+  assert.deepEqual(transport.calls.at(-1).params, { snapshotId: "owned" });
+  const before = transport.calls.length;
+  await assert.rejects(snapshot.page("alpha"), error => error.code === "plugin_snapshot_stale");
+  await assert.rejects(snapshot.readBatch(), error => error.code === "plugin_snapshot_stale");
+  assert.equal(transport.calls.length, before);
+  // readBatch: the same race, the same outcome.
+  const { snapshot: other, reply: otherReply } = await openSnapshot(transport, client, { snapshotId: "batch" });
+  const batchAbort = new AbortController();
+  const batching = other.readBatch(null, batchAbort.signal);
+  const refused = assert.rejects(batching, error => error.code === "plugin_cancel_requested");
+  batchAbort.abort();
+  transport.reply(last("snapshot.readBatch"), batch([chunk("alpha", [rows.a1], 1), chunk("beta", [], null)], { collection: "alpha", offset: 1 }, otherReply.versions, "batch"));
+  await refused;
+  assert.equal(transport.calls.at(-1).method, "snapshot.release");
+  assert.deepEqual(transport.calls.at(-1).params, { snapshotId: "batch" });
+  const afterBatch = transport.calls.length;
+  await assert.rejects(other.readBatch({ collection: "alpha", offset: 1 }), error => error.code === "plugin_snapshot_stale");
+  assert.equal(transport.calls.length, afterBatch);
+  // pages(): the cancelled page ends the walk and the handle; the late reply is never yielded.
+  const { snapshot: walked, reply: walkReply } = await openSnapshot(transport, client, { snapshotId: "walk" });
+  const walkAbort = new AbortController();
+  const stepping = walked.pages(walkAbort.signal).next();
+  const stopped = assert.rejects(stepping, error => error.code === "plugin_cancel_requested");
+  walkAbort.abort();
+  transport.reply(last("snapshot.page"), page("walk", "alpha", [rows.a1], 1, walkReply.versions));
+  await stopped;
+  assert.equal(transport.calls.filter(call => call.method === "snapshot.release" && call.params.snapshotId === "walk").length, 1);
+  await assert.rejects(walked.page("alpha"), error => error.code === "plugin_snapshot_stale");
   client.dispose();
 });
 

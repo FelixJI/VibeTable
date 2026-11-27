@@ -12,6 +12,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -34,11 +35,65 @@ func snapshotRequest(sources ...pluginQueryRequest) pluginSnapshotRequest {
 }
 
 // snapshotEchoRequest feeds an open result back the way the Host does: the
-// original sources plus the open result's versions, re-marshaled verbatim.
+// original sources plus the open result's versions and the binding record it
+// was opened under, re-marshaled verbatim.
 func snapshotEchoRequest(request pluginSnapshotRequest, open map[string]any) json.RawMessage {
+	binding, _ := json.Marshal(open["binding"])
+	return snapshotEchoBinding(request, open, string(binding))
+}
+
+// snapshotEchoBinding echoes an open result with an explicit binding member.
+func snapshotEchoBinding(request pluginSnapshotRequest, open map[string]any, binding string) json.RawMessage {
 	sources, _ := json.Marshal(request.Sources)
 	versions, _ := json.Marshal(open["versions"])
-	return json.RawMessage(`{"contract":"` + pluginSnapshotContract + `","sources":` + string(sources) + `,"versions":` + string(versions) + `}`)
+	return json.RawMessage(`{"contract":"` + pluginSnapshotContract + `","sources":` + string(sources) + `,"versions":` + string(versions) + `,"binding":` + binding + `}`)
+}
+
+// snapshotBinding reads the Host-only binding member of an open result: the
+// audit sequence of the completed model record the handle was opened under.
+func snapshotBinding(t *testing.T, open map[string]any) (int64, bool) {
+	t.Helper()
+	switch binding := open["binding"].(type) {
+	case *int64:
+		if binding == nil {
+			return 0, false
+		}
+		return *binding, true
+	case nil:
+		return 0, false
+	}
+	t.Fatalf("binding member %v (%T)", open["binding"], open["binding"])
+	return 0, false
+}
+
+// snapshotCall runs one snapshot operation through the surface API the way the
+// Host does and returns the result or the product code.
+func (f *dataReadFixture) snapshotCall(t *testing.T, app core.App, method string, request any) (map[string]any, string) {
+	t.Helper()
+	input := f.input
+	input.Method = method
+	switch value := request.(type) {
+	case json.RawMessage:
+		input.Request = value
+	default:
+		input.Request, _ = json.Marshal(request)
+	}
+	result, err := executePluginSurfaceAPI(context.Background(), app, f.source, nil, f.workspace, input, nil)
+	if err == nil {
+		opened, _ := result.(map[string]any)
+		if opened == nil {
+			t.Fatalf("unexpected result %+v", result)
+		}
+		return opened, ""
+	}
+	if result != nil {
+		t.Fatalf("failure leaked a result: %+v", result)
+	}
+	var product *query.ProductError
+	if !errors.As(err, &product) {
+		t.Fatalf("non-product error: %v", err)
+	}
+	return nil, product.Code
 }
 
 func (f *versionsFixture) snapshotCtx(ctx context.Context, t *testing.T, app core.App, method string, request any) (map[string]any, string) {
@@ -560,6 +615,7 @@ func TestPluginSurfaceSnapshotMalformedRequestsFailBeforeAnyTransaction(t *testi
 		"wrong contract": `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v1","collection":"` + table.id + `","fields":["id"]}}]}`,
 		"open versions":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{}}`,
 		"null versions":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":null}`,
+		"open binding":   `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"binding":null}`,
 		"null ids":       `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"ids":null}}]}`,
 		"null sorts":     `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"sorts":null}}]}`,
 		"null pageSize":  `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"pageSize":null}}]}`,
@@ -583,11 +639,22 @@ func TestPluginSurfaceSnapshotMalformedRequestsFailBeforeAnyTransaction(t *testi
 	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(valid)); result != nil || code != "plugin_capability_invalid" {
 		t.Fatalf("validate without versions returned %+v, %q", result, code)
 	}
-	nullPage := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"pageSize":null}}],"versions":{}}`
+	withVersions := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{}`
+	for name, member := range map[string]string{
+		"without binding": "",
+		"string binding":  `,"binding":"1"`,
+		"zero binding":    `,"binding":0`,
+		"float binding":   `,"binding":1.5`,
+	} {
+		if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(withVersions+member+`}`)); result != nil || code != "plugin_capability_invalid" {
+			t.Fatalf("validate %s returned %+v, %q", name, result, code)
+		}
+	}
+	nullPage := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"],"pageSize":null}}],"versions":{},"binding":null}`
 	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(nullPage)); result != nil || code != "plugin_capability_invalid" {
 		t.Fatalf("validate with null pageSize returned %+v, %q", result, code)
 	}
-	incomplete := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{"` + table.id + `":{"schemaRevision":"schema_0001","clockPeriod":"","computed":{}}}}`
+	incomplete := `{"contract":"` + pluginSnapshotContract + `","sources":[{"query":{"contract":"vibetable.plugin-query.v2","collection":"` + table.id + `","fields":["id"]}}],"versions":{"` + table.id + `":{"schemaRevision":"schema_0001","clockPeriod":"","computed":{}}}},"binding":null}`
 	if result, code := f.snapshot(t, hook, "snapshot.validate", json.RawMessage(incomplete)); result != nil || code != "plugin_capability_invalid" {
 		t.Fatalf("incomplete versions returned %+v, %q", result, code)
 	}
@@ -739,5 +806,140 @@ func TestPluginSurfaceSnapshotComputedClosureFollowsVersionsSemantics(t *testing
 	}
 	if result, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(project)); result != nil || code != "plugin_query_failed" {
 		t.Fatalf("unready computed returned %+v, %q", result, code)
+	}
+}
+
+// 句柄的绑定身份只有一个值：open 在授权事务内固定最新 completed 记录的审计序号（pluginstore 追加
+// 审计行时按项目分配 MAX(seq)+1，审计行从不改写，序号从不复用），validate 在同一授权事务内重新
+// 解析后比对。合法重映射即使发生在同一安装修订、同一结构修订、投影仍可读时也使旧句柄失效；
+// A→B→A 得到的是新记录，原句柄不会复活；没有 completed 模型时为 null，且 none 只等于 none。
+func TestPluginSurfaceSnapshotBindingFollowsCompletedRecordSequence(t *testing.T) {
+	// 有数据的表不允许重映射字段（plugin_model_history_present），所以合法重映射发生在这张
+	// 尚无业务行的已绑定表上：句柄打开时投影可读，重映射后它仍可读，但授权记录已换。
+	f := newDataReadFixture(t, false)
+	idGrants := []pluginReadGrant{
+		{Collection: "$active", Operations: []string{"read", "query"}, Fields: []string{"id"}},
+		{Collection: f.mapped.TableID, Operations: []string{"read", "query"}, Fields: []string{"id"}},
+	}
+	request := snapshotRequest(pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: f.mapped.TableID, Fields: []string{"id"}})
+	validate := func(name, want string, open map[string]any) {
+		t.Helper()
+		result, code := f.snapshotCall(t, f.pb, "snapshot.validate", snapshotEchoRequest(request, open))
+		if want == "" {
+			if code != "" || result["valid"] != true {
+				t.Fatalf("%s: %+v %q", name, result, code)
+			}
+			return
+		}
+		if result != nil || code != want {
+			t.Fatalf("%s returned %+v, %q", name, result, code)
+		}
+	}
+	first := f.latestCompleted(t)
+	open, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if seq, bound := snapshotBinding(t, open); code != "" || !bound || seq != first.Seq {
+		t.Fatalf("open binding: %+v %q", open, code)
+	}
+	validate("fresh handle", "", open)
+	// 合法重映射到另一个既有字段：安装修订与结构修订都不变，id 投影仍可读。
+	f.remap(t, f.replacement.FieldID)
+	second := f.latestCompleted(t)
+	if second.Seq <= first.Seq || second.State.InstallationRevision != first.State.InstallationRevision {
+		t.Fatalf("remap must append a record under the same installation revision: %+v -> %+v", first.State, second.State)
+	}
+	validate("remapped binding", "plugin_snapshot_stale", open)
+	reopened, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if seq, _ := snapshotBinding(t, reopened); code != "" || seq != second.Seq || !reflect.DeepEqual(open["versions"], reopened["versions"]) {
+		t.Fatalf("reopened: %+v %q", reopened, code)
+	}
+	validate("reopened handle", "", reopened)
+	// 映射回原字段（A→B→A）：绑定内容与最初相同，但它是新的 completed 记录；两个旧句柄都不复活。
+	f.remap(t, f.mapped.FieldID)
+	third := f.latestCompleted(t)
+	if third.Seq <= second.Seq || !reflect.DeepEqual(third.State.Bindings, first.State.Bindings) {
+		t.Fatalf("A→B→A must append a record with the original bindings: %+v", third.State)
+	}
+	validate("first handle after A→B→A", "plugin_snapshot_stale", open)
+	validate("second handle after A→B→A", "plugin_snapshot_stale", reopened)
+	// 回传值被篡改：声称 none、旧序号或尚未出现的序号都不能通过。
+	current, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if code != "" {
+		t.Fatal(code)
+	}
+	for name, binding := range map[string]string{"none": "null", "older": fmt.Sprint(first.Seq), "future": fmt.Sprint(third.Seq + 1)} {
+		if result, code := f.snapshotCall(t, f.pb, "snapshot.validate", snapshotEchoBinding(request, current, binding)); result != nil || code != "plugin_snapshot_stale" {
+			t.Fatalf("%s binding returned %+v, %q", name, result, code)
+		}
+	}
+	// 安装修订变化后还没有适用的 completed 记录：句柄为 none，validate 通过；绑定完成后 none 句柄失效。
+	f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, idGrants)
+	none, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if _, bound := snapshotBinding(t, none); code != "" || bound {
+		t.Fatalf("unbound open: %+v %q", none, code)
+	}
+	validate("unbound handle", "", none)
+	f.remap(t, f.mapped.FieldID)
+	validate("unbound handle after binding completed", "plugin_snapshot_stale", none)
+	bound, code := f.snapshotCall(t, f.pb, "snapshot.open", request)
+	if seq, isBound := snapshotBinding(t, bound); code != "" || !isBound || seq != f.latestCompleted(t).Seq {
+		t.Fatalf("bound open: %+v %q", bound, code)
+	}
+	validate("bound handle", "", bound)
+	// 记录不再适用于当前安装修订（none）：绑定句柄同样失效。
+	f.input = changeDataGrants(t, pluginstore.New(f.pb, f.workspace), f.input, idGrants)
+	validate("bound handle without an applicable record", "plugin_snapshot_stale", bound)
+}
+
+// 没有 id 授权时快照连行摘要都不读：未绑定表的字段授权不含 id，业务记录不再为了必将被丢弃的
+// 守卫整行加载，回执里也没有 id；同一投影一旦授予 id 就附加行摘要（整行按批加载）。
+func TestPluginSurfaceSnapshotWithoutIdGrantSkipsDigests(t *testing.T) {
+	f := newVersionsFixture(t, 1)
+	table := f.tables[0]
+	recorder := &versionsSQLRecorder{}
+	for _, pool := range []dbx.Builder{f.pb.ConcurrentDB(), f.pb.NonconcurrentDB()} {
+		pool.(*dbx.DB).QueryLogFunc = recorder.log
+	}
+	hook := &versionsTxHook{App: f.pb, recorder: recorder}
+	// The digest batch reads complete records: `SELECT <table>.* FROM <table>`.
+	full := "SELECT `" + table.physical + "`.* FROM `" + table.physical + "`"
+	digestRuns := func(statements []recordedSQL) int {
+		runs := 0
+		for _, statement := range statements {
+			if strings.Contains(statement.statement, full) {
+				runs++
+			}
+		}
+		return runs
+	}
+	request := snapshotRequest(snapshotQuery(table, table.nameID))
+	f.regrant(t, []pluginReadGrant{{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{table.nameID}}})
+	before := len(recorder.snapshot())
+	open, code := f.snapshot(t, hook, "snapshot.open", request)
+	if code != "" {
+		t.Fatal(code)
+	}
+	source := snapshotSource(t, open, table.id)
+	items := source["items"].([]map[string]any)
+	if runs := digestRuns(recorder.snapshot()[before:]); runs != 0 || len(items) != 1 || len(items[0]) != 1 || fmt.Sprint(items[0][table.nameID]) != "甲" {
+		t.Fatalf("id-less open read full records or projected id: %+v digest runs=%d", source, runs)
+	}
+	if guards := source["rowGuards"].([]any); len(guards) != 1 || guards[0] != nil {
+		t.Fatalf("id-less guards: %+v", guards)
+	}
+	// 守卫不可用不影响 validate：没有 id 的投影本身不依赖 id 授权。
+	if result, code := f.snapshot(t, hook, "snapshot.validate", snapshotEchoRequest(request, open)); code != "" || result["valid"] != true || result["identity"].(map[string]bool)[table.id] != false {
+		t.Fatalf("id-less validate: %+v %q", result, code)
+	}
+	// 对照：同一投影授予 id 后附加行摘要，整行按批加载一次。
+	f.regrant(t, []pluginReadGrant{{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{"id", table.nameID}}})
+	before = len(recorder.snapshot())
+	open, code = f.snapshot(t, hook, "snapshot.open", request)
+	if code != "" {
+		t.Fatal(code)
+	}
+	source = snapshotSource(t, open, table.id)
+	guards, _ := source["rowGuards"].([]any)[0].([]any)
+	if runs := digestRuns(recorder.snapshot()[before:]); runs != 1 || len(guards) != 2 || guards[0] == "" || !strings.HasPrefix(fmt.Sprint(guards[1]), "sha256:") {
+		t.Fatalf("control open must attach a digest by loading the record: %+v digest runs=%d", source, runs)
 	}
 }

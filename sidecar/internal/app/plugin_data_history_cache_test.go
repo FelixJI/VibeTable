@@ -335,7 +335,7 @@ func TestPluginDataQueryIgnoresRolledBackAndEqualLengthReplacedHistory(t *testin
 			return err
 		}
 		for _, state := range inside {
-			if state.RequestID == uncommitted.RequestID {
+			if state.State.RequestID == uncommitted.RequestID {
 				return rollback
 			}
 		}

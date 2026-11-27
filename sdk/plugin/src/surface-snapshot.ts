@@ -34,7 +34,7 @@ export const SNAPSHOT_LIMITS = Object.freeze({
   pageRows: 200,
   /** One readBatch crosses sources but carries at most this many rows; empty sources ride along. */
   batchRows: 200,
-  /** Item JSON budget of one batch across source boundaries; only the batch's very first row is unconditional. */
+  /** Bridge-encoded item and guard budget of one batch across source boundaries (the whole reply also stays inside the frame); only the batch's very first row is unconditional. */
   batchBytes: 256 * 1024,
 });
 
@@ -76,7 +76,8 @@ export interface DataSnapshotChunk {
    * served row while the authority still lets the plugin read `id`, whether or not `id` is
    * projected; `{}` once that read is revoked. Items never gain an unprojected `id`. */
   readonly rowGuards: Readonly<Record<string, unknown>>;
-  /** Offset of this source's next row inside the snapshot; null once the source is exhausted. */
+  /** Offset of this source's next row inside the snapshot; null once the source is exhausted (a
+   * non-null offset always points at a row still to serve). */
   readonly nextOffset: number | null;
   /** Projected computed cells are fresh. Source exhaustion is nextOffset === null. */
   readonly complete: boolean;
@@ -105,8 +106,8 @@ export interface DataSnapshot extends DataSnapshotInfo {
   /** One page of one source from the immutable snapshot; one authorization round trip per page. */
   page(collection: string, offset?: number, pageSize?: number, signal?: AbortSignal): Promise<DataSnapshotPage>;
   /**
-   * One authorized cross-source batch: at most batchRows rows and batchBytes of item JSON
-   * from `next` (default: the first source) in request order, empty sources included; one
+   * One authorized cross-source batch: at most batchRows rows and batchBytes of bridge-encoded items
+   * and guards from `next` (default: the first source) in request order, empty sources included; one
    * authorization round trip per batch. The handle stays open; the reply's `next` is the
    * argument of the following call. Every delivered batch belongs to the caller as a whole.
    */
@@ -204,18 +205,30 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
       owned.set(snapshotId, {});
       const stale = () => new PluginCapabilityError("plugin_snapshot_stale", "Snapshot closed or released.");
       const shape = () => new PluginCapabilityError("plugin_capability_invalid", "Snapshot position is invalid.");
-      // Every reply relays the read point's whole version vector; anything else is not this snapshot.
-      const relayVersions = (versions: unknown): boolean => object(versions) && metas.every(({ collection }) => sameDataVersion(info.versions[collection], versions[collection] as DataVersion));
+      // Every reply relays the read point's whole version vector, exactly: the same keys as the
+      // requested collections and the same version per key. Anything else is not this snapshot.
+      const relayVersions = (versions: unknown): boolean => object(versions) && Object.keys(versions).length === metas.length
+        && metas.every(({ collection }) => sameDataVersion(info.versions[collection], versions[collection] as DataVersion));
+      // Row guards follow the data.query contract: string digests keyed by row id, at most one per
+      // served row, and whenever `id` is projected every key is the id of a served row. The map is a
+      // subset (or `{}`) once the authority stops endorsing row identity.
+      const checkGuards = (guards: Record<string, unknown>, items: readonly unknown[], meta: DataSnapshotSourceInfo): boolean => {
+        const keys = Object.keys(guards);
+        if (keys.length > items.length || keys.some(key => !key || typeof guards[key] !== "string")) return false;
+        if (!meta.fields.includes("id")) return true;
+        const served = new Set(items.map(item => (item as Record<string, unknown>).id));
+        return keys.every(key => served.has(key));
+      };
       // Slices tile their source exactly: nextOffset steps by the rows served, a slice that
-      // stops short of filteredRows must have served rows, and only the final slice of a
-      // source reaches filteredRows with none.
+      // stops short of filteredRows must have served rows, a non-null nextOffset always points at a
+      // row still to serve, and only the final slice of a source reaches filteredRows with none.
       const checkSlice = (slice: Record<string, unknown>, meta: DataSnapshotSourceInfo, start: number): slice is DataSnapshotChunk & Record<string, unknown> => {
         if (slice.collection !== meta.collection || !Array.isArray(slice.items) || !object(slice.rowGuards) || typeof slice.complete !== "boolean") return false;
         const items: unknown[] = slice.items;
-        if (!items.every(item => object(item) && exactKeys(item, meta.fields))) return false;
+        if (!items.every(item => object(item) && exactKeys(item, meta.fields)) || !checkGuards(slice.rowGuards, items, meta)) return false;
         const next = slice.nextOffset;
         const reached = start + items.length;
-        return next === null ? reached === meta.filteredRows : count(next) && next === reached && items.length > 0 && next <= meta.filteredRows;
+        return next === null ? reached === meta.filteredRows : count(next) && next === reached && items.length > 0 && next < meta.filteredRows;
       };
       const use = async <T>(method: string, params: unknown, token?: AbortSignal): Promise<T> => {
         if (!owned.has(snapshotId)) throw stale();
@@ -226,11 +239,20 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
           throw error;
         }
       };
+      // A reply that arrives after the caller stopped waiting (or the surface closed) is never
+      // delivered; the handle it was sliced from ends here too, so nothing is ever served from it again.
+      const afterReply = async (token?: AbortSignal): Promise<void> => {
+        if (!closed && !token?.aborted) return;
+        owned.delete(snapshotId);
+        if (!closed) release("snapshot.release", { snapshotId });
+        throw new PluginCapabilityError(closed ? "plugin_surface_closed" : "plugin_cancel_requested", closed ? "Plugin surface closed." : "Snapshot cancelled.");
+      };
       const page = async (collection: string, offset = 0, pageSize = SNAPSHOT_LIMITS.pageRows, token?: AbortSignal): Promise<DataSnapshotPage> => {
         const meta = metas.find(source => source.collection === collection);
         if (!meta) throw new PluginCapabilityError("plugin_capability_invalid", "Collection is not part of this snapshot.");
         if (!count(offset) || !count(pageSize) || pageSize < 1 || pageSize > SNAPSHOT_LIMITS.pageRows) throw new PluginCapabilityError("plugin_capability_invalid", "Snapshot page bounds are invalid.");
         const result = await use<DataSnapshotPage>("snapshot.page", { snapshotId, collection, offset, pageSize }, token);
+        await afterReply(token);
         if (!object(result) || !exactKeys(result, ["snapshotId", "collection", "items", "rowGuards", "nextOffset", "versions", "complete"])) throw invalid();
         if (result.snapshotId !== snapshotId || !checkSlice(result, meta, offset) || result.items.length > pageSize || !relayVersions(result.versions)) throw invalid();
         return result;
@@ -246,6 +268,7 @@ export function createSurfaceSnapshot(call: Call, release: (method: string, para
           offset = from.offset;
         }
         const result = await use<DataSnapshotBatch>("snapshot.readBatch", { snapshotId, next: from ?? null }, token);
+        await afterReply(token);
         if (!object(result) || !exactKeys(result, ["snapshotId", "chunks", "next", "versions"])) throw invalid();
         if (result.snapshotId !== snapshotId || !Array.isArray(result.chunks) || !relayVersions(result.versions)) throw invalid();
         // Chunks tile the sources consecutively from the requested position: no source is
