@@ -66,9 +66,10 @@ type pluginSnapshotRequest struct {
 // well be a model table whose manifest grant is `$active: *`), and alone it
 // authorizes nothing. Open, validate, the version vector, the authorization of
 // computed dependencies and the row guards all resolve this one grant, so a
-// wildcard can neither reject nor authorize a source, and a handle opened on
-// `$active` entries is denied by validate once the table stops being the
-// active one. Ordinary describe/query/versions keep the merged grant.
+// wildcard can neither reject nor authorize a source. Losing active-table
+// permission for a field used by the query denies validation. Losing only
+// the id permission used for guards preserves the projection without guards.
+// Ordinary describe/query/versions keep the merged grant.
 func (installation pluginInstallation) snapshotGrant(table, active string) *pluginReadGrant {
 	var merged *pluginReadGrant
 	for _, grant := range installation.grants() {
