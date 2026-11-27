@@ -278,13 +278,19 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		}
 		return executeSurfaceTransaction(ctx, app, kernel, workspace, input, gate, ports)
 	}
-	if input.Method == "data.query" || input.Method == "dataset.open" || input.Method == "data.versions" {
+	if input.Method == "data.query" || input.Method == "dataset.open" || input.Method == "data.versions" || input.Method == "snapshot.open" || input.Method == "snapshot.validate" {
 		ctx = pluginmodel.WithProgressCache(ctx, app)
 	}
 	if input.Method == "data.versions" {
 		// #589: installation, action/entry binding and every source version are read
 		// in exactly one transaction; nothing is resolved on the raw app first.
 		return executeSurfaceDataVersions(ctx, app, workspace, input)
+	}
+	if input.Method == "snapshot.open" || input.Method == "snapshot.validate" {
+		// #590: the same single-transaction authority resolves the installation,
+		// grants, versions and bounded rows (open) or re-proves every source
+		// before a page is served (validate); nothing is resolved on the raw app first.
+		return executeSurfaceSnapshot(ctx, app, source, workspace, input)
 	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	switch input.Method {

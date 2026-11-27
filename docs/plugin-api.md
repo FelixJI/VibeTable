@@ -50,6 +50,7 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `data.subscribe({collection}, listener, signal?)` | `{subscriptionId}` | 失效通知，不是数据；先订阅再查询 |
 | `data.unsubscribe(subscriptionId)` | `Promise<void>` | 释放本页面订阅 |
 | `data.versions(request, signal?)` | `DataVersions` | 一次事务批量读取 1–64 个授权来源的精确版本；`read` + `query`，显式字段投影；不读行 |
+| `data.openSnapshot(request, signal?)` | `DataSnapshot` | 一次事务物化 1–64 个来源的只读快照（行、rowGuard、#589 版本向量），关闭事务后才发句柄；`page`/`pages`（单来源网络页）/`readBatch`（跨来源批）/`close` |
 | `mutation.preview(plan)` | `{planId, affectedCount}` | 单表 create/update/delete 计划；不会写入 |
 | `mutation.submit(planId, signal?)` | `{status, taskId}` | 请求原生确认；`status` 为 `succeeded` 或 `rejected` |
 | `transaction.configure({declaration}, signal?)` | 配置回执或 null | 已安装声明与已确认模型；精确原生确认后登记持久保护规则 |
@@ -298,6 +299,98 @@ if (after.stale!.length) throw new Error("读取期间来源已变化，请重�
   投影公式尚未就绪或缺少有效的定义版本时，整批报 `plugin_query_failed`；读取方可在计算完成后重新核对。
 - 整批固定一次公式求值时刻并共享依赖图缓存。`clockPeriod` 只反映投影中公式及其同表依赖引用的时钟。
   单个来源没有时钟引用时为 `""`。
+
+## 多来源只读快照：data.openSnapshot
+
+API 3.x 增量能力 `vibetable.plugin-snapshot.v1`（私有 wire `snapshot.open` / `snapshot.page` /
+`snapshot.readBatch` / `snapshot.release`，Host→Go `snapshot.validate`）。它解决“40 个来源要一个读取点”的问题：Go 在**一个**
+只读事务内固定求值时刻，按插件授权逐来源读取精确投影（含 ids/filters/sorts）、行身份与 rowGuard，
+产出与 `data.versions` 逐字相同的版本向量；**事务关闭之后** Host 才发出句柄。之后每一页/每一批都来自这份
+有界内存快照，不会混入更新行，也不会因为单纯数据写入而失效。
+
+```ts
+const snapshot = await api.data.openSnapshot({
+  contract: "vibetable.plugin-snapshot.v1" as const,
+  sources: entities.map(entity => ({
+    // 普通 data.query 请求，去掉 cursor/pageSize；投影、ids、filters、sorts 原样生效。
+    query: { contract: "vibetable.plugin-query.v2" as const, collection: entity.collection, fields: entity.fieldIds },
+  })),
+}, signal);
+try {
+  // 跨来源按批读取：每批一次授权校验，返回若干来源 chunk、完整版本向量与明确的下一位置。
+  let next: DataSnapshotPosition | null = null;
+  do {
+    const batch = await snapshot.readBatch(next, signal); // {snapshotId, chunks, next, versions}
+    for (const chunk of batch.chunks) { /* chunk.collection / chunk.items / chunk.rowGuards */ }
+    next = batch.next;
+  } while (next !== null);
+} finally { await snapshot.close(); }
+```
+
+- 快照句柄：`snapshot.versions`（按 collection 键入的 #589 向量）、`snapshot.sources`（每来源 `collection`、
+  `fields`、`computedFields`、`filteredRows`、`totalRows`、`complete`）、`snapshot.expiresAt`。
+  `page(collection, offset?, pageSize?, signal?)` 取单来源一页（pageSize 1–200，默认 200），每页一次授权往返；
+  `pages(signal?)` 是单来源网络页的顺序迭代（按请求顺序逐来源逐页调用 `page`，不把 chunk 当作新页），
+  耗尽/提前 break/取消/消费者异常都在 finally 关闭句柄；`readBatch(next?, signal?)` 跨来源取一批（见下），
+  句柄保持打开，每批一次授权往返；`close()` 幂等、共享在途释放，
+  失败保留所有权以便重试，Host 回报 stale 时本地丢弃所有权。`api.dispose` 与页面离开/撤权会回收句柄。
+- 每页回执：`{snapshotId, collection, items, rowGuards, nextOffset, versions, complete}`。`items` 的键恰好
+  等于投影字段；`versions` 是读取点的完整向量原样中继（SDK 逐页用 `sameDataVersion` 全量核对）；
+  `rowGuards` 与 `data.query` 同一契约（按行 id 键入的不透明摘要）：只要插件**现行**可读 `id`，就按页/批行键入，投影是否含 `id` 无关；
+  不可读时为 `{}`；`items` 永远不会多出未投影的 `id`。
+  SDK 对回执做 fail-closed 校验：身份回显、字段顺序、行键集合、`nextOffset` 恰好前进 `items.length`、非 null 的 `nextOffset` 必须
+  仍小于 `filteredRows`、最后一页恰好到达 `filteredRows`、`versions` 的键集合恰等于请求的来源集合，任何不一致报
+  `plugin_transport_failed`；`rowGuards` 只接受字符串摘要、键数不超过本页行数、投影含 `id` 时每个键都是本页某一行的
+  `id`（允许只覆盖部分行），否则同样报 `plugin_transport_failed`。
+  调用方已取消（或 surface 已关闭）之后才到达的页/批回执 SDK 一律不交付：本地丢弃该句柄并向 Host 发释放，
+  报 `plugin_cancel_requested`（关闭时 `plugin_surface_closed`），之后该句柄的调用直接报 `plugin_snapshot_stale`。
+- 每批回执（`DataSnapshotBatch`，导出类型 `DataSnapshotChunk` / `DataSnapshotPosition` / `DataSnapshotBatch`）：
+  `{snapshotId, chunks, next, versions}`。`chunks` 从 `next` 指向的位置起按请求顺序连续铺满来源（空来源作为零行
+  chunk 保留；chunk 形状 `{collection, items, rowGuards, nextOffset, complete}` 与页相同，`rowGuards` 按 chunk 行过滤），
+  整批合计 ≤200 行、整批承载内容（每个 chunk 的两个容器与固定成员、每行的 item/守卫成员/分隔符）按 bridge 实际编码 ≤256 KiB，且整条回复（含 envelope 与版本向量）不超 1 MiB 帧——字节预算属于整批，
+  跨来源边界同样生效，只有整批的第一个 chunk 与第一行
+  无条件返回，因此放不下 chunk 或下一行的来源整段留给下一批。`next` 是下一次调用必须原样回传的精确位置
+  （`{collection, offset}`），全部来源读完为 `null`；一批可以在来源边界结束（预算用尽），SDK 不假定批次最大化。
+  SDK 先在本地校验位置形状（未知 collection 同样报 `plugin_capability_invalid`，不发起 wire）；Host 侧对位置的
+  校验发生在该批 `snapshot.validate` 之后（未知 collection 报 `plugin_read_denied`）且不丢句柄。SDK 对回执
+  fail-closed：chunk 必须从请求位置起逐来源铺满（无跳过）、中途截断的 chunk 必须是最后一个且非空、总行数
+  ≤200、`next` 必须等于由 chunk 推导出的位置、`versions` 全量 `sameDataVersion` 核对，否则 `plugin_transport_failed`。
+  已交付的批次整体归调用者持有。
+- 校验语义：每页/每批前 Host 调 `snapshot.validate`，Go 重新核对当前安装/会话、每来源**现行**授权与投影，
+  并比对每来源 `schemaRevision`；**不比对** `dataRevision` 与 `clockPeriod`（它们依赖求值时刻，比对会产生
+  伪失效）。因此：单纯数据写入不会使句柄失效，也不会让合法分页拿到新行；结构变更报 `plugin_snapshot_stale`；
+  授权收窄报 `plugin_read_denied`；安装修订过期报 `plugin_cursor_stale`；会话/页面离开报 `plugin_session_stale`。
+  **模型绑定身份**：Go→Host 的 open 回执带一个 Host-only 的 `binding`（完成模型记录的审计序号，正整数；无完成记录为
+  `null`），在 open 事务内固定，Host 不会把它中继给插件（插件的 open 回执没有该键）。每次 validate 请求原样回传
+  `binding`，Go 在同一授权事务内重新解析完成记录并比对序号：记录不同（即使安装修订、结构修订未变、投影仍可读）、
+  一方为 `null`、回传缺失或形状不是正整数/null，都是 `plugin_snapshot_stale` / `plugin_capability_invalid`，
+  因此句柄不会跨越它被打开时的模型绑定变更而存活，绑定改回原模型也不会让旧句柄复活。
+  validate 回复必须是显式 `valid: true`，否则 Host 视为 `plugin_snapshot_stale` 并丢弃句柄；回复同时携带 `identity`
+  （按来源的“现行可读 `id`”布尔表），Host 据此决定本页/本批是否交付 `rowGuards`——与 `data.query` 一致：只要 `id`
+  当前可读就按行 id 键入，不管投影是否含 `id`；Go 物化的语料里每个来源保存与 `items` 对齐的 `[id, digest]` 数组
+  （open 时未获 `id` 授权的行为 null，且不为这些行加载守卫记录），所以任意 offset 都能同步切片行与守卫，而 `items` 永远不会多出未投影的 `id`。
+  Host 在 validate 往返之后再次核对句柄仍在且未过绝对过期才切片；在背书之后、切片交付之前发生的取消同样回收**已存在**的句柄。
+  任一失败整页失败、不返回部分结果，并释放该句柄。普通来源（无模型绑定、无计算投影、所用字段全部按
+  canonical ID 授权且含 `id`）走一条批量 SQL 的快路径（40 来源 0 次 Describe）；其它来源回退完整 Describe+授权路径。
+  所用字段与 `data.query` 归一化完全相同：投影、排序、筛选叶子字段需授权（筛选组只是结构，不是读取），
+  显式 `ids` 还要求 `id` 授权，且每次校验都重新核对。
+- 限制（在任何读取之前拒绝）：1–64 个来源、每来源 1–64 字段、ID ≤128 字节、ids ≤200、
+  总行 ≤4096、语料编码 ≤512 KiB（items+rowGuards+versions）、每批 ≤200 行且整批（chunk 容器与固定成员 + items+rowGuards + 分隔符）≤256 KiB、每 surface 2 个句柄、全局 8 个、
+  打开后 300 秒绝对过期。字节预算以 **bridge 实际编码**计量（默认 JSON 编码器把 CJK 与 HTML 敏感字符转义为
+  `\uXXXX`，可达原始 JSON 的 6 倍；不改全局编码器）：Go 以原始字节数做内存上限，Host 以 Reply 的实际编码字节做权威
+  判定，并且 open 时每一行连同其守卫都必须能单独放进一条 bridge 回复，否则整次 open 报 `plugin_snapshot_limit`。
+  Host 在发布句柄前还以每次权威调用相同的编码预检该句柄的 validate 请求（插件 sources + 版本向量 + binding）能否放进 1 MiB 帧：
+  放不下则整次 open 报 `plugin_snapshot_limit`，不发布句柄，预留配额归还。
+  两个句柄限额把在途 `snapshot.open` 也计入：Host 从开始物化即预留配额，发布句柄或
+  失败/取消/关会话时归还，因此并发打开不会先让 Go 物化再被拒绝发布；每次准入都先清扫已过绝对过期的句柄，
+  不等清理定时器。
+  行/字节/句柄预算报 `plugin_snapshot_limit`；ids 超限报 `plugin_query_limit`；形状错误（未知键、重复来源、
+  `$` 别名、关系路径、显式 null、来源 query 内出现 `cursor`/`pageSize`（SDK 本地以同一错误码先行拒绝，不上 wire）、
+  open 带 versions / open 带 binding / validate 缺 versions / validate 缺 binding）报 `plugin_capability_invalid`。
+  授权与计算规则与 `data.versions` 相同（通配授权整批 `plugin_read_denied`，未就绪计算 `plugin_query_failed`）。
+- 旧 Host 报 `plugin_api_unsupported`；SDK 不做任何本地模拟，离线宿主需显式 `snapshotAdapter`。
+- 与 `data.versions` 的关系：`snapshot.versions` 深等于同一时刻、同一投影的 `data.versions` 回复；快照
+  关闭后需要复用已加载数据时，仍按 `data.versions` 回传核对。
 
 ## 导出与任务
 

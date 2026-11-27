@@ -21,8 +21,10 @@ export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from ".
 export type { ModelOutputFileField, SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
 export { SURFACE_DATASET_CONTRACT } from "./surface-dataset.js";
 export type { DatasetSource, DatasetVersion, DatasetInfo, DatasetPage, DatasetSum, DatasetSummary, SurfaceDataset, SurfaceDatasets } from "./surface-dataset.js";
-export { SURFACE_DATA_VERSIONS_CONTRACT, DATA_VERSIONS_LIMITS, sameDataVersion } from "./surface-versions.js";
+export { SURFACE_DATA_VERSIONS_CONTRACT, DATA_VERSIONS_LIMITS, isDataVersion, sameDataVersion } from "./surface-versions.js";
 export type { DataVersion, DataVersionSource, DataVersionsRequest, DataVersions, SurfaceDataVersions } from "./surface-versions.js";
+export { SURFACE_SNAPSHOT_CONTRACT, SNAPSHOT_LIMITS } from "./surface-snapshot.js";
+export type { DataSnapshotSource, DataSnapshotRequest, DataSnapshotVersion, DataSnapshotSourceInfo, DataSnapshotInfo, DataSnapshotChunk, DataSnapshotPage, DataSnapshotPosition, DataSnapshotBatch, DataSnapshot, SurfaceDataSnapshot } from "./surface-snapshot.js";
 export type { SurfaceTransaction, TransactionDeclaration, TransactionDecimal, TransactionRule, GroupTarget, GroupReference, StateRelationCase, ReversalSpec, AuthorityRef, AllocationSpec, SettlementSpec, ChangeEvidenceSpec, TransactionReference, TransactionValue,
   TransactionOperation, TransactionPlan, TransactionEffect, TransactionPreview, TransactionApplied, TransactionUnknown, TransactionStatus } from "./surface-transaction.js";
 

@@ -57,11 +57,17 @@ type pluginComputedRevision struct {
 type pluginInstallation struct {
 	ModelOutputFields map[[2]string]*pluginmodel.FilePolicy `json:"-"`
 	ModelGrants       []pluginReadGrant                     `json:"-"`
-	InstallationID    string                                `json:"installationId"`
-	PackageHash       string                                `json:"packageHash"`
-	Revision          int64                                 `json:"revision"`
-	Status            string                                `json:"status"`
-	Manifest          struct {
+	// ModelBindingSeq is the per-project audit sequence of the newest completed
+	// model progress record the grants above derive from (nil without one).
+	// pluginstore assigns it when it appends the row (MAX(seq)+1 inside the
+	// caller-owned transaction) and audit rows are never rewritten, so it names
+	// one authority for the whole installation and is never reused.
+	ModelBindingSeq *int64 `json:"-"`
+	InstallationID  string `json:"installationId"`
+	PackageHash     string `json:"packageHash"`
+	Revision        int64  `json:"revision"`
+	Status          string `json:"status"`
+	Manifest        struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
 			Dataset   string `json:"dataset,omitempty"`

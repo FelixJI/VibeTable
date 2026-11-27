@@ -17,6 +17,8 @@ export interface OfflineSurfaceOptions extends OfflineHostOptions {
   readonly datasetAdapter?: (method: string, params: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
   /** Explicit Go-produced `data.versions` authority adapter (#589); absent means an old Host that rejects the method. */
   readonly versionsAdapter?: (params: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
+  /** Explicit Go-produced `data.openSnapshot` authority adapter (#590); absent means an old Host that rejects the method. */
+  readonly snapshotAdapter?: (method: string, params: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
 }
 function fail(code: string): never { throw new PluginCapabilityError(code, "Synthetic surface request rejected."); }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -45,6 +47,10 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
     if (method === "data.versions") {
       if (!options.versionsAdapter) fail("plugin_api_unsupported");
       return options.versionsAdapter(params, signal);
+    }
+    if (method.startsWith("snapshot.")) {
+      if (!options.snapshotAdapter) fail("plugin_api_unsupported");
+      return options.snapshotAdapter(method, params, signal);
     }
     if (method.startsWith("model.")) fail("plugin_api_unsupported");
     if (method === "context.read") return host.capabilities.context.read();

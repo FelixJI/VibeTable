@@ -58,10 +58,16 @@ func resolveModelGrantState(ctx context.Context, app core.App, project, plugin s
 	if err := installed.Manifest.Permissions.Model.Validate(); err != nil {
 		return nil, pluginDataError("plugin_model_invalid")
 	}
-	state, err := loadCompletedModel(ctx, app, project, plugin, installed, revisions)
-	if err != nil || state == nil {
+	progress, err := loadCompletedModel(ctx, app, project, plugin, installed, revisions)
+	if err != nil || progress == nil {
 		return nil, err
 	}
+	// The record the grants below derive from keeps its audit sequence: a later
+	// completed record (any legitimate remap, even A→B→A) is a different
+	// authority, and read handles name it instead of hashing bindings.
+	seq := progress.Seq
+	installed.ModelBindingSeq = &seq
+	state := &progress.State
 	for _, e := range state.Model.Entities {
 		b := state.Bindings[e.Key]
 		fields := []string{"id"}
@@ -80,7 +86,10 @@ func resolveModelGrantState(ctx context.Context, app core.App, project, plugin s
 	return state, nil
 }
 
-func loadCompletedModel(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation, revisions map[string]string) (*pluginmodel.State, error) {
+// loadCompletedModel returns the newest completed progress record that matches the
+// installation (id, revision and declared model), with the audit sequence of
+// its record, or nil without one.
+func loadCompletedModel(ctx context.Context, app core.App, project, plugin string, installed *pluginInstallation, revisions map[string]string) (*pluginmodel.Progress, error) {
 	// Grants derive from the newest completed state only.
 	completed, err := completedModelHistory(ctx, app, project, plugin)
 	if err != nil {
@@ -88,10 +97,10 @@ func loadCompletedModel(ctx context.Context, app core.App, project, plugin strin
 	}
 	for i := len(completed) - 1; i >= 0; i-- {
 		s := completed[i]
-		if s.InstallationID != installed.InstallationID || s.InstallationRevision != installed.Revision || !pluginmodel.Equal(s.Model, *installed.Manifest.Permissions.Model) {
+		if s.State.InstallationID != installed.InstallationID || s.State.InstallationRevision != installed.Revision || !pluginmodel.Equal(s.State.Model, *installed.Manifest.Permissions.Model) {
 			continue
 		}
-		return &s, validateModelBindings(ctx, app, s, revisions)
+		return &s, validateModelBindings(ctx, app, s.State, revisions)
 	}
 	return nil, nil
 }
