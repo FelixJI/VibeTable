@@ -17,6 +17,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
@@ -276,6 +277,9 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			ports = ioPorts[0]
 		}
 		return executeSurfaceTransaction(ctx, app, kernel, workspace, input, gate, ports)
+	}
+	if input.Method == "data.query" || input.Method == "dataset.open" {
+		ctx = pluginmodel.WithProgressCache(ctx, app)
 	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	switch input.Method {
