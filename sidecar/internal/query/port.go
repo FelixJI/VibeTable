@@ -755,9 +755,15 @@ const digestBatchRows = 256
 // a 4096-row page never accumulates 4096 full records beside its digests.
 func AttachRowDigests(ctx context.Context, app core.App, descriptor TableDescriptor, rows []map[string]any) error {
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
-	// PocketBase record collection. Product descriptors always supply
-	// DigestFields; an empty list explicitly opts out of row-digest projection.
-	if len(descriptor.DigestFields) == 0 || len(rows) == 0 {
+	// PocketBase record collection: they carry neither a digest projector nor
+	// digest fields and opt out. A product descriptor always carries its
+	// projector, so a table with no business field still guards every row: the
+	// digest covers an empty value set and data.query and snapshots serve the
+	// same opaque guard for the same stored row.
+	if descriptor.DigestProjector == nil && len(descriptor.DigestFields) == 0 {
+		return nil
+	}
+	if len(rows) == 0 {
 		return nil
 	}
 	collection, err := app.FindCollectionByNameOrId(descriptor.PhysicalName)

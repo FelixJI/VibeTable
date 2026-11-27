@@ -16,6 +16,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -1032,5 +1033,63 @@ func TestPluginSurfaceSnapshotOpenSharesResolvedDependencyGraphWithDescribe(t *t
 	// 目标公式只由完整缓存解析一次。按来源复制缓存时为 4 次，最初为 6 次。
 	if dependencyReads != 3 {
 		t.Fatalf("computation_dependencies reads during open: %d", dependencyReads)
+	}
+}
+
+// 产品表允许只有系统 id 而没有业务字段：真实 descriptor 仍带 DigestProjector，有行且 id 已授权时，
+// data.query 与快照语料必须给出同一个非空行守卫（摘要覆盖空值集），而不是跳过摘要得到空守卫。
+func TestPluginSurfaceIdOnlyTableServesTheSameRowGuardOnQueryAndSnapshot(t *testing.T) {
+	f := newVersionsFixture(t, 1)
+	ctx := context.Background()
+	lifecycle, err := schemacore.NewTableLifecycle(f.pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "仅 id 表", OperationID: "id-only", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := schemaexecution.Describe(ctx, f.pb, created.TableID)
+	if err != nil || len(schema.Snapshot.Fields) != 0 {
+		t.Fatalf("id-only table: %+v %v", schema.Snapshot.Fields, err)
+	}
+	collection, err := f.pb.FindCollectionByNameOrId(schema.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"idonly000000001", "idonly000000002"} {
+		row := core.NewRecord(collection)
+		row.Id = id
+		if err = f.pb.Save(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bare := versionsTable{id: created.TableID, physical: schema.PhysicalName}
+	f.regrant(t, []pluginReadGrant{{Collection: bare.id, Operations: []string{"read", "query"}, Fields: []string{"id"}}})
+	project := snapshotQuery(bare, "id")
+	open, code := f.snapshot(t, f.pb, "snapshot.open", snapshotRequest(project))
+	if code != "" {
+		t.Fatal(code)
+	}
+	source := snapshotSource(t, open, bare.id)
+	items := source["items"].([]map[string]any)
+	guards := source["rowGuards"].([]any)
+	if len(items) != 2 || len(guards) != 2 {
+		t.Fatalf("rows: %+v", source)
+	}
+	_, queried := f.legacyQuery(t, f.pb, snapshotQuery(bare, "id"), 200)
+	for index, item := range items {
+		id := fmt.Sprint(item["id"])
+		pair, _ := guards[index].([]any)
+		if len(pair) != 2 {
+			t.Fatalf("row %s: empty snapshot guard %v", id, guards[index])
+		}
+		guard := fmt.Sprint(pair[1])
+		if fmt.Sprint(pair[0]) != id || !strings.HasPrefix(guard, "sha256:") || queried[id] == nil || fmt.Sprint(queried[id]) != guard {
+			t.Fatalf("row %s: snapshot guard %q, data.query guard %v", id, guard, queried[id])
+		}
+		if len(item) != 1 {
+			t.Fatalf("id-only projection leaked fields: %+v", item)
+		}
 	}
 }
