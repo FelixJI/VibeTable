@@ -112,7 +112,10 @@ func (source *Source) describeSelectionTable(
 	selected map[string]bool,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	ctx = formula.EnsureEvaluationTime(ctx)
-	ctx = relatedcomputation.WithClockCache(ctx)
+	// One dependency graph per transaction: after the snapshot's same-row
+	// authorization view this installs the transaction's full cache itself
+	// (never a per-source copy); for every other caller it is a fresh cache.
+	ctx = relatedcomputation.WithClockCacheAfterSameRow(ctx)
 	if err := ctx.Err(); err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}

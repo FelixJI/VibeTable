@@ -215,8 +215,10 @@ func executeSurfaceSnapshot(ctx context.Context, app core.App, source *querysche
 	}
 	// One evaluation instant and one dependency-graph cache for the whole batch:
 	// clock periods of all sources are derived from the same instant, exactly
-	// like data.versions, so snapshot.versions equals the versions reply.
-	ctx = relatedcomputation.WithSameRowClockCache(pluginVersionsEvaluationTime(ctx))
+	// like data.versions, so snapshot.versions equals the versions reply. The
+	// same-row authorization view and every source description share one full
+	// cache for the transaction; nothing is copied per source.
+	ctx = relatedcomputation.WithSameRowClockCacheView(pluginVersionsEvaluationTime(ctx))
 	var result map[string]any
 	// validate: per requested collection, whether the plugin may currently read
 	// id, i.e. whether row guards keyed by row id may be served from the corpus.
@@ -485,6 +487,12 @@ func pluginSnapshotProjectionCurrent(ctx context.Context, tx core.App, installed
 		return false, pluginDataError("plugin_read_denied")
 	}
 	table, err := schemaexecution.Describe(ctx, tx, r.Collection)
+	if errors.Is(err, schemaexecution.ErrTableNotFound) {
+		// The projection was authorized under a table that no longer exists: a
+		// structural change of the corpus, not a failed query. Every other
+		// describe failure stays plugin_query_failed.
+		return false, pluginDataError("plugin_snapshot_stale")
+	}
 	if err != nil || table.Snapshot.TableID != r.Collection {
 		return false, pluginDataError("plugin_query_failed")
 	}

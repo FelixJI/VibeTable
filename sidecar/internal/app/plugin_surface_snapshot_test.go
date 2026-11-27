@@ -15,6 +15,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -941,5 +942,95 @@ func TestPluginSurfaceSnapshotWithoutIdGrantSkipsDigests(t *testing.T) {
 	guards, _ := source["rowGuards"].([]any)[0].([]any)
 	if runs := digestRuns(recorder.snapshot()[before:]); runs != 1 || len(guards) != 2 || guards[0] == "" || !strings.HasPrefix(fmt.Sprint(guards[1]), "sha256:") {
 		t.Fatalf("control open must attach a digest by loading the record: %+v digest runs=%d", source, runs)
+	}
+}
+
+// 直接授权的普通表在句柄打开之后被权威 DeleteTable 正常删除（非模型绑定）：这是语料的结构变化，
+// 复核按 plugin_snapshot_stale 报告，而不是把 ErrTableNotFound 误报成 plugin_query_failed；
+// 描述遇到的其它错误（这里用损坏的修订字面量制造）仍然保持 plugin_query_failed。
+func TestPluginSurfaceSnapshotValidateReportsDeletedSourceAsStale(t *testing.T) {
+	f := newVersionsFixture(t, 2)
+	f.grantAll(t)
+	request := snapshotRequest(f.snapshotQueries("id", "name")...)
+	open, code := f.snapshot(t, f.pb, "snapshot.open", request)
+	if code != "" {
+		t.Fatal(code)
+	}
+	echo := snapshotEchoRequest(request, open)
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); code != "" || result["valid"] != true {
+		t.Fatalf("fresh validate: %+v %q", result, code)
+	}
+	removed, err := schemaexecution.Describe(context.Background(), f.pb, f.tables[1].id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = schemaapi.New(f.pb).DeleteTable(context.Background(), f.tables[1].id, mustModelRevision(t, removed.Snapshot.SchemaRevision)); err != nil {
+		t.Fatalf("ordinary native schema blocked: %v", err)
+	}
+	// 删除后的首次读取：批量修订读取因缺行不完整，复核回退到 Describe，缺表是结构变化。
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); result != nil || code != "plugin_snapshot_stale" {
+		t.Fatalf("deleted source returned %+v, %q", result, code)
+	}
+	// 对照：非缺表的描述错误不被归并成 stale。
+	if _, err = f.pb.DB().Update("vibetable_tables", dbx.Params{"schema_revision": "corrupt"}, dbx.HashExp{"table_id": f.tables[0].id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if result, code := f.snapshot(t, f.pb, "snapshot.validate", echo); result != nil || code != "plugin_query_failed" {
+		t.Fatalf("corrupt metadata returned %+v, %q", result, code)
+	}
+}
+
+// 打开在同一事务内共享一张依赖图：授权遍历（data.versions 语义）已经证明为同行的公式，描述阶段不再
+// 重复读取 computation_dependencies；关系目标上的公式不在同行授权范围内，由完整缓存首次解析，
+// 且同一目标在多个来源中重复出现时只解析一次（描述阶段直接使用事务的完整缓存，不按来源复制）；
+// 原始关系字段及其目标计算字段的描述行为不变。
+func TestPluginSurfaceSnapshotOpenSharesResolvedDependencyGraphWithDescribe(t *testing.T) {
+	f := newVersionsFixture(t, 3)
+	table, other, target := f.tables[0], f.tables[1], f.tables[2]
+	input := createVersionsFormula(t, f.pb, table.id, "share-input", "Input", table.secretPhysical)
+	output := createVersionsFormula(t, f.pb, table.id, "share-output", "Output", input.Identity.PhysicalName)
+	targetFormula := createVersionsFormula(t, f.pb, target.id, "share-target", "Target", target.secretPhysical)
+	defaults, err := v2.RecommendedDefaults(v2.LogicalRelation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toTarget := func(owner versionsTable, operationID string) v2.ApplyReceipt {
+		return applySchemaProductField(t, f.pb, v2.FieldChangeIntent{
+			Action: v2.ActionCreate, TableID: owner.id,
+			Draft: &v2.FieldDraft{DisplayName: "共享关系", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+				Relation: &v2.RelationSpec{TargetTableID: target.id, Cardinality: "one", DeletePolicy: "setNull", DisplayField: target.nameID}},
+			RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "反向关系 " + operationID, ReciprocalCardinality: "many", SourceDisplayFieldID: owner.nameID},
+		}, operationID)
+	}
+	relation := toTarget(table, "share-relation")
+	sameTarget := toTarget(other, "share-relation-other")
+	f.regrant(t, []pluginReadGrant{
+		{Collection: table.id, Operations: []string{"read", "query"}, Fields: []string{"id", table.nameID, table.secretID, input.Identity.FieldID, output.Identity.FieldID, relation.FieldID}},
+		{Collection: other.id, Operations: []string{"read", "query"}, Fields: []string{"id", other.nameID, sameTarget.FieldID}},
+		{Collection: target.id, Operations: []string{"read", "query"}, Fields: []string{"id", target.nameID, target.secretID, targetFormula.Identity.FieldID}},
+	})
+	request := snapshotRequest(snapshotQuery(table, "id", output.Identity.FieldID, relation.FieldID), snapshotQuery(other, "id", sameTarget.FieldID))
+	recorder, hook := snapshotRecorder(f)
+	open, code := f.snapshot(t, hook, "snapshot.open", request)
+	if code != "" {
+		t.Fatal(code)
+	}
+	if len(open["sources"].([]any)) != 2 {
+		t.Fatalf("sources: %+v", open)
+	}
+	source := snapshotSource(t, open, table.id)
+	if fmt.Sprint(source["computedFields"]) != fmt.Sprint([]string{output.Identity.FieldID}) {
+		t.Fatalf("computed fields: %+v", source)
+	}
+	var dependencyReads int
+	for _, statement := range recorder.snapshot() {
+		if strings.Contains(statement.statement, "`vibetable_computation_dependencies`") {
+			dependencyReads++
+		}
+	}
+	// output 及其同行操作数 input：授权遍历各读一次，描述阶段复用；两个来源指向同一关系目标，
+	// 目标公式只由完整缓存解析一次。按来源复制缓存时为 4 次，最初为 6 次。
+	if dependencyReads != 3 {
+		t.Fatalf("computation_dependencies reads during open: %d", dependencyReads)
 	}
 }
