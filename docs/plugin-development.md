@@ -94,9 +94,10 @@ Go 在同一事务内校验安装、全部授权与精确版本，只读元数�
 只允许 `request.cancel`、`context.read`、`model.read` 和单份快照的 `snapshot.open/page/readBatch/release`，
 其它方法及受信父页的 `tasks.cancel`/`notification.show`/`navigation.back` 一律 `plugin_surface_background`，无弹窗。
 插件在 `api.lifecycle.whenForeground(signal?)` 之前只做只读准备，用 `api.lifecycle.onChanged` / `context.read().surfacePhase`
-核对阶段；用户点击后 Host 绑定新的前台 token 并投递 `foreground`，隐藏帧被丢弃（提升瞬间的在途后台读取可能
-`plugin_snapshot_stale`，需重读），离开前台退租 token，再次预热换发新的 `background` token。
-未声明的插件行为不变。细节见 `docs/plugin-api.md` 的“后台预热生命周期”。
+核对阶段；用户点击后 Host 把预热的同一 token 原位提升并投递 `foreground`（同一帧、同一会话原位成为可见页面，不换 token、不重载；
+提升瞬间的在途后台读取可能 `plugin_snapshot_stale`，需重读），离开前台退租 token，再次预热换发新的 `background` token。
+未就绪（仍在加载或启动失败）的预热帧不复用：点击时关闭一次并走正常可见路径重开。未声明的插件行为不变；超出 4 个上限的入口
+以及不返回 `surfacePhase` 的旧 Host 保持普通手动入口，不会被隐藏挂载。细节见 `docs/plugin-api.md` 的“后台预热生命周期”。
 
 `api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；
 不另授读权限，输出是该页面已经获准读取并自行渲染的内容。Host 向 Go 重核当前安装、包、动作和

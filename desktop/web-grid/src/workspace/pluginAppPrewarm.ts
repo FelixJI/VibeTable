@@ -29,7 +29,7 @@ export interface PluginAppPrewarmPort {
 
 /** `token` always identifies the surface the state refers to; a new token starts over as `background`. */
 type SlotState =
-  | { readonly kind: "background"; readonly token: string }
+  | { readonly kind: "background"; readonly token: string; readonly ready: boolean }
   | { readonly kind: "promoting"; readonly token: string }
   | { readonly kind: "foreground"; readonly token: string }
   | { readonly kind: "retired"; readonly token: string };
@@ -38,14 +38,21 @@ type SlotState =
  * Slot state machine for lifecycle-declaring applications (manifest
  * `compatibility.surfaceLifecycle`). Undeclared plugins never enter it.
  *
- * - Every declared entry with a live token keeps a hidden `background` frame,
- *   so the user's click reuses the loaded surface instead of mounting one.
+ * - A frame is mounted hidden only while the Host authority says so: the
+ *   catalog entry reports `surfacePhase: "background"` for that very token.
+ *   At the background cap, on a Host that projects no phase, or once the
+ *   token was promoted, the entry is a normal manual entry (no slot).
  * - `background → foreground` happens only through `expectOpen` (the click
  *   path's describe already promoted the Host session) or an explicit
  *   `promote`; the frame stays hidden while a promotion is in flight.
  * - Leaving the foreground retires the token: the Host session is
  *   foreground-only, so hiding it would keep write authority alive. The
  *   catalog is refreshed afterwards and a fresh background surface takes over.
+ * - A token that lost its background grant while still hidden is retired the
+ *   same way: a hidden frame never keeps foreground authority.
+ * - A hidden frame that has not signalled `ready` is never promoted in place
+ *   (that would show a blank page): the click closes it once through `drop`
+ *   and its catalog read opens a fresh surface through the normal path.
  * - A background surface that closes itself stays retired for that token, so
  *   the Host's replacement token does not create a remount loop.
  */
@@ -58,7 +65,14 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
   function scheduleRefresh(): void {
     if (refreshScheduled) return;
     refreshScheduled = true;
+    // Runs after the pending flush, so a frame retired above has already posted its close and
+    // the Host issues a replacement token instead of handing the retired one back.
     void nextTick(() => { refreshScheduled = false; port.refresh(); });
+  }
+
+  function retire(key: string, token: string): void {
+    states.set(key, { kind: "retired", token });
+    scheduleRefresh();
   }
 
   function reconcile(): void {
@@ -66,11 +80,20 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
     const next: PluginAppPrewarmSlot[] = [];
     const live = new Set<string>();
     for (const entry of port.entries.value) {
-      if (!entry.prewarm) continue;
+      if (!entry.declared) continue;
       live.add(entry.key);
+      const granted = entry.surfacePhase === "background";
       let state = states.get(entry.key);
-      if (!state || state.token !== entry.surfaceToken) state = { kind: "background", token: entry.surfaceToken };
-      else if (state.kind === "retired") continue;
+      if (state && state.token === entry.surfaceToken) {
+        if (state.kind === "retired") continue;
+        if (!granted && state.kind !== "foreground") {
+          retire(entry.key, entry.surfaceToken);
+          continue;
+        }
+      } else {
+        if (!granted) continue;
+        state = { kind: "background", token: entry.surfaceToken, ready: false };
+      }
       if (entry.key === activeKey) {
         if (state.kind === "background") {
           if (expected.delete(entry.key)) state = { kind: "foreground", token: entry.surfaceToken };
@@ -80,8 +103,7 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
           }
         }
       } else if (state.kind !== "background") {
-        states.set(entry.key, { kind: "retired", token: entry.surfaceToken });
-        scheduleRefresh();
+        retire(entry.key, entry.surfaceToken);
         continue;
       }
       states.set(entry.key, state);
@@ -112,16 +134,44 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
 
   return {
     slots,
-    /** The click path: the following activation of `key` was already promoted by its describe call. */
+    /**
+     * The click path: the following activation of `key` was already promoted by its describe call.
+     * The returned finalizer runs when the click path settles: a slot that is still hidden may hold a
+     * session its describe promoted although the view discarded the navigation, so the authority is
+     * re-read and a token the Host no longer grants in background is retired.
+     */
     expectOpen(key: string): () => void {
       expected.add(key);
-      return () => { expected.delete(key); };
+      return () => {
+        expected.delete(key);
+        const state = states.get(key);
+        if (state && state.kind !== "foreground") scheduleRefresh();
+      };
     },
-    /** A mounted background surface closed itself; keep that token retired until the catalog moves on. */
-    selfClose(key: string): void {
+    /** The hidden frame has not signalled `ready` (still loading or failed to start). */
+    isCold(key: string): boolean {
       const state = states.get(key);
-      if (!state || state.kind === "retired") return;
+      return state?.kind === "background" && !state.ready;
+    },
+    /** Closes a cold hidden frame once; the catalog read of the click that follows opens a fresh surface. */
+    drop(key: string): void {
+      const state = states.get(key);
+      if (state?.kind !== "background") return;
       states.set(key, { kind: "retired", token: state.token });
+      reconcile();
+    },
+    /** The frame completed the SDK `ready` handshake: the next click promotes this very element. */
+    markReady(key: string): void {
+      const state = states.get(key);
+      if (state?.kind !== "background" || state.ready) return;
+      states.set(key, { ...state, ready: true });
+    },
+    /** A mounted background surface closed itself; keep that token retired until the catalog moves on.
+     * `token` identifies the frame that emitted the close, so a frame unmounted by a replacement never retires it. */
+    selfClose(key: string, token: string): void {
+      const state = states.get(key);
+      if (!state || state.kind === "retired" || state.token !== token) return;
+      states.set(key, { kind: "retired", token });
       reconcile();
     },
   };

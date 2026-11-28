@@ -1089,7 +1089,9 @@ public sealed class PluginRequestDispatcher : IDisposable
                 SurfaceSrc = surface.DocumentUri.ToString(),
                 SurfaceToken = surface.SurfaceToken,
                 SurfaceTitle = LocalizeTitle(action.DisplayName, action.ActionId),
-                // Background is the only phase the renderer needs to see; foreground stays implicit.
+                // Only a token the Host currently grants in background is projected; foreground
+                // stays implicit. The renderer mounts a frame hidden for that value alone, so an
+                // application beyond the background cap keeps its normal manual entry.
                 SurfacePhase = surface.Phase == PluginSurfacePhases.Background ? PluginSurfacePhases.Background : null,
             });
         }

@@ -1,6 +1,6 @@
 import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type DOMWrapper } from "@vue/test-utils";
 import { createPinia, getActivePinia, setActivePinia, type Pinia } from "pinia";
 import { defineComponent, h, watch } from "vue";
 import { NDropdown, NMessageProvider } from "naive-ui";
@@ -788,7 +788,7 @@ describe("WorkspaceView", () => {
   });
 
   describe("native plugin view consumers", () => {
-    async function prepare(withWorkspaceCenter = false) {
+    async function prepare(withWorkspaceCenter = false, intercept?: (message: Outbound) => boolean) {
       if (withWorkspaceCenter) configureWorkspaceEpochPair();
       const plugins = usePluginStore();
       const workspace = useWorkspaceStore();
@@ -819,6 +819,7 @@ describe("WorkspaceView", () => {
       });
       let catalog = plugin;
       const record = makeRecordingBridge(message => {
+        if (intercept?.(message)) return;
         if (message.type === "plugin.catalog.list") queueMicrotask(() => record.emit({ ...message, payload: [catalog] }));
         if (message.type === "plugin.action.describe") queueMicrotask(() => record.emit({ ...message, payload: { available: true, reasons: [] } }));
         if (message.type === "plugin.task.cancel") {
@@ -838,6 +839,26 @@ describe("WorkspaceView", () => {
           surface: { src: "https://native.plugins.vibetable.local/ui/index.html", surfaceToken: `${actionId}-token`, title: actionId } }, context);
       }
       return { wrapper, plugins, plugin, record, task, openPanel, setCatalog: (snapshot: PluginSnapshot) => { catalog = snapshot; plugins.applyPlugin(snapshot); } };
+    }
+    /** A lifecycle-declaring application; `phase` is the Host projection for its token (`background` = granted). */
+    function declaredApplication(plugin: PluginSnapshot, token: string, revision: number, phase: "background" | null = "background",
+      status: "enabled" | "disabled" = "enabled"): PluginSnapshot {
+      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html`;
+      return { ...plugin, status, revision, manifest: { ...plugin.manifest,
+        compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
+        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: token, surfacePhase: phase, surfaceSrc: source } : action) } };
+    }
+    const prewarmSlots = (wrapper: ReturnType<typeof mountView>, phase: string) =>
+      wrapper.findAll('[data-testid="plugin-app-prewarm-slot"]').filter(slot => slot.attributes("data-phase") === phase);
+    const surfaceCloses = (record: ReturnType<typeof makeRecordingBridge>) => record.posted
+      .filter(item => item.type === "plugin.surface.event" && (item.payload as { event?: string }).event === "close")
+      .map(item => (item.payload as { surfaceToken: string }).surfaceToken);
+    const describeCount = (record: ReturnType<typeof makeRecordingBridge>) => record.posted.filter(item => item.type === "plugin.action.describe").length;
+    /** The SDK `ready` handshake from the frame: the pre-warmed surface finished loading and is reusable. */
+    function signalReady(slot: DOMWrapper<Element>, token: string) {
+      const frame = slot.get("iframe");
+      window.dispatchEvent(new MessageEvent("message", { origin: new URL(frame.attributes("src")!).origin, source: frame.element.contentWindow,
+        data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "ready", payload: {} } }));
     }
 
     it("retires the trusted print path synchronously for a platform overlay or application navigation", async () => {
@@ -1030,14 +1051,10 @@ describe("WorkspaceView", () => {
 
     it("pre-warms a lifecycle-declaring application hidden and read-only, promotes the same frame on click and retires it on leave", async () => {
       const { wrapper, plugins, plugin, record, setCatalog } = await prepare();
-      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html`;
-      const declared = (token: string, revision: number, status: "enabled" | "disabled" = "enabled"): PluginSnapshot => ({ ...plugin, status, revision, manifest: { ...plugin.manifest,
-        compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
-        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: token, surfacePhase: "background", surfaceSrc: source } : action) } });
-      const slots = (phase: string) => wrapper.findAll('[data-testid="plugin-app-prewarm-slot"]').filter(slot => slot.attributes("data-phase") === phase);
-      const closes = () => record.posted.filter(item => item.type === "plugin.surface.event" && (item.payload as { event?: string }).event === "close")
-        .map(item => (item.payload as { surfaceToken: string }).surfaceToken);
-      const describes = () => record.posted.filter(item => item.type === "plugin.action.describe").length;
+      const declared = (token: string, revision: number, status: "enabled" | "disabled" = "enabled") => declaredApplication(plugin, token, revision, "background", status);
+      const slots = (phase: string) => prewarmSlots(wrapper, phase);
+      const closes = () => surfaceCloses(record);
+      const describes = () => describeCount(record);
       setCatalog(declared("application-token", 3)); await flushPromises();
       // Background: loaded once, hidden, unfocusable, no legacy viewport, no describe.
       const slot = slots("background")[0]!;
@@ -1052,6 +1069,7 @@ describe("WorkspaceView", () => {
       expect(describes()).toBe(0);
       const post = vi.fn();
       Object.defineProperty(frame.element, "contentWindow", { configurable: true, value: { postMessage: post } });
+      signalReady(slot, "application-token");
       // Click: the pre-warmed element itself becomes foreground; no reload, no second describe.
       await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
       expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
@@ -1064,7 +1082,9 @@ describe("WorkspaceView", () => {
       expect(wrapper.get(".tables-view").isVisible()).toBe(false);
       expect(describes()).toBe(1);
       expect(closes()).toEqual([]);
-      expect(post.mock.calls.map(([message]) => message).filter(message => message.event === "lifecycleChanged").map(message => message.payload.phase)).toEqual(["foreground"]);
+      expect(post.mock.calls.map(([message]) => message).filter(message => message.event === "lifecycleChanged").map(message => message.payload.phase))
+        // The ready handshake replayed the background phase; the promotion announced the foreground once.
+        .toEqual(["background", "foreground"]);
       // 返回平台: the host-side foreground session is retired, the catalog is re-read and a fresh
       // background surface takes over on the replacement token.
       const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
@@ -1084,13 +1104,11 @@ describe("WorkspaceView", () => {
 
     it("promotes the active application again when the catalog replaces its token, and never revives a self-closed background frame", async () => {
       const { wrapper, plugin, record, setCatalog } = await prepare();
-      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html`;
-      const declared = (token: string, revision: number): PluginSnapshot => ({ ...plugin, revision, manifest: { ...plugin.manifest,
-        compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
-        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: token, surfacePhase: "background", surfaceSrc: source } : action) } });
-      const slots = (phase: string) => wrapper.findAll('[data-testid="plugin-app-prewarm-slot"]').filter(slot => slot.attributes("data-phase") === phase);
-      const describes = () => record.posted.filter(item => item.type === "plugin.action.describe").length;
+      const declared = (token: string, revision: number) => declaredApplication(plugin, token, revision);
+      const slots = (phase: string) => prewarmSlots(wrapper, phase);
+      const describes = () => describeCount(record);
       setCatalog(declared("application-token", 3)); await flushPromises();
+      signalReady(slots("background")[0]!, "application-token");
       await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
       expect(slots("foreground")[0]?.get("iframe").attributes("name")).toBe("application-token");
       expect(describes()).toBe(1);
@@ -1112,6 +1130,83 @@ describe("WorkspaceView", () => {
       setCatalog(declared("application-token-3", 6)); await flushPromises();
       expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
       expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBe(lists);
+    });
+
+    it("keeps the normal manual path for a declared application the Host did not grant in background", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare();
+      // Beyond the background cap, or on a Host that projects no phase: nothing is mounted hidden.
+      setCatalog(declaredApplication(plugin, "manual-token", 3, null)); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(describeCount(record)).toBe(0);
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      const viewport = wrapper.get('[data-testid="plugin-app-viewport"]');
+      expect(viewport.classes()).not.toContain("plugin-app-viewport--background");
+      expect(viewport.get("iframe").attributes("name")).toBe("manual-token");
+      expect(viewport.get("iframe").attributes("data-surface-phase")).toBe("foreground");
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(describeCount(record)).toBe(1);
+      expect(surfaceCloses(record)).toEqual([]);
+      await viewport.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(surfaceCloses(record)).toEqual(["manual-token"]);
+    });
+
+    it("closes a pre-warmed frame that never signalled ready once and re-opens the application through the visible path", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+        // The Host retires the closed session before the click's catalog read and issues a replacement.
+        if (message.type === "plugin.surface.event" && (message.payload as { event?: string }).event === "close") {
+          setCatalog(declaredApplication(plugin, "warm-token", 4));
+          return true;
+        }
+        return false;
+      });
+      setCatalog(declaredApplication(plugin, "cold-token", 3)); await flushPromises();
+      const cold = prewarmSlots(wrapper, "background")[0]!;
+      expect(cold.get("iframe").attributes("name")).toBe("cold-token");
+      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      // One close, one re-open: only the click's own catalog read, no extra refresh and no second describe.
+      expect(surfaceCloses(record)).toEqual(["cold-token"]);
+      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBe(lists + 1);
+      expect(describeCount(record)).toBe(1);
+      const warm = prewarmSlots(wrapper, "foreground")[0]!;
+      expect(warm.get("iframe").attributes("name")).toBe("warm-token");
+      expect(warm.element).not.toBe(cold.element);
+      expect(prewarmSlots(wrapper, "background")).toHaveLength(0);
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(wrapper.get(".tables-view").isVisible()).toBe(false);
+    });
+
+    it("reclaims the hidden session when the user leaves while the click's describe is still in flight", async () => {
+      let held: Outbound | undefined; let armed = false; let reads = 0;
+      const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+        if (!armed) return false;
+        if (message.type === "plugin.action.describe") { held = message; return true; }
+        // The click's own read still reports the granted token; later reads project the promoted session.
+        if (message.type === "plugin.catalog.list" && ++reads > 1) setCatalog(declaredApplication(plugin, "application-token", 3, null));
+        return false;
+      });
+      setCatalog(declaredApplication(plugin, "application-token", 3)); await flushPromises();
+      signalReady(prewarmSlots(wrapper, "background")[0]!, "application-token");
+      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+      armed = true;
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(held).toBeDefined();
+      // The user returns to the platform before the Host answers; the describe still promoted the session.
+      useUiStore().closePluginApp(); await flushPromises();
+      record.emit({ ...held!, payload: { available: true, reasons: [] } }); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      // The click path settled without opening: the authority is re-read, the promoted token is retired
+      // with its frame closed, and the replacement token is pre-warmed again.
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(surfaceCloses(record)).toEqual(["application-token"]);
+      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBe(lists + 3);
+      setCatalog(declaredApplication(plugin, "application-token-2", 4)); await flushPromises();
+      expect(prewarmSlots(wrapper, "background").map(slot => slot.get("iframe").attributes("name"))).toEqual(["application-token-2"]);
+      expect(useUiStore().activePluginApp).toBeNull();
     });
 
     it("keys a reopened headless run by its surface token without reusing stopped state or old receipts", async () => {

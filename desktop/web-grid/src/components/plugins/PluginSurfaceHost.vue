@@ -21,6 +21,8 @@ const props = withDefaults(defineProps<{
 }>(), { showTasks: true, phase: "foreground" });
 const emit = defineEmits<{
   close: [];
+  /** The frame completed the SDK `ready` handshake: its surface is loaded and reusable. */
+  ready: [];
   action: [payload: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected", taskId: string];
   cancel: [taskId: string];
@@ -79,7 +81,7 @@ function onMessage(event: MessageEvent): void {
     if (response) postToSurface("uiResponse", response);
     return;
   }
-  if (event.data.event === "ready") { sendLifecycle(); sendTheme(); sendTask(); }
+  if (event.data.event === "ready") { sendLifecycle(); sendTheme(); sendTask(); emit("ready"); }
   if (event.data.event !== "close") bridge.notify("plugin.surface.event", event.data);
   if (event.data.event === "action") {
     const payload = typeof event.data.payload === "object" && event.data.payload !== null

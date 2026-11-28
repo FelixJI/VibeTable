@@ -455,6 +455,8 @@ state.relationCases 为不同来源角色声明必填/可空/禁止关系；grou
 
 声明后，Host 在工作区就绪后用现有隔离 session 在后台预热该插件声明的 application 页面：帧隐藏、不可聚焦、
 不进入 Tab 序、不换页、不抢焦点、不阻塞主界面，同时最多 4 个；切换工作区、禁用、卸载或失败时释放。
+渲染层只对目录投影为 `surfacePhase: "background"` 的 token 隐藏挂载：超出上限的入口、不返回该字段的旧 Host 以及
+已提升的 token 都保持普通手动入口，不会以全权限被隐藏挂载。
 **只读由 Host 按 surface token 强制，不是前端标志**：后台阶段仅允许 `request.cancel`、`context.read`、`model.read`
 和单份快照的 `snapshot.open/page/readBatch/release`，其余方法一律返回 `plugin_surface_background`；
 受信父页的 `tasks.cancel`、`notification.show`、`navigation.back` 同样拒绝，沙箱无 `allow-modals`，不会弹窗。
@@ -465,7 +467,9 @@ const phase = api.lifecycle.current() ?? (await api.context.read()).surfacePhase
 const stop = api.lifecycle.onChanged((phase) => { if (phase === "foreground") renderEditable(); });
 await api.lifecycle.whenForeground(signal); // 用户已打开页面；关闭后为 plugin_surface_closed
 ```
-阶段单向：用户点击入口时 Host 先绑定新的前台 token，再投递 `foreground`，隐藏帧被丢弃而不是原地提升，
-因此提升瞬间的在途后台读取可能报 `plugin_snapshot_stale`，应重新读取；离开前台时 Host 退租 token，
-再次预热会换发新的 `background` token，前台页面永不被降级。`whenForeground` 没有超时（预热可能持续数小时），
-请传入 `AbortSignal`；旧 Host 不返回 `surfacePhase` 也不会预热，SDK 归一化为 `foreground`。
+阶段单向：用户点击入口时，该次点击的 `plugin.action.describe` 先绑定活动集合，再把已预热的同一 surface token 原位提升并投递 `foreground`——
+同一帧、同一会话直接成为可见页面，不换发 token、不重载；因此提升瞬间的在途后台读取可能报 `plugin_snapshot_stale`，应重新读取；
+离开前台时 Host 退租 token，再次预热会换发新的 `background` token，前台页面永不被降级。SDK 的相位按会话单调：`foreground` 之后
+忽略重复或更早的 `lifecycleChanged`，迟到的 `context.read()` 回复也不会把相位退回 `background`。`whenForeground` 没有超时
+（预热可能持续数小时），请传入 `AbortSignal`；取消在 `context.read()` 在途时同样立即生效。旧 Host 不返回 `surfacePhase`
+也不会预热，SDK 归一化为 `foreground`。未就绪（仍在加载或启动失败）的预热帧不会被复用：点击时先关闭它一次，再经正常可见路径重新打开。

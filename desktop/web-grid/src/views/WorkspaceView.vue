@@ -19,7 +19,7 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon, NModal } from "naive-ui";
 import { FilePlus2 } from "@lucide/vue";
@@ -961,7 +961,14 @@ watch(
     }
   },
 );
-function onOpenPluginApp(key: string): void {
+async function onOpenPluginApp(key: string): Promise<void> {
+  // A pre-warmed frame that never signalled ready (still loading or failed to start) would show a
+  // blank page if promoted in place: close it once, let the Host retire that session, and let the
+  // click's own catalog read open a fresh surface through the normal path.
+  if (pluginPrewarm.isCold(key)) {
+    pluginPrewarm.drop(key);
+    await nextTick();
+  }
   // The describe call inside app.open promotes the Host session; the slot only has to adopt it.
   const opened = pluginPrewarm.expectOpen(key);
   void pluginController.dispatch({ type: "app.open", key }).finally(opened);
@@ -1397,7 +1404,8 @@ const showWorkspaceCenterScreen = computed(() =>
     || (!workspaceSession.hasOpenWorkspace && ui.activeView === "home")));
 
 // #596 surface lifecycle: declared applications keep a hidden read-only frame in the
-// background; the click reuses it. The legacy viewport above only serves undeclared plugins.
+// background while the Host grants their token in background; the click reuses it. Every
+// other entry (undeclared, at the background cap, promoted) uses the legacy viewport above.
 const pluginPrewarm = createPluginAppPrewarm({
   entries: pluginAppNav.entries,
   activeKey: computed(() => showWorkspaceCenterScreen.value ? null : activePluginAppKey.value),
@@ -1408,9 +1416,13 @@ const pluginPrewarm = createPluginAppPrewarm({
     message.warning("插件入口已失效或被移除，已返回平台");
   },
 });
-function onPrewarmSlotClose(key: string): void {
-  if (activePluginAppKey.value === key) ui.closePluginApp(); else pluginPrewarm.selfClose(key);
+/** `close` carries the surface token of the frame that emitted it, so a frame unmounted by a replacement never retires it. */
+function onPrewarmSlotClose(key: string, token: string): void {
+  if (activePluginAppKey.value === key) ui.closePluginApp(); else pluginPrewarm.selfClose(key, token);
 }
+/** The active application's slot: when present it is the visible frame, so the legacy viewport stays out. */
+const activePrewarmSlot = computed(() =>
+  pluginPrewarm.slots.value.find(slot => slot.key === activePluginAppKey.value) ?? null);
 
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
@@ -1842,7 +1854,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
         />
         <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" />
         <PluginAppViewport
-          v-if="!showWorkspaceCenterScreen && activePluginAppEntry && !activePluginAppEntry.prewarm"
+          v-if="!showWorkspaceCenterScreen && activePluginAppEntry && !activePrewarmSlot"
           :src="activePluginAppEntry.src"
           :surface-token="activePluginAppEntry.surfaceToken"
           :title="activePluginAppEntry.label"
@@ -1873,7 +1885,8 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             :tasks="pluginApplicationTasks"
             @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
             @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
-            @close="onPrewarmSlotClose(slot.key)"
+            @close="onPrewarmSlotClose(slot.key, slot.entry.surfaceToken)"
+            @ready="pluginPrewarm.markReady(slot.key)"
             @manage="ui.closePluginApp(); ui.navigate('plugins')"
           />
         </div>

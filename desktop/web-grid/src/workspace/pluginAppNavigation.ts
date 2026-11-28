@@ -1,6 +1,6 @@
 import type { ComputedRef } from "vue";
 import { computed } from "vue";
-import type { PluginSnapshot } from "@/contracts";
+import type { PluginSnapshot, PluginSurfacePhase } from "@/contracts";
 import { PLUGIN_SURFACE_LIFECYCLE_CONTRACT } from "@/contracts";
 import type { useUiStore } from "@/stores/uiStore";
 import type { usePluginStore } from "@/stores/pluginStore";
@@ -17,7 +17,11 @@ export interface PluginAppEntry {
   readonly src: string;
   readonly surfaceToken: string;
   readonly revision: number;
-  /** The manifest declares `compatibility.surfaceLifecycle`: the Host may keep this surface loaded in the background. */
+  /** The manifest declares `compatibility.surfaceLifecycle`: this application opts into background pre-warming. */
+  readonly declared: boolean;
+  /** The Host's authoritative phase of this very token; only `background` may be mounted hidden (`null` = foreground or not granted). */
+  readonly surfacePhase: PluginSurfacePhase | null;
+  /** The Host currently grants this token in background: the entry may keep a hidden read-only frame. */
   readonly prewarm: boolean;
 }
 
@@ -38,6 +42,10 @@ export function derivePluginAppEntries(
     for (const action of plugin.manifest.actions) {
       if (action.presentation !== "application" || action.invocation !== "manual") continue;
       if (!action.surfaceSrc || !action.surfaceToken) continue;
+      // Only a Host-granted background token is pre-warmed: at the background cap, on a Host without
+      // the contract (no phase projected) and once promoted, the entry stays a normal manual entry.
+      const declared = plugin.manifest.compatibility.surfaceLifecycle === PLUGIN_SURFACE_LIFECYCLE_CONTRACT;
+      const surfacePhase: PluginSurfacePhase | null = action.surfacePhase === "background" ? "background" : null;
       entries.push({
         key: `${plugin.pluginId}/${action.actionId}`,
         pluginId: plugin.pluginId,
@@ -51,9 +59,11 @@ export function derivePluginAppEntries(
         src: action.surfaceSrc,
         surfaceToken: action.surfaceToken,
         revision: plugin.revision,
-        prewarm: plugin.manifest.compatibility.surfaceLifecycle === PLUGIN_SURFACE_LIFECYCLE_CONTRACT,
+        declared,
+        surfacePhase,
+        prewarm: declared && surfacePhase === "background",
       });
-    }
+          }
   }
   return entries;
 }

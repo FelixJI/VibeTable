@@ -19,6 +19,8 @@ const emit = defineEmits<{
   resolve: [decision: "approved" | "rejected", taskId: string];
   cancel: [taskId: string];
   close: [];
+  /** The plugin frame completed the SDK `ready` handshake. */
+  ready: [];
   manage: [];
 }>();
 </script>
@@ -56,6 +58,7 @@ const emit = defineEmits<{
         @resolve="(decision, taskId) => emit('resolve', decision, taskId)"
         @cancel="taskId => emit('cancel', taskId)"
         @close="() => emit('close')"
+        @ready="emit('ready')"
       />
     </div>
   </section>

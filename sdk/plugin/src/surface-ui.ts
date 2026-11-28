@@ -46,13 +46,18 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
   const tasks = new Map<string, SurfaceTask>();
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   const notify = <T>(set: Set<(value: T) => void>, value: T) => { for (const callback of set) try { callback(value); } catch { /* Consumer callbacks cannot block receipts. */ } };
-  /** vibetable.plugin-surface-lifecycle.v1: only a change is announced; the Host never demotes a foreground surface. */
-  function adopt(next: SurfacePhase): void {
-    if (closed || phase === next) return;
+  /**
+   * vibetable.plugin-surface-lifecycle.v1: a session only moves background → foreground. The Host
+   * never demotes (leaving the foreground retires the token), so a late `context.read()` reply or a
+   * stale `lifecycleChanged` never rewinds the phase; only a change is announced.
+   */
+  function adopt(next: SurfacePhase): SurfacePhase {
+    if (closed || phase === next || phase === "foreground") return phase ?? next;
     phase = next;
     notify(phases, next);
-    if (next !== "foreground") return;
+    if (next !== "foreground") return phase;
     for (const waiter of waiters) { waiters.delete(waiter); waiter.signal?.removeEventListener("abort", waiter.abort); waiter.resolve(next); }
+    return phase;
   }
   function applyLifecycle(value: unknown): boolean {
     if (!object(value) || (value.phase !== "background" && value.phase !== "foreground")) return false;

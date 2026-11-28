@@ -140,6 +140,17 @@ export interface SurfaceLifecycle {
 
 type WireCommandContext = Omit<CommandContext, "surfacePhase"> & { readonly surfacePhase?: unknown };
 const surfacePhase = (value: unknown): SurfacePhase => value === "background" ? "background" : "foreground";
+/** Rejects as soon as `signal` aborts even while `work` is in flight; the late reply is dropped without an unhandled rejection. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled."));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); });
+  });
+}
 
 /** Runs only inside an isolated WebView2 iframe; never forwards through the parent Product bridge. */
 export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTransport, parentTransport?: SurfaceParentTransport): SurfaceCapabilities {
@@ -484,9 +495,11 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const snapshots = createSurfaceSnapshot(call, release);
   const readContext = async (): Promise<CommandContext> => {
     const context = await call<WireCommandContext>("context.read", {});
-    // The Host is the phase authority; a Host without the lifecycle contract never pre-warms.
-    const normalized = { ...context, surfacePhase: surfacePhase(context.surfacePhase) } as CommandContext;
-    presentation.adoptPhase(normalized.surfacePhase);
+    // The Host is the phase authority; a Host without the lifecycle contract never pre-warms. The
+    // announced phase is monotonic, so a reply that was already in flight when the surface was
+    // promoted never rewinds it.
+    const announced = presentation.adoptPhase(surfacePhase(context.surfacePhase));
+    const normalized = { ...context, surfacePhase: announced } as CommandContext;
     // Trusted parent supplies presentation only; Go remains the data authority.
     if (!presentation.available) return normalized;
     const current = await presentation.current();
@@ -502,7 +515,8 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       onChanged: presentation.lifecycle.onChanged,
       async whenForeground(signal?: AbortSignal): Promise<SurfacePhase> {
         if (signal?.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled.");
-        if (presentation.lifecycle.current() === undefined) await readContext();
+        // Cancellation takes effect while the read is still in flight instead of waiting for its reply.
+        if (presentation.lifecycle.current() === undefined) await abortable(readContext(), signal);
         return presentation.lifecycle.whenForeground(signal);
       },
     },

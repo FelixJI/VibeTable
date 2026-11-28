@@ -328,8 +328,8 @@
       "foreground"
     ],
     "background": {
-      "mount": "hidden isolated frame in the workspace; never focused, no tab stop, no Product bridge; dropped on workspace switch, disable, uninstall or failure",
-      "authority": "Host-enforced per surface token before any capability runs; never a renderer flag",
+      "mount": "hidden isolated frame in the workspace, mounted only while plugin.catalog.list projects surfacePhase background for that very token; never focused, no tab stop, no Product bridge; dropped on workspace switch, disable, uninstall, failure or a lost background grant",
+      "authority": "Host-enforced per surface token before any capability runs; never a renderer flag. The catalog projection is the only trigger for a hidden mount: an application beyond maxBackgroundSurfaces, a Host that omits surfacePhase, or a token that was already promoted keeps its normal manual entry and is never mounted hidden",
       "allowlist": [
         "request.cancel",
         "context.read",
@@ -342,10 +342,13 @@
       "refusal": "plugin_surface_background for every other method, including ui tasks.cancel, notification.show and navigation.back",
       "dialogs": "none; no script dialogs and no modals sandbox flag"
     },
-    "promote": "only the user opening the entry: a new foreground token is bound first, then lifecycleChanged foreground is delivered; the hidden frame is discarded, never promoted in place",
+    "catalog": "plugin.catalog.list projects action.surfacePhase background only for a token the Host currently grants in background; foreground and ungranted tokens project null, so a consumer that never reads the field behaves exactly as before",
+    "promote": "only the user opening the entry: the click's plugin.action.describe binds the active collection and promotes the prepared surface token in place, then lifecycleChanged foreground is delivered; the same frame and session become the visible viewport without a reload or a token change",
+    "readiness": "a pre-warmed frame is reusable only after its SDK ready handshake; a click on a frame that has not signalled ready (still loading, or failed to start) closes it once, and the click's own catalog read opens a fresh surface through the normal visible path; the close always precedes that read so the cold token is never reused",
     "demote": "leaving the foreground retires the token and releases the frame; a Host never demotes a foreground surface; re-preparing the same entry issues a new background token",
-    "contextRead": "surfacePhase reports the Go-authorized phase of the calling token; a Host without this contract omits it and the SDK reads it as foreground",
-    "transport": "trusted parent vibetable.plugin-surface.v1 event=lifecycleChanged payload={phase}; sent before themeChanged on ready and on load, and on every phase change; the SDK ignores a repeated phase",
+    "discardedClick": "a describe whose navigation the view discarded (the user left, or the project changed) may already have promoted the hidden session; once the click path settles without showing the frame the renderer re-reads the catalog and retires any prepared token that no longer projects background",
+    "contextRead": "surfacePhase reports the Go-authorized phase of the calling token; a Host without this contract omits it and the SDK reads it as foreground; the SDK phase is monotonic per session, so a late reply or a stale lifecycleChanged never rewinds foreground",
+    "transport": "trusted parent vibetable.plugin-surface.v1 event=lifecycleChanged payload={phase}; sent before themeChanged on ready and on load, and on every phase change; the SDK ignores a repeated phase and any phase announced after foreground; whenForeground(signal) stops waiting as soon as the signal aborts, even while a context.read is in flight",
     "limits": {
       "maxBackgroundSurfaces": 4
     }

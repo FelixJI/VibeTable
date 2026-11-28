@@ -93,8 +93,9 @@ public sealed class PluginSurfaceSessionManager
         ArgumentNullException.ThrowIfNull(revision);
         string normalized = PluginResourceHost.NormalizePackagePath(entryPath);
         string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        // Pre-warming is bounded host-side: a surface beyond the bound is opened
-        // foreground so a hidden frame never carries foreground authority by accident.
+        // Pre-warming is bounded host-side: a surface beyond the bound is opened as a plain
+        // foreground session. The catalog projects no background phase for it, and the renderer
+        // mounts a frame hidden only for a projected background token, so it stays a manual entry.
         string effectivePhase = phase == PluginSurfacePhases.Background && BackgroundSurfaceCount >= MaxBackgroundSurfaces
             ? PluginSurfacePhases.Foreground
             : phase;

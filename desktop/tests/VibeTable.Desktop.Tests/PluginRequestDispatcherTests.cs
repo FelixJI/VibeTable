@@ -385,6 +385,53 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task SurfaceLifecycleProjectsBackgroundOnlyUpToTheBoundAndKeepsTheRestAsManualEntries()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-surface-lifecycle-cap-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            PluginRuntimeAction Action(string actionId) => new(actionId, new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Write, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                "application", "ui/index.html");
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "declared-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = Enumerable.Range(1, PluginSurfaceSessionManager.MaxBackgroundSurfaces + 2).Select(index => Action($"app-{index}")).ToArray(),
+                },
+            };
+            using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, declared.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+            package.CreateEntry("ui/index.html");
+            package.CreateEntry("worker.js");
+            using var gateway = new FakePluginGateway { CatalogSnapshot = declared };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { declared })), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-cap", """{"projectKey":"project-1"}"""));
+            var actions = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions;
+            var granted = actions.Where(action => action.SurfacePhase == PluginSurfacePhases.Background).ToList();
+            Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, granted.Count, "Background pre-warming is bounded by the Host.");
+            Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, surfaces.BackgroundSurfaceCount);
+            foreach (var action in actions.Except(granted))
+            {
+                // The renderer mounts a frame hidden only for a projected background token: these stay manual entries.
+                Assert.IsNull(action.SurfacePhase, "Beyond the bound the application projects no background phase.");
+                Assert.IsTrue(surfaces.TryGet(action.SurfaceToken!, out var session));
+                Assert.AreEqual(PluginSurfacePhases.Foreground, session!.Phase);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task DispatchUsesCorrelatedClosedResponseTypeAndNeverGenericRpc()
     {
         var reply = new RecordingReplySink();
