@@ -410,6 +410,93 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task RendererRecoveryRetiresExistingSurfacesAndKeepsTheSameWorkspaceManualUntilItReopens()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-renderer-recovery-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "recoverable-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = [new("app", new Dictionary<string, string>(), new Dictionary<string, string>(), "local",
+                        PluginRisk.Read, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                        "application", "ui/index.html")],
+                },
+            };
+            using (var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, declared.PackageHash)!,
+                System.IO.Compression.ZipArchiveMode.Create))
+            {
+                package.CreateEntry("ui/index.html");
+            }
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            PluginProjectContext current = ReadyContext();
+            TaskCompletionSource<JsonElement>? heldRead = null;
+            JsonElement Snapshots() => JsonSerializer.SerializeToElement(new[] { declared with { ProjectKey = current.ProjectKey } });
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources,
+                projectContext: () => current, sharedRpc: (_, _, _) => heldRead?.Task ?? Task.FromResult(Snapshots()),
+                packageCacheRoot: _ => root);
+
+            async Task<PluginRuntimeAction> Catalog(string requestId)
+            {
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", requestId, $$"""{"projectKey":"{{current.ProjectKey}}"}"""));
+                return Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single();
+            }
+
+            var prepared = await Catalog("before-recovery");
+            Assert.AreEqual(PluginSurfacePhases.Background, prepared.SurfacePhase, "A normal launch prepares the application.");
+            Assert.IsTrue(resources.MarkSurfaceMounted(prepared.SurfaceToken!));
+            heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task staleCatalog = dispatcher.DispatchAsync(Request("plugin.catalog.list", "retired-catalog", """{"projectKey":"project-1"}"""));
+            dispatcher.RetireRendererSurfacesForRecovery();
+            Assert.IsFalse(surfaces.TryGet(prepared.SurfaceToken!, out _), "The stopped renderer's token is revoked before rebuild.");
+            heldRead.SetResult(Snapshots());
+            heldRead = null;
+            await staleCatalog;
+            Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+            Assert.AreEqual(0, surfaces.ActiveSurfaceCount);
+
+            // The replacement renderer's ordinary ready handshake also clears token allocations.
+            resources.CloseAllSurfaces();
+            var manual = await Catalog("after-recovery");
+            Assert.IsNull(manual.SurfacePhase, "The recovered workspace must not automatically rerun plugin code.");
+            Assert.IsNotNull(manual.SurfaceToken);
+            Assert.AreNotEqual(prepared.SurfaceToken, manual.SurfaceToken);
+            Assert.AreEqual(0, surfaces.BackgroundSurfaceCount);
+            Assert.AreEqual(manual.SurfaceToken, (await Catalog("realtime-after-recovery")).SurfaceToken);
+            Assert.AreEqual(0, surfaces.BackgroundSurfaceCount, "A later background refresh in the same session stays manual.");
+
+            const string DescribeContext = """{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}""";
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "explicit-open-after-recovery",
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{manual.SurfaceToken}}"}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(manual.SurfaceToken, out var opened));
+            Assert.AreEqual("orders", opened!.ActiveCollection);
+            Assert.AreEqual(PluginSurfacePhases.Foreground, opened.Phase);
+            Assert.IsTrue(resources.CloseSurface(manual.SurfaceToken));
+            Assert.IsNull((await Catalog("after-manual-close")).SurfacePhase);
+
+            resources.CloseAllSurfaces();
+            var stoppedWorkspace = current;
+            current = new PluginProjectContext("project-2", "new-workspace", current.SessionGeneration + 1);
+            dispatcher.SetProjectContext(current);
+            Assert.AreEqual(PluginSurfacePhases.Background, (await Catalog("another-workspace")).SurfacePhase);
+
+            resources.CloseAllSurfaces();
+            current = stoppedWorkspace with { ProjectRevision = "workspace:reopened", SessionGeneration = current.SessionGeneration + 1 };
+            dispatcher.SetProjectContext(current);
+            Assert.AreEqual(PluginSurfacePhases.Background, (await Catalog("after-workspace-reopen")).SurfacePhase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task SurfaceLifecycleProjectsBackgroundOnlyUpToTheBoundAndKeepsTheRestAsManualEntries()
     {
         string root = Path.Combine(Path.GetTempPath(), $"vibetable-surface-lifecycle-cap-{Guid.NewGuid():N}");

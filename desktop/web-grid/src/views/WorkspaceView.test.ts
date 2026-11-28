@@ -1068,6 +1068,33 @@ describe("WorkspaceView", () => {
       }
     });
 
+    it("keeps a stopped application manual when the native stop signal refreshes its catalog", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare();
+      setCatalog(declaredApplication(plugin, "prepared-token", 3));
+      await flushPromises();
+      signalReady(prewarmSlots(wrapper, "background")[0]!, "prepared-token");
+      const open = async () => {
+        await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click");
+        await flushPromises();
+      };
+      await open();
+      expect(prewarmSlots(wrapper, "foreground")[0]!.get("iframe").attributes("name")).toBe("prepared-token");
+
+      setCatalog(declaredApplication(plugin, "manual-after-stop", 3, null));
+      record.emit({ type: "host.pluginChrome", payload: { action: "stopped" } });
+      await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(surfaceCloses(record)).toEqual(["prepared-token"]);
+      expect(describeCount(record)).toBe(1);
+
+      await open();
+      expect(wrapper.get('[data-testid="plugin-app-viewport"] iframe').attributes("name")).toBe("manual-after-stop");
+      expect(describeCount(record)).toBe(2);
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+    });
+
 
     it("pre-warms a lifecycle-declaring application hidden and read-only, promotes the same frame on click and retires it on leave", async () => {
       const { wrapper, plugins, plugin, record, setCatalog } = await prepare();

@@ -35,6 +35,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     // Orders local resource projection only; PocketBase remains the authority.
     private readonly object _catalogProjectionGate = new();
     private long _catalogProjectionGeneration;
+    private PluginProjectContext? _prewarmPausedContext;
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
@@ -161,6 +162,18 @@ public sealed class PluginRequestDispatcher : IDisposable
     /// </summary>
     public void SetWorkspaceContext(PluginProjectContext? context)
         => _taskRegistry.SetWorkspaceContext(context);
+
+    /// <summary>Retires the sealed renderer's surfaces and leaves its workspace session on manual opens.</summary>
+    internal void RetireRendererSurfacesForRecovery()
+    {
+        PluginProjectContext? context = _projectContext();
+        lock (_catalogProjectionGate)
+        {
+            ++_catalogProjectionGeneration;
+            _prewarmPausedContext = context;
+        }
+        _resourceHost.CloseAllSurfaces();
+    }
 
     internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context)
     {
@@ -1079,19 +1092,18 @@ public sealed class PluginRequestDispatcher : IDisposable
             // A plugin that declares compatibility.surfaceLifecycle opts its manual
             // application action into background pre-warming: the surface is prepared
             // off-screen and the host admits reads only until the user opens it.
-            string? phase = action.EffectivePresentation == "application"
+            bool prewarm = context is not null && context != _prewarmPausedContext
+                && action.EffectivePresentation == "application"
                 && snapshot.Manifest.Compatibility.TryGetProperty("surfaceLifecycle", out var lifecycle)
                 && lifecycle.ValueKind == JsonValueKind.String
-                && lifecycle.GetString() == PluginContractVersions.SurfaceLifecycle
-                    ? PluginSurfacePhases.Background
-                    : null;
+                && lifecycle.GetString() == PluginContractVersions.SurfaceLifecycle;
             var surface = _resourceHost.OpenSurface(
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 action.Entry,
                 action.ActionId,
                 action.EffectivePresentation,
-                phase ?? PluginSurfacePhases.Foreground);
+                prewarm ? PluginSurfacePhases.Background : PluginSurfacePhases.Foreground);
             if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,

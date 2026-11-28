@@ -458,6 +458,7 @@ state.relationCases 为不同来源角色声明必填/可空/禁止关系；grou
 不进入 Tab 序、不换页、不抢焦点、不阻塞主界面，同时最多 4 个；切换工作区、禁用、卸载或失败时释放。
 渲染层只对目录投影为 `surfacePhase: "background"` 的 token 隐藏挂载：超出上限的入口、不返回该字段的旧 Host 以及
 已提升的 token 都保持普通手动入口，不会以全权限被隐藏挂载。
+原生停止插件或恢复渲染器时，宿主先撤销旧 token。重建后，当前工作区会话内的应用只在用户点击后打开。重新打开工作区或正常启动主程序后，后台预热恢复。
 **只读由 Host 按 surface token 强制，不是前端标志**：后台阶段仅允许 `request.cancel`、`context.read`、`model.read`
 和单份快照的 `snapshot.open/page/readBatch/release`，其余方法一律返回 `plugin_surface_background`；
 受信父页的 `tasks.cancel`、`notification.show`、`navigation.back` 同样拒绝，沙箱无 `allow-modals`，不会弹窗。
