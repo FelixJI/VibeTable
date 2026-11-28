@@ -1233,6 +1233,74 @@ describe("WorkspaceView", () => {
       expect(wrapper.find(".run-button").exists()).toBe(true);
     });
 
+    it.each([
+      ["recovery", "open"], ["recovery", "leave"], ["recovery", "fail"], ["catalog event", "open"],
+    ] as const)(
+      "uses the current catalog after the cold frame closes: %s / %s",
+      async (source, outcome) => {
+        const reads: Outbound[] = [];
+        let armed = false;
+        const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+          if (!armed || message.type !== "plugin.catalog.list") return false;
+          reads.push(message);
+          return true;
+        });
+        setCatalog(declaredApplication(plugin, "closed-token", 3));
+        await flushPromises();
+        expect(prewarmSlots(wrapper, "background")[0]!.get("iframe").attributes("name")).toBe("closed-token");
+
+        armed = true;
+        await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click");
+        await flushPromises();
+        expect(surfaceCloses(record)).toEqual(["closed-token"]);
+        expect(reads).toHaveLength(1);
+        const replacement = declaredApplication(plugin, "replacement-token", 3);
+        if (source === "recovery") {
+          record.emit({ type: "realtime.recovered", payload: {
+            contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [],
+          } });
+        } else {
+          record.emit({ type: "plugin.catalog.changed", payload: {
+            contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed",
+            projectKey: plugin.projectKey, entityId: plugin.pluginId, revision: replacement.revision, snapshot: replacement,
+          } });
+        }
+        await flushPromises();
+        expect(reads).toHaveLength(source === "recovery" ? 2 : 1);
+        record.emit({ ...reads[0]!, payload: [replacement] });
+        await flushPromises();
+        expect(reads).toHaveLength(2);
+        expect(describeCount(record)).toBe(0);
+        expect(useUiStore().activePluginApp).toBeNull();
+
+        if (outcome === "leave") {
+          await wrapper.get('[data-testid="nav-tables"]').trigger("click");
+        }
+        if (outcome === "fail") {
+          record.emit({ type: "operation.failed", requestId: reads[1]!.requestId,
+            payload: { code: "PLUGIN_CATALOG_UNAVAILABLE", message: "恢复目录读取失败" } });
+          await flushPromises();
+          expect(document.body.textContent).toContain("恢复目录读取失败");
+          expect(describeCount(record)).toBe(0);
+          expect(useUiStore().activePluginApp).toBeNull();
+        } else {
+          record.emit({ ...reads[1]!, payload: [replacement] });
+          await flushPromises();
+          if (outcome === "open") {
+            const descriptions = record.posted.filter(item => item.type === "plugin.action.describe");
+            expect(descriptions.map(item => item.payload)).toEqual([expect.objectContaining({ surfaceToken: "replacement-token" })]);
+            expect(prewarmSlots(wrapper, "foreground")[0]!.get("iframe").attributes("name")).toBe("replacement-token");
+          } else {
+            expect(describeCount(record)).toBe(0);
+            expect(useUiStore().activePluginApp).toBeNull();
+            expect(prewarmSlots(wrapper, "background")[0]!.get("iframe").attributes("name")).toBe("replacement-token");
+          }
+        }
+        expect(surfaceCloses(record)).toEqual(["closed-token"]);
+        expect(reads).toHaveLength(2);
+      },
+    );
+
     it("discards a click when its catalog read reveals a package upgrade and opens the new package on a fresh click", async () => {
       let armed = false; let upgraded = false;
       const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
