@@ -3339,15 +3339,10 @@ async function scenario04(page, recorder, _network, runtime) {
   const jsonField = jsonTable.field.physicalName;
   await selectTable(page, "E2E JSON Round Trip");
   await insertRowFromToolbar(page);
-  let jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+  let jsonCell = page.locator('.grid-wrapper[aria-busy="false"] .grid-host > .tabulator-mount.tabulator')
+    .locator(`.tabulator-row .tabulator-cell[tabulator-field="${jsonField}"][aria-haspopup="dialog"]`)
+    .first();
   await jsonCell.waitFor({ timeout: 30_000 });
-  await page.waitForFunction(
-    (field) => document.querySelector(
-      `.tabulator-cell[tabulator-field="${field}"]`,
-    )?.getAttribute("aria-haspopup") === "dialog",
-    jsonField,
-    { timeout: 30_000 },
-  );
 
   const keyboardContract = await jsonCell.evaluate((element) => ({
     focusableByKeyboard: element.tabIndex === 0,
@@ -3421,9 +3416,6 @@ async function scenario04(page, recorder, _network, runtime) {
         : null,
     }));
   }
-  jsonCell = page.locator(".grid-host > .tabulator-mount.tabulator")
-    .locator(`.tabulator-cell[tabulator-field="${jsonField}"]`)
-    .nth(0);
   await jsonCell.waitFor({ timeout: 10_000 });
   recorder.check(
     "Escape closes the structured modal and restores focus when the renderer owns OS focus",
