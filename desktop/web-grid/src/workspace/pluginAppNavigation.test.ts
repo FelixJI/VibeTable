@@ -158,6 +158,7 @@ describe("derivePluginAppEntries", () => {
 });
 
 describe("createPluginAppNavigation with ui store", () => {
+  const openedApp = { pluginId: "com.example.tasks", actionId: "open-task-desk", installationId: null, revision: 1, surfaceToken: "token-open" };
   beforeEach(() => {
     setActivePinia(createPinia());
   });
@@ -169,7 +170,7 @@ describe("createPluginAppNavigation with ui store", () => {
     plugins.replaceCatalog("local:default", [appPlugin()]);
 
     const navigation = createPluginAppNavigation(plugins, ui);
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     expect(navigation.activeEntry.value?.surfaceToken).toBe("token-open");
 
     // Catalog revision removes the application surface (disable/uninstall).
@@ -179,7 +180,7 @@ describe("createPluginAppNavigation with ui store", () => {
     expect(navigation.activeEntry.value).toBeNull();
 
     // Switching workspaces clears the active app identity entirely.
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     plugins.replaceCatalog("local:default", [appPlugin()]);
     expect(navigation.activeEntry.value).not.toBeNull();
     ui.setWorkspaceNamespace("other-workspace");
@@ -187,14 +188,31 @@ describe("createPluginAppNavigation with ui store", () => {
     expect(navigation.activeEntry.value).toBeNull();
   });
 
+  it("matches only the confirmed installation, revision and token", () => {
+    const plugins = usePluginStore();
+    const ui = useUiStore();
+    const navigation = createPluginAppNavigation(plugins, ui);
+    const plugin = appPlugin();
+    ui.openPluginApp(openedApp);
+    plugins.replaceCatalog(plugin.projectKey, [plugin]);
+    expect(navigation.activeEntry.value?.surfaceToken).toBe(openedApp.surfaceToken);
+    plugins.replaceCatalog(plugin.projectKey, [appPlugin({ installationId: "replacement" })]);
+    expect(navigation.activeEntry.value).toBeNull();
+    plugins.replaceCatalog(plugin.projectKey, [appPlugin({ revision: 2 })]);
+    expect(navigation.activeEntry.value).toBeNull();
+    plugins.replaceCatalog(plugin.projectKey, [{ ...plugin, manifest: { ...plugin.manifest,
+      actions: plugin.manifest.actions.map(action => ({ ...action, surfaceToken: "replacement-token" })) } }]);
+    expect(navigation.activeEntry.value).toBeNull();
+  });
+
   it("navigating to a platform view returns from the plugin app", () => {
     setActivePinia(createPinia());
     const ui = useUiStore();
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
-    expect(ui.activePluginApp).toEqual({ pluginId: "com.example.tasks", actionId: "open-task-desk" });
+    ui.openPluginApp(openedApp);
+    expect(ui.activePluginApp).toEqual(openedApp);
     ui.navigate("tables");
     expect(ui.activePluginApp).toBeNull();
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     ui.closePluginApp();
     expect(ui.activePluginApp).toBeNull();
   });

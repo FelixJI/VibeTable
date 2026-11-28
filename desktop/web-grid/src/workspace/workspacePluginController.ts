@@ -119,9 +119,13 @@ export function createWorkspacePluginController(
   const applicationTasks = computed(() => {
     const active = dependencies.ui.activePluginApp;
     if (!active) return [];
-    const action = dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.actions.find(action => action.actionId === active.actionId);
-    if (action?.presentation === "application")
-      return action.surfaceToken ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, action.surfaceToken) : [];
+    const installation = dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId
+      && (plugin.installationId ?? null) === active.installationId && plugin.revision === active.revision);
+    const action = installation?.manifest.actions.find(action => action.actionId === active.actionId);
+    if (!action) return [];
+    if (action.presentation === "application")
+      return active.surfaceToken && action.surfaceToken === active.surfaceToken
+        ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, active.surfaceToken) : [];
     return dependencies.plugins.tasksForAction(active.pluginId, active.actionId);
   });
   const actionTasks = computed(() => {
@@ -241,6 +245,9 @@ export function createWorkspacePluginController(
     if (disposed) return false;
     const navigation = dependencies.ui.beginNavigation();
     const isNavigationCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation;
+    const registered = registeredActions.value.find(item => item.key === key);
+    const generation = dependencies.plugins.projectContextGeneration;
+    const projectKey = dependencies.plugins.projectKey;
     const inert: PluginApplicationIntent = { active: false, token: null, confirm: () => undefined, settle: () => undefined };
     let intent = inert;
     let isCurrent = isNavigationCurrent;
@@ -251,8 +258,6 @@ export function createWorkspacePluginController(
         ? await dependencies.applicationOpen.begin(key, isNavigationCurrent)
         : { active: true, token: null, confirm: () => undefined, settle: () => undefined };
       if (!intent.active || !isNavigationCurrent()) return false;
-      // The catalog may have moved on during the bounded cold close: the entry is resolved after it.
-      const registered = registeredActions.value.find(item => item.key === key);
       if (!registered) {
         dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
         return false;
@@ -261,19 +266,32 @@ export function createWorkspacePluginController(
         dependencies.reportError("该入口不是插件应用");
         return false;
       }
-      const generation = dependencies.plugins.projectContextGeneration;
-      const projectKey = dependencies.plugins.projectKey;
       const isProjectCurrent = () => dependencies.plugins.projectKey === projectKey
         && dependencies.plugins.projectContextGeneration === generation;
       const currentPlugin = () => dependencies.plugins.plugins.find(plugin => plugin.pluginId === registered.plugin.pluginId);
       const sameVersion = (plugin: typeof registered.plugin) => plugin.installationId === registered.plugin.installationId
         && plugin.revision === registered.plugin.revision;
+      const applicationAction = (plugin: typeof registered.plugin) =>
+        plugin.manifest.actions.find(action => action.actionId === registered.action.actionId && action.presentation === "application");
+      let confirmedToken: string | null | undefined;
       isCurrent = () => {
         const plugin = currentPlugin();
-        return isNavigationCurrent() && isProjectCurrent() && plugin !== undefined && sameVersion(plugin)
-          && (intent.token === null || plugin.manifest.actions.some(action =>
-            action.actionId === registered.action.actionId && action.surfaceToken === intent.token));
+        return isNavigationCurrent() && isProjectCurrent() && plugin?.status === "enabled" && sameVersion(plugin)
+          && (confirmedToken === undefined || (applicationAction(plugin)?.surfaceToken ?? null) === confirmedToken);
       };
+      const reportUpgrade = () => {
+        const replacement = currentPlugin();
+        if (isNavigationCurrent() && isProjectCurrent() && replacement?.status === "enabled"
+          && replacement.installationId === registered.plugin.installationId && replacement.revision !== registered.plugin.revision
+          && applicationAction(replacement)?.invocation === "manual") {
+          dependencies.reportError("插件版本已更新，请重新打开应用");
+        }
+      };
+      // The click targets the installation that was present before a cold frame was closed.
+      if (!isCurrent()) {
+        reportUpgrade();
+        return false;
+      }
       // describeAction refreshes the catalog for 3.x plugins, revalidates the
       // live surface and binds the command context without opening the
       // action overlay; the viewport then mounts from the fresh projection.
@@ -285,20 +303,18 @@ export function createWorkspacePluginController(
         registered.action.actionId,
         commandContext(keys),
         false,
-        { isCurrent, confirm: token => intent.confirm(token) },
+        { isCurrent, confirm: token => { confirmedToken = token; intent.confirm(token); } },
       );
       if (!isCurrent()) {
-        const replacement = currentPlugin();
-        if (isNavigationCurrent() && isProjectCurrent() && replacement?.status === "enabled"
-          && replacement.installationId === registered.plugin.installationId && replacement.revision !== registered.plugin.revision
-          && replacement.manifest.actions.some(action => action.actionId === registered.action.actionId
-            && action.presentation === "application" && action.invocation === "manual")) {
-          dependencies.reportError("插件版本已更新，请重新打开应用");
-        }
+        reportUpgrade();
         return false;
       }
       if (!availability.available) return false;
-      dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
+      dependencies.ui.openPluginApp({
+        pluginId: registered.plugin.pluginId, actionId: registered.action.actionId,
+        installationId: registered.plugin.installationId ?? null, revision: registered.plugin.revision,
+        surfaceToken: confirmedToken === undefined ? registered.action.surfaceToken ?? null : confirmedToken,
+      });
       intent.settle(true);
       return true;
     } catch (error) {

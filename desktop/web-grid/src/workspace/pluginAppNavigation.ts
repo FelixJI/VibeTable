@@ -16,6 +16,7 @@ export interface PluginAppEntry {
   readonly label: string;
   readonly src: string;
   readonly surfaceToken: string;
+  readonly installationId: string | null;
   readonly revision: number;
   /** The manifest declares `compatibility.surfaceLifecycle`: this application opts into background pre-warming. */
   readonly declared: boolean;
@@ -58,6 +59,7 @@ export function derivePluginAppEntries(
           ?? action.actionId,
         src: action.surfaceSrc,
         surfaceToken: action.surfaceToken,
+        installationId: plugin.installationId ?? null,
         revision: plugin.revision,
         declared,
         surfacePhase,
@@ -86,7 +88,9 @@ export function createPluginAppNavigation(
     const active = ui.activePluginApp;
     if (!active) return null;
     return entries.value.find(
-      entry => entry.pluginId === active.pluginId && entry.actionId === active.actionId,
+      entry => entry.pluginId === active.pluginId && entry.actionId === active.actionId
+        && entry.installationId === active.installationId && entry.revision === active.revision
+        && entry.surfaceToken === active.surfaceToken,
     ) ?? null;
   });
   return { entries, entryByKey, activeEntry };

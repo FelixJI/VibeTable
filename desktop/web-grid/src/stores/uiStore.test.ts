@@ -50,7 +50,7 @@ describe("uiStore", () => {
 
   it("openSettings lands on the settings view with the requested section and retires plugin apps", () => {
     const s = useUiStore();
-    s.openPluginApp("com.example.erp", "app");
+    s.openPluginApp({ pluginId: "com.example.erp", actionId: "app", installationId: "install-erp", revision: 1, surfaceToken: "erp-token" });
     s.openSettings("versions");
     expect(s.activeView).toBe("settings");
     expect(s.activePluginApp).toBeNull();

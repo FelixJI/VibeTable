@@ -155,7 +155,7 @@ describe("workspacePluginController", () => {
       historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value, applicationOpen: { begin } });
     // Sidebar, toolbar, row context menu and plugin center all reach this path.
     expect(await controller.openApplication(key, [])).toBe(true);
-    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A" });
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 1, surfaceToken: "token-A" });
     expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A", "settle:true", "settle:false"]);
     expect(describeAction).toHaveBeenLastCalledWith(plugin.pluginId, "A", expect.anything(), false,
       expect.objectContaining({ isCurrent: expect.any(Function), confirm: expect.any(Function) }));
@@ -202,7 +202,7 @@ describe("workspacePluginController", () => {
     expect(describeAction).toHaveBeenCalledTimes(1);
     expect(begin).toHaveBeenCalledTimes(1);
     expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A-2", "settle:true", "settle:false"]);
-    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A" });
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 2, surfaceToken: "token-A-2" });
     expect(errors).not.toHaveBeenCalled();
     // An entry gone meanwhile (uninstalled) ends the click with one toast and no describe.
     plugins.removePlugin(plugin.pluginId);
@@ -244,7 +244,7 @@ describe("workspacePluginController", () => {
     expect(await controller.openApplication(key, [])).toBe(true);
     expect(describeAction).toHaveBeenCalledTimes(2);
     expect(order).toEqual([`begin:${key}`, "catalog", "settle:false", `begin:${key}`, "describe", "confirm:token-A-2", "settle:true", "settle:false"]);
-    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A" });
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 2, surfaceToken: "token-A-2" });
 
     describeAction.mockImplementationOnce(async () => {
       ui.navigate("settings");
@@ -399,7 +399,10 @@ describe("workspacePluginController", () => {
     const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
     const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest, actions: plugin.manifest.actions.map(action => ({ ...action,
       presentation: "application", workerEntry: null, entry: "ui/index.html", surfaceToken: "current-surface", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html" })) } };
-    plugins.replaceCatalog("local:default", [app]); const ui = useUiStore(); ui.openPluginApp(app.pluginId, "normalize");
+    plugins.replaceCatalog("local:default", [app]);
+    const ui = useUiStore();
+    ui.openPluginApp({ pluginId: app.pluginId, actionId: "normalize", installationId: app.installationId ?? null,
+      revision: app.revision, surfaceToken: "current-surface" });
     const task: PluginTaskSnapshot = { taskId: "old", runId: "old-run", pluginId: app.pluginId, pluginVersion: app.version,
       installationId: app.installationId, installationRevision: app.revision, actionId: "normalize", surfaceToken: "old-surface",
       projectKey: app.projectKey, collection: null, targetCount: 1, risk: "write", state: "succeeded", cancelRequested: false, result: null, error: null };
@@ -481,7 +484,8 @@ describe("workspacePluginController", () => {
     plugins.setProjectContext("local:default", "r1");
     plugins.replaceCatalog("local:default", [plugin]);
     const ui = useUiStore();
-    ui.openPluginApp(plugin.pluginId, "normalize");
+    ui.openPluginApp({ pluginId: plugin.pluginId, actionId: "normalize", installationId: plugin.installationId ?? null,
+      revision: plugin.revision, surfaceToken: null });
     const context = { contract: "vibetable.command-context.v1" as const, projectKey: "local:default",
       collection: "orders", selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light" as const,
       density: "comfortable", user: {}, hostVersion: "1.0.0" };
@@ -536,7 +540,7 @@ describe("workspacePluginController", () => {
       reportError: vi.fn(), historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
     if (entry === "rowMenu.select") await controller.dispatch({ type: "rowMenu.open", rowKey: "row-menu", x: 1, y: 1 });
     await controller.dispatch({ type: entry, key: `${app.pluginId}/normalize` });
-    expect(ui.activePluginApp).toEqual({ pluginId: app.pluginId, actionId: "normalize" });
+    expect(ui.activePluginApp).toMatchObject({ pluginId: app.pluginId, actionId: "normalize" });
     expect(plugins.actionOpen).toBe(false);
     expect(plugins.activeContext?.selectedKeys).toEqual([entry === "rowMenu.select" ? "row-menu" : "selected"]);
     await expect(usePluginService().startAction(app.pluginId, "normalize", {}, plugins.activeContext!)).rejects.toThrow("Worker");

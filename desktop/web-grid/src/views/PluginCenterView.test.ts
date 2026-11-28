@@ -1097,7 +1097,8 @@ describe("PluginCenterView", () => {
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
     await wrapper.get(".run-button").trigger("click");
     await flushPromises();
-    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize" });
+    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize",
+      installationId: application.installationId ?? null, revision: application.revision, surfaceToken: "owned" });
     expect(usePluginStore().actionOpen).toBe(false);
     expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
   });

@@ -532,7 +532,9 @@ export function usePluginService(): PluginService {
       const description = projectAction(plugin, action, context.locale);
       const application = description.presentation === "application";
       store.beginAction(description, context, openPanel && !application);
-      if (application && openPanel) ui.openPluginApp(pluginId, actionId);
+      if (application && openPanel) ui.openPluginApp({
+        pluginId, actionId, installationId: plugin.installationId ?? null, revision: plugin.revision, surfaceToken,
+      });
       return availability;
     } catch (error) {
       if (!isCurrent()) return retired;
