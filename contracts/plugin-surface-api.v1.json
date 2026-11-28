@@ -7,6 +7,7 @@
     "model.configure",
     "model.read",
     "model.status",
+    "fieldProtection.status",
     "transaction.configure",
     "transaction.preview",
     "transaction.submit",
@@ -295,7 +296,8 @@
       "tasks.list",
       "tasks.cancel",
       "notification.show",
-      "navigation.back"
+      "navigation.back",
+      "navigation.openFieldProtection"
     ],
     "notifications": [
       "lifecycleChanged",
@@ -340,7 +342,7 @@
         "snapshot.readBatch",
         "snapshot.release"
       ],
-      "refusal": "plugin_surface_background for every other method, including ui tasks.cancel, notification.show and navigation.back",
+      "refusal": "plugin_surface_background for every other method, including fieldProtection.status and UI tasks.cancel, notification.show, navigation.back and navigation.openFieldProtection",
       "dialogs": "none; no script dialogs and no modals sandbox flag"
     },
     "catalog": "plugin.catalog.list projects action.surfacePhase background only for a token the Host currently grants in background; foreground and ungranted tokens project null, so a consumer that never reads the field behaves exactly as before",

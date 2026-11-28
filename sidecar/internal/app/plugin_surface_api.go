@@ -16,6 +16,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
@@ -291,6 +292,9 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		// grants, versions and bounded rows (open) or re-proves every source
 		// before a page is served (validate); nothing is resolved on the raw app first.
 		return executeSurfaceSnapshot(ctx, app, source, workspace, input)
+	}
+	if input.Method == "fieldProtection.status" {
+		return surfaceFieldProtectionStatus(ctx, app, workspace, input)
 	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	switch input.Method {
@@ -761,6 +765,12 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 				if !ok || field.File == nil || !outputOnly && allowed[field.Identity.FieldID] == "" {
 					return pluginDataError("plugin_write_denied")
 				}
+				// Persistent field protection (#591): a protected file field, e.g. an
+				// issued archive, accepts attachments from its registered owner only.
+				// The owner is the surface the host authenticated above, never a claim.
+				if err := mutation.RefuseProtectedField(ctx, tx, table, operation.FieldID); err != nil {
+					return err
+				}
 				var ports *pluginSurfaceIO
 				if len(ioPorts) > 0 {
 					ports = ioPorts[0]
@@ -781,7 +791,11 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 		}
 		return nil
 	}
-	if err := request.Authorize(ctx, app); err != nil {
+	// The surface identity is verified by Authorize (installation, status, hash,
+	// revision) before the kernel writes anything; the kernel additionally
+	// requires this installation to be the registered owner of each protected field.
+	request.ProtectedFieldWriter = &fieldprotection.Owner{PluginID: input.PluginID, InstallationID: input.InstallationID}
+	if err := request.Authorize(mutation.WithProtectedFieldWriter(ctx, app, request.ProtectedFieldWriter), app); err != nil {
 		return request, err
 	}
 	return request, nil

@@ -68,12 +68,20 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `tasks.cancel(taskId)` | `{cancelRequested}` | 只表示请求已受理，不是取消终态 |
 | `ui.notifications.show(text)` | 完成回执 | 纯文本提示，每条最多 500 字符 |
 | `ui.navigation.back()` | `{navigated}` | 返回平台；false 表示离开被阻止 |
+| `ui.navigation.openFieldProtection()` | `{navigated}` | 在当前前台应用页面打开宿主「设置 → 插件字段保护」，预选此插件 |
+| `fieldProtection.status()` | `SurfaceFieldProtectionStatus` | 在前台读取宿主权威保护状态，包含当前声明字段及此插件全部持久保护的计数 |
 | `ui.capabilities()` | 支持及不支持的方法列表 | 同步展示能力查询，不是权限查询 |
 | `output.print(signal?)` | `{opened:true}` | 仅当前可见 application；表示已开预览，不表示打印成功 |
 | `lifecycle.current()` / `onChanged(listener)` | `SurfacePhase \| undefined` / 取消函数 | 仅声明 `compatibility.surfaceLifecycle` 的插件会被后台预热；阶段由 Host 决定，插件只观察 |
 | `lifecycle.whenForeground(signal?)` | `Promise<SurfacePhase>` | 等到用户打开页面；无超时，用 `AbortSignal` 取消；关闭后拒绝 `plugin_surface_closed` |
 | `lifecycle.readyToActivate()` | void | **应用就绪握手**：首屏已渲染、可承接前台激活时调用一次；幂等、永不抛；仅 lifecycle 声明插件有效，旧 Host 静默；详见“后台预热生命周期” |
 | `dispose()` | void | 关闭客户端，释放监听及句柄 |
+
+插件可在 `permissions.fieldProtection` 中声明模型字段，契约为
+`vibetable.plugin-field-protection.v1`，字段列表为 `[{entity, field}]`。默认关闭保护。
+管理员在宿主设置中选择实际表字段并启用，之后只有保护所属的插件安装可通过已授权的写入操作修改。
+宿主设置也支持解除旧绑定或卸载插件留下的保护。SDK 返回的
+`currentProtectedCount` 统计当前安装和映射，`activeProtectionCount` 还包括仍生效的旧记录。
 
 ## 查询与分页
 

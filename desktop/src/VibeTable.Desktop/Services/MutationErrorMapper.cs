@@ -70,6 +70,8 @@ internal sealed class TableMutationRejectedException(MutationError error, RpcRem
 /// </summary>
 public static class MutationErrorMapper
 {
+    private const string FieldProtected = "mutation.field_protected";
+
     /// <summary>JSON-RPC error code: edit conflict (stale old value / digest).</summary>
     public const int CodeEditConflict = -32010;
 
@@ -165,8 +167,8 @@ public static class MutationErrorMapper
             "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.record.not_found"
                 => MutationErrorKind.EditConflict,
             "mutation.schema_revision_conflict" or "mutation.table.not_found" => MutationErrorKind.SchemaMismatch,
-            // kernel.preview: writable fields/table and the field migration write fence.
-            "mutation.table.read_only" or "mutation.field.read_only" or "field.migration.write_locked"
+            // Writable schema, migration fence and the transactional persistent field guard.
+            "mutation.table.read_only" or "mutation.field.read_only" or "field.migration.write_locked" or FieldProtected
                 => MutationErrorKind.NotWritable,
             // kernel.preview fieldvalue/relation checks; applyOperation/resolveOperationRecord;
             // storageSaveFailure's validation.Errors branch and archive.go. Storage errors are excluded.
@@ -189,6 +191,10 @@ public static class MutationErrorMapper
 
     private static MutationError Rejection(RpcRemoteException remote, MutationErrorKind kind, string? code, bool notSubmitted = false)
     {
+        if (code == FieldProtected)
+            return new MutationError(kind,
+                Localize(code, FieldProtected, "A field is protected by a plugin. The change was not saved."),
+                Code: code, NotSubmitted: notSubmitted);
         string fallback = kind switch
         {
             MutationErrorKind.EditConflict => Localize("edit_conflict", "edit_conflict", "This row was changed by another session."),
@@ -326,6 +332,7 @@ public static class MutationErrorMapper
         {
             "edit_conflict" => "此单元格已被其他会话修改。",
             "mutation_validation" => "当前值无法保存，请检查后重试。",
+            FieldProtected => "有字段受插件保护，本次更改未保存。",
             _ => fallback,
         };
     }

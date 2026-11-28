@@ -96,9 +96,10 @@ describe("SettingsView", () => {
 
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("organizes discoverable settings into six sections", () => {
+  it("organizes discoverable settings and includes plugin field protection", () => {
     const wrapper = mount(SettingsView);
-    expect(wrapper.findAll(".settings-nav button")).toHaveLength(6);
+    expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
+    expect(wrapper.get('[data-testid="settings-nav-fieldProtection"]').text()).toBe("插件字段保护");
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动时进入");
     expect(wrapper.text()).toContain("上次使用的工作区");
@@ -120,6 +121,61 @@ describe("SettingsView", () => {
     await wrapper.get('[data-testid="settings-nav-general"]').trigger("click");
     expect(wrapper.get('[data-testid="settings-nav-general"]').classes()).toContain("active");
     expect(wrapper.get('[data-testid="settings-nav-versions"]').classes()).not.toContain("active");
+  });
+
+  it("selects exact current mappings and releases retained old mappings from host settings", async () => {
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const projectKey = "local:11111111111141118111111111111111";
+    const pluginId = "com.example.project";
+    const session = useWorkspaceSessionStore();
+    session.activeWorkspaceId = workspaceId;
+    session.workspaces = [{
+      contractVersion: "2.0", workspaceId, displayName: "合成工作区", selectedRoot: "C:\\synthetic",
+      activityRoot: null, storageKind: "fixed", coordinationStrength: "strong", lastOpenedAt: null,
+      lastKnownHealth: "healthy", lastSnapshotAt: null, lastSyncAt: null, pendingSync: false,
+    }];
+    const current = {
+      entity: "orders", field: "code", tableId: "tbl_current", fieldId: "fld_current",
+      tableName: "当前单头", fieldName: "单号", fieldType: "text",
+      state: "unprotected", owner: null, ownerStale: false, diagnostic: "", eligible: true,
+    };
+    const old = { ...current, tableId: "tbl_old", fieldId: "fld_old", tableName: "早期单头", pluginId, installationId: "saved-installation" };
+    const detail = {
+      contract: "vibetable.plugin-field-protection.v1", projectKey, pluginId,
+      installation: { installationId: "saved-installation", revision: 3, status: "enabled", version: "1.0.0", pluginApi: "3.x" },
+      declared: true, suggested: [current], protected: [old], foreign: [], blockingReasons: [],
+      events: 1, eventsRemaining: 511, maxProtectedFields: 2880, maxEvents: 512,
+    };
+    backupRequest.mockImplementation(async (type: string) => {
+      if (type === "plugin.protection.list") return [
+        { pluginId: "com.example.earlier", installed: false, protectedCount: 1 },
+        { pluginId, installed: true, protectedCount: 1 },
+      ];
+      if (type === "plugin.protection.describe") return detail;
+      if (type === "plugin.protection.enable") return { ...detail, protected: [old, { ...old, tableId: current.tableId, fieldId: current.fieldId }], suggested: [{ ...current, state: "protected" }] };
+      if (type === "plugin.protection.release") return { ...detail, protected: [] };
+      return {};
+    });
+    const wrapper = mount(SettingsView);
+    useUiStore().openSettings("fieldProtection", pluginId);
+    await flushPromises();
+
+    expect(backupRequest).toHaveBeenCalledWith("plugin.protection.describe", { projectKey, pluginId });
+    expect(wrapper.get('[data-testid="field-protection-stored"]').text()).toContain("保护仍在旧映射上");
+    expect(backupRequest.mock.calls.map(([method]) => method)).not.toContain("plugin.protection.enable");
+    await wrapper.get('[data-testid="plugin-field-protection-settings"] input[type="checkbox"]').setValue(true);
+    await wrapper.get('[data-testid="field-protection-enable"]').trigger("click");
+    await flushPromises();
+    expect(backupRequest).toHaveBeenCalledWith("plugin.protection.enable", {
+      projectKey, pluginId, installationId: "saved-installation", installationRevision: 3,
+      fields: [{ entity: "orders", field: "code", tableId: "tbl_current", fieldId: "fld_current" }],
+    });
+    await wrapper.get('[data-testid="field-protection-stored"] input[type="checkbox"]').setValue(true);
+    await wrapper.get('[data-testid="field-protection-release"]').trigger("click");
+    await flushPromises();
+    expect(backupRequest).toHaveBeenCalledWith("plugin.protection.release", {
+      projectKey, pluginId, fields: [{ tableId: "tbl_old", fieldId: "fld_old" }],
+    });
   });
 
   it("persists the device-level Workspace Center startup preference", async () => {

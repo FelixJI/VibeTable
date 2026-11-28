@@ -100,6 +100,10 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.fieldProtection.describe",
+        "plugin.fieldProtection.enable",
+        "plugin.fieldProtection.list",
+        "plugin.fieldProtection.release",
         "plugin.listAudit",
         "plugin.listAuditPage",
         "plugin.listCatalog",
@@ -150,6 +154,14 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert query_page.product_scenarios == ("04-json-round-trip",)
     snapshot = inventory.require("rpc", "query.validateSnapshot")
     assert snapshot.current_route == "goSidecar"
+    protection = inventory.require("rpc", "plugin.fieldProtection.enable")
+    assert protection.group_id == "rpc.plugin-field-protection"
+    assert protection.current_path == ("wpfHost", "goSidecar", "pocketBase")
+    assert protection.classification == "GO_AUTHORITY"
+    assert protection.product_scenarios == ("54-plugin-models",)
+    assert protection.evidence[0] == ("sidecar/internal/fieldprotection/fieldprotection.go")
+    assert inventory.require("rpc", "plugin.fieldProtection.describe").current_route == "goSidecar"
+    assert inventory.require("rpc", "plugin.fieldProtection.release").current_route == "goSidecar"
     assert snapshot.current_path == ("wpfHost", "goSidecar", "pocketBase")
     assert snapshot.classification == "GO_AUTHORITY"
     assert snapshot.cancellation == "cooperative"

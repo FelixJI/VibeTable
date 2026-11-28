@@ -115,6 +115,7 @@ def _permission_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "privateStorage": permissions.get("privateStorage", False),
         "network": permissions.get("network", {"domains": [], "methods": ["GET"]}),
         "transactions": permissions.get("transactions"),
+        "fieldProtection": permissions.get("fieldProtection"),
         "dataset": manifest.get("compatibility", {}).get("dataset"),
         "risks": sorted(
             {action["risk"] for action in manifest.get("actions", [])},
@@ -148,6 +149,13 @@ def _command_inspect_permissions(args: argparse.Namespace) -> int:
         print(
             f"业务事务: {declaration['modelId']} v{declaration['version']}，"
             f"{len(declaration['rules'])} 条规则；原生确认后持续保护普通写入，停用或卸载不解除"
+        )
+        print(json.dumps(declaration, ensure_ascii=False, sort_keys=True))
+    if report["fieldProtection"] is not None:
+        declaration = report["fieldProtection"]
+        print(
+            f"宿主持久字段保护建议: {len(declaration['fields'])} 个字段；"
+            f"默认关闭，仅在工作区管理器显式启用后生效，卸载或停用不自动解除"
         )
         print(json.dumps(declaration, ensure_ascii=False, sort_keys=True))
     network = report["network"]

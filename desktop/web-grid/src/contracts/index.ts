@@ -1,4 +1,8 @@
 import type { FormulaAuthorDocument } from "./generated/workbench";
+import type {
+  PluginFieldProtectionDetails, PluginFieldProtectionEnable, PluginFieldProtectionIdentity,
+  PluginFieldProtectionListItem, PluginFieldProtectionProject, PluginFieldProtectionRelease,
+} from "./pluginFieldProtection";
 import type { ImportHistoryResult } from "./importManagement";
 import type { DocumentDiffSessionResult, DocumentDiffChangePageRequest, DocumentDiffChangePageResult } from "./documentDiffV2";
 import type { WorkCalendarOverride } from "@/calendar/workCalendar";
@@ -372,6 +376,7 @@ export interface MutationErrorPayload {
     | "cancelled"
     | "unknown";
   readonly message: string;
+  readonly code?: string | null;
   readonly currentRow?: Record<string, unknown> | null;
   readonly conflictingRowKeys?: readonly (number | string)[] | null;
   readonly fieldErrors?: Record<string, string> | null;
@@ -1599,6 +1604,10 @@ export type WebMessageType =
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.audit.page"
+  | "plugin.protection.list"
+  | "plugin.protection.describe"
+  | "plugin.protection.enable"
+  | "plugin.protection.release"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.github.inspect"
@@ -1738,6 +1747,10 @@ export type HostMessageType =
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.audit.page"
+  | "plugin.protection.list"
+  | "plugin.protection.describe"
+  | "plugin.protection.enable"
+  | "plugin.protection.release"
   | "plugin.cleanup.listPending"
   | "plugin.install.inspect"
   | "plugin.install.github.inspect"
@@ -2067,6 +2080,10 @@ export interface HostPayloadMap {
   "plugin.catalog.list": readonly PluginSnapshot[];
   "plugin.audit.list": readonly PluginAuditEvent[];
   "plugin.audit.page": PluginAuditSummaryPage;
+  "plugin.protection.list": readonly PluginFieldProtectionListItem[];
+  "plugin.protection.describe": PluginFieldProtectionDetails;
+  "plugin.protection.enable": PluginFieldProtectionDetails;
+  "plugin.protection.release": PluginFieldProtectionDetails;
   "plugin.cleanup.listPending": readonly PluginAuditEvent[];
   "plugin.install.inspect": PluginInstallPlan;
   "plugin.install.github.inspect": PluginInstallPlan;
@@ -2289,6 +2306,10 @@ export interface WebPayloadMap {
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
   "plugin.audit.page": { readonly projectKey: string; readonly pluginId: string; readonly cursor: string | null };
+  "plugin.protection.list": PluginFieldProtectionProject;
+  "plugin.protection.describe": PluginFieldProtectionIdentity;
+  "plugin.protection.enable": PluginFieldProtectionEnable;
+  "plugin.protection.release": PluginFieldProtectionRelease;
   "plugin.cleanup.listPending": { readonly projectKey: string };
   "plugin.install.inspect": {
     readonly projectKey: string;

@@ -22,6 +22,8 @@
       "mutation.relation.cardinality",
       "mutation.relation.reciprocal_cardinality",
       "mutation.relation.target_not_found",
+      "mutation.field_protected",
+      "mutation.field_protection.unavailable",
       "transaction.binding_stale",
       "transaction.decimal_mapping_invalid",
       "transaction.reference_mapping_invalid",

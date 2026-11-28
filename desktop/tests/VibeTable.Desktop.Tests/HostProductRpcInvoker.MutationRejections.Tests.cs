@@ -14,6 +14,8 @@ public sealed partial class HostProductRpcInvokerTests
     [DataRow("schema_unknown", "paste_error", MutationErrorKind.SchemaMismatch, true)]
     [DataRow("mutation.field.invalid_value", "paste_error", MutationErrorKind.Validation, false)]
     [DataRow("mutation.relation.restricted", "paste_error", MutationErrorKind.Validation, false)]
+    [DataRow("mutation.field_protected", "paste_error", MutationErrorKind.NotWritable, false)]
+    [DataRow("mutation.field_protection.unavailable", "paste_error", MutationErrorKind.Unknown, false)]
     [DataRow("paste_token_consumed", "paste_error", MutationErrorKind.Unknown, false)]
     [DataRow("paste_idempotency_mismatch", "paste_error", MutationErrorKind.Unknown, false)]
     [DataRow("mutation.idempotency_conflict", "paste_error", MutationErrorKind.Unknown, false)]
@@ -50,7 +52,8 @@ public sealed partial class HostProductRpcInvokerTests
             await recovery.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.AreEqual("table.editRejected", reply.Type);
             Assert.AreEqual(MutationErrorMapper.ToWireKind(expectedKind), payload.GetProperty("kind").GetString());
-            Assert.AreEqual(code, payload.GetProperty("code").GetString()); Assert.AreEqual(reason, payload.GetProperty("message").GetString());
+            Assert.AreEqual(code, payload.GetProperty("code").GetString());
+            if (code != "mutation.field_protected") Assert.AreEqual(reason, payload.GetProperty("message").GetString());
             Assert.AreEqual("applyPaste", payload.GetProperty("operation").GetString());
             Assert.AreEqual(notSubmitted, payload.TryGetProperty("notSubmitted", out var fact) && fact.GetBoolean());
             // A later known rejection cannot clear uncertainty left by another logical write.

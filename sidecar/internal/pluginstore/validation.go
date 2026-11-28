@@ -2,10 +2,12 @@ package pluginstore
 
 import (
 	"encoding/json"
-	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
-	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 	"path"
 	"strings"
+
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
+	"github.com/vibetable/vibetable/sidecar/internal/transactionrules"
 )
 
 func invalidPayload() *Error {
@@ -14,6 +16,10 @@ func invalidPayload() *Error {
 
 // surfaceLifecycleContract is the only compatibility.surfaceLifecycle value a v2 manifest may declare (#596).
 const surfaceLifecycleContract = "vibetable.plugin-surface-lifecycle.v1"
+
+// fieldProtectionDeclarationBudget is the same 1 MiB serialized-declaration
+// budget every native permission applies at the write boundary.
+const fieldProtectionDeclarationBudget = 1 << 20
 
 func validateObject(object map[string]any, allowed, texts string) error {
 	fields := " " + allowed + " "
@@ -64,6 +70,28 @@ func validateManifest(value any, pluginID, version string) error {
 		modelRaw, modelErr := json.Marshal(manifest["permissions"].(map[string]any)["model"])
 		model, decodeErr := pluginmodel.Decode(modelRaw)
 		if err != nil || modelErr != nil || decodeErr != nil || declaration.ModelID != model.ModelID || declaration.ValidatePaths(model) != nil {
+			return invalidPayload()
+		}
+	}
+	// Persistent field protection (#591) is a closed declaration stored with the
+	// installation and decoded strictly on every read, so an undecodable or
+	// unbound suggestion is refused here instead of poisoning the snapshot. It
+	// stays a suggestion: nothing is protected until the host records an enable.
+	if value, exists := manifest["permissions"].(map[string]any)["fieldProtection"]; exists {
+		raw, err := json.Marshal(value)
+		if !native || err != nil || len(raw) > fieldProtectionDeclarationBudget {
+			return invalidPayload()
+		}
+		var declaration fieldprotection.Declaration
+		if json.Unmarshal(raw, &declaration) != nil {
+			return invalidPayload()
+		}
+		modelRaw, modelErr := json.Marshal(manifest["permissions"].(map[string]any)["model"])
+		var model *pluginmodel.Declaration
+		if modelErr == nil {
+			model, modelErr = pluginmodel.Decode(modelRaw)
+		}
+		if modelErr != nil || declaration.Validate(model) != nil {
 			return invalidPayload()
 		}
 	}

@@ -72,6 +72,7 @@ func pluginAuditPageFixtureWithApp(t *testing.T) (http.Handler, *pluginstore.Ser
 		return &core.RequestEvent{App: pb, Event: router.Event{Response: writer, Request: request}}, nil
 	})
 	registrations := PluginSharedStateRegistrations(store)
+	registrations = append(registrations, fieldProtectionRegistrations(pb, "11111111-1111-4111-8111-111111111111")...)
 	for _, descriptor := range productcapabilities.CurrentOwnerRPCDescriptors(productcapabilities.GoSidecar) {
 		if !strings.HasPrefix(descriptor.Method, "plugin.") {
 			registrations = append(registrations, productrpc.Registration{

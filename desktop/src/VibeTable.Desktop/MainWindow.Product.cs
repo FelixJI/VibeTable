@@ -380,6 +380,28 @@ public partial class MainWindow : Window
                 _workspaceSessions,
                 _workspaceSessionFilter,
                 context),
+            fieldProtectionRpc: async (scope, method, parameters, token) =>
+            {
+                if (!_workspaceSessionFilter.TryCapture(scope, out var lease) || lease is null)
+                    throw new PluginRequestDispatcher.PluginDispatchException(
+                        "BAD_WORKSPACE_SCOPE", "Field protection belongs to a retired workspace session.");
+                using (lease)
+                using (var call = CancellationTokenSource.CreateLinkedTokenSource(token, lease.CancellationToken))
+                {
+                    WorkspaceSessionV2 session = _workspaceSessions.Current;
+                    if (session.WorkspaceId != scope.WorkspaceId || session.SessionEpoch != scope.SessionEpoch)
+                        throw new PluginRequestDispatcher.PluginDispatchException(
+                            "BAD_WORKSPACE_SCOPE", "Field protection belongs to a retired workspace session.");
+                    if (method is "plugin.fieldProtection.enable" or "plugin.fieldProtection.release"
+                        && session.OpenMode == WorkspaceOpenMode.ReadOnly)
+                        throw new PluginRequestDispatcher.PluginDispatchException(
+                            "WORKSPACE_READ_ONLY", "The workspace is open read-only.");
+                    HostProductRpcBinding binding = _runtime.CaptureHostProductRpcBinding(session)
+                        ?? throw new BackendUnavailableException("Field protection is unavailable.");
+                    using JsonRpcProductDataGateway gateway = binding.CreateGateway(_workspaceSessionFilter);
+                    return await gateway.InvokePluginCatalogAsync(method, parameters, call.Token).ConfigureAwait(false);
+                }
+            },
             packageCacheRoot: projectKey =>
             {
                 WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;

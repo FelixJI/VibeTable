@@ -573,6 +573,45 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task FieldProtectionManagerUsesClosedSidecarMethodsForTheCurrentWorkspace()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var workspaceId = Guid.Parse("11111111-1111-4111-8111-111111111111");
+        var context = new PluginProjectContext($"local:{workspaceId:N}", "workspace-revision", 42);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace", WorkspaceId = workspaceId, SessionEpoch = 42,
+            OperationId = Guid.NewGuid(), Sequence = 1,
+        };
+        var forwarded = new List<string>();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources, githubSource: null, projectContext: () => context,
+            fieldProtectionRpc: (admitted, method, payload, _) =>
+            {
+                Assert.AreEqual(scope, admitted);
+                Assert.AreEqual(context.ProjectKey, payload.GetProperty("projectKey").GetString());
+                forwarded.Add(method);
+                return Task.FromResult(JsonSerializer.SerializeToElement(Array.Empty<object>()));
+            });
+        foreach (string operation in new[] { "list", "describe", "enable", "release" })
+        {
+            string alias = $"plugin.protection.{operation}";
+            var request = Request(alias, operation, JsonSerializer.Serialize(new { projectKey = context.ProjectKey }));
+            await dispatcher.DispatchAsync(request with { Scope = scope });
+            Assert.AreEqual(alias, reply.ResponseType);
+            Assert.AreEqual(operation, reply.RequestId);
+        }
+        var stale = Request("plugin.protection.list", "stale", JsonSerializer.Serialize(new { projectKey = context.ProjectKey }));
+        await dispatcher.DispatchAsync(stale with { Scope = scope with { SessionEpoch = 41 } });
+        Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
+        CollectionAssert.AreEqual(
+            new[] { "plugin.fieldProtection.list", "plugin.fieldProtection.describe", "plugin.fieldProtection.enable", "plugin.fieldProtection.release" },
+            forwarded.ToArray());
+    }
+
+    [TestMethod]
     public async Task DispatchForwardsAuditSummaryPageToTheBoundedSharedMethod()
     {
         var reply = new RecordingReplySink();

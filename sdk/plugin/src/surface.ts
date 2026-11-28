@@ -1,4 +1,5 @@
 import { createSurfacePresentationClient, type SurfaceParentTransport, type SurfacePresentation, type SurfaceTask } from "./surface-ui.js";
+import type { SurfaceFieldProtection } from "./surface-protection.js";
 import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryPage, DataQueryRequest } from "./data.js";
 import type { CommandContext, JsonObject, JsonValue, SurfacePhase } from "./types.js";
 import type { ReadGrant, WriteGrant } from "./capabilities.js";
@@ -66,6 +67,7 @@ export interface SurfaceTransport {
 export interface SurfaceCapabilities {
   readonly dataset: SurfaceDatasets;
   readonly model: SurfaceModel;
+  readonly fieldProtection: SurfaceFieldProtection;
   readonly transaction: SurfaceTransaction;
   readonly context: { read(): Promise<CommandContext>; current(): Promise<SurfacePresentation>; onChanged(listener: (value: SurfacePresentation) => void): () => void };
   /** vibetable.plugin-surface-lifecycle.v1: observable background → foreground lifecycle of this surface. */
@@ -511,6 +513,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   return {
     dataset: datasets,
     model: createSurfaceModel(call),
+    fieldProtection: { status: () => call("fieldProtection.status", {}) },
     transaction: createSurfaceTransaction(call),
     context: { read: readContext, current: presentation.current, onChanged: presentation.onChanged },
     lifecycle: {

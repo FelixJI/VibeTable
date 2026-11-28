@@ -7,9 +7,10 @@ const running = { taskId: "one", actionId: "save", surfaceToken: "token", revisi
   progress: { current: 2, total: 0, message: "阶段二", cancellable: true }, result: null, error: null } as PluginTaskViewSnapshot;
 function setup(tasks = [running]) {
   const cancel = vi.fn(); const show = vi.fn(); const back = vi.fn(() => true);
-  const service = createPluginSurfaceUi({ token: () => "token", theme: () => theme, tasks: () => tasks, cancel, show, back });
+  const openFieldProtection = vi.fn(() => true);
+  const service = createPluginSurfaceUi({ token: () => "token", theme: () => theme, tasks: () => tasks, cancel, show, back, openFieldProtection });
   const call = (method: string, params: object = {}) => service.handle({ service: "ui", requestId: "request", method, params });
-  return { service, call, cancel, show, back };
+  return { service, call, cancel, show, back, openFieldProtection };
 }
 describe("surface presentation services", () => {
   it("matches the public closed catalog and supplies current presentation without data context", () => {
@@ -62,19 +63,32 @@ describe("surface presentation services", () => {
   it("keeps a background (pre-warmed) surface read-only: no notice, navigation or cancel, but current presentation and tasks", () => {
     let background = false;
     const cancel = vi.fn(); const show = vi.fn(); const back = vi.fn(() => true);
-    const service = createPluginSurfaceUi({ token: () => "token", theme: () => theme, tasks: () => [running], cancel, show, back, background: () => background });
+    const openFieldProtection = vi.fn(() => true);
+    const service = createPluginSurfaceUi({ token: () => "token", theme: () => theme, tasks: () => [running], cancel, show, back, openFieldProtection, background: () => background });
     const call = (method: string, params: object = {}) => service.handle({ service: "ui", requestId: method, method, params });
     background = true;
     expect(call("notification.show", { message: "后台不可见" })?.error?.code).toBe("plugin_surface_background");
     expect(call("navigation.back")?.error?.code).toBe("plugin_surface_background");
+    expect(call("navigation.openFieldProtection")?.error?.code).toBe("plugin_surface_background");
     expect(call("tasks.cancel", { taskId: "one" })?.error?.code).toBe("plugin_surface_background");
     expect(call("tasks.cancel", { taskId: "missing" })?.error?.code).toBe("plugin_surface_background");
     expect(show).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled(); expect(back).not.toHaveBeenCalled();
+    expect(openFieldProtection).not.toHaveBeenCalled();
     expect(call("context.current")?.result).toEqual(theme);
     expect(call("tasks.list")?.result).toMatchObject([{ taskId: "one" }]);
     background = false;
     expect(call("notification.show", { message: "已在前台" })?.result).toEqual({ shown: true });
     expect(call("tasks.cancel", { taskId: "missing" })?.error?.code).toBe("plugin_task_not_owned");
     expect(call("navigation.back")?.result).toEqual({ navigated: true });
+    expect(call("navigation.openFieldProtection")?.result).toEqual({ navigated: true });
+    expect(openFieldProtection).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens trusted settings without accepting a plugin identity or a protection change", () => {
+    const { call, openFieldProtection } = setup();
+    expect(call("navigation.openFieldProtection", { pluginId: "another.plugin" })?.error?.code).toBe("plugin_capability_invalid");
+    expect(call("plugin.protection.enable")?.error?.code).toBe("plugin_api_unsupported");
+    expect(call("navigation.openFieldProtection")?.result).toEqual({ navigated: true });
+    expect(openFieldProtection).toHaveBeenCalledTimes(1);
   });
 });

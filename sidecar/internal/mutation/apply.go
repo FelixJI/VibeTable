@@ -107,6 +107,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 				)
 			}
 		}()
+		ctx = WithProtectedFieldWriter(ctx, txApp, request.ProtectedFieldWriter)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -214,6 +215,11 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			); guardErr != nil {
 				return guardErr
 			}
+			if operation.Kind == OperationDelete {
+				if err := checkProtectedDelete(ctx, txApp, definition, before); err != nil {
+					return err
+				}
+			}
 
 			after, applyErr := kernel.applyOperation(
 				ctx, txApp, definition, record, operation, before,
@@ -238,6 +244,11 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 				}
 			}
 			reciprocalChanges = append(reciprocalChanges, related...)
+			if operation.Kind != OperationDelete {
+				if err := checkProtectedWrite(ctx, txApp, definition, before, after, request.Operations[index]); err != nil {
+					return err
+				}
+			}
 			if operation.Kind == OperationDelete {
 				deleted[recordID] = true
 				delete(recordStates, recordID)
@@ -717,6 +728,9 @@ func (kernel *Kernel) applyOperation(
 				"managed attachment service is unavailable", nil, false,
 			)
 		}
+		if err := checkProtectedAttachment(ctx, app, definition, operation.Attachment.FieldID); err != nil {
+			return nil, err
+		}
 		var err error
 		finalizeAttachments, err = kernel.attachments.Prepare(
 			ctx, app, definition, record, *operation.Attachment,
@@ -926,6 +940,9 @@ func (kernel *Kernel) syncReciprocalRelationPhase(ctx context.Context, app core.
 			}
 			if equalStrings(current, next) {
 				continue
+			}
+			if err := checkProtectedReciprocal(ctx, app, targetDefinition, reciprocal); err != nil {
+				return nil, err
 			}
 			var productValue any = next
 			if reciprocal.Relation.Cardinality == "one" {

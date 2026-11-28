@@ -1113,6 +1113,7 @@ public sealed class PluginSurfaceApiTests
             ("mutation.submit", "{}"), ("transaction.configure", "{}"),
             ("output.print", "{}"), ("file.pickRead", "{}"), ("data.import.start", "{}"), ("data.export.start", "{}"),
             ("model.status", "{}"), ("model.preview", "{}"), ("model.catalog", "{}"), ("model.configure", "{}"),
+            ("fieldProtection.status", "{}"),
             ("attachments.list", "{}"), ("attachments.read", "{}"), ("attachments.previewChange", "{}"),
             ("data.query", "{}"), ("data.subscribe", "{}"), ("data.describe", "{}"), ("dataset.open", "{}"), ("data.io.start", "{}"),
         })
@@ -1132,6 +1133,8 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("selected", fixture.Http.Calls.Last().GetProperty("invocationContext").GetProperty("selectedKeys")[0].GetString(), "Promotion binds the active selection.");
         // Promotion restores exactly the declared capability: a refused read-set member and a write both pass.
         Assert.IsFalse((await fixture.Call("data.query", "{}")).TryGetProperty("error", out _));
+        Assert.IsFalse((await fixture.Call("fieldProtection.status", "{}")).TryGetProperty("error", out _));
+        Assert.AreEqual("fieldProtection.status", fixture.Http.Calls.Last().GetProperty("method").GetString());
         Assert.IsFalse((await fixture.Call("storage.set", "{}")).TryGetProperty("error", out _), "Promotion restores the declared write capability.");
 
         // Once adopted, a promoted surface follows the foreground stale rules like any other.

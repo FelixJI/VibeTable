@@ -19,6 +19,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -233,10 +234,16 @@ func (executor *Executor) apply(
 			receipt = *replayed
 			return nil
 		}
+		if err := fieldprotection.RefuseSchemaErase(ctx, txApp, plan.Intent.TableID, plan.Intent.FieldID, plan.Before, plan.After); err != nil {
+			return err
+		}
 		if err := pluginmodel.ProtectField(ctx, txApp, plan.Intent.TableID, plan.Intent.FieldID, plan.Before, plan.After); err != nil {
 			return err
 		}
 		for _, related := range plan.RelatedChanges {
+			if err := fieldprotection.RefuseSchemaErase(ctx, txApp, related.TableID, related.FieldID, related.Before, related.After); err != nil {
+				return err
+			}
 			if err := pluginmodel.ProtectField(ctx, txApp, related.TableID, related.FieldID, related.Before, related.After); err != nil {
 				return err
 			}

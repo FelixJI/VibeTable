@@ -1,7 +1,7 @@
 import { BridgeRequestNotSentError } from "@/bridge/hostBridge";
 import { useHostBridge } from "./bridgeContext";
 import { useMutationScope } from "./mutationScope";
-import { isDefiniteMutationRejection } from "./notificationPolicy";
+import { isDefiniteMutationRejection, mutationRejectionMessage } from "./notificationPolicy";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import type { ApplyPasteResult, MutationErrorPayload, PastePlan, PreviewPasteRequestedPayload } from "@/contracts";
@@ -87,7 +87,8 @@ export function usePasteService() {
         if (!isCurrent()) return;
         applying = false;
         retireApplying = undefined;
-        store.setError(zeroWrites ? rejection.message : "粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
+        const message = rejection.kind === "not_writable" ? mutationRejectionMessage(rejection) : rejection.message;
+        store.setError(zeroWrites ? message : "粘贴结果尚未确认，请刷新并核实权威数据；不要直接重试。");
         return;
       }
       const applied = result as ApplyPasteResult;

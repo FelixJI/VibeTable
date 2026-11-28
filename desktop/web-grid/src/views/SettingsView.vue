@@ -23,6 +23,7 @@ import {
   Keyboard,
   Palette,
   SlidersHorizontal,
+  ShieldCheck,
 } from "@lucide/vue";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import changelog from "@/generated/changelog.json";
@@ -57,6 +58,7 @@ import { buildReleaseNoteSections } from "@/components/settings/releaseNoteMarkd
 import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
+import PluginFieldProtectionSettings from "@/components/settings/PluginFieldProtectionSettings.vue";
 
 type Section = SettingsSection;
 type ChangelogEntry = Readonly<{
@@ -67,6 +69,7 @@ type ChangelogEntry = Readonly<{
 const ui = useUiStore();
 const workCalendar = useWorkCalendarStore();
 const current = ref<Section>("general");
+const requestedProtectionPlugin = ref<string | null>(null);
 const emit = defineEmits<{
   reconnect: [];
   openHelp: [];
@@ -120,6 +123,7 @@ watch(
   () => ui.requestedSettingsSection,
   (section) => {
     if (!section) return;
+    requestedProtectionPlugin.value = ui.requestedFieldProtectionPlugin;
     current.value = section;
     ui.settleSettingsSection();
   },
@@ -320,6 +324,7 @@ const sections = computed(() => [
     icon: ArchiveRestore,
     label: "workspaceV2.settings.versions",
   },
+  { key: "fieldProtection" as const, icon: ShieldCheck, label: "settings.fieldProtection.title" },
   { key: "interaction" as const, icon: SlidersHorizontal, label: "settings.interaction" },
   { key: "about" as const, icon: Info, label: "settings.about" },
 ]);
@@ -646,6 +651,11 @@ function setCalendarName(name: string): void {
             @action="emit('workspaceV2Action', $event)"
           />
         </template>
+
+        <PluginFieldProtectionSettings
+          v-else-if="current === 'fieldProtection' && ui.activeView === 'settings' && !ui.activePluginApp"
+          :initial-plugin-id="requestedProtectionPlugin"
+        />
 
         <template v-else-if="current === 'interaction'">
           <header><h1>{{ t("settings.interaction") }}</h1><p>{{ t("settings.interaction.description") }}</p></header>

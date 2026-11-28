@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Diagnostics;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
@@ -29,6 +30,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly Action<string>? _diagnosticTrace;
     private readonly Func<PluginProjectContext?> _projectContext;
     private readonly Func<string, JsonElement, CancellationToken, Task<JsonElement>>? _sharedRpc;
+    private readonly Func<WorkspaceWireScope, string, JsonElement, CancellationToken, Task<JsonElement>>? _fieldProtectionRpc;
     private readonly Func<string, string?>? _packageCacheRoot;
     private readonly Func<CancellationToken, Task>? _ensureGateway;
     private readonly object _gatewayGate = new();
@@ -82,7 +84,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
         Func<string, string?>? packageCacheRoot = null,
         Func<CancellationToken, Task>? ensureGateway = null,
-        Func<PluginProjectContext, Func<Func<bool>, bool>>? sharedReadEmitGate = null)
+        Func<PluginProjectContext, Func<Func<bool>, bool>>? sharedReadEmitGate = null,
+        Func<WorkspaceWireScope, string, JsonElement, CancellationToken, Task<JsonElement>>? fieldProtectionRpc = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -92,6 +95,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         _diagnosticTrace = diagnosticTrace;
         _projectContext = projectContext ?? (() => null);
         _sharedRpc = sharedRpc;
+        _fieldProtectionRpc = fieldProtectionRpc;
         _packageCacheRoot = packageCacheRoot;
         _ensureGateway = ensureGateway;
         _authority = authority ?? new ProductAuthorityEpoch();
@@ -195,6 +199,19 @@ public sealed class PluginRequestDispatcher : IDisposable
         ArgumentNullException.ThrowIfNull(request);
         try
         {
+            string? protectionMethod = request.Type switch
+            {
+                "plugin.protection.list" => "plugin.fieldProtection.list",
+                "plugin.protection.describe" => "plugin.fieldProtection.describe",
+                "plugin.protection.enable" => "plugin.fieldProtection.enable",
+                "plugin.protection.release" => "plugin.fieldProtection.release",
+                _ => null,
+            };
+            if (protectionMethod is not null)
+            {
+                await DispatchFieldProtectionAsync(request, protectionMethod, token).ConfigureAwait(false);
+                return;
+            }
             string? sharedMethod = request.Type switch
             {
                 "plugin.catalog.list" => "plugin.listCatalog",
@@ -471,6 +488,32 @@ public sealed class PluginRequestDispatcher : IDisposable
         _githubSource?.Dispose();
         _surfaces.CloseAll();
         if (_ownsAuthority) _authority.Dispose();
+    }
+
+    private async Task DispatchFieldProtectionAsync(RoutedWebRequest request, string method, CancellationToken token)
+    {
+        PluginProjectContext? context = _projectContext();
+        if (context is null || request.Scope is not { } scope
+            || context.ProjectKey != $"local:{scope.WorkspaceId:N}"
+            || context.SessionGeneration != scope.SessionEpoch
+            || request.Payload.ValueKind != JsonValueKind.Object
+            || !request.Payload.TryGetProperty("projectKey", out var projectKey)
+            || projectKey.ValueKind != JsonValueKind.String || projectKey.GetString() != context.ProjectKey)
+            throw StaleTask();
+        if (_fieldProtectionRpc is null)
+            throw new PluginDispatchException("PLUGIN_NOT_READY", "Field protection is unavailable for this workspace.");
+
+        Func<Func<bool>, bool>? emitGate = GateSharedReadTerminal(request.Type, context);
+        try
+        {
+            JsonElement result = await _fieldProtectionRpc(scope, method, request.Payload, token).ConfigureAwait(false);
+            if (emitGate is null && context != _projectContext()) throw StaleTask();
+            _reply.TryPostResponse(request.Type, request.RequestId, result, emitGate);
+        }
+        catch (Exception ex) when (emitGate is not null)
+        {
+            PostSharedReadFailure(request, ex, token, emitGate);
+        }
     }
 
     private void DispatchSurfaceEvent(RoutedWebRequest request)
@@ -972,6 +1015,13 @@ public sealed class PluginRequestDispatcher : IDisposable
                 message = dispatch.Message;
                 code = dispatch.Code;
                 break;
+            case RpcRemoteException remote when
+                request.Type.StartsWith("plugin.protection.", StringComparison.Ordinal)
+                && remote.ErrorData is { } errorData
+                && ProductRpcErrorMapper.TryMap(errorData, out var protection):
+                message = protection.GetProperty("error").GetProperty("message").GetString()!;
+                code = protection.GetProperty("error").GetProperty("code").GetString();
+                break;
             case GitHubPluginSourceException github:
                 message = github.Message;
                 code = github.Code;
@@ -1351,7 +1401,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         lock (_gatewayGate) return _gateway;
     }
 
-    private sealed class PluginDispatchException : Exception
+    internal sealed class PluginDispatchException : Exception
     {
         public PluginDispatchException(string code, string message) : base(message)
             => Code = code;

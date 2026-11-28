@@ -86,6 +86,7 @@ export function mutationRejectionMessage(error: MutationErrorPayload): string {
     case "mutation_validation":
       return error.message || t("workspace.editRejected.validation");
     case "not_writable":
+      if (error.code === "mutation.field_protected") return t("workspace.editRejected.fieldProtected");
       return error.message || t("workspace.editRejected.notWritable");
     case "backend_unavailable":
       return t("workspace.editRejected.backendUnavailable");

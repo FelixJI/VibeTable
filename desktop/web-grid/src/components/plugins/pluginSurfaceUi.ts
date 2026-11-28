@@ -1,6 +1,6 @@
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 
-export const SURFACE_UI_METHODS = ["context.current", "tasks.list", "tasks.cancel", "notification.show", "navigation.back"] as const;
+export const SURFACE_UI_METHODS = ["context.current", "tasks.list", "tasks.cancel", "notification.show", "navigation.back", "navigation.openFieldProtection"] as const;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every(key => key in value);
 const terminal = (task: PluginTaskViewSnapshot) => ["succeeded", "failed", "cancelled", "aborted"].includes(task.state);
@@ -27,6 +27,7 @@ export function createPluginSurfaceUi(port: {
   tasks(): readonly PluginTaskViewSnapshot[];
   cancel(taskId: string): void;
   back(): boolean;
+  openFieldProtection?(): boolean;
   show(message: string): void;
   /** v1 surface lifecycle: true while the frame is pre-warmed in the background. */
   background?(): boolean;
@@ -68,6 +69,10 @@ export function createPluginSurfaceUi(port: {
           if (!exact(params, [])) return failure("plugin_capability_invalid");
           if (background()) return failure("plugin_surface_background");
           result = { navigated: port.back() }; break;
+        case "navigation.openFieldProtection":
+          if (!exact(params, [])) return failure("plugin_capability_invalid");
+          if (background()) return failure("plugin_surface_background");
+          result = { navigated: port.openFieldProtection?.() ?? false }; break;
         default: return failure("plugin_api_unsupported");
       }
       return { requestId, result };
