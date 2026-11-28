@@ -115,14 +115,10 @@ func executeSurfaceAttachment(ctx context.Context, app core.App, workspace strin
 		if !ok || field.File == nil || installed.ModelOutputFields[[2]string{request.Collection, field.Identity.FieldID}] != nil || allowed[field.Identity.FieldID] == "" || allowed["id"] == "" {
 			return pluginDataError("plugin_read_denied")
 		}
-		// Persistent field protection (#591): refuse before any byte is staged. Only
-		// the registered owner installation may touch a protected field, and the
-		// identity is the one the host verified for this surface, so a plugin can
-		// never vouch for another one.
-		if err := refuseProtectedSurfaceField(ctx, tx, input, request.Collection, field.Identity.FieldID); err != nil {
-			return err
-		}
 		if input.Method == "attachment.stage" {
+			if err := refuseProtectedSurfaceField(ctx, tx, input, request.Collection, field.Identity.FieldID); err != nil {
+				return err
+			}
 			if installed.ActionRisk == "read" || request.Handle == "" || request.FileGrantID == "" || request.RunID == "" {
 				return pluginDataError("plugin_write_denied")
 			}

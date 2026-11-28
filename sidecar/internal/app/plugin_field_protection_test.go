@@ -1223,6 +1223,61 @@ func secondSurfacePlugin(t *testing.T, app core.App, workspace, table string, fi
 	return pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: table, SurfaceToken: token, RequestID: "files-request"}
 }
 
+func TestFieldProtectionAllowsAttachmentReadsWithExistingGrant(t *testing.T) {
+	ctx := context.Background()
+	f := newFileListFixture(t)
+	f.upload(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	fields := []string{"id", f.fieldID}
+	owner, _ := surfaceIOInstallation(t, f.pb, workspace, f.tableID, fields)
+	recordProtectionEvent(t, f.pb, workspace, "fieldProtection:enable:attachments", owner.ProjectKey, owner.PluginID, "1.0.0", "sha256:"+owner.PackageHash,
+		fieldprotection.EnabledDetails{InstallationID: owner.InstallationID, InstallationRevision: 1, ModelID: "files", ModelVersion: 1,
+			Fields: []fieldprotection.Entry{{TableID: f.tableID, FieldID: f.fieldID, Entity: "documents", Field: "image",
+				TableName: "附件", FieldName: "图片", FieldType: "file", PluginID: owner.PluginID, InstallationID: owner.InstallationID}}},
+		"2026-01-01T00:00:00Z")
+
+	other := secondSurfacePlugin(t, f.pb, workspace, f.tableID, fields, "com.example.other", "surface-b")
+	ports := &pluginSurfaceIO{attachments: f.manager}
+	call := func(method string, request map[string]any) (any, error) {
+		request["collection"], request["recordId"], request["fieldId"] = f.tableID, f.recordID, f.fieldID
+		other.Method = method
+		other.Request, _ = json.Marshal(request)
+		return executePluginSurfaceAPI(ctx, f.pb, nil, nil, workspace, other, nil, ports)
+	}
+
+	listed, err := call("attachment.list", map[string]any{})
+	if err != nil {
+		t.Fatalf("listing with an attachment read grant: %v", err)
+	}
+	items := listed.(map[string]any)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("listed attachments = %#v, want one", items)
+	}
+	item := items[0].(map[string]any)
+	storedName, _ := item["storedName"].(string)
+	if item["displayName"] != "猫.png" || storedName == "" {
+		t.Fatalf("listed attachment = %#v", item)
+	}
+
+	content := base64.StdEncoding.EncodeToString(f.content)
+	read, err := call("attachment.read", map[string]any{"storedName": storedName, "offset": 0})
+	if err != nil {
+		t.Fatalf("reading with an attachment read grant: %v", err)
+	}
+	block := read.(map[string]any)
+	if block["base64"] != content || block["eof"] != true {
+		t.Fatal("reading the protected attachment did not return the original file")
+	}
+
+	if _, err := call("attachment.stage", map[string]any{"handle": "other-stage", "fileGrantId": "grant", "runId": "run",
+		"name": "image.png", "base64": content}); surfaceErrorCode(t, err) != "mutation.field_protected" {
+		t.Fatalf("staging a protected attachment as a non-owner: %v", err)
+	}
+	if len(ports.stages.items) != 0 {
+		t.Fatal("denied write staged an attachment")
+	}
+}
+
 // The archive a plugin issues (output.stage → mutation.commit with uploadHandles,
 // e.g. report_editions.archive_file) is a protected file field like any other:
 // the owner keeps every original guard, everyone else, including the host
