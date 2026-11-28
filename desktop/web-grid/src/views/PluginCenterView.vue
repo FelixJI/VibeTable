@@ -17,7 +17,11 @@ import { t } from "@/i18n";
 import { useHostBridge } from "@/services/bridgeContext";
 import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 
-const props = withDefaults(defineProps<{ autoLoad?: boolean }>(), { autoLoad: true });
+const props = withDefaults(defineProps<{
+  autoLoad?: boolean;
+  /** The workspace's common application-open path. */
+  openApplication?: (pluginId: string, actionId: string) => Promise<boolean>;
+}>(), { autoLoad: true });
 const store = usePluginStore();
 const service = usePluginService();
 const ui = useUiStore();
@@ -327,6 +331,11 @@ async function openAction(pluginId: string, actionId: string): Promise<void> {
   const plugin = store.plugins.find(item => item.pluginId === pluginId);
   const action = plugin?.manifest.actions.find(item => item.actionId === actionId);
   if (!plugin || !action || !canRunAction(plugin, action)) return;
+  // Applications join the shell's funnel so a pre-warmed surface is promoted once, on its own token.
+  if (action.presentation === "application" && props.openApplication) {
+    await safely(() => props.openApplication!(pluginId, actionId));
+    return;
+  }
   await safely(() => service.describeAction(pluginId, actionId, commandContext()));
 }
 function selectPlugin(pluginId: string): void {

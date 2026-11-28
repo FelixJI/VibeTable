@@ -1,6 +1,7 @@
 import type { ComputedRef } from "vue";
 import { computed } from "vue";
-import type { PluginSnapshot } from "@/contracts";
+import type { PluginSnapshot, PluginSurfacePhase } from "@/contracts";
+import { PLUGIN_SURFACE_LIFECYCLE_CONTRACT } from "@/contracts";
 import type { useUiStore } from "@/stores/uiStore";
 import type { usePluginStore } from "@/stores/pluginStore";
 
@@ -15,7 +16,14 @@ export interface PluginAppEntry {
   readonly label: string;
   readonly src: string;
   readonly surfaceToken: string;
+  readonly installationId: string | null;
   readonly revision: number;
+  /** The manifest declares `compatibility.surfaceLifecycle`: this application opts into background pre-warming. */
+  readonly declared: boolean;
+  /** The Host's authoritative phase of this very token; only `background` may be mounted hidden (`null` = foreground or not granted). */
+  readonly surfacePhase: PluginSurfacePhase | null;
+  /** The Host currently grants this token in background: the entry may keep a hidden read-only frame. */
+  readonly prewarm: boolean;
 }
 
 /**
@@ -35,6 +43,10 @@ export function derivePluginAppEntries(
     for (const action of plugin.manifest.actions) {
       if (action.presentation !== "application" || action.invocation !== "manual") continue;
       if (!action.surfaceSrc || !action.surfaceToken) continue;
+      // Only a Host-granted background token is pre-warmed: at the background cap, on a Host without
+      // the contract (no phase projected) and once promoted, the entry stays a normal manual entry.
+      const declared = plugin.manifest.compatibility.surfaceLifecycle === PLUGIN_SURFACE_LIFECYCLE_CONTRACT;
+      const surfacePhase: PluginSurfacePhase | null = action.surfacePhase === "background" ? "background" : null;
       entries.push({
         key: `${plugin.pluginId}/${action.actionId}`,
         pluginId: plugin.pluginId,
@@ -47,7 +59,11 @@ export function derivePluginAppEntries(
           ?? action.actionId,
         src: action.surfaceSrc,
         surfaceToken: action.surfaceToken,
+        installationId: plugin.installationId ?? null,
         revision: plugin.revision,
+        declared,
+        surfacePhase,
+        prewarm: declared && surfacePhase === "background",
       });
     }
   }
@@ -72,7 +88,9 @@ export function createPluginAppNavigation(
     const active = ui.activePluginApp;
     if (!active) return null;
     return entries.value.find(
-      entry => entry.pluginId === active.pluginId && entry.actionId === active.actionId,
+      entry => entry.pluginId === active.pluginId && entry.actionId === active.actionId
+        && entry.installationId === active.installationId && entry.revision === active.revision
+        && entry.surfaceToken === active.surfaceToken,
     ) ?? null;
   });
   return { entries, entryByKey, activeEntry };

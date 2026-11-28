@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Microsoft.Web.WebView2.Core;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
@@ -61,7 +62,8 @@ public sealed class PluginWebViewResourceHost : IDisposable
     }
 
     /// <summary>True while a plugin frame is mounted, not merely listed in the catalog.</summary>
-    public bool HasActiveSurfaces => _surfaces.MountedSurfaceCount > 0;
+    /// <summary>Whether a mounted frame carries foreground authority (pre-warmed background frames do not count).</summary>
+    public bool HasActiveSurfaces => _surfaces.MountedForegroundSurfaceCount > 0;
 
     internal bool MarkSurfaceMounted(string surfaceToken) => _surfaces.MarkMounted(surfaceToken);
 
@@ -195,7 +197,8 @@ public sealed class PluginWebViewResourceHost : IDisposable
         string pluginId,
         string entryPath,
         string actionId = "",
-        string presentation = "surface")
+        string presentation = "surface",
+        string phase = PluginSurfacePhases.Foreground)
     {
         PluginPackageRevision revision;
         string normalizedEntry = PluginResourceHost.NormalizePackagePath(entryPath);
@@ -223,7 +226,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
             Uri? documentUri = presentation == "headless"
                 ? PluginResourceHost.BuildHeadlessDocumentUri(revision, normalizedEntry)
                 : null;
-            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry, documentUri);
+            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry, documentUri, phase);
             _surfaceTokens[key] = opened.SurfaceToken;
             return opened;
         }

@@ -1021,9 +1021,9 @@ public partial class MainWindow : Window
             // 1. Seal inbound host routing and retire realtime delivery so no
             // late emission reaches the new page.
             _webBridge.SealForRendererRecovery();
-            // 2. Close every plugin surface token synchronously (covers tokens
-            // that never issued a request), then drain in-flight writes.
-            _pluginResources.CloseAllSurfaces();
+            // 2. Close every plugin surface token and keep this workspace on
+            // manual opens after rebuild, then drain in-flight writes.
+            _pluginDispatcher.RetireRendererSurfacesForRecovery();
             _readiness?.Trace($"Renderer recovery sealed plugin sessions; reason={reason}; generation={generation}");
             if (_webBridge.PluginApi is { } pluginApi)
             {
@@ -1097,8 +1097,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Native 停止插件：closes every plugin surface token and drains in-flight
-    /// plugin writes, without touching the platform page or the backend.
+    /// Native 停止插件：retires plugin surfaces and rebuilds the renderer while
+    /// preserving the workspace and backend.
     /// </summary>
     private void StopAllPluginSurfaces()
     {

@@ -35,6 +35,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     // Orders local resource projection only; PocketBase remains the authority.
     private readonly object _catalogProjectionGate = new();
     private long _catalogProjectionGeneration;
+    private PluginProjectContext? _prewarmPausedContext;
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
@@ -161,6 +162,18 @@ public sealed class PluginRequestDispatcher : IDisposable
     /// </summary>
     public void SetWorkspaceContext(PluginProjectContext? context)
         => _taskRegistry.SetWorkspaceContext(context);
+
+    /// <summary>Retires the sealed renderer's surfaces and leaves its workspace session on manual opens.</summary>
+    internal void RetireRendererSurfacesForRecovery()
+    {
+        PluginProjectContext? context = _projectContext();
+        lock (_catalogProjectionGate)
+        {
+            ++_catalogProjectionGeneration;
+            _prewarmPausedContext = context;
+        }
+        _resourceHost.CloseAllSurfaces();
+    }
 
     internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context)
     {
@@ -339,7 +352,19 @@ public sealed class PluginRequestDispatcher : IDisposable
                         _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, [reason]));
                         return;
                     }
-                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
+                    // The click names the session it confirmed (renderer intent): the Host promotes that session and no other,
+                    // so a session the catalog issued later for the same application is never promoted by an older click.
+                    // Without a token (panel actions, legacy applications) the describe binds the foreground sessions only:
+                    // a pre-warmed surface is never promoted by key.
+                    if (!string.IsNullOrEmpty(describe.SurfaceToken))
+                    {
+                        if (!_surfaces.TryPromote(describe.SurfaceToken, describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context))
+                        {
+                            _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
+                            return;
+                        }
+                    }
+                    else _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
                     _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
                     return;
                 }
@@ -1064,12 +1089,21 @@ public sealed class PluginRequestDispatcher : IDisposable
                 projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });
                 continue;
             }
+            // A plugin that declares compatibility.surfaceLifecycle opts its manual
+            // application action into background pre-warming: the surface is prepared
+            // off-screen and the host admits reads only until the user opens it.
+            bool prewarm = context is not null && context != _prewarmPausedContext
+                && action.EffectivePresentation == "application"
+                && snapshot.Manifest.Compatibility.TryGetProperty("surfaceLifecycle", out var lifecycle)
+                && lifecycle.ValueKind == JsonValueKind.String
+                && lifecycle.GetString() == PluginContractVersions.SurfaceLifecycle;
             var surface = _resourceHost.OpenSurface(
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 action.Entry,
                 action.ActionId,
-                action.EffectivePresentation);
+                action.EffectivePresentation,
+                prewarm ? PluginSurfacePhases.Background : PluginSurfacePhases.Foreground);
             if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
@@ -1079,6 +1113,10 @@ public sealed class PluginRequestDispatcher : IDisposable
                 SurfaceSrc = surface.DocumentUri.ToString(),
                 SurfaceToken = surface.SurfaceToken,
                 SurfaceTitle = LocalizeTitle(action.DisplayName, action.ActionId),
+                // Only a token the Host currently grants in background is projected; foreground
+                // stays implicit. The renderer mounts a frame hidden for that value alone, so an
+                // application beyond the background cap keeps its normal manual entry.
+                SurfacePhase = surface.Phase == PluginSurfacePhases.Background ? PluginSurfacePhases.Background : null,
             });
         }
         return projected;

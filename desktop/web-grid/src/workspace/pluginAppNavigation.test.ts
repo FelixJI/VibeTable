@@ -105,7 +105,32 @@ describe("derivePluginAppEntries", () => {
       label: "打开任务台",
       src: "https://aaa.bbb.plugins.vibetable.local/ui/index.html",
       surfaceToken: "token-open",
+      declared: false,
+      surfacePhase: null,
+      prewarm: false,
     });
+  });
+
+  it("pre-warms only applications that declare the exact lifecycle contract and whose token the Host granted in background", () => {
+    const declared = appPlugin({ manifest: { ...appPlugin().manifest,
+      compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
+      actions: appPlugin().manifest.actions.map(action => ({ ...action, surfacePhase: "background" })) } });
+    const misspelled = appPlugin({ pluginId: "com.example.typo", manifest: { ...appPlugin().manifest, pluginId: "com.example.typo",
+      compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v2" },
+      actions: appPlugin().manifest.actions.map(action => ({ ...action, surfacePhase: "background" })) } });
+    // Declared, but the Host projected no phase (a Host without the contract, or the background cap).
+    const ungranted = appPlugin({ pluginId: "com.example.capped", manifest: { ...appPlugin().manifest, pluginId: "com.example.capped",
+      compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" } } });
+    const foreground = appPlugin({ pluginId: "com.example.open", manifest: { ...declared.manifest, pluginId: "com.example.open",
+      actions: appPlugin().manifest.actions.map(action => ({ ...action, surfacePhase: "foreground" })) } });
+    const entries = derivePluginAppEntries([declared, misspelled, ungranted, foreground, appPlugin()], "zh-CN");
+    expect(entries.map(entry => [entry.key, entry.declared, entry.surfacePhase, entry.prewarm])).toEqual([
+      ["com.example.tasks/open-task-desk", true, "background", true],
+      ["com.example.typo/open-task-desk", false, "background", false],
+      ["com.example.capped/open-task-desk", true, null, false],
+      ["com.example.open/open-task-desk", true, null, false],
+      ["com.example.tasks/open-task-desk", false, null, false],
+    ]);
   });
 
   it("uses the active locale before the fixed Host title and omits nonmanual applications", () => {
@@ -133,6 +158,7 @@ describe("derivePluginAppEntries", () => {
 });
 
 describe("createPluginAppNavigation with ui store", () => {
+  const openedApp = { pluginId: "com.example.tasks", actionId: "open-task-desk", installationId: null, revision: 1, surfaceToken: "token-open" };
   beforeEach(() => {
     setActivePinia(createPinia());
   });
@@ -144,7 +170,7 @@ describe("createPluginAppNavigation with ui store", () => {
     plugins.replaceCatalog("local:default", [appPlugin()]);
 
     const navigation = createPluginAppNavigation(plugins, ui);
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     expect(navigation.activeEntry.value?.surfaceToken).toBe("token-open");
 
     // Catalog revision removes the application surface (disable/uninstall).
@@ -154,7 +180,7 @@ describe("createPluginAppNavigation with ui store", () => {
     expect(navigation.activeEntry.value).toBeNull();
 
     // Switching workspaces clears the active app identity entirely.
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     plugins.replaceCatalog("local:default", [appPlugin()]);
     expect(navigation.activeEntry.value).not.toBeNull();
     ui.setWorkspaceNamespace("other-workspace");
@@ -162,14 +188,31 @@ describe("createPluginAppNavigation with ui store", () => {
     expect(navigation.activeEntry.value).toBeNull();
   });
 
+  it("matches only the confirmed installation, revision and token", () => {
+    const plugins = usePluginStore();
+    const ui = useUiStore();
+    const navigation = createPluginAppNavigation(plugins, ui);
+    const plugin = appPlugin();
+    ui.openPluginApp(openedApp);
+    plugins.replaceCatalog(plugin.projectKey, [plugin]);
+    expect(navigation.activeEntry.value?.surfaceToken).toBe(openedApp.surfaceToken);
+    plugins.replaceCatalog(plugin.projectKey, [appPlugin({ installationId: "replacement" })]);
+    expect(navigation.activeEntry.value).toBeNull();
+    plugins.replaceCatalog(plugin.projectKey, [appPlugin({ revision: 2 })]);
+    expect(navigation.activeEntry.value).toBeNull();
+    plugins.replaceCatalog(plugin.projectKey, [{ ...plugin, manifest: { ...plugin.manifest,
+      actions: plugin.manifest.actions.map(action => ({ ...action, surfaceToken: "replacement-token" })) } }]);
+    expect(navigation.activeEntry.value).toBeNull();
+  });
+
   it("navigating to a platform view returns from the plugin app", () => {
     setActivePinia(createPinia());
     const ui = useUiStore();
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
-    expect(ui.activePluginApp).toEqual({ pluginId: "com.example.tasks", actionId: "open-task-desk" });
+    ui.openPluginApp(openedApp);
+    expect(ui.activePluginApp).toEqual(openedApp);
     ui.navigate("tables");
     expect(ui.activePluginApp).toBeNull();
-    ui.openPluginApp("com.example.tasks", "open-task-desk");
+    ui.openPluginApp(openedApp);
     ui.closePluginApp();
     expect(ui.activePluginApp).toBeNull();
   });

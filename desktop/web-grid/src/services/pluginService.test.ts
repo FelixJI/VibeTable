@@ -1527,6 +1527,30 @@ describe("pluginService lifecycle retirement", () => {
   });
   afterEach(() => setHostBridgeForTesting(null));
 
+  it("retires an application opening while it waits for another service's catalog projection", async () => {
+    const { posted, reply, bridge } = deferredCatalogBridge();
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" },
+      actions: snapshot.manifest.actions.map(action => ({ ...action, presentation: "application", surfaceToken: "old-token" })) } };
+    usePluginStore().replaceCatalog(app.projectKey, [app]);
+    const service = usePluginService();
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const pendingOpen = service.describeAction(app.pluginId, "normalize", context);
+    const newerRead = usePluginService().list();
+    const older = posted[0]!;
+    const newer = posted[1]!;
+    reply(older.requestId, [app]);
+    await flushPromises();
+    expect(posted.map(item => item.type)).toEqual(["plugin.catalog.list", "plugin.catalog.list"]);
+
+    service.dispose();
+    await expect(pendingOpen).resolves.toEqual({ available: false, reasons: [] });
+    reply(newer.requestId, [app]);
+    await newerRead;
+    expect(posted.map(item => item.type)).toEqual(["plugin.catalog.list", "plugin.catalog.list"]);
+    expect(usePluginStore().lastError).toBeNull();
+    bridge.stop();
+  });
+
   // Deferred correlated replies keep a catalog read in flight across dispose,
   // which a same-epoch remount cannot otherwise exercise.
   function deferredCatalogBridge(): {

@@ -15,7 +15,11 @@ from typing import Any, BinaryIO, ClassVar
 from pydantic import ValidationError
 
 from backend._version import __version__
-from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
+from backend.contracts.plugin import (
+    SURFACE_LIFECYCLE_CONTRACT,
+    plugin_entry_has_supported_type,
+    plugin_entry_is_host_reserved,
+)
 from backend.contracts.plugin_model import PluginModelDeclaration
 from backend.contracts.plugin_transactions import (
     MAX_DECLARATION_BYTES,
@@ -178,6 +182,13 @@ def _validate_compatibility(
     ):
         raise PluginPackageError(
             "version_incompatible", "compatibility.dataset requires native dataset v1"
+        )
+    if "surfaceLifecycle" in compatibility and (
+        plugin_api != "3.x" or compatibility["surfaceLifecycle"] != SURFACE_LIFECYCLE_CONTRACT
+    ):
+        raise PluginPackageError(
+            "version_incompatible",
+            "compatibility.surfaceLifecycle requires native surface lifecycle v1",
         )
 
     retired_provider = "".join(["di", "rectus"])

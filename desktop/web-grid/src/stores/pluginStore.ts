@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import type {
   PluginInstallPlan,
@@ -20,6 +20,7 @@ export interface CatalogReadReceipt {
    *  projection may not consume queued demands. */
   readonly barrierWindow: boolean;
   settled: false | "projected" | "failed-current" | "locally-retired" | "retired" | "superseded";
+  error?: unknown;
 }
 
 /** A pending write's ordering barrier token; released only by its owner. */
@@ -35,6 +36,7 @@ export const usePluginStore = defineStore("plugins", () => {
   const projectContextGeneration = ref(0);
   // Shared by every service instance; this orders UI reads, not authority data.
   let catalogReadSequence = 0;
+  const catalogActivity = ref(0);
   let catalogRefreshRunning = false;
   // A queued demand is the unsettled notification itself: it carries the
   // generation/sequence it must be served under and survives until a real
@@ -109,9 +111,12 @@ export const usePluginStore = defineStore("plugins", () => {
     return tasksForAction(pluginId, actionId, surfaceToken).at(-1) ?? null;
   }
 
-  function beginCatalogRead(): number { return ++catalogReadSequence; }
+  function beginCatalogRead(): number {
+    catalogReadSequence++;
+    catalogActivity.value++;
+    return catalogReadSequence;
+  }
   function isCurrentCatalogRead(sequence: number): boolean { return sequence === catalogReadSequence; }
-  function invalidateCatalogReads(): void { catalogReadSequence++; }
 
   /** A catalog read (direct or scheduler-driven) registers as the newest
    *  activity; the scheduler waits for its terminal instead of racing it. */
@@ -138,8 +143,11 @@ export const usePluginStore = defineStore("plugins", () => {
   function settleObservedCatalogRead(
     receipt: CatalogReadReceipt,
     outcome: Exclude<CatalogReadReceipt["settled"], false>,
+    error?: unknown,
   ): void {
     if (receipt.settled !== false) return;
+    receipt.error = error;
+    catalogActivity.value++;
     if (catalogLatestReceipt !== receipt) {
       receipt.settled = "superseded";
       scheduleCatalogRefresh();
@@ -167,6 +175,30 @@ export const usePluginStore = defineStore("plugins", () => {
     scheduleCatalogRefresh();
   }
 
+  /** Waits for the authoritative projection covering this read or a newer one. */
+  function waitForCatalogProjection(sequence: number, isCurrent: () => boolean): Promise<CatalogReadReceipt | null> {
+    function currentReceipt(): CatalogReadReceipt | null | undefined {
+      // Activity may advance the shared sequence without projecting, for example an SSE demand or a write.
+      void catalogActivity.value;
+      if (!isCurrent()) return null;
+      if (catalogWriteBarriers.size > 0) return undefined;
+      const latest = catalogLatestReceipt;
+      if (latest?.settled === false) return undefined;
+      if (latest && latest.sequence >= sequence && isCurrentCatalogRead(latest.sequence) && !latest.barrierWindow
+        && latest.settled !== "superseded" && latest.settled !== "retired") return latest;
+      return catalogRefreshPending.size > 0 ? undefined : null;
+    }
+    const current = currentReceipt();
+    if (current !== undefined) return Promise.resolve(current);
+    return new Promise(resolve => {
+      const stop = watch(currentReceipt, result => {
+        if (result === undefined) return;
+        stop();
+        resolve(result);
+      });
+    });
+  }
+
   /** A write's ordering barrier: advances the sequence and holds the
    *  scheduler until the write's own terminal releases this token. */
   function beginCatalogWriteBarrier(): CatalogWriteBarrier {
@@ -182,6 +214,7 @@ export const usePluginStore = defineStore("plugins", () => {
     // Duplicate or old-generation releases are inert: they must never release
     // a newer generation's barrier or wake racing reads on their own.
     if (!catalogWriteBarriers.delete(token)) return;
+    catalogActivity.value++;
     scheduleCatalogRefresh();
   }
 
@@ -193,7 +226,10 @@ export const usePluginStore = defineStore("plugins", () => {
         while (true) {
           // A retired owner's demand can never be consumed.
           for (const [read, demand] of catalogRefreshPending) {
-            if (!demand.ownerCurrent()) catalogRefreshPending.delete(read);
+            if (!demand.ownerCurrent()) {
+              catalogRefreshPending.delete(read);
+              catalogActivity.value++;
+            }
           }
           if (catalogRefreshPending.size === 0) break;
           // A pending write orders first; so does the newest unsettled read —
@@ -220,7 +256,7 @@ export const usePluginStore = defineStore("plugins", () => {
     read: () => Promise<readonly PluginSnapshot[]>,
     ownerCurrent: () => boolean = () => true,
   ): void {
-    invalidateCatalogReads();
+    beginCatalogRead();
     // Keying by the stable reader merges repeated notifications from one
     // owner; each notification replaces the demand with a fresh object.
     catalogRefreshPending.set(read, {
@@ -236,7 +272,7 @@ export const usePluginStore = defineStore("plugins", () => {
   }
 
   function setProjectContext(key: string, revision: string): void {
-    invalidateCatalogReads();
+    beginCatalogRead();
     // A generation switch invalidates every queued demand, write barrier and
     // receipt; old-generation terminals can never touch the new generation.
     catalogRefreshPending = new Map();
@@ -466,6 +502,7 @@ export const usePluginStore = defineStore("plugins", () => {
     isCurrentCatalogRead,
     beginObservedCatalogRead,
     settleObservedCatalogRead,
+    waitForCatalogProjection,
     beginCatalogWriteBarrier,
     endCatalogWriteBarrier,
     refreshCatalog,

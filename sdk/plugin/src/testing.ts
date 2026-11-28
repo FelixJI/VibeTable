@@ -94,7 +94,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   let context: CommandContext = {
     contract: "vibetable.command-context.v1", projectKey: "offline:test", collection: null,
     selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light",
-    density: "comfortable", user: {}, hostVersion: "unknown", ...options.context,
+    density: "comfortable", user: {}, hostVersion: "unknown", surfacePhase: "foreground", ...options.context,
   };
   const grant = (collection: string, operation: "read" | "query") =>
     options.permissions?.data?.find(item => item.operations.includes(operation)

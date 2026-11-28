@@ -1,3 +1,4 @@
+import { ref } from "vue";
 import type {
   PluginAction,
   PluginActionAvailability,
@@ -28,6 +29,17 @@ import {
 } from "./pluginInstallPlanLease";
 
 const installPlanLeases = new WeakMap<object, PluginInstallPlanLease>();
+
+/**
+ * Guards an application describe for the click that posts it.
+ * `isCurrent`: the click's navigation, project and package are still the ones the user is on.
+ * `confirm`: receives the catalog's live token for the application right before the describe is posted
+ * (its only set point); the describe names that token so the Host promotes that session and no other.
+ */
+export interface PluginDescribeGuard {
+  readonly isCurrent?: () => boolean;
+  readonly confirm?: (token: string | null) => void;
+}
 
 function installPlanLeaseFor(owner: object): PluginInstallPlanLease {
   const existing = installPlanLeases.get(owner);
@@ -60,7 +72,7 @@ export interface PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel?: boolean,
-    isCurrentRequest?: () => boolean,
+    guard?: PluginDescribeGuard,
   ): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
   resolveInteraction(task: PluginTaskViewSnapshot, decision: "approved" | "rejected"): Promise<PluginTaskViewSnapshot>;
@@ -98,7 +110,7 @@ export function usePluginService(): PluginService {
   const store = usePluginStore();
   const installPlanLease = installPlanLeaseFor(store);
   let initialized = false;
-  let lifecycleRevision = 0;
+  const lifecycleRevision = ref(0);
   let unsubscribe: Array<() => void> = [];
   const taskPollers = new Map<string, { cancelled: boolean }>();
 
@@ -129,7 +141,7 @@ export function usePluginService(): PluginService {
   }
 
   function dispose(): void {
-    lifecycleRevision++;
+    lifecycleRevision.value++;
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
     for (const poller of taskPollers.values()) poller.cancelled = true;
@@ -142,7 +154,7 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean; readonly onErrorClassified?: (classification: "visible" | "hidden-retired" | "hidden-stale") => void } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean; readonly onErrorClassified?: (classification: "visible" | "hidden-retired" | "hidden-stale", error: unknown) => void } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
@@ -170,7 +182,7 @@ export function usePluginService(): PluginService {
       const contextCurrent = isCurrentContext() && !locallyRetired;
       if (contextCurrent && options.isErrorCurrent && !options.isErrorCurrent()) {
         if (errorPolicy === "foreground") store.finishBusy();
-        options.onErrorClassified?.("hidden-stale");
+        options.onErrorClassified?.("hidden-stale", error);
         throw error;
       }
       if (contextCurrent) {
@@ -179,10 +191,10 @@ export function usePluginService(): PluginService {
         } else if (errorPolicy === "background") {
           store.failIfNoError(error);
         }
-        options.onErrorClassified?.("visible");
+        options.onErrorClassified?.("visible", error);
         throw error;
       }
-      options.onErrorClassified?.(locallyRetired ? "hidden-retired" : "hidden-stale");
+      options.onErrorClassified?.(locallyRetired ? "hidden-retired" : "hidden-stale", error);
       throw error;
     }
   }
@@ -193,13 +205,12 @@ export function usePluginService(): PluginService {
    * instance's predicate and never the shared queue.
    */
   function catalogOwnerIsCurrent(): () => boolean {
-    const requestLifecycle = lifecycleRevision;
-    return () => lifecycleRevision === requestLifecycle;
+    const requestLifecycle = lifecycleRevision.value;
+    return () => lifecycleRevision.value === requestLifecycle;
   }
 
-  async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
-    const requestLifecycle = lifecycleRevision;
-    const isInstanceCurrent = () => lifecycleRevision === requestLifecycle;
+  function startCatalogRead(isErrorCurrent?: () => boolean) {
+    const isInstanceCurrent = catalogOwnerIsCurrent();
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     // The observed read lets the store scheduler yield to this newer activity;
@@ -210,44 +221,48 @@ export function usePluginService(): PluginService {
     const coversCurrentActivity = () => isInstanceCurrent() && store.projectKey === projectKey
       && store.projectContextGeneration === generation && store.isCurrentCatalogRead(sequence);
     let settled = false;
-    const settleOnce = (outcome: Exclude<CatalogReadReceipt["settled"], false>) => {
+    const settleOnce = (outcome: Exclude<CatalogReadReceipt["settled"], false>, error?: unknown) => {
       if (settled) return;
       settled = true;
-      store.settleObservedCatalogRead(receipt, outcome);
+      store.settleObservedCatalogRead(receipt, outcome, error);
     };
-    try {
-      const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
-        "plugin.catalog.list",
-        { projectKey },
-        {
-          errorPolicy: "background",
-          isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
-          isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
-          // Freeze the receipt at the exact synchronous point call decides
-          // the error's classification; a later dispose must not reclassify
-          // a shown failure, and a hidden local retirement settles bounded
-          // instead of spinning as an endless superseded read.
-          onErrorClassified: classification => settleOnce(
-            classification === "visible" ? "failed-current"
-              : classification === "hidden-retired" ? "locally-retired"
-              : isInstanceCurrent() ? "superseded" : "retired"),
-        },
-      );
-      const current = coversCurrentActivity();
-      if (current) {
-        store.replaceCatalog(projectKey, snapshots);
+    async function read(): Promise<readonly PluginSnapshot[]> {
+      try {
+        const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
+          "plugin.catalog.list",
+          { projectKey },
+          {
+            errorPolicy: "background",
+            isCurrent: () => isInstanceCurrent() && store.isCurrentCatalogRead(sequence),
+            isErrorCurrent: () => isInstanceCurrent() && (isErrorCurrent?.() ?? true),
+            // Classify at the point of failure so a later dispose cannot reclassify the receipt.
+            onErrorClassified: (classification, error) => settleOnce(
+              classification === "visible" ? "failed-current"
+                : classification === "hidden-retired" ? "locally-retired"
+                : isInstanceCurrent() ? "superseded" : "retired", error),
+          },
+        );
+        const current = coversCurrentActivity();
+        if (current) {
+          store.replaceCatalog(projectKey, snapshots);
+        }
+        settleOnce(current ? "projected" : isInstanceCurrent() ? "superseded" : "retired");
+        return snapshots;
+      } catch (error) {
+        settleOnce(coversCurrentActivity() ? "failed-current"
+          : isInstanceCurrent() ? "superseded" : "retired", error);
+        throw error;
       }
-      settleOnce(current ? "projected" : isInstanceCurrent() ? "superseded" : "retired");
-      return snapshots;
-    } catch (error) {
-      settleOnce(coversCurrentActivity() ? "failed-current"
-        : isInstanceCurrent() ? "superseded" : "retired");
-      throw error;
     }
+    return { receipt, result: read() };
+  }
+
+  function list(): Promise<readonly PluginSnapshot[]> {
+    return startCatalogRead().result;
   }
 
   async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
-    const requestLifecycle = lifecycleRevision;
+    const requestLifecycle = lifecycleRevision.value;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const barrier = store.beginCatalogWriteBarrier();
@@ -264,7 +279,7 @@ export function usePluginService(): PluginService {
       // the normal refresh; the write itself never re-sends. A stale token
       // (generation switched) is inert in the store.
       store.endCatalogWriteBarrier(barrier);
-      if (lifecycleRevision === requestLifecycle && currentContext()) {
+      if (lifecycleRevision.value === requestLifecycle && currentContext()) {
         store.refreshCatalog(list, catalogOwnerIsCurrent());
       }
     }
@@ -468,24 +483,47 @@ export function usePluginService(): PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel = true,
-    isCurrentRequest?: () => boolean,
+    guard?: PluginDescribeGuard,
   ): Promise<PluginActionAvailability> {
+    const isCurrentRequest = guard?.isCurrent;
     const ui = useUiStore();
-    const requestLifecycle = lifecycleRevision;
+    const requestLifecycle = lifecycleRevision.value;
     const navigation = openPanel ? ui.beginNavigation() : null;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const original = store.plugins.find(plugin => plugin.pluginId === pluginId);
-    const isCurrent = () => lifecycleRevision === requestLifecycle && store.projectKey === projectKey && store.projectContextGeneration === generation
+    const currentSurfaceToken = () => store.plugins.find(plugin => plugin.pluginId === pluginId)?.manifest.actions
+      .find(item => item.actionId === actionId)?.surfaceToken ?? null;
+    let surfaceToken: string | null = null;
+    const isCurrent = () => lifecycleRevision.value === requestLifecycle && store.projectKey === projectKey && store.projectContextGeneration === generation
       && (navigation === null || ui.navigationRevision === navigation) && (isCurrentRequest?.() ?? true)
+      && (surfaceToken === null || currentSurfaceToken() === surfaceToken)
       && (!original || store.plugins.some(plugin => plugin.pluginId === pluginId
         && plugin.installationId === original.installationId && plugin.revision === original.revision));
     const retired = { available: false, reasons: [] };
     try {
-      if (original?.manifest.compatibility.pluginApi === "3.x") await list(isCurrent);
+      if (original?.manifest.compatibility.pluginApi === "3.x") {
+        const { receipt, result } = startCatalogRead(isCurrent);
+        // The shared receipt, which can belong to another service instance, decides which result applies.
+        void result.catch(() => undefined);
+        while (true) {
+          const latest = await store.waitForCatalogProjection(receipt.sequence, isCurrent);
+          if (!latest || !isCurrent()) return retired;
+          if (!store.isCurrentCatalogRead(latest.sequence)) continue;
+          if (latest.settled === "failed-current") throw latest.error;
+          if (latest.settled !== "projected") return retired;
+          break;
+        }
+      }
       if (!isCurrent()) return retired;
+      // The fresh catalog projects the live surface for this application. A click's intent confirms that
+      // token here, right before the describe is posted (its only set point), and the describe names it so
+      // the Host promotes that session and no other; a session the catalog issues later is never promoted
+      // by an older click. Without a token (legacy Host projection, 2.x) the Host binds by key.
+      surfaceToken = currentSurfaceToken();
+      guard?.confirm?.(surfaceToken);
       const availability = await call<"plugin.action.describe", PluginActionAvailability>(
-        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context },
+        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context, ...(surfaceToken ? { surfaceToken } : {}) },
         { isErrorCurrent: isCurrent },
       );
       if (!isCurrent()) return retired;
@@ -510,7 +548,9 @@ export function usePluginService(): PluginService {
       const description = projectAction(plugin, action, context.locale);
       const application = description.presentation === "application";
       store.beginAction(description, context, openPanel && !application);
-      if (application && openPanel) ui.openPluginApp(pluginId, actionId);
+      if (application && openPanel) ui.openPluginApp({
+        pluginId, actionId, installationId: plugin.installationId ?? null, revision: plugin.revision, surfaceToken,
+      });
       return availability;
     } catch (error) {
       if (!isCurrent()) return retired;

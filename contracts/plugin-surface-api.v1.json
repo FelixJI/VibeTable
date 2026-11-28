@@ -93,6 +93,7 @@
     "snapshotIdsPerSource": 200,
     "snapshotRows": 4096,
     "snapshotHandlesPerSurface": 2,
+    "snapshotHandlesPerBackgroundSurface": 1,
     "snapshotHandlesTotal": 8,
     "snapshotSeconds": 300,
     "outputBytes": 33554432,
@@ -297,6 +298,7 @@
       "navigation.back"
     ],
     "notifications": [
+      "lifecycleChanged",
       "themeChanged",
       "tasksChanged",
       "uiResponse"
@@ -318,5 +320,43 @@
     },
     "context": "presentation only; Go-authorized context.read remains the data authority",
     "tasks": "only native tasks owned by the current surface; cancelRequested is not settlement; no confirmation fields"
+  },
+  "lifecycle": {
+    "contract": "vibetable.plugin-surface-lifecycle.v1",
+    "declaration": "manifest compatibility.surfaceLifecycle; pluginApi 3.x only; any other value is version_incompatible; a plugin without it keeps the manual entry only",
+    "phases": [
+      "background",
+      "foreground"
+    ],
+    "background": {
+      "mount": "hidden isolated frame in the workspace, mounted only while plugin.catalog.list projects surfacePhase background for that very token; never focused, no tab stop, no Product bridge; dropped on workspace switch, disable, uninstall, failure or a lost background grant",
+      "authority": "Host-enforced per surface token before any capability runs; never a renderer flag. The catalog projection is the only trigger for a hidden mount: an application beyond maxBackgroundSurfaces, a Host that omits surfacePhase, or a token that was already promoted keeps its normal manual entry and is never mounted hidden",
+      "allowlist": [
+        "request.cancel",
+        "context.read",
+        "model.read",
+        "snapshot.open",
+        "snapshot.page",
+        "snapshot.readBatch",
+        "snapshot.release"
+      ],
+      "refusal": "plugin_surface_background for every other method, including ui tasks.cancel, notification.show and navigation.back",
+      "dialogs": "none; no script dialogs and no modals sandbox flag"
+    },
+    "catalog": "plugin.catalog.list projects action.surfacePhase background only for a token the Host currently grants in background; foreground and ungranted tokens project null, so a consumer that never reads the field behaves exactly as before",
+    "promote": "only the user opening the entry: the click's plugin.action.describe binds the active collection and promotes the prepared surface token in place, then lifecycleChanged foreground is delivered; the same frame and session become the visible viewport without a reload or a token change",
+    "readiness": "application readiness is a separate handshake from the transport ready event: a lifecycle-declaring plugin calls api.lifecycle.readyToActivate() once its first view is rendered and it can serve a foreground activation (idempotent, never throws); the frame posts vibetable.plugin-surface.v1 event=readyToActivate payload={} to its parent and the shell consumes it locally (it is never forwarded to the Host authority, whose surface events stay ready | close | action); the SDK posts it only after the Host announced lifecycleChanged, so a Host without this contract never receives it, and an early call is deferred to that first announcement; a pre-warmed frame is reusable only after this signal, a click on a frame without it (still loading, or failed to start) closes it once, and the click's own catalog read opens a fresh surface through the normal visible path; the close always precedes that read so the cold token is never reused; a plugin that never signals is re-opened once per click (bounded, same as the legacy viewport)",
+    "demote": "leaving the foreground retires the token and releases the frame; a Host never demotes a foreground surface; re-preparing the same entry issues a new background token",
+    "rendererRecovery": "native stop and renderer recovery retire the old surface tokens before rebuilding. The recovered workspace session projects manual entries with no background phase. An explicit click still opens the application. Opening a new workspace session or starting the application normally allows background preparation",
+    "discardedClick": "a describe may have promoted its token before the user leaves. The shell closes that token before refreshing the catalog. A newer click on the same entry takes responsibility for that pending token and the older intent cannot affect the replacement. A reply naming a previously replaced token cannot open or close the new frame",
+    "applicationOpen": "sidebar, toolbar, row context menu and plugin center share the application-open path. Each click has one intent and sends at most one describe. A successful describe promotes its confirmed token in place and the shell adopts that frame without a reload. The active view stays bound to the confirmed installation, revision and token. If the catalog changes that binding, the shell leaves the view and the replacement needs a new click. An install change detected during the click's catalog read ends the old click before it describes any action. A frame that has not signalled readiness closes before the catalog read so the first click can open a fresh visible surface",
+    "contextRead": "surfacePhase reports the Go-authorized phase of the calling token; a Host without this contract omits it and the SDK reads it as foreground; the SDK phase is monotonic per session, so a late reply or a stale lifecycleChanged never rewinds foreground",
+    "transport": "trusted parent vibetable.plugin-surface.v1 event=lifecycleChanged payload={phase}; sent before themeChanged on ready and on load, and on every phase change; the SDK ignores a repeated phase and any phase announced after foreground; whenForeground(signal) stops waiting as soon as the signal aborts, even while a context.read is in flight; event=readyToActivate (application readiness, see readiness) is the only other lifecycle event and is consumed by the shell",
+    "limits": {
+      "maxBackgroundSurfaces": 4,
+      "snapshotHandlesPerBackgroundSurface": 1,
+      "snapshotHandlesPerForegroundSurface": 2,
+      "snapshotHandlesTotal": 8
+    }
   }
 }

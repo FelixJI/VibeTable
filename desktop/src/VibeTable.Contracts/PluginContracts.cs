@@ -10,6 +10,21 @@ public static class PluginContractVersions
     public const string Event = "vibetable.plugin-event.v1";
     public const string Surface = "vibetable.plugin-surface.v1";
     public const string Theme = "vibetable.plugin-theme.v1";
+    /// <summary>
+    /// Manifest opt-in (<c>compatibility.surfaceLifecycle</c>): the plugin's
+    /// manual application action may be prepared off-screen and follows the
+    /// background → foreground surface lifecycle. Older hosts ignore it.
+    /// </summary>
+    public const string SurfaceLifecycle = "vibetable.plugin-surface-lifecycle.v1";
+}
+
+/// <summary>Surface lifecycle phases; a surface only moves background → foreground.</summary>
+public static class PluginSurfacePhases
+{
+    /// <summary>Prepared off-screen before the user opens it: the host admits reads only.</summary>
+    public const string Background = "background";
+    /// <summary>Opened by the user: the declared capability is available.</summary>
+    public const string Foreground = "foreground";
 }
 
 public static class PluginRisk
@@ -29,6 +44,8 @@ public static class PluginSurfaceEvents
 public static class PluginSurfaceMessages
 {
     public const string ThemeChanged = "themeChanged";
+    /// <summary>Host → surface notification carrying <c>{ phase }</c> (see <see cref="PluginSurfacePhases"/>).</summary>
+    public const string LifecycleChanged = "lifecycleChanged";
 }
 
 public static class PluginThemeModes
@@ -118,7 +135,12 @@ public sealed record PluginDescribeActionParams(
     string ProjectKey,
     string PluginId,
     string ActionId,
-    PluginRuntimeCommandContext Context);
+    PluginRuntimeCommandContext Context)
+{
+    /// <summary>The live surface session the click confirmed (renderer intent). Present for 3.x applications:
+    /// the Host promotes that session and no other. Absent for panel actions and legacy applications.</summary>
+    public string? SurfaceToken { get; init; }
+}
 public sealed record PluginStartActionParams(
     string ProjectKey,
     string PluginId,
@@ -240,7 +262,9 @@ public sealed record PluginRuntimeAction(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Entry = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceSrc = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceToken = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceTitle = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceTitle = null,
+    /// <summary>Projection-only: <c>background</c> while the application surface is pre-warmed; omitted once foreground.</summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfacePhase = null)
 {
     /// <summary>Normalized presentation; absent/empty maps to the legacy surface channel.</summary>
     [JsonIgnore]

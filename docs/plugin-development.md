@@ -88,6 +88,20 @@ Go 在同一事务内校验安装、全部授权与精确版本，只读元数�
 选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
 隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
 
+`application` 动作可声明 `compatibility.surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1"`（仅 `pluginApi: "3.x"`，
+其它取值为 `version_incompatible`）加入后台预热：工作区就绪后 Host 在隐藏隔离帧中预热该页面，不换页、不抢焦点，
+最多 4 个，切换工作区/禁用/卸载/失败时释放。后台阶段由 Host 按 surface token 强制只读：
+只允许 `request.cancel`、`context.read`、`model.read` 和单份快照的 `snapshot.open/page/readBatch/release`（后台每帧 1 个句柄，4 帧不占满全局 8 个），
+其它方法及受信父页的 `tasks.cancel`/`notification.show`/`navigation.back` 一律 `plugin_surface_background`，无弹窗。
+插件在 `api.lifecycle.whenForeground(signal?)` 之前只做只读准备，用 `api.lifecycle.onChanged` / `context.read().surfacePhase`
+核对阶段；用户点击后 Host 把预热的同一 token 原位提升并投递 `foreground`（同一帧、同一会话原位成为可见页面，不换 token、不重载；
+提升瞬间的在途后台读取可能 `plugin_snapshot_stale`，需重读），离开前台退租 token，再次预热换发新的 `background` token。
+未就绪（仍在加载或启动失败）的预热帧不复用：点击时关闭一次并走正常可见路径重开。**首屏就绪后必须调用 `api.lifecycle.readyToActivate()`**（幂等、永不抛）：
+它是应用就绪握手，与 transport `ready` 分离；只有发过该信号的预热帧才会在点击时原位提升（单次 describe、不重载），未发信号的帧每次点击都
+关闭并重开一次（有界）。旧 Host 收不到该信号、行为不变。所有入口（侧栏、工具栏/行列菜单、插件中心）都经同一打开漏斗：
+每次点击只有一个打开意图，最多发送一次 describe。离开时先归还该意图已确认的 token，再刷新目录。同一入口的较新点击接管尚在处理的 token，迟到回包只属于其原来的会话。若这次点击的目录读取发现安装已升级或被替换，旧意图止于目录读取，下一次点击使用更新后的入口。同一安装升级且用户未离开时，界面提示重新打开。模型尚未映射或应用尚未完成初始化时，首次点击可打开可操作的冷前台，用户可以在应用内完成映射。超出 4 个上限的入口
+以及不返回 `surfacePhase` 的旧 Host 保持普通手动入口，不会被隐藏挂载。原生停止插件或恢复渲染器后，当前工作区会话也只提供手动入口，直到打开新的工作区会话。细节见 `docs/plugin-api.md` 的“后台预热生命周期”。
+
 `api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；
 不另授读权限，输出是该页面已经获准读取并自行渲染的内容。Host 向 Go 重核当前安装、包、动作和
 工作区身份，可信父页只保留该 iframe 的打印路径；平台表格、导航、任务与确认页脚、消息、

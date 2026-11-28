@@ -465,6 +465,38 @@ describe("PluginCenterView", () => {
     }
   });
 
+  it("routes an application's 运行 button through the shell funnel (one intent, one describe) and keeps other actions on describeAction", async () => {
+    const request = vi.fn(async (_type: string, _payload: unknown) => ({ available: true, reasons: [] }));
+    const bridge = createHostBridge({ webview: {
+      postMessage: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } });
+    setHostBridgeForTesting({ ...bridge, request } as unknown as HostBridge);
+    const application = {
+      ...blockedPlugin.manifest.actions[0]!, actionId: "overview", presentation: "application" as const, placements: [], workerEntry: null,
+      entry: "ui/index.html", surfaceSrc: "https://native.plugins.vibetable.local/ui/index.html", surfaceToken: "app-token", surfaceTitle: "概览",
+    };
+    usePluginStore().applyPlugin({ ...blockedPlugin, status: "enabled", disabledReason: null, blockingReasons: [], revision: 8,
+      manifest: { ...blockedPlugin.manifest, compatibility: { pluginApi: "3.x" }, actions: [application, blockedPlugin.manifest.actions[0]!] } });
+    const openApplication = vi.fn(async (_pluginId: string, _actionId: string) => true);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false, openApplication } });
+    try {
+      await wrapper.get(".run-button").trigger("click");
+      await flushPromises();
+      // The application joins the shell funnel: the pre-warmed surface is promoted once on its own token.
+      expect(openApplication).toHaveBeenCalledExactlyOnceWith("com.acme.clean", "overview");
+      expect(request).not.toHaveBeenCalled();
+      await wrapper.findAll(".run-button")[1]!.trigger("click");
+      await flushPromises();
+      expect(openApplication).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+      bridge.stop();
+    }
+  });
+
   it("binds whole-plugin enable to the inspected installation identity and revision", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
@@ -1065,7 +1097,8 @@ describe("PluginCenterView", () => {
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
     await wrapper.get(".run-button").trigger("click");
     await flushPromises();
-    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize" });
+    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize",
+      installationId: application.installationId ?? null, revision: application.revision, surfaceToken: "owned" });
     expect(usePluginStore().actionOpen).toBe(false);
     expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
   });

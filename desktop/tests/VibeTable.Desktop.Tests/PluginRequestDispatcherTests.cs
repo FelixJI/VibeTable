@@ -311,6 +311,239 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task SurfaceLifecycleDeclarationProjectsBackgroundOnlyUntilTheUserOpensTheApplication()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-surface-lifecycle-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            PluginRuntimeAction Action(string actionId, string presentation) => new(actionId, new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Write, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                presentation, presentation == "headless" ? "worker.js" : "ui/index.html");
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "declared-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = [Action("app", "application"), Action("headless", "headless"), Action("entry", "surface")],
+                },
+            };
+            var legacy = declared with
+            {
+                PluginId = "com.acme.legacy", InstallationId = "legacy-record", PackageHash = "sha256:" + new string('b', 64),
+                Manifest = declared.Manifest with
+                {
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = "vibetable.plugin-surface-lifecycle.v0" }),
+                    Actions = [Action("app", "application")],
+                },
+            };
+            foreach (var snapshot in new[] { declared, legacy })
+            {
+                using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+                {
+                    package.CreateEntry("ui/index.html");
+                    package.CreateEntry("worker.js");
+                }
+            }
+            using var gateway = new FakePluginGateway { CatalogSnapshot = declared };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { declared, legacy })), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-catalog", """{"projectKey":"project-1"}"""));
+            var catalog = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload);
+            var app = catalog.Single(snapshot => snapshot.PluginId == declared.PluginId).Manifest.Actions;
+            Assert.AreEqual(PluginSurfacePhases.Background, app.Single(action => action.ActionId == "app").SurfacePhase,
+                "Only the declared plugin's manual application action is pre-warmed.");
+            Assert.IsNull(app.Single(action => action.ActionId == "headless").SurfacePhase, "Headless modules keep the foreground lifecycle.");
+            Assert.IsNull(app.Single(action => action.ActionId == "entry").SurfacePhase, "Legacy surface panels are not pre-warmed.");
+            Assert.IsNull(catalog.Single(snapshot => snapshot.PluginId == legacy.PluginId).Manifest.Actions.Single().SurfacePhase,
+                "Unknown declarations change nothing.");
+            string token = app.Single(action => action.ActionId == "app").SurfaceToken!;
+            Assert.IsTrue(surfaces.TryGet(token, out var session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase);
+            Assert.AreEqual("allow-scripts allow-same-origin", session.IframeSandbox, "Pre-warmed frames stay sandboxed without modal dialogs.");
+
+            // Without a token the describe binds foreground sessions only: a pre-warmed surface is never promoted by key.
+            const string DescribeContext = """{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}""";
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "lifecycle-describe-by-key",
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}}}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase, "A describe without a token never promotes a pre-warmed surface.");
+
+            // A token the Host no longer holds (retired, or issued for another application) is refused: the live session is
+            // never promoted in its place, so an older click can never open a session the catalog issued later.
+            string retired = surfaces.Open("project-1", declared.PluginId, PluginPackageRevision.Create(@"C:\plugins\clean", declared.PackageHash), "ui/index.html",
+                phase: PluginSurfacePhases.Background).SurfaceToken;
+            Assert.IsTrue(surfaces.Close(retired));
+            foreach (var (id, stale) in new[] { ("lifecycle-describe-retired", retired), ("lifecycle-describe-unknown", "not-a-live-token") })
+            {
+                await dispatcher.DispatchAsync(Request("plugin.action.describe", id,
+                    $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{stale}}"}"""));
+                var refused = Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload);
+                Assert.IsFalse(refused.Available);
+                CollectionAssert.Contains(refused.Reasons.ToArray(), "plugin_surface_unavailable");
+            }
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase, "A refused token promotes nothing.");
+
+            // The click confirms the session it is about to open: the Host promotes that session and no other.
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "lifecycle-describe",
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{token}}"}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Foreground, session!.Phase, "Opening the application promotes the pre-warmed surface in place.");
+            Assert.AreEqual("orders", session.ActiveCollection);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-catalog-foreground", """{"projectKey":"project-1"}"""));
+            var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload)
+                .Single(snapshot => snapshot.PluginId == declared.PluginId).Manifest.Actions.Single(action => action.ActionId == "app");
+            Assert.AreEqual(token, projected.SurfaceToken, "Promotion keeps the prepared surface; the user reuses what was pre-warmed.");
+            Assert.IsNull(projected.SurfacePhase, "Foreground is implicit for undeclared consumers.");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task RendererRecoveryRetiresExistingSurfacesAndKeepsTheSameWorkspaceManualUntilItReopens()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-renderer-recovery-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "recoverable-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = [new("app", new Dictionary<string, string>(), new Dictionary<string, string>(), "local",
+                        PluginRisk.Read, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                        "application", "ui/index.html")],
+                },
+            };
+            using (var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, declared.PackageHash)!,
+                System.IO.Compression.ZipArchiveMode.Create))
+            {
+                package.CreateEntry("ui/index.html");
+            }
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            PluginProjectContext current = ReadyContext();
+            TaskCompletionSource<JsonElement>? heldRead = null;
+            JsonElement Snapshots() => JsonSerializer.SerializeToElement(new[] { declared with { ProjectKey = current.ProjectKey } });
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources,
+                projectContext: () => current, sharedRpc: (_, _, _) => heldRead?.Task ?? Task.FromResult(Snapshots()),
+                packageCacheRoot: _ => root);
+
+            async Task<PluginRuntimeAction> Catalog(string requestId)
+            {
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", requestId, $$"""{"projectKey":"{{current.ProjectKey}}"}"""));
+                return Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single();
+            }
+
+            var prepared = await Catalog("before-recovery");
+            Assert.AreEqual(PluginSurfacePhases.Background, prepared.SurfacePhase, "A normal launch prepares the application.");
+            Assert.IsTrue(resources.MarkSurfaceMounted(prepared.SurfaceToken!));
+            heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task staleCatalog = dispatcher.DispatchAsync(Request("plugin.catalog.list", "retired-catalog", """{"projectKey":"project-1"}"""));
+            dispatcher.RetireRendererSurfacesForRecovery();
+            Assert.IsFalse(surfaces.TryGet(prepared.SurfaceToken!, out _), "The stopped renderer's token is revoked before rebuild.");
+            heldRead.SetResult(Snapshots());
+            heldRead = null;
+            await staleCatalog;
+            Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+            Assert.AreEqual(0, surfaces.ActiveSurfaceCount);
+
+            // The replacement renderer's ordinary ready handshake also clears token allocations.
+            resources.CloseAllSurfaces();
+            var manual = await Catalog("after-recovery");
+            Assert.IsNull(manual.SurfacePhase, "The recovered workspace must not automatically rerun plugin code.");
+            Assert.IsNotNull(manual.SurfaceToken);
+            Assert.AreNotEqual(prepared.SurfaceToken, manual.SurfaceToken);
+            Assert.AreEqual(0, surfaces.BackgroundSurfaceCount);
+            Assert.AreEqual(manual.SurfaceToken, (await Catalog("realtime-after-recovery")).SurfaceToken);
+            Assert.AreEqual(0, surfaces.BackgroundSurfaceCount, "A later background refresh in the same session stays manual.");
+
+            const string DescribeContext = """{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}""";
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "explicit-open-after-recovery",
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{manual.SurfaceToken}}"}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(manual.SurfaceToken, out var opened));
+            Assert.AreEqual("orders", opened!.ActiveCollection);
+            Assert.AreEqual(PluginSurfacePhases.Foreground, opened.Phase);
+            Assert.IsTrue(resources.CloseSurface(manual.SurfaceToken));
+            Assert.IsNull((await Catalog("after-manual-close")).SurfacePhase);
+
+            resources.CloseAllSurfaces();
+            var stoppedWorkspace = current;
+            current = new PluginProjectContext("project-2", "new-workspace", current.SessionGeneration + 1);
+            dispatcher.SetProjectContext(current);
+            Assert.AreEqual(PluginSurfacePhases.Background, (await Catalog("another-workspace")).SurfacePhase);
+
+            resources.CloseAllSurfaces();
+            current = stoppedWorkspace with { ProjectRevision = "workspace:reopened", SessionGeneration = current.SessionGeneration + 1 };
+            dispatcher.SetProjectContext(current);
+            Assert.AreEqual(PluginSurfacePhases.Background, (await Catalog("after-workspace-reopen")).SurfacePhase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task SurfaceLifecycleProjectsBackgroundOnlyUpToTheBoundAndKeepsTheRestAsManualEntries()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-surface-lifecycle-cap-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            PluginRuntimeAction Action(string actionId) => new(actionId, new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Write, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                "application", "ui/index.html");
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "declared-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = Enumerable.Range(1, PluginSurfaceSessionManager.MaxBackgroundSurfaces + 2).Select(index => Action($"app-{index}")).ToArray(),
+                },
+            };
+            using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, declared.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+            package.CreateEntry("ui/index.html");
+            package.CreateEntry("worker.js");
+            using var gateway = new FakePluginGateway { CatalogSnapshot = declared };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { declared })), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-cap", """{"projectKey":"project-1"}"""));
+            var actions = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions;
+            var granted = actions.Where(action => action.SurfacePhase == PluginSurfacePhases.Background).ToList();
+            Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, granted.Count, "Background pre-warming is bounded by the Host.");
+            Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, surfaces.BackgroundSurfaceCount);
+            foreach (var action in actions.Except(granted))
+            {
+                // The renderer mounts a frame hidden only for a projected background token: these stay manual entries.
+                Assert.IsNull(action.SurfacePhase, "Beyond the bound the application projects no background phase.");
+                Assert.IsTrue(surfaces.TryGet(action.SurfaceToken!, out var session));
+                Assert.AreEqual(PluginSurfacePhases.Foreground, session!.Phase);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task DispatchUsesCorrelatedClosedResponseTypeAndNeverGenericRpc()
     {
         var reply = new RecordingReplySink();

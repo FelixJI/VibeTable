@@ -114,6 +114,148 @@ describe("workspacePluginController", () => {
     expect(ui.activePluginApp).toBeNull();
   });
 
+  /** An intent double for the pre-warm layer: it records the protocol the click keeps with it. */
+  function intentDouble(order: string[]) {
+    const settles: boolean[] = [];
+    const begin = vi.fn(async (intentKey: string, _current?: () => boolean) => {
+      order.push(`begin:${intentKey}`);
+      const intent = {
+        active: true,
+        token: null as string | null,
+        confirm(token: string | null) { order.push(`confirm:${token}`); intent.token = token; },
+        settle(opened: boolean) { order.push(`settle:${opened}`); settles.push(opened); },
+      };
+      return intent;
+    });
+    return { begin, settles };
+  }
+
+  /** The service confirms the token its fresh catalog read projects for the key, right before the describe. */
+  function describingCatalogToken(plugins: ReturnType<typeof usePluginStore>, order: string[]) {
+    return vi.fn(async (...args: unknown[]) => {
+      order.push("describe");
+      const guard = args[4] as { confirm?: (token: string | null) => void } | undefined;
+      guard?.confirm?.(plugins.plugins[0]!.manifest.actions[0]!.surfaceToken ?? null);
+      return { available: true, reasons: [] as string[] };
+    });
+  }
+
+  it("funnels every application entry through one intent: begin precedes the describe, the describe confirms its token, the open settles true and a discarded click settles false", async () => {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const key = `${plugin.pluginId}/A`;
+    plugins.replaceCatalog("local:default", [{ ...plugin, manifest: { ...plugin.manifest, actions: [{ ...plugin.manifest.actions[0]!,
+      actionId: "A", presentation: "application", surfaceToken: "token-A", entry: "ui/index.html" }] } }]);
+    const ui = useUiStore(); ui.navigate("tables");
+    const order: string[] = [];
+    const { begin, settles } = intentDouble(order);
+    const describeAction = describingCatalogToken(plugins, order);
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction, startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() }, selectedRows: () => [],
+      openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: vi.fn(),
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value, applicationOpen: { begin } });
+    // Sidebar, toolbar, row context menu and plugin center all reach this path.
+    expect(await controller.openApplication(key, [])).toBe(true);
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 1, surfaceToken: "token-A" });
+    expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A", "settle:true", "settle:false"]);
+    expect(describeAction).toHaveBeenLastCalledWith(plugin.pluginId, "A", expect.anything(), false,
+      expect.objectContaining({ isCurrent: expect.any(Function), confirm: expect.any(Function) }));
+    order.length = 0;
+    await controller.dispatch({ type: "action.open", key });
+    await vi.waitFor(() => expect(order).toHaveLength(5));
+    expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A", "settle:true", "settle:false"]);
+    expect(settles).toEqual([true, false, true, false]);
+    order.length = 0;
+    await controller.dispatch({ type: "rowMenu.open", rowKey: "clicked-row", x: 0, y: 0 });
+    await controller.dispatch({ type: "rowMenu.select", key });
+    expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A", "settle:true", "settle:false"]);
+    expect(describeAction).toHaveBeenLastCalledWith(plugin.pluginId, "A", expect.objectContaining({ selectedKeys: ["clicked-row"] }), false, expect.anything());
+    order.length = 0;
+    // A discarded click (the user navigated while the describe was in flight) settles false without opening.
+    let reply!: (value: { available: boolean; reasons: string[] }) => void;
+    describeAction.mockImplementationOnce(() => new Promise<{ available: boolean; reasons: string[] }>(resolve => { order.push("describe"); reply = resolve; }));
+    const opening = controller.openApplication(key);
+    await vi.waitFor(() => expect(reply).toBeDefined());
+    ui.navigate("tables");
+    reply({ available: true, reasons: [] });
+    expect(await opening).toBe(false);
+    expect(order).toEqual([`begin:${key}`, "describe", "settle:false"]);
+    expect(ui.activePluginApp).toBeNull();
+  });
+
+  it("opens the first click on a committed upgrade on its own: the entry resolves after the read's catalog, one describe on the fresh token, one intent", async () => {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const key = `${plugin.pluginId}/A`;
+    const action = { ...plugin.manifest.actions[0]!, actionId: "A", presentation: "application" as const, surfaceToken: "token-A", entry: "ui/index.html" };
+    plugins.replaceCatalog("local:default", [{ ...plugin, revision: 1, manifest: { ...plugin.manifest, compatibility: { pluginApi: "3.x" }, actions: [action] } }]);
+    const ui = useUiStore(); ui.navigate("tables");
+    const order: string[] = [];
+    const { begin } = intentDouble(order);
+    const describeAction = describingCatalogToken(plugins, order);
+    const errors = vi.fn();
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction, startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() }, selectedRows: () => [],
+      openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: errors,
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value, applicationOpen: { begin } });
+    // The upgrade committed before the click: the sidebar row keeps its key and the installation is revision 2.
+    plugins.applyPlugin({ ...plugins.plugins[0]!, revision: 2, manifest: { ...plugins.plugins[0]!.manifest, actions: [{ ...action, surfaceToken: "token-A-2" }] } });
+    expect(await controller.openApplication(key, [])).toBe(true);
+    expect(describeAction).toHaveBeenCalledTimes(1);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(order).toEqual([`begin:${key}`, "describe", "confirm:token-A-2", "settle:true", "settle:false"]);
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 2, surfaceToken: "token-A-2" });
+    expect(errors).not.toHaveBeenCalled();
+    // An entry gone meanwhile (uninstalled) ends the click with one toast and no describe.
+    plugins.removePlugin(plugin.pluginId);
+    order.length = 0;
+    expect(await controller.openApplication(key, [])).toBe(false);
+    expect(order).toEqual([`begin:${key}`, "settle:false"]);
+    expect(describeAction).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveBeenCalledExactlyOnceWith("插件应用入口已不存在，请刷新插件目录");
+  });
+
+  it("reports a package upgrade that retired the click; the next click opens on the committed catalog", async () => {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const key = `${plugin.pluginId}/A`;
+    const action = { ...plugin.manifest.actions[0]!, actionId: "A", presentation: "application" as const, surfaceToken: "token-A", entry: "ui/index.html" };
+    plugins.replaceCatalog("local:default", [{ ...plugin, revision: 1, manifest: { ...plugin.manifest, compatibility: { pluginApi: "3.x" }, actions: [action] } }]);
+    const ui = useUiStore(); ui.navigate("tables");
+    const order: string[] = [];
+    const { begin, settles } = intentDouble(order);
+    const describeAction = describingCatalogToken(plugins, order);
+    // The click's catalog read brings the upgraded installation (same entry, new revision and token).
+    describeAction.mockImplementationOnce(async (...args) => {
+      order.push("catalog");
+      plugins.applyPlugin({ ...plugins.plugins[0]!, revision: 2, manifest: { ...plugins.plugins[0]!.manifest, actions: [{ ...action, surfaceToken: "token-A-2" }] } });
+      const guard = args[4] as { isCurrent: () => boolean };
+      expect(guard.isCurrent()).toBe(false);
+      return { available: false, reasons: [] };
+    });
+    const errors = vi.fn();
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction, startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() }, selectedRows: () => [],
+      openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: errors,
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value, applicationOpen: { begin } });
+    expect(await controller.openApplication(key, [])).toBe(false);
+    expect(describeAction).toHaveBeenCalledTimes(1);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(settles).toEqual([false]);
+    expect(ui.activePluginApp).toBeNull();
+    expect(errors).toHaveBeenCalledExactlyOnceWith("插件版本已更新，请重新打开应用");
+    expect(await controller.openApplication(key, [])).toBe(true);
+    expect(describeAction).toHaveBeenCalledTimes(2);
+    expect(order).toEqual([`begin:${key}`, "catalog", "settle:false", `begin:${key}`, "describe", "confirm:token-A-2", "settle:true", "settle:false"]);
+    expect(ui.activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "A", installationId: plugin.installationId, revision: 2, surfaceToken: "token-A-2" });
+
+    describeAction.mockImplementationOnce(async () => {
+      ui.navigate("settings");
+      plugins.applyPlugin({ ...plugins.plugins[0]!, revision: 3, manifest: { ...plugins.plugins[0]!.manifest, actions: [{ ...action, surfaceToken: "token-A-3" }] } });
+      return { available: false, reasons: [] };
+    });
+    expect(await controller.openApplication(key, [])).toBe(false);
+    expect(ui.activePluginApp).toBeNull();
+    expect(errors).toHaveBeenCalledExactlyOnceWith("插件版本已更新，请重新打开应用");
+  });
+
   it("在模块内从当前 grid 选择构造插件命令上下文", async () => {
     const plugins = usePluginStore();
     plugins.replaceCatalog("local:default", [plugin], 1);
@@ -257,7 +399,10 @@ describe("workspacePluginController", () => {
     const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
     const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest, actions: plugin.manifest.actions.map(action => ({ ...action,
       presentation: "application", workerEntry: null, entry: "ui/index.html", surfaceToken: "current-surface", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html" })) } };
-    plugins.replaceCatalog("local:default", [app]); const ui = useUiStore(); ui.openPluginApp(app.pluginId, "normalize");
+    plugins.replaceCatalog("local:default", [app]);
+    const ui = useUiStore();
+    ui.openPluginApp({ pluginId: app.pluginId, actionId: "normalize", installationId: app.installationId ?? null,
+      revision: app.revision, surfaceToken: "current-surface" });
     const task: PluginTaskSnapshot = { taskId: "old", runId: "old-run", pluginId: app.pluginId, pluginVersion: app.version,
       installationId: app.installationId, installationRevision: app.revision, actionId: "normalize", surfaceToken: "old-surface",
       projectKey: app.projectKey, collection: null, targetCount: 1, risk: "write", state: "succeeded", cancelRequested: false, result: null, error: null };
@@ -339,7 +484,8 @@ describe("workspacePluginController", () => {
     plugins.setProjectContext("local:default", "r1");
     plugins.replaceCatalog("local:default", [plugin]);
     const ui = useUiStore();
-    ui.openPluginApp(plugin.pluginId, "normalize");
+    ui.openPluginApp({ pluginId: plugin.pluginId, actionId: "normalize", installationId: plugin.installationId ?? null,
+      revision: plugin.revision, surfaceToken: null });
     const context = { contract: "vibetable.command-context.v1" as const, projectKey: "local:default",
       collection: "orders", selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light" as const,
       density: "comfortable", user: {}, hostVersion: "1.0.0" };
@@ -394,7 +540,7 @@ describe("workspacePluginController", () => {
       reportError: vi.fn(), historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
     if (entry === "rowMenu.select") await controller.dispatch({ type: "rowMenu.open", rowKey: "row-menu", x: 1, y: 1 });
     await controller.dispatch({ type: entry, key: `${app.pluginId}/normalize` });
-    expect(ui.activePluginApp).toEqual({ pluginId: app.pluginId, actionId: "normalize" });
+    expect(ui.activePluginApp).toMatchObject({ pluginId: app.pluginId, actionId: "normalize" });
     expect(plugins.actionOpen).toBe(false);
     expect(plugins.activeContext?.selectedKeys).toEqual([entry === "rowMenu.select" ? "row-menu" : "selected"]);
     await expect(usePluginService().startAction(app.pluginId, "normalize", {}, plugins.activeContext!)).rejects.toThrow("Worker");

@@ -129,6 +129,7 @@ import { createAlternativeViewInteractionController } from "@/workspace/alternat
 import { createRelationEditorController } from "@/workspace/relationEditorController";
 import { createWorkspacePluginController } from "@/workspace/workspacePluginController";
 import { createPluginAppNavigation } from "@/workspace/pluginAppNavigation";
+import { createPluginAppPrewarm } from "@/workspace/pluginAppPrewarm";
 import {
   createTabulatorInteractionAdapter,
   createWorkspaceTableInteractionController,
@@ -920,6 +921,7 @@ const pluginController = createWorkspacePluginController({
   historyCellLabel: () => t("history.context.cell"),
   historyRowLabel: () => t("history.context.row"),
   riskLabel: risk => t(`plugin.risk.${risk}`),
+  applicationOpen: { begin: (key, current) => pluginPrewarm.begin(key, current) },
 });
 const pluginTheme = pluginController.theme;
 const pluginApplicationTasks = pluginController.applicationTasks;
@@ -944,8 +946,7 @@ const closedPluginTaskReceipts = computed(() => {
     visibleTokens.add(panel.surface.surfaceToken);
   return plugins.nativeTaskReceipts.filter(task => !visibleTokens.has(task.surfaceToken ?? ""));
 });
-const activePluginAppKey = computed(() =>
-  ui.activePluginApp ? `${ui.activePluginApp.pluginId}/${ui.activePluginApp.actionId}` : null);
+const activePluginAppKey = computed(() => activePluginAppEntry.value?.key ?? null);
 const platformViewsHidden = computed(() =>
   showWorkspaceCenterScreen.value || activePluginAppEntry.value !== null);
 watch(
@@ -955,13 +956,15 @@ watch(
     // the entry disappears, so the viewport returns to the platform with a
     // recoverable notice instead of keeping a dead authorization on screen.
     if (active && !entry) {
-      message.warning("插件入口已失效或被移除，已返回平台");
-      ui.closePluginApp();
+      const current = pluginAppNav.entryByKey(`${active.pluginId}/${active.actionId}`);
+      message.warning(current ? "插件入口已更新，请重新打开应用" : "插件入口已失效或被移除，已返回平台");
+      ui.retirePluginApp();
     }
   },
 );
-function onOpenPluginApp(key: string): void {
-  void pluginController.dispatch({ type: "app.open", key });
+/** Sidebar opens through the same controller as the toolbar, row context menu and plugin center. */
+function onOpenPluginApp(key: string): Promise<void> {
+  return pluginController.dispatch({ type: "app.open", key });
 }
 
 // #482 native host chrome: the always-reachable WPF row steers the trusted
@@ -1393,6 +1396,31 @@ const showWorkspaceCenterScreen = computed(() =>
   && (showWorkspaceCenter.value
     || (!workspaceSession.hasOpenWorkspace && ui.activeView === "home")));
 
+// #596 surface lifecycle: declared applications keep a hidden read-only frame in the
+// background while the Host grants their token in background; the click reuses it. Every
+// other entry (undeclared, at the background cap, promoted) uses the legacy viewport above.
+const pluginPrewarm = createPluginAppPrewarm({
+  entries: pluginAppNav.entries,
+  activeToken: computed(() => showWorkspaceCenterScreen.value ? null : activePluginAppEntry.value?.surfaceToken ?? null),
+  navigation: () => ui.navigationRevision,
+  refresh: () => void pluginService.list().catch(() => undefined),
+});
+/** `close` carries the token of the frame that emitted it: the user left the visible application only when that token is
+ * the active one; a hidden frame's self-close retires its own token, and a replaced frame's late close retires nothing. */
+function onPrewarmSlotClose(key: string, token: string): void {
+  if (pluginPrewarm.isActive(key, token)) ui.closePluginApp(); else pluginPrewarm.selfClose(key, token);
+}
+/** The legacy viewport's close is the user leaving only when it comes from the entry's current token. */
+function onLegacyViewportClose(token: string): void {
+  if (activePluginAppEntry.value?.surfaceToken === token) ui.closePluginApp();
+}
+/** The active application's slot: when present it is the visible frame, so the legacy viewport stays out. */
+const activePrewarmSlot = computed(() =>
+  pluginPrewarm.slots.value.find(slot => slot.entry.surfaceToken === activePluginAppEntry.value?.surfaceToken) ?? null);
+/** The plugin center's 运行 button joins the same funnel; its command context carries no row selection. */
+const openPluginApplication = (pluginId: string, actionId: string): Promise<boolean> =>
+  pluginController.openApplication(`${pluginId}/${actionId}`, []);
+
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
   ({ nextWorkspaceId }) => {
@@ -1821,9 +1849,10 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           v-if="!platformViewsHidden && ui.activeView === 'conflicts' && workspaceSession.conflictEnabled"
           @action="workspaceSessionUi.execute"
         />
-        <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" />
+        <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" :open-application="openPluginApplication" />
         <PluginAppViewport
-          v-if="!showWorkspaceCenterScreen && activePluginAppEntry"
+          v-if="!showWorkspaceCenterScreen && activePluginAppEntry && !activePrewarmSlot"
+          :key="activePluginAppEntry.surfaceToken"
           :src="activePluginAppEntry.src"
           :surface-token="activePluginAppEntry.surfaceToken"
           :title="activePluginAppEntry.label"
@@ -1832,9 +1861,33 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           :tasks="pluginApplicationTasks"
           @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
           @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
-          @close="ui.closePluginApp"
+          @close="onLegacyViewportClose"
           @manage="ui.closePluginApp(); ui.navigate('plugins')"
         />
+        <!-- #596: every lifecycle-declaring application keeps exactly one frame here; the
+             active one is the same element that was pre-warmed, so a click never reloads. -->
+        <div v-if="pluginPrewarm.slots.value.length" class="plugin-app-prewarm" aria-label="插件应用">
+          <PluginAppViewport
+            v-for="slot in pluginPrewarm.slots.value"
+            :key="slot.entry.surfaceToken"
+            data-testid="plugin-app-prewarm-slot"
+            :data-phase="slot.phase"
+            :class="slot.phase === 'foreground' ? 'plugin-app-prewarm-slot--foreground' : null"
+            :active="slot.phase === 'foreground'"
+            :phase="slot.phase"
+            :src="slot.entry.src"
+            :surface-token="slot.entry.surfaceToken"
+            :title="slot.entry.label"
+            :theme="pluginTheme"
+            :navigate-back="backFromPluginSurface"
+            :tasks="pluginApplicationTasks"
+            @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+            @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
+            @close="token => onPrewarmSlotClose(slot.key, token)"
+            @ready="token => pluginPrewarm.markReady(slot.key, token)"
+            @manage="ui.closePluginApp(); ui.navigate('plugins')"
+          />
+        </div>
       </div>
       <section v-if="closedPluginTaskReceipts.length" data-testid="closed-plugin-task-receipts"
         class="closed-plugin-task-receipts" aria-label="已关闭插件页面的任务回执">
@@ -2331,6 +2384,9 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
 .app-title strong { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 500; }
 .view-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; background: var(--vt-bg); }
 .view-stack > * { width: 100%; height: 100%; }
+/* #596 pre-warm layer: covers the stack without blocking the platform underneath; only the foreground slot is interactive. */
+.plugin-app-prewarm { position: absolute; inset: 0; pointer-events: none; }
+.plugin-app-prewarm-slot--foreground { position: absolute; inset: 0; pointer-events: auto; }
 .tables-view { display: flex; min-width: 0; }
 .main {
   display: flex;

@@ -17,6 +17,9 @@ export type DailyQuoteStyle = "mixed" | "inspiring" | "literary" | "philosophy" 
 export interface ActivePluginApp {
   readonly pluginId: string;
   readonly actionId: string;
+  readonly installationId: string | null;
+  readonly revision: number;
+  readonly surfaceToken: string | null;
 }
 
 export const QUOTE_STYLES_BY_SOURCE: Readonly<Record<DailyQuoteSource, readonly DailyQuoteStyle[]>> = {
@@ -237,13 +240,16 @@ export const useUiStore = defineStore("ui", () => {
   function settleSettingsSection(): void {
     requestedSettingsSection.value = null;
   }
-  function openPluginApp(pluginId: string, actionId: string): void {
+  function openPluginApp(app: ActivePluginApp): void {
     beginNavigation();
-    activePluginApp.value = { pluginId, actionId };
+    activePluginApp.value = app;
+  }
+  function retirePluginApp(): void {
+    activePluginApp.value = null;
   }
   function closePluginApp(): void {
     beginNavigation();
-    activePluginApp.value = null;
+    retirePluginApp();
   }
   function setStartupPage(page: StartupPage): void {
     startupPage.value = page;
@@ -363,6 +369,7 @@ export const useUiStore = defineStore("ui", () => {
     openSettings,
     settleSettingsSection,
     openPluginApp,
+    retirePluginApp,
     closePluginApp,
     setStartupPage,
     setWorkspaceStartupPolicy,
