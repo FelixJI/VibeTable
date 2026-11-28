@@ -59,6 +59,8 @@ type sessionRow struct {
 	deleted    bool
 	// Explicit relation values are compared with the derived final graph.
 	relations map[string]any
+	// The original input distinguishes an explicit insert value from a schema default.
+	input Operation
 }
 
 // ApplyPlan uses the same normalizer, operation executor, history and outbox as Apply.
@@ -91,6 +93,11 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 	if err := kernel.coordinator.acquire(ctx); err != nil {
 		return result, err
 	}
+	writer, err := planProtectedFieldWriter(requests)
+	if err != nil {
+		kernel.coordinator.release()
+		return result, err
+	}
 	locked := true
 	defer func() {
 		if locked {
@@ -101,8 +108,9 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 	ctx = formula.EnsureEvaluationTimeAt(ctx, applyNow)
 	ctx = relatedcomputation.WithClockCache(ctx)
 	ctx = context.WithValue(ctx, pendingPlanKey{}, pending)
-	staging := context.WithValue(ctx, stagingPlanKey{}, true)
 	err = kernel.app.RunInTransaction(func(tx core.App) error {
+		ctx = WithProtectedFieldWriter(ctx, tx, writer)
+		staging := context.WithValue(ctx, stagingPlanKey{}, true)
 		rows := map[RowKey]*sessionRow{}
 		keys := []RowKey{}
 		touched := map[string]map[string]bool{}
@@ -138,6 +146,11 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 				if err := validateOperationGuard(before, rev, op, i); err != nil {
 					return err
 				}
+				if op.Kind == OperationDelete {
+					if err := checkProtectedDelete(ctx, tx, preview.Definition, before); err != nil {
+						return err
+					}
+				}
 				if err := authorize(ctx, tx, key.TableID, string(op.Kind)); err != nil {
 					return err
 				}
@@ -171,7 +184,7 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 						}
 					}
 				}
-				rows[key] = &sessionRow{request: request, definition: preview.Definition, operation: op, record: record, before: before, revision: rev, insert: op.Kind == OperationInsert, deleted: op.Kind == OperationDelete, relations: relations}
+				rows[key] = &sessionRow{request: request, definition: preview.Definition, operation: op, record: record, before: before, revision: rev, insert: op.Kind == OperationInsert, deleted: op.Kind == OperationDelete, relations: relations, input: request.Operations[i]}
 				keys = append(keys, key)
 			}
 			if _, exists := numbers[request.TableID]; !exists {
@@ -323,6 +336,17 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 				return mutationError("transaction.budget_exceeded", nil, "final write images exceed the plan budget", nil, false)
 			}
 		}
+		// Persistent field protection is decided before the business rules so that a
+		// protected write is reported as such even when a rule would also fail.
+		for _, key := range keys {
+			row := rows[key]
+			if row.deleted {
+				continue
+			}
+			if err := checkProtectedWrite(ctx, tx, row.definition, row.before, row.after, row.input); err != nil {
+				return err
+			}
+		}
 		if err := transactionrules.ValidateGuards(ctx, tx, guards); err != nil {
 			return businessRuleError(err)
 		}
@@ -397,6 +421,11 @@ func (kernel *Kernel) ApplyPlan(ctx context.Context, requests []Request, authori
 						return err
 					}
 					row.after = ProductRow(tx, row.definition, row.record)
+				}
+				if !row.deleted {
+					if err := checkProtectedWrite(ctx, tx, row.definition, row.before, row.after, row.input); err != nil {
+						return err
+					}
 				}
 				raw, err := json.Marshal([]map[string]any{row.before, row.after})
 				if err != nil {

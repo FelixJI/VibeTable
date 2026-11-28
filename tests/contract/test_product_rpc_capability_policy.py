@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 119
+    assert len(manifest["rpcMethods"]) == 123
     assert len(manifest["eventTopics"]) == 6
     preservation = next(
         item for item in manifest["rpcMethods"] if item["method"] == "pluginPreservation.snapshot"
@@ -55,6 +55,22 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "owner": "goSidecar",
         "effect": "read",
     }
+    protection = {
+        item["method"]: (item["audience"], item["effect"])
+        for item in manifest["rpcMethods"]
+        if item["capabilityId"] == "plugin.protection"
+    }
+    assert protection == {
+        "plugin.fieldProtection.describe": ("hostOnly", "read"),
+        "plugin.fieldProtection.enable": ("hostOnly", "write"),
+        "plugin.fieldProtection.list": ("hostOnly", "read"),
+        "plugin.fieldProtection.release": ("hostOnly", "write"),
+    }
+    assert all(
+        item["owner"] == "goSidecar" and item["scope"] == "workspace"
+        for item in manifest["rpcMethods"]
+        if item["capabilityId"] == "plugin.protection"
+    )
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
         "method": "schema.getTable",
@@ -77,6 +93,10 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "path.resolveGrant",
         "path.revokeExportTarget",
         "plugin.cancelInstall",
+        "plugin.fieldProtection.describe",
+        "plugin.fieldProtection.enable",
+        "plugin.fieldProtection.list",
+        "plugin.fieldProtection.release",
         "shortcut.list",
         "shortcut.save",
         "shortcut.delete",
@@ -329,6 +349,10 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.fieldProtection.describe",
+        "plugin.fieldProtection.enable",
+        "plugin.fieldProtection.list",
+        "plugin.fieldProtection.release",
         "plugin.listAudit",
         "plugin.listAuditPage",
         "plugin.listCatalog",

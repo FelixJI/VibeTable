@@ -1490,6 +1490,55 @@
       ]
     },
     {
+      "id": "rpc.plugin-field-protection",
+      "kind": "rpc",
+      "names": [
+        "plugin.fieldProtection.describe",
+        "plugin.fieldProtection.enable",
+        "plugin.fieldProtection.list",
+        "plugin.fieldProtection.release"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "plugin.fieldProtection.describe",
+          "plugin.fieldProtection.list"
+        ],
+        "write": [
+          "plugin.fieldProtection.enable",
+          "plugin.fieldProtection.release"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "none",
+      "timeout": "none",
+      "productScenarios": [
+        "54-plugin-models"
+      ],
+      "targetSlice": "L9",
+      "targetPr": null,
+      "deleteWhen": "Completed: Go owns the immutable protection audit events replayed into the write-layer registry; the Host only renders the manager view and never decides protection locally.",
+      "evidence": [
+        "sidecar/internal/fieldprotection/fieldprotection.go",
+        "sidecar/internal/mutation/field_protection.go",
+        "sidecar/internal/app/plugin_field_protection_rpc.go"
+      ]
+    },
+    {
       "id": "rpc.plugin-host-pending",
       "kind": "rpc",
       "names": [

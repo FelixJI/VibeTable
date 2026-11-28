@@ -17,6 +17,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
@@ -46,6 +47,9 @@ func NewCatalog(app core.App) *Catalog {
 }
 
 func (catalog *Catalog) ProtectModelField(ctx context.Context, table, field string, before, after *v2.FieldDefinition) error {
+	if err := fieldprotection.RefuseSchemaErase(ctx, catalog.app, table, field, before, after); err != nil {
+		return err
+	}
 	return pluginmodel.ProtectField(ctx, catalog.app, table, field, before, after)
 }
 

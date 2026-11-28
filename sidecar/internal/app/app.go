@@ -526,6 +526,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				productRegistrations,
 				pluginPreservationSnapshotRegistration(plugins),
 			)
+			// Field protection (#591): manager view, enable and release. Release stays
+			// available while a plugin is disabled or after it was uninstalled.
+			productRegistrations = append(productRegistrations, fieldProtectionRegistrations(pb, capabilities.WorkspaceID, businessGate)...)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,

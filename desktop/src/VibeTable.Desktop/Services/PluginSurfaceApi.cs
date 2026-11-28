@@ -252,6 +252,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
                     break;
+                case "fieldProtection.status":
+                    if (request.Params.ValueKind != JsonValueKind.Object || request.Params.EnumerateObject().Any())
+                        throw Error("plugin_capability_invalid");
+                    result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
+                    break;
                 case "data.versions":
                     {
                         // Host only checks the closed shape; Go validates limits, duplicates,

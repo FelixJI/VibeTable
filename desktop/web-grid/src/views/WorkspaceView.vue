@@ -936,6 +936,13 @@ function backFromPluginSurface(token: string): boolean {
   if (isApplication()) ui.closePluginApp(); else plugins.closeAction();
   return true;
 }
+function openPluginFieldProtection(token: string): boolean {
+  const application = activePluginAppEntry.value;
+  if (application?.surfaceToken !== token || showWorkspaceCenterScreen.value || workspaceSession.isTransitioning)
+    return false;
+  ui.openSettings("fieldProtection", application.pluginId);
+  return true;
+}
 const closedPluginTaskReceipts = computed(() => {
   const visibleTokens = new Set<string>();
   if (!showWorkspaceCenterScreen.value && activePluginAppEntry.value)
@@ -1858,6 +1865,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           :title="activePluginAppEntry.label"
           :theme="pluginTheme"
           :navigate-back="backFromPluginSurface"
+          :open-field-protection="openPluginFieldProtection"
           :tasks="pluginApplicationTasks"
           @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
           @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
@@ -1880,6 +1888,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             :title="slot.entry.label"
             :theme="pluginTheme"
             :navigate-back="backFromPluginSurface"
+            :open-field-protection="openPluginFieldProtection"
             :tasks="pluginApplicationTasks"
             @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
             @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
@@ -1906,7 +1915,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
       :display-columns="tableStore.schema ?? []"
       :busy="insertDialogBusy"
       :disabled="insertRowDisabled"
-      :error="editRejection?.message ?? null"
+      :error="editRejection?.kind === 'not_writable' ? editRejectionText : editRejection?.message ?? null"
       @submit="submitInsertRow"
       @close="closeInsertDialog"
     />

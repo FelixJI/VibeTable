@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -36,6 +38,30 @@ public sealed class TableMutationContractTests
 
         Assert.AreEqual(MutationErrorKind.EditConflict, error.Kind);
         Assert.AreEqual("edit_conflict", MutationErrorMapper.ToWireKind(error.Kind));
+    }
+
+    [TestMethod]
+    [DataRow("zh-CN", "有字段受插件保护，本次更改未保存。")]
+    [DataRow("en-US", "A field is protected by a plugin. The change was not saved.")]
+    public void FieldProtectionUsesLocalizedBusinessReason(string culture, string message)
+    {
+        CultureInfo previous = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(culture);
+            var remote = new RpcRemoteException(-32150, "Product data error", JsonSerializer.SerializeToElement(
+                new { code = "mutation.field_protected", message = "field is protected by a plugin" }));
+            MutationError? error = MutationErrorMapper.MapApplyRejection(remote);
+            Assert.IsNotNull(error);
+            Assert.AreEqual(MutationErrorKind.NotWritable, error.Value.Kind);
+            Assert.AreEqual("mutation.field_protected", error.Value.Code);
+            Assert.AreEqual(message, error.Value.Message);
+            Assert.IsFalse(error.Value.NotSubmitted);
+        }
+        finally
+        {
+            CultureInfo.CurrentUICulture = previous;
+        }
     }
 
     private static readonly JsonSerializerOptions Web =

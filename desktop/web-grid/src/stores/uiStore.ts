@@ -6,7 +6,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export type SystemBaseTheme = "light" | "dark";
 export type AppView = "home" | "tables" | "imports" | "files" | "search" | "conflicts" | "plugins" | "settings";
 /** Sections of the settings page; mirrors the settings view's closed nav set. */
-export type SettingsSection = "general" | "calendar" | "storage" | "versions" | "interaction" | "about";
+export type SettingsSection = "general" | "calendar" | "storage" | "versions" | "fieldProtection" | "interaction" | "about";
 export type StartupPage = "home" | "tables";
 export type WorkspaceStartupPolicy = "lastWorkspace" | "workspaceCenter";
 export type DensityMode = "comfortable" | "compact";
@@ -163,6 +163,7 @@ export const useUiStore = defineStore("ui", () => {
   // Requested settings section for a deep link (e.g. home → 版本与恢复). The
   // settings view consumes it; the navigation is not complete until then.
   const requestedSettingsSection = ref<SettingsSection | null>(null);
+  const requestedFieldProtectionPlugin = ref<string | null>(null);
   // Orders explicit navigation intents, including same-view and null-to-null departures.
   const navigationRevision = ref(0);
   function beginNavigation(): number { return ++navigationRevision.value; }
@@ -229,16 +230,19 @@ export const useUiStore = defineStore("ui", () => {
     activePluginApp.value = null;
     // 任何新的导航都取代未消费的设置分区意图。
     requestedSettingsSection.value = null;
+    requestedFieldProtectionPlugin.value = null;
   }
-  function openSettings(section: SettingsSection): void {
+  function openSettings(section: SettingsSection, fieldProtectionPlugin: string | null = null): void {
     beginNavigation();
     activeView.value = "settings";
     activePluginApp.value = null;
+    requestedFieldProtectionPlugin.value = section === "fieldProtection" ? fieldProtectionPlugin : null;
     requestedSettingsSection.value = section;
   }
   /** Clears a consumed settings deep-link request. */
   function settleSettingsSection(): void {
     requestedSettingsSection.value = null;
+    requestedFieldProtectionPlugin.value = null;
   }
   function openPluginApp(app: ActivePluginApp): void {
     beginNavigation();
@@ -305,6 +309,7 @@ export const useUiStore = defineStore("ui", () => {
     recentTables.value = loadRecentTables(workspaceId);
     tableModified.value = loadTableModified(workspaceId);
     requestedSettingsSection.value = null;
+    requestedFieldProtectionPlugin.value = null;
     // A different workspace has a different plugin catalog; a stale app view
     // must not survive the switch (AC4: no cross-workspace page retention).
     activePluginApp.value = null;
@@ -341,6 +346,7 @@ export const useUiStore = defineStore("ui", () => {
     activeView,
     activePluginApp,
     requestedSettingsSection,
+    requestedFieldProtectionPlugin,
     navigationRevision,
     beginNavigation,
     showDailyQuote,

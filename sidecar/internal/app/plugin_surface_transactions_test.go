@@ -102,6 +102,13 @@ func newTransactionFixture(t *testing.T, storage ...string) *transactionFixture 
 		if len(storage) > 0 && storage[0] == "scoped" {
 			addVersionModel(m)
 		}
+		if len(storage) > 0 && storage[0] == "protection-values" {
+			m.Entities[0].Fields = append(m.Entities[0].Fields, pluginmodel.Field{
+				Key: "protected_number", Label: "测试数量", Type: v2.LogicalNumber, Precision: "float64",
+			}, pluginmodel.Field{
+				Key: "protected_flag", Label: "测试标记", Type: v2.LogicalBool,
+			}, pluginmodel.Field{Key: "protected_text", Label: "测试文本", Type: v2.LogicalText})
+		}
 		if delivery {
 			all := []string{"read", "query", "create", "update", "delete"}
 			m.Entities = []pluginmodel.Entity{

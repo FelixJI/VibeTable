@@ -85,6 +85,16 @@ from backend.contracts.plugin import (
     PluginSnapshot,
     UninstallResult,
 )
+from backend.contracts.plugin_field_protection import (
+    MAX_EVENTS,
+    MAX_PROTECTED_FIELDS,
+    CONTRACT as FIELD_PROTECTION_CONTRACT,
+    PluginFieldProtectionDescribeResult,
+    PluginFieldProtectionEnableParams,
+    PluginFieldProtectionIdentityParams,
+    PluginFieldProtectionListItem,
+    PluginFieldProtectionReleaseParams,
+)
 from backend.contracts.plugin_rpc import (
     CancelInstallParams,
     CommitInstallParams,
@@ -344,6 +354,56 @@ def _model_payload(
             },
         }
         return model.model_validate(samples[model.__name__]).model_dump(mode="json", by_alias=True)
+    if model is PluginFieldProtectionDescribeResult:
+        # One bound and protected declared field; the golden must satisfy the
+        # closed pydantic model because Go returns the same camelCase shape.
+        owner = {
+            "pluginId": "sample-plugin",
+            "installationId": "00000000-0000-4000-8000-000000000001",
+        }
+        entry = {
+            "tableId": "orders",
+            "fieldId": "fld_00000001",
+            "entity": "sample-value",
+            "field": "sample-value",
+            "tableName": "Orders",
+            "fieldName": "Code",
+            "fieldType": "text",
+            **owner,
+        }
+        return model.model_validate(
+            {
+                "contract": FIELD_PROTECTION_CONTRACT,
+                "projectKey": "local:default",
+                "pluginId": "sample-plugin",
+                "installation": {
+                    "installationId": owner["installationId"],
+                    "revision": 1,
+                    "status": "enabled",
+                    "version": "1.0.0",
+                    "pluginApi": "3.x",
+                },
+                "declared": True,
+                "suggested": [
+                    {
+                        **{key: entry[key] for key in ("entity", "field", "tableId", "fieldId")},
+                        **{key: entry[key] for key in ("tableName", "fieldName", "fieldType")},
+                        "state": "protected",
+                        "owner": owner,
+                        "ownerStale": False,
+                        "diagnostic": "",
+                        "eligible": False,
+                    }
+                ],
+                "protected": [entry],
+                "foreign": [],
+                "blockingReasons": [],
+                "events": 1,
+                "eventsRemaining": MAX_EVENTS - 1,
+                "maxProtectedFields": MAX_PROTECTED_FIELDS,
+                "maxEvents": MAX_EVENTS,
+            }
+        ).model_dump(mode="json", by_alias=True)
     model_stack = (*model_stack, model)
     if issubclass(model, ProductParams):
         return _product_payload(model)
@@ -419,6 +479,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "pluginPreservation.snapshot": PluginPreservationPageParams,
             "plugin.cancelTask": RetiredPluginExecutionParams,
             "plugin.describeAction": RetiredPluginExecutionParams,
+            "plugin.fieldProtection.describe": PluginFieldProtectionIdentityParams,
+            "plugin.fieldProtection.enable": PluginFieldProtectionEnableParams,
+            "plugin.fieldProtection.list": PluginProjectParams,
+            "plugin.fieldProtection.release": PluginFieldProtectionReleaseParams,
             "plugin.resolveFile": RetiredPluginExecutionParams,
             "plugin.resolveInteraction": RetiredPluginExecutionParams,
             "plugin.startAction": RetiredPluginExecutionParams,
@@ -777,6 +841,12 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "nextRecordOffset": 0,
             },
         ),
+        "plugin.fieldProtection.describe": _typed(PluginFieldProtectionDescribeResult),
+        "plugin.fieldProtection.enable": _typed(PluginFieldProtectionDescribeResult),
+        "plugin.fieldProtection.list": _typed(
+            list[PluginFieldProtectionListItem], "PluginFieldProtectionList"
+        ),
+        "plugin.fieldProtection.release": _typed(PluginFieldProtectionDescribeResult),
         "contentProfile.commit": _typed(ContentProfileSnapshot),
         "contentProfile.delete": _typed(ContentProfileDeleteResult),
         "contentProfile.load": _typed(ContentProfileSnapshot),

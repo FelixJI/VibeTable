@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/security"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
@@ -346,6 +347,11 @@ func executeSurfaceTransaction(ctx context.Context, app core.App, kernel *mutati
 		return response, nil
 	}
 	preview, requests := prepared.preview, prepared.requests
+	// The owning plugin's transaction (#591) is the only writer allowed to
+	// change fields it protects; every other kernel caller stays a normal writer.
+	for i := range requests {
+		requests[i].ProtectedFieldWriter = &fieldprotection.Owner{PluginID: input.PluginID, InstallationID: input.InstallationID}
+	}
 	authorize := transactionAuthorize(input, workspace)
 	authorizeCurrent := func(ctx context.Context, tx core.App, table, kind string) error {
 		if err := ctx.Err(); err != nil {

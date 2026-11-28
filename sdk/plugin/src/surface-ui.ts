@@ -4,7 +4,7 @@ import type { SurfacePhase } from "./types.js";
 /** Manifest `compatibility.surfaceLifecycle` value a plugin declares to opt into Host pre-warming. */
 export const SURFACE_LIFECYCLE_CONTRACT = "vibetable.plugin-surface-lifecycle.v1" as const;
 
-export const SURFACE_UI_METHODS = ["context.current", "tasks.list", "tasks.cancel", "notification.show", "navigation.back"] as const;
+export const SURFACE_UI_METHODS = ["context.current", "tasks.list", "tasks.cancel", "notification.show", "navigation.back", "navigation.openFieldProtection"] as const;
 export const SURFACE_UI_UNSUPPORTED = ["navigation.table", "navigation.record", "navigation.url", "task.create", "task.approve"] as const;
 export interface SurfacePresentation {
   readonly contract: "vibetable.plugin-theme.v1";
@@ -208,7 +208,11 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
     },
     ui: {
       capabilities: () => ({ methods: SURFACE_UI_METHODS, unsupported: SURFACE_UI_UNSUPPORTED }),
-      navigation: { back: () => call<{ readonly navigated: boolean }>("navigation.back") },
+      navigation: {
+        back: () => call<{ readonly navigated: boolean }>("navigation.back"),
+        /** Open the Host settings for the current plugin. Only the manager can make changes there. */
+        openFieldProtection: () => call<{ readonly navigated: boolean }>("navigation.openFieldProtection"),
+      },
       notifications: { show: (message: string) => call<{ readonly shown: boolean }>("notification.show", { message }) },
     },
     get available(): boolean { return channel !== undefined; },

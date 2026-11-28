@@ -243,16 +243,25 @@ func ProtectField(ctx context.Context, app core.App, table, field string, before
 				if after == nil {
 					return protected("fieldId")
 				}
-				// Display and help remain user-editable; value/storage/relations stay compatible.
-				a, z := *before, *after
-				a.DisplayName, a.Help, a.Display = z.DisplayName, z.Help, z.Display
-				if !reflect.DeepEqual(a, z) {
+				if !DisplayOnlyChange(before, after) {
 					return protected("fieldId")
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// DisplayOnlyChange reports whether a field change touches nothing but display
+// name, help and display options. Such a change keeps stored values, so it is
+// the only change a bound or protected field accepts without being released.
+func DisplayOnlyChange(before, after *v2.FieldDefinition) bool {
+	if before == nil || after == nil {
+		return false
+	}
+	a, z := *before, *after
+	a.DisplayName, a.Help, a.Display = z.DisplayName, z.Help, z.Display
+	return reflect.DeepEqual(a, z)
 }
 func protected(path string) error {
 	return &schemaerror.ProductError{Code: "plugin.model.core_protected", Path: path, Message: "field or table is bound to a plugin model; rename and user extension fields remain editable"}

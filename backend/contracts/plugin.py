@@ -10,6 +10,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from backend._version import __version__
+from backend.contracts.plugin_field_protection import (
+    MAX_DECLARATION_BYTES as FIELD_PROTECTION_DECLARATION_BYTES,
+)
+from backend.contracts.plugin_field_protection import (
+    PluginFieldProtectionDeclaration as FieldProtectionDeclaration,
+)
 from backend.contracts.plugin_model import PluginModelDeclaration
 from backend.contracts.plugin_transactions import PluginTransactionsDeclaration
 
@@ -140,6 +146,24 @@ class PluginManifest(PluginContract):
                 1 << 20
             ):
                 raise ValueError("transactions declaration exceeds the 1 MiB budget")
+        if "fieldProtection" in self.permissions:
+            if not native:
+                raise ValueError("field protection permissions require native plugin API 3.x")
+            protection = FieldProtectionDeclaration.model_validate(
+                self.permissions["fieldProtection"], by_alias=True, by_name=False
+            )
+            # Go stores the declaration with the installation and decodes it
+            # strictly; an unknown field or a read-only entity must never get there.
+            protection_model = (
+                PluginModelDeclaration.model_validate(self.permissions["model"])
+                if "model" in self.permissions
+                else None
+            )
+            protection.validate_model(protection_model)
+            if len(json.dumps(self.permissions["fieldProtection"], ensure_ascii=False).encode()) > (
+                FIELD_PROTECTION_DECLARATION_BYTES
+            ):
+                raise ValueError("field protection declaration exceeds the 1 MiB budget")
         if native != (self.compatibility.get("pluginApi") == "3.x"):
             raise ValueError("manifest/API version mismatch")
         if native and any(action.worker_entry is not None for action in self.actions):

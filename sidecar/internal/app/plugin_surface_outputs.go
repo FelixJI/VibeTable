@@ -125,6 +125,12 @@ func executeSurfaceOutput(ctx context.Context, app core.App, workspace string, i
 			if err != nil {
 				return err
 			}
+			// Persistent field protection (#591): an issued archive field accepts
+			// archives from its registered owner installation only. Refuse before
+			// any byte is staged; the original guards below stay unchanged.
+			if err := refuseProtectedSurfaceField(ctx, tx, input, request.Collection, field); err != nil {
+				return err
+			}
 			policy := installed.ModelOutputFields[[2]string{request.Collection, field}]
 			if policy != nil {
 				if int64(request.SizeBytes) > policy.MaxBytesPerFile {

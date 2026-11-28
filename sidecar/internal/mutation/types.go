@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"github.com/pocketbase/pocketbase/core"
 	"io"
+
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 )
 
 const ContractVersion = "2.0"
@@ -37,6 +39,10 @@ type Request struct {
 	InternalBypassMigrationFence bool `json:"-"`
 	// Authorize is supplied only by trusted callers and runs inside the business transaction.
 	Authorize func(context.Context, core.App) error `json:"-"`
+	// ProtectedFieldWriter identifies the owning plugin installation whose
+	// transaction may change host-protected fields (#591). Trusted callers
+	// only; it is never accepted from JSON and never part of the request hash.
+	ProtectedFieldWriter *fieldprotection.Owner `json:"-"`
 }
 
 type Actor struct {

@@ -126,6 +126,7 @@ function host(options: {
   failProfile?: string;
   failLink?: string;
   failMutation?: string;
+  protectTitle?: boolean;
 } = {}) {
   let currentProfile = options.profile === undefined
     ? { profile, revision: "profile-1" }
@@ -164,6 +165,10 @@ function host(options: {
     }
     if (type === "mutation.apply") {
       if (options.failMutation) throw new Error(options.failMutation);
+      const operations = payload.operations as { values: Record<string, unknown> }[];
+      if (options.protectTitle && operations.some(operation => Object.hasOwn(operation.values, "title"))) {
+        return { error: { code: "mutation.field_protected", message: "field is protected by a plugin" } };
+      }
       return {
         contractVersion: "2.0",
         status: "applied",
@@ -393,6 +398,34 @@ describe("ContentRecordPanel", () => {
     expect(request).toHaveBeenCalledWith("recordDocumentLink.delete", expect.objectContaining({
       expectedRevision: "link-3",
     }));
+    wrapper.unmount();
+  });
+
+  it("retains the record draft after a protected field is rejected and saves only the legal changes", async () => {
+    const request = host({ protectTitle: true });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.findAll("button").find(button => button.text().includes("编辑内容"))!.trigger("click");
+    const inputs = wrapper.findAllComponents(NInput);
+    inputs[0]!.vm.$emit("update:value", "拒绝的标题");
+    inputs[2]!.vm.$emit("update:value", "合法的新正文");
+    const save = () => wrapper.get('[data-testid="content-record-save"]').trigger("click");
+    await save();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("有字段受插件保护，本次更改未保存。");
+    expect(wrapper.emitted("saved")).toBeUndefined();
+    expect(inputs[0]!.props("value")).toBe("拒绝的标题");
+    expect(inputs[2]!.props("value")).toBe("合法的新正文");
+    inputs[0]!.vm.$emit("update:value", "初始标题");
+    await save();
+    await flushPromises();
+
+    const lastWrite = request.mock.calls.filter(([method]) => method === "mutation.apply").at(-1);
+    expect(lastWrite?.[1].operations).toEqual([{ kind: "update", recordId: "r1", values: { body: "合法的新正文" } }]);
+    expect(wrapper.emitted("saved")).toHaveLength(1);
+    expect(wrapper.text()).toContain("初始标题");
+    expect(wrapper.text()).toContain("合法的新正文");
     wrapper.unmount();
   });
 

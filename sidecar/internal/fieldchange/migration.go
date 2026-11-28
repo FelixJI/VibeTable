@@ -18,6 +18,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -831,6 +832,9 @@ func (service *MigrationService) switchAuthority(
 		}
 		currentField, err := NewCatalog(app).Field(ctx, plan.Intent.TableID, plan.Intent.FieldID)
 		if err != nil {
+			return err
+		}
+		if err := fieldprotection.RefuseSchemaErase(ctx, app, plan.Intent.TableID, plan.Intent.FieldID, currentField, plan.After); err != nil {
 			return err
 		}
 		if err := pluginmodel.ProtectField(ctx, app, plan.Intent.TableID, plan.Intent.FieldID, currentField, plan.After); err != nil {

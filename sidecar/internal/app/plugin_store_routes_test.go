@@ -33,6 +33,7 @@ func TestPluginPrivateHTTPMatchesWorkerShapeAndPublicOwnerUsesDurableGate(t *tes
 	bindWorkspaceV2WriteBoundary(&core.ServeEvent{Router: r})
 	registerPluginStoreRoutes(r, service, f.runtime.CoordinateBusinessWrite)
 	registrations := PluginSharedStateRegistrations(service, f.runtime.CoordinateBusinessWrite)
+	registrations = append(registrations, fieldProtectionRegistrations(f.pb, "11111111-1111-4111-8111-111111111111")...)
 	for _, descriptor := range productcapabilities.CurrentOwnerRPCDescriptors(productcapabilities.GoSidecar) {
 		if !strings.HasPrefix(descriptor.Method, "plugin.") {
 			registrations = append(registrations, productrpc.Registration{Method: descriptor.Method, Scope: descriptor.Scope, ValidateParams: func(json.RawMessage) error { t.Fatal("unrelated validation"); return nil }, Handler: func(context.Context, json.RawMessage) (any, error) { t.Fatal("unrelated handler"); return nil, nil }})

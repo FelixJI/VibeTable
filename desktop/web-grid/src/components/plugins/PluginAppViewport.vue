@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import type { PluginSurfacePhase, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
+import { t } from "@/i18n";
 
 withDefaults(defineProps<{
   src: string;
@@ -8,6 +9,7 @@ withDefaults(defineProps<{
   title: string;
   theme: PluginSurfaceThemeSnapshot;
   navigateBack?: (surfaceToken: string) => boolean;
+  openFieldProtection?: (surfaceToken: string) => boolean;
   task?: PluginTaskViewSnapshot | null;
   tasks?: readonly PluginTaskViewSnapshot[];
   /** false while the platform shows another view: the whole viewport leaves the tab order. */
@@ -41,6 +43,8 @@ const emit = defineEmits<{
         <strong>{{ title }}</strong>
       </div>
       <div class="plugin-app-actions">
+        <button v-if="active && phase === 'foreground' && openFieldProtection" type="button" data-testid="plugin-app-field-protection"
+          @click="openFieldProtection?.(surfaceToken)">{{ t("settings.fieldProtection.title") }}</button>
         <button type="button" data-testid="plugin-app-manage" @click="emit('manage')">管理插件</button>
         <button type="button" data-testid="plugin-app-return" class="primary" @click="emit('close', surfaceToken)">返回平台</button>
       </div>
@@ -52,6 +56,7 @@ const emit = defineEmits<{
         :title="title"
         :theme="theme"
         :navigate-back="navigateBack"
+        :open-field-protection="active && phase === 'foreground' ? openFieldProtection : undefined"
         :task="task"
         :tasks="tasks"
         variant="app"

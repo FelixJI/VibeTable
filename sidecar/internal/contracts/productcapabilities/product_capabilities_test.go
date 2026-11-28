@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 119 {
-		t.Fatalf("RPCDescriptors length = %d, want 119", len(descriptors))
+	if len(descriptors) != 123 {
+		t.Fatalf("RPCDescriptors length = %d, want 123", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 77 {
+	if len(allGo) != 81 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -94,12 +94,20 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	relationMethods := map[string]bool{"relation.applyDelta": true, "relation.createTarget": true, "relation.updateSingle": true}
 	versionMethods := map[string]Effect{"version.compare": ReadEffect, "version.create": WriteEffect, "version.delete": WriteEffect, "version.list": ReadEffect, "version.promote": WriteEffect, "version.save": WriteEffect}
+	protectionEffects := map[string]Effect{"plugin.fieldProtection.describe": ReadEffect, "plugin.fieldProtection.enable": WriteEffect, "plugin.fieldProtection.list": ReadEffect, "plugin.fieldProtection.release": WriteEffect}
 	otherGo := []RPCDescriptor{}
 	for _, descriptor := range allGo {
 		if descriptor.Method == "pluginPreservation.snapshot" {
 			if descriptor != (RPCDescriptor{Method: "pluginPreservation.snapshot", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.preservation", Owner: GoSidecar, Effect: ReadEffect}) {
 				t.Fatalf("preservation descriptor = %#v", descriptor)
 			}
+			continue
+		}
+		if effect, found := protectionEffects[descriptor.Method]; found {
+			if descriptor != (RPCDescriptor{Method: descriptor.Method, Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.protection", Owner: GoSidecar, Effect: effect}) {
+				t.Fatalf("field protection descriptor = %#v", descriptor)
+			}
+			delete(protectionEffects, descriptor.Method)
 			continue
 		}
 		if effect, found := versionMethods[descriptor.Method]; found {
@@ -142,6 +150,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	if len(versionMethods) != 0 {
 		t.Fatalf("missing versions: %v", versionMethods)
+	}
+	if len(protectionEffects) != 0 {
+		t.Fatalf("missing field protection descriptors: %v", protectionEffects)
 	}
 	if len(relationMethods) != 0 {
 		t.Fatalf("missing relation writes: %v", relationMethods)

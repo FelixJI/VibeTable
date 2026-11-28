@@ -86,6 +86,10 @@ public sealed class ProductRpcCapabilityManifestTests
                 "lookup.valuePage:workspace",
                 "mutation.apply:workspace",
                 "mutation.preview:workspace",
+                "plugin.fieldProtection.describe:workspace",
+                "plugin.fieldProtection.enable:workspace",
+                "plugin.fieldProtection.list:workspace",
+                "plugin.fieldProtection.release:workspace",
                 "plugin.listAudit:workspace",
                 "plugin.listAuditPage:workspace",
                 "plugin.listCatalog:workspace",
@@ -132,6 +136,14 @@ public sealed class ProductRpcCapabilityManifestTests
                 .Select(item => $"{item.Method}:{item.Scope}").ToArray());
         Assert.IsTrue(manifest.TryGet("history.read", out ProductRpcCapability historyRead));
         Assert.AreEqual("goSidecar", historyRead.Owner);
+        Assert.IsTrue(manifest.TryGet("plugin.fieldProtection.enable", out ProductRpcCapability protectionEnable));
+        Assert.AreEqual("hostOnly", protectionEnable.Audience);
+        Assert.AreEqual("plugin.protection", protectionEnable.CapabilityId);
+        Assert.AreEqual("goSidecar", protectionEnable.Owner);
+        Assert.AreEqual("write", protectionEnable.Effect);
+        Assert.IsTrue(manifest.TryGet("plugin.fieldProtection.describe", out ProductRpcCapability protectionDescribe));
+        Assert.AreEqual("read", protectionDescribe.Effect);
+        Assert.AreEqual("hostOnly", protectionDescribe.Audience);
     }
 
     [TestMethod]

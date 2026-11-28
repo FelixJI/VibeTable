@@ -8,13 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/importvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
@@ -137,6 +140,49 @@ func pasteAssertCode(t *testing.T, response productrpc.ResponseEnvelope, code st
 		t.Fatalf("response = %+v; want %s", response, code)
 	}
 }
+
+func TestPasteProductRejectsProtectedInsertAndCommitsAfterRelease(t *testing.T) {
+	fixture, owner, dispatcher := newPasteTestRuntime(t)
+	tableID := fixture.request.TableID
+	field, ok := fixture.definition.Field(fixture.field)
+	if !ok {
+		t.Fatal("fixture title field missing")
+	}
+	const pluginID = "com.example.paste-owner"
+	const installationID = "paste-owner-fixture"
+	hash := "sha256:" + strings.Repeat("a", 64)
+	projectKey := pluginstore.New(fixture.pb, owner.workspaceID).ProjectKey()
+	recordProtectionEvent(t, fixture.pb, owner.workspaceID, "fieldProtection:enable:paste", projectKey, pluginID, "1.0.0", hash,
+		fieldprotection.EnabledDetails{InstallationID: installationID, InstallationRevision: 1, ModelID: "paste", ModelVersion: 1,
+			Fields: []fieldprotection.Entry{{TableID: tableID, FieldID: field.Identity.FieldID, Entity: "items", Field: "title",
+				TableName: "Mutation HTTP", FieldName: "Title", FieldType: "text", PluginID: pluginID, InstallationID: installationID}}},
+		"2026-01-01T00:00:00Z")
+	before := fixture.state(t)
+	plan := pasteTestPreview(t, fixture, dispatcher)
+	pasteAssertCode(t, pasteTestCall(t, dispatcher, "table.applyPaste", map[string]any{
+		"collection": tableID, "token": plan.Token.Token, "idempotencyKey": "protected-paste",
+	}), "mutation.field_protected")
+	if after := fixture.state(t); !reflect.DeepEqual(before, after) {
+		t.Fatalf("rejected paste changed authority: before=%v after=%v", before, after)
+	}
+	recordProtectionEvent(t, fixture.pb, owner.workspaceID, "fieldProtection:release:paste", projectKey, pluginID, "1.0.0", hash,
+		fieldprotection.ReleasedDetails{Fields: []fieldprotection.FieldRef{{TableID: tableID, FieldID: field.Identity.FieldID}}},
+		"2026-01-02T00:00:00Z")
+	released := pasteTestPreview(t, fixture, dispatcher)
+	response := pasteTestCall(t, dispatcher, "table.applyPaste", map[string]any{
+		"collection": tableID, "token": released.Token.Token, "idempotencyKey": "released-paste",
+	})
+	var result pasteApplyResult
+	if response.Error != nil || json.Unmarshal(response.Result, &result) != nil ||
+		result.Outcome != "committed" || len(result.CreatedRowKeys) != 1 {
+		t.Fatalf("paste after release = %+v (%+v)", response, result)
+	}
+	row, err := fixture.pb.FindRecordById(fixture.definition.PhysicalName, fmt.Sprint(result.CreatedRowKeys[0]))
+	if err != nil || row.GetString(fixture.field) != "second" {
+		t.Fatalf("restored paste did not commit its text value: %v", err)
+	}
+}
+
 func TestPasteProductPendingBindsKeyAndRetriesOnlyUntilCommitted(t *testing.T) {
 	fixture, owner, dispatcher := newPasteTestRuntime(t)
 	probe := &pasteUnknownOnce{actual: fixture.authority}

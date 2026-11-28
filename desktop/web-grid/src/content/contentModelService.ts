@@ -7,6 +7,7 @@ import type {
 } from "@/contracts/generated/workbench";
 import type { MutationReceipt } from "@/contracts";
 import { useHostBridge } from "@/services/bridgeContext";
+import { mutationRejectionMessage } from "@/services/notificationPolicy";
 
 export class ContentModelClientError extends Error {
   constructor(readonly code: string, message: string) {
@@ -122,5 +123,8 @@ function productError(value: unknown): ContentModelClientError | null {
   }
   const error = envelope.error as { code?: unknown; message?: unknown };
   if (typeof error.code !== "string" || typeof error.message !== "string") return null;
-  return new ContentModelClientError(error.code, error.message);
+  const message = error.code === "mutation.field_protected"
+    ? mutationRejectionMessage({ kind: "not_writable", code: error.code, message: error.message })
+    : error.message;
+  return new ContentModelClientError(error.code, message);
 }

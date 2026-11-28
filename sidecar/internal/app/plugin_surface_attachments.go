@@ -9,6 +9,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -59,6 +60,19 @@ func (ports *pluginSurfaceIO) authorizeAttachment(input pluginSurfaceAPIRequest,
 	}
 	return nil
 }
+
+// refuseProtectedSurfaceField applies persistent field protection to a plugin
+// surface target before any byte is staged. The writer identity is the one the
+// host verified for this surface; the kernel decides whether it is the owner.
+func refuseProtectedSurfaceField(ctx context.Context, app core.App, input pluginSurfaceAPIRequest, tableID, fieldID string) error {
+	table, err := schemaexecution.Describe(ctx, app, tableID)
+	if err != nil {
+		return err
+	}
+	writer := &fieldprotection.Owner{PluginID: input.PluginID, InstallationID: input.InstallationID}
+	return mutation.RefuseProtectedField(mutation.WithProtectedFieldWriter(ctx, app, writer), app, table, fieldID)
+}
+
 func executeSurfaceAttachment(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, ports *pluginSurfaceIO) (any, error) {
 	if ports == nil || ports.attachments == nil {
 		return nil, pluginDataError("plugin_api_unsupported")
@@ -102,6 +116,9 @@ func executeSurfaceAttachment(ctx context.Context, app core.App, workspace strin
 			return pluginDataError("plugin_read_denied")
 		}
 		if input.Method == "attachment.stage" {
+			if err := refuseProtectedSurfaceField(ctx, tx, input, request.Collection, field.Identity.FieldID); err != nil {
+				return err
+			}
 			if installed.ActionRisk == "read" || request.Handle == "" || request.FileGrantID == "" || request.RunID == "" {
 				return pluginDataError("plugin_write_denied")
 			}

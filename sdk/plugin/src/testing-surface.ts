@@ -53,6 +53,10 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
       return options.snapshotAdapter(method, params, signal);
     }
     if (method.startsWith("model.")) fail("plugin_api_unsupported");
+    // Persistent field protection (#591) is a Host-only administrator decision
+    // made in the native manager entry. The synthetic host never enables or
+    // releases it and no adapter can fake that, exactly like the real surface.
+    if (method.startsWith("fieldProtection.")) fail("plugin_capability_invalid");
     if (method === "context.read") return host.capabilities.context.read();
     if (method === "data.describe") return host.capabilities.data.describe(params as unknown as Parameters<typeof host.capabilities.data.describe>[0]);
     if (method === "data.releaseCursor") {

@@ -20,6 +20,18 @@ func unrelatedPluginCatalogRegistration(t *testing.T, method string) productrpc.
 	}
 }
 
+// unrelatedFieldProtectionRegistration keeps dispatcher fixtures exact for one
+// generated plugin.fieldProtection.* route without reading anything.
+func unrelatedFieldProtectionRegistration(t *testing.T, method string) productrpc.Registration {
+	t.Helper()
+	return productrpc.Registration{Method: method, Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: func(json.RawMessage) error { t.Fatalf("unrelated field protection validator invoked"); return nil },
+		Handler: func(context.Context, json.RawMessage) (any, error) {
+			t.Fatalf("unrelated field protection handler invoked")
+			return nil, nil
+		}}
+}
+
 // unrelatedPluginPreservationRegistration keeps dispatcher fixtures exact for
 // the generated pluginPreservation.snapshot route without reading anything.
 func unrelatedPluginPreservationRegistration(t *testing.T) productrpc.Registration {

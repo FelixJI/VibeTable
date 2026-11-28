@@ -458,6 +458,38 @@
       "effect": "read"
     },
     {
+      "method": "plugin.fieldProtection.describe",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.protection",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.fieldProtection.enable",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.protection",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.fieldProtection.list",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.protection",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.fieldProtection.release",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.protection",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
       "method": "plugin.inspectInstall",
       "scope": "workspace",
       "audience": "rendererPublic",

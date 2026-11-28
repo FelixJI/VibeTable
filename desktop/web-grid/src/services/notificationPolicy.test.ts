@@ -1,4 +1,5 @@
 import type { MutationErrorPayload } from "@/contracts";
+import { getLocale, setLocale } from "@/i18n";
 import { describe, expect, it } from "vitest";
 import { WorkspaceV2RequestError } from "./workspaceV2HostAdapter";
 import {
@@ -16,6 +17,19 @@ import {
 describe("notificationPolicy", () => {
   it.each(["mutation_validation", "not_writable"] as const)("review17 preserves the public reason of a definite %s rejection", kind => {
     expect(mutationRejectionMessage({ kind, message: "Referenced records cannot be deleted." })).toBe("Referenced records cannot be deleted.");
+  });
+
+  it.each([
+    ["zh-CN", "有字段受插件保护，本次更改未保存。"],
+    ["en-US", "A field is protected by a plugin. The change was not saved."],
+  ] as const)("localizes an authoritative field protection rejection for %s", (locale, expected) => {
+    const previous = getLocale();
+    try {
+      setLocale(locale);
+      expect(mutationRejectionMessage({ kind: "not_writable", code: "mutation.field_protected", message: "host locale differs" })).toBe(expected);
+    } finally {
+      setLocale(previous);
+    }
   });
 
   it("review10 a proven preflight unknown uses safe generic rejection copy", () => {

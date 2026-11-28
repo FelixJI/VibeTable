@@ -242,6 +242,9 @@ func (kernel *Kernel) Preview(ctx context.Context, request Request) (PreviewResu
 }
 
 func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request) (PreviewResult, error) {
+	// The bound writer lets an authenticated plugin surface learn about a
+	// protected target from its own Authorize hook without a second registry load.
+	ctx = WithProtectedFieldWriter(ctx, app, request.ProtectedFieldWriter)
 	if request.Authorize != nil {
 		if err := request.Authorize(ctx, app); err != nil {
 			return PreviewResult{}, err

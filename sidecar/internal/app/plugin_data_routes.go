@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprotection"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginmodel"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
@@ -73,11 +74,15 @@ type pluginInstallation struct {
 			Dataset   string `json:"dataset,omitempty"`
 		} `json:"compatibility"`
 		Permissions struct {
-			Transactions   *transactionrules.Declaration `json:"transactions,omitempty"`
-			Model          *pluginmodel.Declaration      `json:"model,omitempty"`
-			Data           []pluginReadGrant             `json:"data"`
-			PrivateStorage bool                          `json:"privateStorage"`
-			Files          []string                      `json:"files"`
+			Transactions *transactionrules.Declaration `json:"transactions,omitempty"`
+			Model        *pluginmodel.Declaration      `json:"model,omitempty"`
+			// Declared suggestion only (#591): protection stays OFF until the
+			// workspace manager enables it in the host; each field must exist in
+			// the sibling model declaration.
+			FieldProtection *fieldprotection.Declaration `json:"fieldProtection,omitempty"`
+			Data            []pluginReadGrant            `json:"data"`
+			PrivateStorage  bool                         `json:"privateStorage"`
+			Files           []string                     `json:"files"`
 		} `json:"permissions"`
 	} `json:"manifest"`
 }

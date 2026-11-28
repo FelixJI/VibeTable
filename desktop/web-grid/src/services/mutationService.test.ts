@@ -812,6 +812,25 @@ describe("mutationService correlated writes", () => {
     expect(s.rejected).toHaveBeenCalledTimes(2);
   });
 
+  it("restores a protected cell and keeps edits to an extension field available", async () => {
+    const s = setup();
+    s.service.updateCell(1, "name", "old", "refused");
+    const error = { kind: "not_writable", code: "mutation.field_protected", message: "field is protected by a plugin" };
+    s.reply(s.posted.at(-1)!, "table.editRejected", error);
+    await flush();
+    expect(s.rejected).toHaveBeenCalledWith(error);
+    expect(s.table.allRows[0]?.name).toBe("old");
+    expect(s.history.writeUncertain).toBe(false);
+    expect(s.history.canUndo).toBe(false);
+
+    s.service.updateCell(1, "other", "before", "allowed");
+    expect(s.posted).toHaveLength(2);
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("allowed", 1, "other"));
+    await flush();
+    expect(s.table.allRows[0]).toMatchObject({ name: "old", other: "allowed" });
+    expect(s.history.canUndo).toBe(true);
+  });
+
   it("a rejected earlier optimistic value is not used as the next successful write's undo value", async () => {
     const s = setup();
     s.service.updateCell(1, "name", "old", "first"); const first = s.posted.at(-1)!;
@@ -1186,7 +1205,25 @@ describe("paste request ownership", () => {
     expect(s.history.undoStackSize).toBe(2); expect(s.posted.filter((request) => request.type === "table.applyPasteRequested")).toHaveLength(1);
   });
 
-  it.each(["paste_token_consumed", "paste_idempotency_mismatch", "mutation.storage.failed", "paste_future_code", "typed-unknown"])("review17 %s cannot turn paste uncertainty into zero writes", async (code) => {
+  it("rejects the whole protected paste with a localized reason and allows a later write", async () => {
+    const s = pasteSetup();
+    s.paste.apply(input);
+    s.reply(s.posted.at(-1)!, "table.editRejected", {
+      kind: "not_writable", code: "mutation.field_protected", message: "field is protected by a plugin",
+    });
+    await flush();
+    expect(s.store.error).toBe("有字段受插件保护，本次更改未保存。");
+    expect(s.history.writeUncertain).toBe(false);
+    expect(s.applied).not.toHaveBeenCalled();
+    expect(s.table.allRows.map(row => row.name)).toEqual(["old", "two"]);
+    s.service.updateCell(2, "name", "two", "allowed");
+    expect(s.posted.at(-1)?.type).toBe("table.updateCellRequested");
+    s.reply(s.posted.at(-1)!, "table.editCommitted", edit("allowed", 2));
+    await flush();
+    expect(s.table.allRows.map(row => row.name)).toEqual(["old", "allowed"]);
+  });
+
+  it.each(["paste_token_consumed", "paste_idempotency_mismatch", "mutation.storage.failed", "mutation.field_protection.unavailable", "paste_future_code", "typed-unknown"])("review17 %s cannot turn paste uncertainty into zero writes", async (code) => {
     const s = pasteSetup(); await seed(s);
     const undo = s.service.performUndo(); await flush(); s.reply(s.posted.at(-1)!, "table.editCommitted", edit("old", 1, "name", 3)); await undo;
     s.paste.apply(input); const apply = s.posted.at(-1)!;

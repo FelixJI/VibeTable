@@ -1149,6 +1149,40 @@ describe("WorkspaceView", () => {
       expect(closes()).toEqual(["application-token", "application-token-2"]);
     });
 
+    it("opens host field protection from the same pre-warmed frame only after foreground activation", async () => {
+      const { wrapper, plugin, setCatalog } = await prepare();
+      const token = "application-token";
+      setCatalog(declaredApplication(plugin, token, 3));
+      await flushPromises();
+      const slot = prewarmSlots(wrapper, "background")[0]!;
+      const frame = slot.get("iframe");
+      const post = captureFramePosts(slot);
+      const navigate = () => window.dispatchEvent(new MessageEvent("message", {
+        origin: new URL(frame.attributes("src")!).origin, source: frame.element.contentWindow,
+        data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "action",
+          payload: { service: "ui", requestId: "open-protection", method: "navigation.openFieldProtection", params: {} } },
+      }));
+      const reply = () => post.mock.calls.filter(([message]) => message.event === "uiResponse").at(-1)?.[0].payload;
+
+      expect(slot.find('[data-testid="plugin-app-field-protection"]').exists()).toBe(false);
+      navigate();
+      expect(reply()?.error?.code).toBe("plugin_surface_background");
+      expect(useUiStore().activeView).not.toBe("settings");
+
+      signalReady(slot, token);
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click");
+      await flushPromises();
+      const foreground = prewarmSlots(wrapper, "foreground")[0]!;
+      expect(foreground.get("iframe").element).toBe(frame.element);
+      expect(foreground.find('[data-testid="plugin-app-field-protection"]').exists()).toBe(true);
+      navigate();
+      await flushPromises();
+      expect(reply()?.result).toEqual({ navigated: true });
+      expect(useUiStore().activeView).toBe("settings");
+      expect(wrapper.get('[data-testid="settings-nav-fieldProtection"]').classes()).toContain("active");
+      expect(prewarmSlots(wrapper, "foreground")).toHaveLength(0);
+    });
+
     it("never revives a self-closed background frame on a catalog refresh", async () => {
       const { wrapper, plugin, record, setCatalog } = await prepare();
       const declared = (token: string, revision: number) => declaredApplication(plugin, token, revision);
@@ -4066,7 +4100,10 @@ describe("WorkspaceView", () => {
     expect(firstRow.attributes("disabled")).toBeDefined();
   });
 
-  it("collects required values before insertion and keeps the form after a rejected write", async () => {
+  it.each([
+    ["validation", { kind: "mutation_validation", message: "名称已存在" }, "名称已存在"],
+    ["field protection", { kind: "not_writable", code: "mutation.field_protected", message: "field is protected by a plugin" }, "有字段受插件保护，本次更改未保存。"],
+  ])("collects required values before insertion and keeps the form after %s rejection", async (_scenario, rejection, message) => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -4096,10 +4133,12 @@ describe("WorkspaceView", () => {
     const request = posted.find(message => message.type === "table.insertRowRequested")!;
     expect(request.payload).toEqual(expect.objectContaining({ values: { name: "新记录" } }));
     emit({ type: "table.editRejected", requestId: request.requestId,
-      payload: { kind: "mutation_validation", message: "名称已存在", conflictingRowKeys: [] } });
+      payload: rejection });
     await flushPromises();
     expect(dialog.props("show")).toBe(true);
-    expect(dialog.props("error")).toContain("名称已存在");
+    expect(dialog.props("error")).toBe(message);
+    expect(table.allRows).toHaveLength(0);
+    expect(useHistoryStore().writeUncertain).toBe(false);
     dialog.vm.$emit("submit", { name: "其他记录" });
     await flushPromises();
     const retry = posted.filter(message => message.type === "table.insertRowRequested").at(-1)!;

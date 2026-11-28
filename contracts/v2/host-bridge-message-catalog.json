@@ -1187,6 +1187,42 @@
       "bridgeHost": true
     },
     {
+      "name": "plugin.protection.describe",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.protection.enable",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.protection.list",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
+      "name": "plugin.protection.release",
+      "family": "core",
+      "status": "active",
+      "routerWeb": true,
+      "routerHost": true,
+      "bridgeWeb": true,
+      "bridgeHost": true
+    },
+    {
       "name": "plugin.surface.event",
       "family": "core",
       "status": "active",

@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{
   tasks?: readonly PluginTaskViewSnapshot[];
   showTasks?: boolean;
   navigateBack?: (surfaceToken: string) => boolean;
+  openFieldProtection?: (surfaceToken: string) => boolean;
   variant?: "panel" | "app" | "headless";
   /** v1 surface lifecycle: `background` frames are hidden, unfocusable and read-only on the Host side. */
   phase?: PluginSurfacePhase;
@@ -40,6 +41,7 @@ const notices = ref<string[]>([]);
 const presentation = createPluginSurfaceUi({
   token: () => activeToken.value, theme: () => props.theme, tasks: () => currentTasks.value,
   cancel: taskId => emit("cancel", taskId), back: () => props.navigateBack?.(activeToken.value) ?? false,
+  openFieldProtection: () => props.openFieldProtection?.(activeToken.value) ?? false,
   show: message => { notices.value = [...notices.value, message].slice(-3); },
   background: () => props.phase === "background",
 });
