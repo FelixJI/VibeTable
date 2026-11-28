@@ -149,17 +149,17 @@ class PluginManifest(PluginContract):
         if "fieldProtection" in self.permissions:
             if not native:
                 raise ValueError("field protection permissions require native plugin API 3.x")
-            declaration = FieldProtectionDeclaration.model_validate(
+            protection = FieldProtectionDeclaration.model_validate(
                 self.permissions["fieldProtection"], by_alias=True, by_name=False
             )
             # Go stores the declaration with the installation and decodes it
             # strictly; an unknown field or a read-only entity must never get there.
-            model = (
+            protection_model = (
                 PluginModelDeclaration.model_validate(self.permissions["model"])
                 if "model" in self.permissions
                 else None
             )
-            declaration.validate_model(model)
+            protection.validate_model(protection_model)
             if len(json.dumps(self.permissions["fieldProtection"], ensure_ascii=False).encode()) > (
                 FIELD_PROTECTION_DECLARATION_BYTES
             ):

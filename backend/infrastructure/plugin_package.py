@@ -385,11 +385,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             raise PluginPackageError("permissions_invalid", str(error)) from error
     if "transactions" in permissions:
         try:
-            declaration = PluginTransactionsDeclaration.model_validate(
+            transactions = PluginTransactionsDeclaration.model_validate(
                 permissions["transactions"], by_alias=True, by_name=False
             )
-            model = PluginModelDeclaration.model_validate(permissions.get("model"))
-            declaration.validate_model(model)
+            transaction_model = PluginModelDeclaration.model_validate(permissions.get("model"))
+            transactions.validate_model(transaction_model)
             if manifest.get("compatibility", {}).get("pluginApi") != "3.x":
                 raise ValueError("transactions permissions require native plugin API 3.x")
             # Go Decode applies the same declaration budget at the write boundary.
@@ -399,15 +399,15 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             raise PluginPackageError("permissions_invalid", str(error)) from error
     if "fieldProtection" in permissions:
         try:
-            declaration = PluginFieldProtectionDeclaration.model_validate(
+            protection = PluginFieldProtectionDeclaration.model_validate(
                 permissions["fieldProtection"], by_alias=True, by_name=False
             )
-            model = (
+            protection_model = (
                 PluginModelDeclaration.model_validate(permissions["model"])
                 if "model" in permissions
                 else None
             )
-            declaration.validate_model(model)
+            protection.validate_model(protection_model)
             if manifest.get("compatibility", {}).get("pluginApi") != "3.x":
                 raise ValueError("field protection permissions require native plugin API 3.x")
             # Go decodes the stored declaration with the same closed budget.
