@@ -594,9 +594,9 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             throw new PluginDispatchException(
                 "PLUGIN_GITHUB_SOURCE_UNAVAILABLE",
-                "GitHub 插件来源在当前运行模式下不可用。");
+                "远程插件来源在当前运行模式下不可用。");
         }
-        DownloadedPluginPackage? download = await _githubSource.DownloadLatestAsync(
+        DownloadedPluginPackage? download = await _githubSource.DownloadAsync(
             request.Repository,
             token).ConfigureAwait(false);
         try

@@ -396,30 +396,65 @@ Manifest 只声明实现实际消费的 capability：
   成功，也不连接真实业务库。取消、进度、权限、未知提交等新链保障由 surface 测试与产品
   E2E 验证，离线 helper 不替代真实 Host 的 task registry。
 
-## 6. GitHub Release 安装契约
+## 6. 远程 Release 安装契约（GitHub / Codeberg）
 
-VibeTable 插件中心支持输入 `owner/repo` 或标准 `https://github.com/owner/repo` 地址，从公共
-GitHub 仓库的 latest 正式 Release 检查插件。首版不携带 GitHub token，因此私有仓库不在
-支持范围内。
+VibeTable 插件中心接受以下远程来源，并把原始字符串交给原生宿主解析（renderer 与 WebView
+桥不做任何正则或长度限制，只 trim 首尾空白）：
+
+- GitHub：`owner/repo`（沿用 latest 正式 Release）、`github.com/owner/repo`、
+  `https://github.com/owner/repo`（可带 `.git` 后缀，可跟 `/releases` 或 `/releases/latest`）；
+- GitHub 固定 Release 或资产：`.../releases/tag/<tag>`、`.../releases/download/<tag>/<name>.vtplugin`、
+  `.../releases/latest/download/<name>.vtplugin`；
+- 被 `https://ghfast.top/`、`https://ghproxy.net/` 或 `https://gh-proxy.com/` 包裹的上述
+  `https://github.com/...` 地址（只接受一层包裹，内层必须是 https 的 github.com 地址）；
+- Codeberg（公共 Forgejo）：`codeberg.org/owner/repo`、`https://codeberg.org/owner/repo`，以及与
+  GitHub 相同的 `/releases`、`/releases/latest`、`/releases/tag/<tag>`、
+  `/releases/download/<tag>/<name>.vtplugin`、`/releases/latest/download/<name>.vtplugin` 形态。
+
+其他 host、非 https、显式非默认端口（如 `github.com:8443`）、带账号/查询参数/片段、非 `.vtplugin` 资产名或
+多余路径段的输入一律以 `PLUGIN_GITHUB_REPOSITORY_INVALID` 拒绝；镜像只能包裹 `https://github.com/...`，
+包裹 Codeberg 或其他 host 同样拒绝。首版不携带任何 token，因此私有仓库不在支持范围内。
+
+### Release 校验
 
 Release 必须满足：
 
-1. 不是 draft 或 prerelease，并有 tag 与发布时间；
-2. 正好包含一个状态为 `uploaded`、扩展名为 `.vtplugin` 的资产；
-3. 资产大小为 1 byte 到 64 MiB；
-4. GitHub API 为该资产提供合法的 `sha256:` digest；
-5. `browser_download_url` 是 `https://github.com/...`；
-6. 下载字节数与 Release metadata 一致，SHA-256 与 API digest 一致；
+1. 不是 draft 或 prerelease，并有 tag 与发布时间（GitHub 与 Forgejo 的 `published_at` 都是 ISO 8601 /
+   RFC 3339 字符串；数字或其他形式视为 metadata 无效）；
+2. 请求了 tag 时，返回的 `tag_name` 必须与请求完全一致，否则 `PLUGIN_GITHUB_TAG_MISMATCH` /
+   `PLUGIN_CODEBERG_TAG_MISMATCH`；
+3. 正好包含一个扩展名为 `.vtplugin` 的资产（GitHub 还要求 `state == "uploaded"`），请求了
+   文件名时必须与唯一资产一致，否则 `*_ASSET_NAME_MISMATCH`；
+4. 资产大小为 1 byte 到 64 MiB；
+5. `browser_download_url` 必须是 https、位于对应 host 的官方域、无账号/查询参数/片段，且路径
+   必须是 `<owner>/<repo>/releases/download/<tag>/<name>`（Codeberg 另接受 Forgejo 的
+   `/attachments/<uuid>` 形式）；
+6. 下载字节数与 Release metadata 一致，SHA-256 与下述权威摘要一致；
 7. 下载后仍必须通过 VibeTable 既有包内 manifest、路径和 `integrity.json` 审查。
 
-Release metadata 始终直连 `api.github.com`。`.vtplugin` 资产使用“设置 → 关于 → 软件更新”
-中相同的下载通道：GitHub 直连、`ghproxy.net`、`gh-proxy.com` 或自定义 HTTPS 前缀。
-第三方代理可能看到 GitHub 下载 URL；无论选择哪个通道，VibeTable 都会用直连 GitHub API
-返回的 digest 验证最终字节。
+### 权威摘要
 
-插件中心只把仓库坐标交给原生宿主，不接受任意下载 URL，也不会把本机缓存路径暴露给
+- GitHub：资产必须带合法的 `sha256:<64 hex>` `digest`（缺失则 `PLUGIN_GITHUB_DIGEST_INVALID`）。
+- Codeberg：Forgejo API 没有 `digest` 字段，因此以同一 Release 内**唯一**的 `<name>.vtplugin.sha256`
+  附件为唯一权威摘要（不叠加第二套校验）：该附件大小为 1 byte 到 4 KiB，下载地址必须满足与资产相同的
+  官方域信任规则，内容必须严格是一行 `sha256sum` 文本（`<64 hex><空格 或 *><文件名>`，可带一个结尾换行，
+  严格 UTF-8），且文件名必须与资产名逐字相同；否则分别以 `PLUGIN_CODEBERG_CHECKSUM_ASSET_INVALID`、
+  `PLUGIN_CODEBERG_CHECKSUM_INVALID` 拒绝。仅依赖 API digest 不是受支持的发布方式。
+
+### 下载通道
+
+Release metadata 始终直连官方 API（`api.github.com` 或 `codeberg.org/api/v1`），永远不经过代理。
+GitHub `.vtplugin` 资产的下载路由：若用户粘贴的是镜像包裹地址，则**这一次**资产请求实际走该镜像
+（如 `https://ghfast.top/https://github.com/...`），覆盖设置中的下载通道，但不读取也不改写持久化的
+更新代理偏好；否则沿用“设置 → 关于 → 软件更新”中的通道：GitHub 直连、`ghproxy.net`、`gh-proxy.com`
+或自定义 HTTPS 前缀。Codeberg 的资产与 `.sha256` 附件始终直连，不使用 GitHub 代理。第三方代理
+可能看到 GitHub 下载 URL；无论走哪条路由，VibeTable 都会用官方 API（或 Codeberg 同 Release 的
+`.sha256` 附件）给出的摘要验证最终字节。
+
+插件中心只把来源字符串交给原生宿主，不接受任意下载 URL，也不会把本机缓存路径暴露给
 WebView。远程包下载后仍使用与本地 `.vtplugin` 相同的“检查计划 → 展示权限 → 用户批准 →
-提交安装”事务；取消、替换计划、后端重启或退出会释放尚未提交的远程包缓存。
+提交安装”事务；若该插件已安装，计划会绑定目标安装并展示权限差异，同样必须由用户明确批准后
+才会发送 `plugin.lifecycle.upgrade`。取消、替换计划、后端重启或退出会释放尚未提交的远程包缓存。
 
 ## 7. 独立插件仓库示例
 

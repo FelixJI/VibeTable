@@ -96,7 +96,7 @@ function retryAuditLoad(): void {
   if (!plugin.value) return;
   void loadAuditPage(plugin.value.pluginId, auditEvents.value.length ? auditNextCursor.value : null);
 }
-const githubRepository = ref("");
+const remoteReleaseSource = ref("");
 const bridge = useHostBridge();
 const pluginPreservationBusy = ref(false);
 const pluginPreservationStatus = ref("");
@@ -259,11 +259,14 @@ async function inspectInstall(sourceToken: "host-picker:package" | "host-picker:
     plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
-async function inspectGitHubInstall(): Promise<void> {
-  const repository = githubRepository.value.trim();
-  if (!repository) return;
+async function inspectRemoteRelease(): Promise<void> {
+  const source = remoteReleaseSource.value.trim();
+  if (!source) return;
   await safely(async () => {
-    const plan = await service.inspectGitHubInstall(repository);
+    // The repository field carries whatever the user pasted (owner/repo, a
+    // github.com / codeberg.org release or asset URL, or a mirror-wrapped
+    // GitHub URL); the host resolves and validates it.
+    const plan = await service.inspectGitHubInstall(source);
     plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
@@ -385,22 +388,23 @@ onBeforeUnmount(() => { cancelPluginPreservation(); service.dispose(); });
       <div class="install-source">
         <button type="button" class="quiet-button" data-testid="plugin-refresh" :disabled="store.busy" @click="safely(() => service.list())">刷新目录</button>
         <input
-          v-model="githubRepository"
-          aria-label="GitHub 插件仓库"
+          v-model="remoteReleaseSource"
+          aria-label="远程插件 Release 来源"
           autocomplete="off"
-          placeholder="owner/repo"
+          placeholder="owner/repo 或 Release 地址（GitHub / Codeberg）"
+          maxlength="1024"
           spellcheck="false"
-          @keyup.enter="inspectGitHubInstall"
+          @keyup.enter="inspectRemoteRelease"
         />
         <button
           class="quiet-button"
           type="button"
           data-testid="plugin-install-github"
-          :disabled="!store.projectContextReady || store.busy || !githubRepository.trim()"
-          title="Release metadata 直连 GitHub，.vtplugin 使用设置中的下载通道"
-          @click="inspectGitHubInstall"
+          :disabled="!store.projectContextReady || store.busy || !remoteReleaseSource.trim()"
+          title="Release metadata 直连 GitHub / Codeberg 官方 API；GitHub 资产走设置中的下载通道，Codeberg 直连；安装与升级仍需确认"
+          @click="inspectRemoteRelease"
         >
-          <NIcon :size="15"><GitBranch /></NIcon> 从 GitHub 检查
+          <NIcon :size="15"><GitBranch /></NIcon> 检查远程 Release
         </button>
         <button class="install-button" type="button" data-testid="plugin-install-package" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:package')">
           <NIcon :size="15"><Upload /></NIcon> 选择 .vtplugin
