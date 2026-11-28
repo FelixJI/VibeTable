@@ -2521,7 +2521,7 @@ public sealed class PluginRequestDispatcherTests
     {
         public string? Repository { get; private set; }
 
-        public Task<DownloadedPluginPackage> DownloadLatestAsync(
+        public Task<DownloadedPluginPackage> DownloadAsync(
             string repository,
             CancellationToken token)
         {

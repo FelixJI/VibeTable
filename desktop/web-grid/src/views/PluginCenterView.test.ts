@@ -592,7 +592,7 @@ describe("PluginCenterView", () => {
     setHostBridgeForTesting(bridge);
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
 
-    await wrapper.get('input[aria-label="GitHub 插件仓库"]').setValue("FelixJI/weread-plugin");
+    await wrapper.get('input[aria-label="远程插件 Release 来源"]').setValue("FelixJI/weread-plugin");
     await wrapper.get('[data-testid="plugin-install-github"]').trigger("click");
     await flushPromises();
     expect(posted[0]).toMatchObject({
@@ -608,6 +608,129 @@ describe("PluginCenterView", () => {
       payload: { planId: "plan-github" },
     });
     expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+  });
+
+  it.each([
+    "https://github.com/FelixJI/weread-plugin/releases/tag/v1.2.0",
+    "https://github.com/FelixJI/weread-plugin/releases/download/v1.2.0/weread-plugin.vtplugin",
+    "https://github.com/FelixJI/weread-plugin/releases/latest/download/weread-plugin.vtplugin",
+    "https://ghfast.top/https://github.com/FelixJI/weread-plugin",
+    "https://ghproxy.net/https://github.com/FelixJI/weread-plugin/releases/tag/v1.2.0",
+    "https://codeberg.org/felix/weread-plugin/releases/tag/v1.2.0",
+  ])("forwards the remote release reference %s verbatim to the host resolver", async (source) => {
+    usePluginStore().setProjectContext("local:default", "r2");
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "remote-release",
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload: {
+              planId: "plan-remote",
+              projectKey: "local:default",
+              projectRevision: "r2",
+              sourceType: "package",
+              sourceLocation: "host-managed",
+              packageHash: "sha256:remote",
+              manifest: { ...blockedPlugin.manifest, pluginId: "com.acme.remote", version: "1.2.0" },
+              schemas: {},
+            },
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    expect(wrapper.get('[data-testid="plugin-install-github"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('input[aria-label="远程插件 Release 来源"]').setValue(`  ${source}  `);
+    expect(wrapper.get('[data-testid="plugin-install-github"]').attributes("disabled")).toBeUndefined();
+    await wrapper.get('[data-testid="plugin-install-github"]').trigger("click");
+    await flushPromises();
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      type: "plugin.install.github.inspect",
+      payload: { projectKey: "local:default", projectRevision: "r2", repository: source },
+    });
+    expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("1.2.0");
+    expect(wrapper.find('[data-testid="plugin-install-commit"]').exists()).toBe(true);
+  });
+
+  it("requires explicit approval before upgrading an installed plugin from a remote release", async () => {
+    usePluginStore().setProjectContext("local:default", "r2");
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    let authority: PluginSnapshot[] = [blockedPlugin];
+    const upgraded: PluginSnapshot = { ...blockedPlugin, version: "1.3.0", packageHash: "sha256:new", revision: 8,
+      manifest: { ...blockedPlugin.manifest, version: "1.3.0",
+        permissions: { data: ["customers:read", "customers:write", "orders:read"] } } };
+    const bridge = createHostBridge({
+      generateRequestId: () => `remote-upgrade-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          let payload: unknown;
+          if (request.type === "plugin.catalog.list") payload = authority;
+          else if (request.type === "plugin.install.cancel") payload = { cancelled: true };
+          else if (request.type === "plugin.lifecycle.upgrade") { authority = [upgraded]; payload = upgraded; }
+          else if (request.type === "plugin.install.github.inspect") {
+            payload = {
+              planId: "plan-remote-upgrade",
+              targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+              projectKey: "local:default",
+              projectRevision: "r2",
+              sourceType: "package",
+              sourceLocation: "host-managed",
+              packageHash: "sha256:new",
+              manifest: upgraded.manifest,
+              schemas: {},
+            };
+          } else throw new Error(`Unexpected request ${request.type}`);
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type,
+            requestId: request.requestId,
+            payload,
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+
+    await wrapper.get('input[aria-label="远程插件 Release 来源"]').setValue(
+      "https://gh-proxy.com/https://github.com/FelixJI/weread-plugin/releases/latest");
+    await wrapper.get('[data-testid="plugin-install-github"]').trigger("click");
+    await flushPromises();
+
+    expect(posted[0]).toMatchObject({
+      type: "plugin.install.github.inspect",
+      payload: { repository: "https://gh-proxy.com/https://github.com/FelixJI/weread-plugin/releases/latest" },
+    });
+    expect(wrapper.get('[data-testid="plugin-upgrade-permission-delta"]').text()).toContain("+ data:orders:read");
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.lifecycle.upgrade")).toHaveLength(0);
+
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.lifecycle.upgrade")).toMatchObject([
+      { payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
+        planId: "plan-remote-upgrade", projectRevision: "r2" } },
+    ]);
+    expect(usePluginStore().plugins[0]).toMatchObject({ revision: 8, version: "1.3.0" });
+    expect(usePluginStore().installPlan).toBeNull();
   });
 
   it("shows the upgrade permission delta and commits only after approval", async () => {
