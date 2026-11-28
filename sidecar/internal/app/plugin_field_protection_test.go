@@ -891,6 +891,26 @@ func TestFieldProtectionReleaseWorksWhileDisabledAndAfterUninstall(t *testing.T)
 	}
 }
 
+func TestFieldProtectionReleaseNullReleasesAllProtectedFields(t *testing.T) {
+	code := fieldprotection.DeclaredField{Entity: "headers", Field: "code"}
+	amount := fieldprotection.DeclaredField{Entity: "headers", Field: "amount"}
+	p := newProtectionFixture(t, code, amount)
+	enabled := p.enable(t, code, amount)
+	if len(enabled.Protected) != 2 {
+		t.Fatalf("enabled protected fields = %#v", enabled.Protected)
+	}
+	result, err := p.rpc(t, "plugin.fieldProtection.release", map[string]any{
+		"projectKey": p.input.ProjectKey, "pluginId": p.input.PluginID, "fields": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := result.(*pluginFieldProtectionDescribeResult)
+	if len(released.Protected) != 0 || released.Events != enabled.Events+1 {
+		t.Fatalf("explicit null did not persist one release-all event: %#v", released)
+	}
+}
+
 func TestFieldProtectionOwnerConflictAndNotOwner(t *testing.T) {
 	code := fieldprotection.DeclaredField{Entity: "headers", Field: "code"}
 	p := newProtectionFixture(t, code)
@@ -954,7 +974,14 @@ func TestFieldProtectionEnableRefusesStaleUndeclaredAndMalformedRequests(t *test
 		t.Fatal("refused enables must not append events")
 	}
 	prefix := `{"projectKey":"` + p.input.ProjectKey + `","pluginId":"` + p.input.PluginID + `","installationId":"` + p.input.InstallationID + `","installationRevision":` + fmt.Sprint(p.input.InstallationRevision)
-	for _, raw := range []string{`{"projectKey":"` + p.input.ProjectKey + `","pluginId":"` + p.input.PluginID + `"}`, prefix + `,"fields":null}`, prefix + `,"fields":[],"all":true}`, prefix + `,"fields":[{"entity":"headers"}]}`, prefix + `,"fields":[{"entity":"headers","field":"code"}],"fields":[]}`} {
+	for _, raw := range []string{
+		`{"projectKey":"` + p.input.ProjectKey + `","pluginId":"` + p.input.PluginID + `"}`,
+		prefix + `,"fields":null}`,
+		prefix + `,"fields":[]}`,
+		prefix + `,"fields":[{"entity":"headers","field":"code","tableId":"t","fieldId":"f"}],"all":true}`,
+		prefix + `,"fields":[{"entity":"headers"}]}`,
+		prefix + `,"fields":[{"entity":"headers","field":"code"}],"fields":[]}`,
+	} {
 		if err := p.registrations["plugin.fieldProtection.enable"].ValidateParams([]byte(raw)); publicError(err) == nil || publicError(err).Code != "pluginFieldProtection.params.invalid" {
 			t.Errorf("closed enable decode accepted %s: %v", raw, err)
 		}

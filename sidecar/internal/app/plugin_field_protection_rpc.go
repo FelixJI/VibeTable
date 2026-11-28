@@ -125,7 +125,7 @@ func fieldProtectionParamsInvalid() error {
 	}
 }
 
-func decodeFieldProtectionParams(raw json.RawMessage, target any, allowed ...string) error {
+func decodeFieldProtectionParams(raw json.RawMessage, target any, nullableField string, allowed ...string) error {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return fieldProtectionParamsInvalid()
@@ -138,8 +138,7 @@ func decodeFieldProtectionParams(raw json.RawMessage, target any, allowed ...str
 				break
 			}
 		}
-		// An explicit null is only meaningful for the optional release list.
-		if !known || (key != "fields" || len(allowed) == 3) && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		if !known || key != nullableField && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return fieldProtectionParamsInvalid()
 		}
 	}
@@ -163,7 +162,7 @@ func validateFieldProtectionIdentity(projectKey, pluginID string) error {
 
 func decodeFieldProtectionDescribe(raw json.RawMessage) (pluginFieldProtectionDescribeParams, error) {
 	var params pluginFieldProtectionDescribeParams
-	err := decodeFieldProtectionParams(raw, &params, "projectKey", "pluginId")
+	err := decodeFieldProtectionParams(raw, &params, "", "projectKey", "pluginId")
 	if err == nil {
 		err = validateFieldProtectionIdentity(params.ProjectKey, params.PluginID)
 	}
@@ -172,7 +171,7 @@ func decodeFieldProtectionDescribe(raw json.RawMessage) (pluginFieldProtectionDe
 
 func decodeFieldProtectionEnable(raw json.RawMessage) (pluginFieldProtectionEnableParams, error) {
 	var params pluginFieldProtectionEnableParams
-	err := decodeFieldProtectionParams(raw, &params, "projectKey", "pluginId", "installationId", "installationRevision", "fields")
+	err := decodeFieldProtectionParams(raw, &params, "", "projectKey", "pluginId", "installationId", "installationRevision", "fields")
 	if err == nil {
 		err = validateFieldProtectionIdentity(params.ProjectKey, params.PluginID)
 	}
@@ -197,7 +196,7 @@ func decodeFieldProtectionEnable(raw json.RawMessage) (pluginFieldProtectionEnab
 
 func decodeFieldProtectionRelease(raw json.RawMessage) (pluginFieldProtectionReleaseParams, error) {
 	var params pluginFieldProtectionReleaseParams
-	err := decodeFieldProtectionParams(raw, &params, "projectKey", "pluginId", "fields")
+	err := decodeFieldProtectionParams(raw, &params, "fields", "projectKey", "pluginId", "fields")
 	if err == nil {
 		err = validateFieldProtectionIdentity(params.ProjectKey, params.PluginID)
 	}
@@ -226,7 +225,7 @@ func fieldProtectionRegistrations(app core.App, workspace string, gates ...busin
 	service := pluginstore.New(app, workspace)
 	decodeList := func(raw json.RawMessage) (pluginFieldProtectionListParams, error) {
 		var params pluginFieldProtectionListParams
-		err := decodeFieldProtectionParams(raw, &params, "projectKey")
+		err := decodeFieldProtectionParams(raw, &params, "", "projectKey")
 		if err == nil {
 			err = service.ValidateProject(params.ProjectKey)
 		}
