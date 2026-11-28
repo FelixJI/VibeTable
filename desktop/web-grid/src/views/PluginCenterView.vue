@@ -19,7 +19,7 @@ import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 
 const props = withDefaults(defineProps<{
   autoLoad?: boolean;
-  /** #596: the shell funnel every application entry shares (one click = one intent = one describe); absent only outside the workspace shell. */
+  /** The workspace's common application-open path. */
   openApplication?: (pluginId: string, actionId: string) => Promise<boolean>;
 }>(), { autoLoad: true });
 const store = usePluginStore();

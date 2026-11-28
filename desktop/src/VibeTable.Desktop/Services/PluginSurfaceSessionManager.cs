@@ -274,20 +274,37 @@ public sealed class PluginSurfaceSessionManager
                 _sessions[token] = session with { Context = context, InstallationRevision = revision, InstallationId = installationId, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry, Presentation = presentation };
     }
 
+    /// <summary>Binds the invocation context of every <em>foreground</em> session of this application. A bind never promotes:
+    /// opening a pre-warmed application is the only promotion path and it goes through <see cref="TryPromote"/>,
+    /// so a click can never promote a session by key.</summary>
     internal void BindActiveCollection(string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)
+    {
+        lock (_gate)
+            foreach (var pair in _sessions)
+                if (pair.Value.Phase != PluginSurfacePhases.Background
+                    && pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
+                    _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+    }
+
+    /// <summary>Promotes the session <paramref name="token"/> names when it is live and belongs to this application:
+    /// the click confirmed exactly that session, so a session the catalog issued later for the same application is
+    /// never promoted by an older click. Returns false when no such session is live.</summary>
+    internal bool TryPromote(string? token, string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)
     {
         bool promoted = false;
         lock (_gate)
-            foreach (var pair in _sessions)
-                if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
-                {
-                    var bound = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
-                    // Opening a pre-warmed application is the only promotion path; there is no demotion.
-                    if (bound.Phase == PluginSurfacePhases.Background) { bound = bound with { Phase = PluginSurfacePhases.Foreground }; promoted = true; }
-                    _sessions[pair.Key] = bound;
-                }
+        {
+            if (string.IsNullOrEmpty(token) || !_sessions.TryGetValue(token, out var session)
+                || session.ProjectKey != projectKey || session.PluginId != pluginId || session.ActionId != actionId)
+                return false;
+            var bound = session with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+            // Opening a pre-warmed application is the only promotion path; there is no demotion.
+            if (bound.Phase == PluginSurfacePhases.Background) { bound = bound with { Phase = PluginSurfacePhases.Foreground }; promoted = true; }
+            _sessions[token] = bound;
+        }
         // Promotion changes which mounted frames carry authority; never raise under the gate.
         if (promoted) Changed?.Invoke();
+        return true;
     }
 
     private static void ValidateTheme(PluginSurfaceThemeSnapshot theme)

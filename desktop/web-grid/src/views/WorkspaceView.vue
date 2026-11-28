@@ -962,10 +962,7 @@ watch(
     }
   },
 );
-/** Every application entry (sidebar `app.open`, toolbar and row/column menus `action.open`, the plugin center)
- * goes through the controller funnel: one click = one intent = one describe. The intent closes a pre-warmed frame that
- * never signalled application readiness (once) before the describe, adopts the surface the describe promotes on the
- * same token, and reclaims it deterministically when the navigation is discarded. */
+/** Sidebar opens through the same controller as the toolbar, row context menu and plugin center. */
 function onOpenPluginApp(key: string): Promise<void> {
   return pluginController.dispatch({ type: "app.open", key });
 }
@@ -1405,6 +1402,7 @@ const showWorkspaceCenterScreen = computed(() =>
 const pluginPrewarm = createPluginAppPrewarm({
   entries: pluginAppNav.entries,
   activeKey: computed(() => showWorkspaceCenterScreen.value ? null : activePluginAppKey.value),
+  navigation: () => ui.navigationRevision,
   refresh: () => void pluginService.list().catch(() => undefined),
   promote: key => pluginController.openApplication(key),
   rollback: key => {
@@ -1412,9 +1410,14 @@ const pluginPrewarm = createPluginAppPrewarm({
     message.warning("插件入口已失效或被移除，已返回平台");
   },
 });
-/** `close` carries the surface token of the frame that emitted it, so a frame unmounted by a replacement never retires it. */
+/** `close` carries the token of the frame that emitted it: the user left the visible application only when that token is
+ * the active one; a hidden frame's self-close retires its own token, and a replaced frame's late close retires nothing. */
 function onPrewarmSlotClose(key: string, token: string): void {
-  if (activePluginAppKey.value === key) ui.closePluginApp(); else pluginPrewarm.selfClose(key, token);
+  if (pluginPrewarm.isActive(key, token)) ui.closePluginApp(); else pluginPrewarm.selfClose(key, token);
+}
+/** The legacy viewport's close is the user leaving only when it comes from the entry's current token. */
+function onLegacyViewportClose(token: string): void {
+  if (activePluginAppEntry.value?.surfaceToken === token) ui.closePluginApp();
 }
 /** The active application's slot: when present it is the visible frame, so the legacy viewport stays out. */
 const activePrewarmSlot = computed(() =>
@@ -1862,7 +1865,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           :tasks="pluginApplicationTasks"
           @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
           @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
-          @close="ui.closePluginApp"
+          @close="onLegacyViewportClose"
           @manage="ui.closePluginApp(); ui.navigate('plugins')"
         />
         <!-- #596: every lifecycle-declaring application keeps exactly one frame here; the
@@ -1884,8 +1887,8 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
             :tasks="pluginApplicationTasks"
             @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
             @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
-            @close="onPrewarmSlotClose(slot.key, slot.entry.surfaceToken)"
-            @ready="pluginPrewarm.markReady(slot.key)"
+            @close="token => onPrewarmSlotClose(slot.key, token)"
+            @ready="token => pluginPrewarm.markReady(slot.key, token)"
             @manage="ui.closePluginApp(); ui.navigate('plugins')"
           />
         </div>

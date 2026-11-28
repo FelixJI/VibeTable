@@ -1121,10 +1121,10 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(0, fixture.Prints, "A hidden surface cannot open a print dialog.");
         Assert.AreEqual(PluginSurfacePhases.Background, fixture.Surface.Phase, "Denied writes never promote a surface.");
 
-        // Opening the application binds the active collection and promotes the surface.
+        // Opening the application binds the active collection and promotes the surface the click confirmed.
         var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
             [JsonSerializer.SerializeToElement("selected")], null, "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
-        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context);
+        Assert.IsTrue(fixture.Surfaces.TryPromote(fixture.Surface.SurfaceToken, fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context));
         fixture.Surfaces.TryGet(fixture.Surface.SurfaceToken, out var promoted);
         Assert.AreEqual(PluginSurfacePhases.Foreground, promoted!.Phase);
         var foreground = await fixture.Call("context.read", "{}");
@@ -1153,7 +1153,7 @@ public sealed class PluginSurfaceApiTests
         // Promotion restores the foreground allowance of two handles.
         var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
             [JsonSerializer.SerializeToElement("selected")], null, "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
-        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context);
+        Assert.IsTrue(fixture.Surfaces.TryPromote(fixture.Surface.SurfaceToken, fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context));
         string third = (await fixture.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
         Assert.AreNotEqual(second, third);
         Assert.AreEqual("plugin_snapshot_limit", Code(await fixture.Call("snapshot.open", SnapshotRequest)));

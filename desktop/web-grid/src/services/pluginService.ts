@@ -29,6 +29,17 @@ import {
 
 const installPlanLeases = new WeakMap<object, PluginInstallPlanLease>();
 
+/**
+ * Guards an application describe for the click that posts it.
+ * `isCurrent`: the click's navigation, project and package are still the ones the user is on.
+ * `confirm`: receives the catalog's live token for the application right before the describe is posted
+ * (its only set point); the describe names that token so the Host promotes that session and no other.
+ */
+export interface PluginDescribeGuard {
+  readonly isCurrent?: () => boolean;
+  readonly confirm?: (token: string | null) => void;
+}
+
 function installPlanLeaseFor(owner: object): PluginInstallPlanLease {
   const existing = installPlanLeases.get(owner);
   if (existing) return existing;
@@ -60,7 +71,7 @@ export interface PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel?: boolean,
-    isCurrentRequest?: () => boolean,
+    guard?: PluginDescribeGuard,
   ): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
   resolveInteraction(task: PluginTaskViewSnapshot, decision: "approved" | "rejected"): Promise<PluginTaskViewSnapshot>;
@@ -468,24 +479,35 @@ export function usePluginService(): PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel = true,
-    isCurrentRequest?: () => boolean,
+    guard?: PluginDescribeGuard,
   ): Promise<PluginActionAvailability> {
+    const isCurrentRequest = guard?.isCurrent;
     const ui = useUiStore();
     const requestLifecycle = lifecycleRevision;
     const navigation = openPanel ? ui.beginNavigation() : null;
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const original = store.plugins.find(plugin => plugin.pluginId === pluginId);
+    const currentSurfaceToken = () => store.plugins.find(plugin => plugin.pluginId === pluginId)?.manifest.actions
+      .find(item => item.actionId === actionId)?.surfaceToken ?? null;
+    let surfaceToken: string | null = null;
     const isCurrent = () => lifecycleRevision === requestLifecycle && store.projectKey === projectKey && store.projectContextGeneration === generation
       && (navigation === null || ui.navigationRevision === navigation) && (isCurrentRequest?.() ?? true)
+      && (surfaceToken === null || currentSurfaceToken() === surfaceToken)
       && (!original || store.plugins.some(plugin => plugin.pluginId === pluginId
         && plugin.installationId === original.installationId && plugin.revision === original.revision));
     const retired = { available: false, reasons: [] };
     try {
       if (original?.manifest.compatibility.pluginApi === "3.x") await list(isCurrent);
       if (!isCurrent()) return retired;
+      // The fresh catalog projects the live surface for this application. A click's intent confirms that
+      // token here, right before the describe is posted (its only set point), and the describe names it so
+      // the Host promotes that session and no other; a session the catalog issues later is never promoted
+      // by an older click. Without a token (legacy Host projection, 2.x) the Host binds by key.
+      surfaceToken = currentSurfaceToken();
+      guard?.confirm?.(surfaceToken);
       const availability = await call<"plugin.action.describe", PluginActionAvailability>(
-        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context },
+        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context, ...(surfaceToken ? { surfaceToken } : {}) },
         { isErrorCurrent: isCurrent },
       );
       if (!isCurrent()) return retired;

@@ -2328,6 +2328,8 @@ export interface WebPayloadMap {
     readonly pluginId: string;
     readonly actionId: string;
     readonly context: PluginCommandContext;
+    /** The confirmed surface session for token-specific promotion or binding. Without a token, the Host binds foreground sessions by key. */
+    readonly surfaceToken?: string;
   };
   "plugin.action.start": {
     readonly projectKey: string;

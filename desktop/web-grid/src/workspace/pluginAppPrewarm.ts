@@ -18,6 +18,8 @@ export interface PluginAppPrewarmPort {
   readonly entries: ComputedRef<readonly PluginAppEntry[]>;
   /** The application the user has open, or null (platform navigation, workspace center, native chrome). */
   readonly activeKey: ComputedRef<string | null>;
+  /** Advances on every platform navigation, including same-view and null→null departures. */
+  readonly navigation: () => number;
   /** Re-reads the catalog so the Host replaces a retired token with a fresh background surface. */
   refresh(): void;
   /** Binds the active collection Host-side for a surface no click promoted.
@@ -28,25 +30,44 @@ export interface PluginAppPrewarmPort {
 }
 
 /**
- * The single funnel every entry point that opens an application goes through (sidebar, toolbar, row and
- * column menus, plugin center): one click = one intent = one describe.
+ * One user click on an application, as seen by the describe that opens it.
+ *
+ * The intent confirms exactly one token: the one the catalog projects for the key right before the
+ * click's describe is posted. The Host is asked to promote that session and no other, so a session the
+ * catalog issued later for the same key is never promoted by an older click. The confirmation is also
+ * the record of what the click did: before it nothing was sent and a discarded click retires nothing;
+ * after it a discarded click retires exactly that token, and a successor token or a successor click is
+ * never touched.
+ */
+export interface PluginApplicationIntent {
+  /** Still the newest click on its key: a superseded or ended intent is inert. */
+  readonly active: boolean;
+  /** The confirmed token, or null while the click's describe has not been posted. */
+  readonly token: string | null;
+  /** Called right before the describe is posted, with the token it names. Ignored once the click was superseded. */
+  confirm(token: string | null): void;
+  /** `true`: the describe confirmed the application and the visible frame is the one it promoted. `false`: the click was discarded. */
+  settle(opened: boolean): void;
+}
+
+/**
+ * Sidebar, toolbar, row context menu and plugin center share this open path.
+ * Each click has one intent and sends at most one describe.
  */
 export interface PluginApplicationOpen {
   /**
-   * Registers the click on `key` before its describe runs and resolves the finalizer for when the click
-   * path settles. A hidden frame that never signalled application readiness is closed first (bounded to
-   * once), so the click's own catalog read opens a fresh surface through the normal path.
+   * Registers the click on `key` before its describe. A hidden frame that
+   * never signalled application readiness is closed first (bounded to once), so the click's own catalog
+   * read opens a fresh surface through the normal path and the intent confirms that fresh token.
    *
-   * - `settle(true)`: the describe confirmed the application; the hidden surface it promoted on the same
-   *   token becomes the visible frame without a reload or a second describe.
-   * - `settle(false)`: the navigation was discarded (cancel, superseded click, refused describe). The
-   *   describe may already have promoted the session, so the token the intent captured is retired and
-   *   closed at once, without waiting for a catalog read. A newer click on the same key supersedes the
-   *   intent: its finalizer is a no-op and never touches the successor's surface.
-   *
-   * `current` is re-checked after the bounded cold close: a click the user already moved on from registers nothing.
+   * `current` is the click's navigation. It is re-checked after the bounded cold close (a click the user
+   * already moved on from registers nothing) and on every platform navigation while the click is pending:
+   * the moment the user leaves, even when the application was never open (`activeKey` null → null), the
+   * intent ends and a describe it already posted may have promoted its confirmed token, which is retired
+   * and closed at once without waiting for a catalog read. A navigation that makes the key active is the
+   * click's own open: the confirmed surface is adopted as the visible frame.
    */
-  begin(key: string, current?: () => boolean): Promise<(opened: boolean) => void>;
+  begin(key: string, current?: () => boolean): Promise<PluginApplicationIntent>;
 }
 
 /** `token` always identifies the surface the state refers to; a new token starts over as `background`. */
@@ -56,11 +77,13 @@ type SlotState =
   | { readonly kind: "foreground"; readonly token: string }
   | { readonly kind: "retired"; readonly token: string };
 
-/** One user click on an application. `token` is the hidden surface the click may have promoted: captured from the
- * catalog while the intent is pending (null until one showed up). */
+/** One user click on an application. `token` is set once, by `confirm`, and never rewritten by the catalog. */
 interface OpenIntent {
   readonly key: string;
   token: string | null;
+  /** A same-key predecessor already described this session, which still needs an owner until the new click posts. */
+  readonly inheritedToken: string | null;
+  readonly current?: () => boolean;
 }
 
 /**
@@ -71,14 +94,16 @@ interface OpenIntent {
  *   catalog entry reports `surfacePhase: "background"` for that very token.
  *   At the background cap, on a Host that projects no phase, or once the
  *   token was promoted, the entry is a normal manual entry (no slot).
- * - `background → foreground` happens through a click intent (its describe
- *   promoted the Host session: the same element is adopted) or an explicit
- *   `promote` for an activation no click announced. The frame stays hidden
- *   while a promotion is in flight.
+ * - `background → foreground` happens only through a click intent whose
+ *   confirmed token is the slot's token (its describe promoted the Host
+ *   session: the same element is adopted) or an explicit `promote` for an
+ *   activation no click announced. The frame stays hidden while a promotion
+ *   is in flight.
  * - The same token without its background grant was promoted: the Host never
- *   demotes a session and never lists a retired token again. The active
- *   application confirms its promotion; any other hidden frame would keep
- *   foreground authority, so it is retired right away.
+ *   demotes a session and never lists a retired token again. The visible one
+ *   confirms its promotion; any other hidden frame would keep foreground
+ *   authority, so it is retired right away. A pending click owns its key's
+ *   token until it settles: its own catalog read may be the very promotion.
  * - Leaving the foreground, a discarded click or a refused promotion retires
  *   the token deterministically, without a catalog read: the Host session is
  *   foreground-only, so hiding it would keep write authority alive. The
@@ -96,6 +121,28 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
   const slots: Ref<readonly PluginAppPrewarmSlot[]> = ref([]);
   let refreshScheduled = false;
   let refreshNeeded = false;
+  let reconciling = false;
+  let reconcileAgain = false;
+  let staleCheckQueued = false;
+
+  /** Ends every pending click whose navigation is over, then reconciles. Runs in the microtask after the
+   * navigation: the controller registers the click that caused it (a second click on the same key supersedes
+   * the pending one, which retires nothing) before this check, and no Host reply can settle an ended click
+   * first. The user's departure still ends the intent at once, with no catalog read. */
+  function endStaleIntents(): void {
+    if (staleCheckQueued) return;
+    staleCheckQueued = true;
+    queueMicrotask(() => {
+      staleCheckQueued = false;
+      withReconcile(() => {
+        for (const intent of [...latest.values()]) {
+          if (!intent.current || intent.current()) continue;
+          // The user left (the key is not active: its confirmed token goes at once) or this is the click's own open.
+          settleState(intent, port.activeKey.value === intent.key);
+        }
+      });
+    });
+  }
 
   function scheduleRefresh(): void {
     if (refreshScheduled) return;
@@ -111,6 +158,27 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
     refreshNeeded = true;
   }
 
+  /** Applies the intent's outcome to the slot state; the caller reconciles. */
+  function settleState(intent: OpenIntent, opened: boolean): void {
+    if (latest.get(intent.key) !== intent) return;
+    latest.delete(intent.key);
+    const state = states.get(intent.key);
+    if (opened) {
+      // The describe confirmed the application it promoted: that very surface is the visible frame. A slot on
+      // another token (the catalog moved on) is not the one the Host promoted and is adopted by its own click.
+      if ((state?.kind === "background" || state?.kind === "promoting") && state.token === intent.token && port.activeKey.value === intent.key) {
+        states.set(intent.key, { kind: "foreground", token: state.token });
+      }
+      return;
+    }
+    if (!state || state.kind === "retired" || state.kind === "foreground") return;
+    // An explicit promotion owns the slot; its own settlement retires it with the rollback notice.
+    if (state.kind === "promoting") return;
+    // A describe may already have promoted the token even if the newest same-key click has yet to post its own.
+    if (state.token !== (intent.token ?? intent.inheritedToken)) return;
+    retire(intent.key, state.token);
+  }
+
   function reconcile(): void {
     const activeKey = port.activeKey.value;
     const next: PluginAppPrewarmSlot[] = [];
@@ -120,25 +188,29 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
       live.add(entry.key);
       const granted = entry.surfacePhase === "background";
       const intent = latest.get(entry.key);
-      if (intent) intent.token = entry.surfaceToken;
+      // The intent adopts only the token it confirmed: the describe promoted that session and no other.
+      const confirmed = intent !== undefined && intent.token !== null && intent.token === entry.surfaceToken;
       let state = states.get(entry.key);
       if (state && state.token === entry.surfaceToken) {
         if (state.kind === "retired") continue;
-        if (!granted && state.kind !== "foreground" && !intent) {
+        if (!granted && state.kind !== "foreground" && intent === undefined) {
           // The same token without its background grant was promoted: the Host never demotes a session
           // and never lists a retired token again. The visible one confirms its promotion; any other
           // hidden frame would keep foreground authority, so it is retired right away. A pending click
-          // owns its token until it settles: the describe may be the very promotion.
+          // owns its key's token until it settles: its own catalog read may be the very promotion.
           if (entry.key === activeKey) state = { kind: "foreground", token: entry.surfaceToken };
           else { retire(entry.key, entry.surfaceToken); continue; }
         }
       } else {
-        if (!granted) continue;
+        if (!granted) {
+          states.delete(entry.key);
+          continue;
+        }
         state = { kind: "background", token: entry.surfaceToken, ready: false };
       }
       if (entry.key === activeKey) {
         if (state.kind === "background") {
-          if (intent) state = { kind: "foreground", token: entry.surfaceToken };
+          if (confirmed) state = { kind: "foreground", token: entry.surfaceToken };
           else {
             state = { kind: "promoting", token: entry.surfaceToken };
             void promote(entry.key, entry.surfaceToken);
@@ -157,45 +229,33 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
     if (refreshNeeded) { refreshNeeded = false; scheduleRefresh(); }
   }
 
+  /** Runs `work` and reconciles once; a reconcile requested from inside one (a synchronous navigation) runs after it. */
+  function withReconcile(work: () => void): void {
+    reconcileAgain = true;
+    if (reconciling) return;
+    reconciling = true;
+    try { work(); while (reconcileAgain) { reconcileAgain = false; reconcile(); } }
+    finally { reconciling = false; }
+  }
+
   async function promote(key: string, token: string): Promise<void> {
     let opened = false;
     try { opened = await port.promote(key); } catch { opened = false; }
     const state = states.get(key);
+    if (state?.kind !== "promoting" || state.token !== token || port.activeKey.value !== key) return;
     if (opened) {
-      // The click path's own intent may already have adopted the surface, or the catalog confirmed the promotion.
-      if (state?.kind === "promoting" && state.token === token) { states.set(key, { kind: "foreground", token }); reconcile(); }
+      withReconcile(() => states.set(key, { kind: "foreground", token }));
       return;
     }
-    // The user left, the catalog replaced the token or a newer promotion owns the slot meanwhile.
-    if (state?.kind === "promoting" && state.token === token) { retire(key, token); reconcile(); }
-    if (!state || state.kind === "foreground" || port.activeKey.value !== key) return;
+    withReconcile(() => retire(key, token));
     port.rollback(key);
   }
 
-  function settle(intent: OpenIntent, opened: boolean): void {
-    if (latest.get(intent.key) !== intent) return;
-    latest.delete(intent.key);
-    const state = states.get(intent.key);
-    if (!state || state.kind === "retired") return;
-    if (opened) {
-      // The describe confirmed the application: the hidden surface of this key is the one it promoted.
-      if (state.kind !== "foreground" && port.activeKey.value === intent.key) {
-        states.set(intent.key, { kind: "foreground", token: state.token });
-        reconcile();
-      }
-      return;
-    }
-    if (state.kind === "foreground") return;
-    // An explicit promotion owns the slot; its own settlement retires it with the rollback notice.
-    if (state.kind === "promoting") return;
-    // Fail closed: the describe may already have promoted this session. The captured token goes now, a
-    // successor token (or a successor click) is never touched.
-    if (intent.token === null || state.token !== intent.token) return;
-    retire(intent.key, state.token);
-    reconcile();
-  }
-
-  watch(() => [port.entries.value, port.activeKey.value] as const, reconcile, { flush: "sync", immediate: true });
+  watch(
+    () => [port.entries.value, port.activeKey.value, port.navigation()] as const,
+    () => { endStaleIntents(); withReconcile(() => undefined); },
+    { flush: "sync", immediate: true },
+  );
 
   /** The hidden frame has not signalled `readyToActivate` (still loading or failed to start). */
   function isCold(key: string): boolean {
@@ -206,39 +266,52 @@ export function createPluginAppPrewarm(port: PluginAppPrewarmPort) {
   function drop(key: string): void {
     const state = states.get(key);
     if (state?.kind !== "background") return;
-    states.set(key, { kind: "retired", token: state.token });
-    reconcile();
+    withReconcile(() => states.set(key, { kind: "retired", token: state.token }));
   }
 
   return {
     slots,
-    async begin(key: string, current?: () => boolean): Promise<(opened: boolean) => void> {
+    async begin(key: string, current?: () => boolean): Promise<PluginApplicationIntent> {
       if (isCold(key)) {
         drop(key);
         await nextTick();
       }
-      const superseded = (): void => undefined;
-      if (current && !current()) return superseded;
-      const state = states.get(key);
-      const intent: OpenIntent = { key, token: state && state.kind !== "retired" ? state.token : null };
+      // A click the user already moved on from registers nothing, so it never replaces a newer click.
+      if (current && !current()) return { active: false, token: null, confirm: () => undefined, settle: () => undefined };
+      const previous = latest.get(key);
+      const intent: OpenIntent = { key, token: null, inheritedToken: previous?.token ?? previous?.inheritedToken ?? null, current };
       latest.set(key, intent);
-      return opened => settle(intent, opened);
+      return {
+        get active() { return latest.get(key) === intent; },
+        get token() { return intent.token; },
+        confirm(token) {
+          // Only the newest click on the key speaks for it, and only for the describe it is about to post.
+          if (latest.get(key) !== intent || intent.token !== null) return;
+          intent.token = token;
+        },
+        settle(opened) { withReconcile(() => settleState(intent, opened)); },
+      };
     },
     isCold,
     drop,
-    /** The application signalled `readyToActivate`: the next click promotes this very element. */
-    markReady(key: string): void {
+    /** The application signalled `readyToActivate` for `token`: the next click promotes this very element. */
+    markReady(key: string, token: string): void {
       const state = states.get(key);
-      if (state?.kind !== "background" || state.ready) return;
+      // A late signal from a replaced frame never vouches for its successor's token.
+      if (state?.kind !== "background" || state.token !== token || state.ready) return;
       states.set(key, { ...state, ready: true });
+    },
+    /** The visible application is exactly this token: a close from any other token (a replaced frame) is not the user leaving it. */
+    isActive(key: string, token: string): boolean {
+      const state = states.get(key);
+      return state?.kind === "foreground" && state.token === token && port.activeKey.value === key;
     },
     /** A mounted background surface closed itself; keep that token retired until the catalog moves on.
      * `token` identifies the frame that emitted the close, so a frame unmounted by a replacement never retires it. */
     selfClose(key: string, token: string): void {
       const state = states.get(key);
       if (!state || state.kind === "retired" || state.token !== token) return;
-      states.set(key, { kind: "retired", token });
-      reconcile();
+      withReconcile(() => states.set(key, { kind: "retired", token }));
     },
   };
 }

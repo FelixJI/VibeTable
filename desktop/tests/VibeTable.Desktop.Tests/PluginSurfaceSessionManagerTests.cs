@@ -192,17 +192,28 @@ public sealed class PluginSurfaceSessionManagerTests
 
         int changed = 0;
         manager.Changed += () => changed++;
+        // A bind never promotes: the pre-warmed surface is opened only by the click that confirms its token.
         manager.BindActiveCollection("local:ws", "plugin", "app-0", context);
+        Assert.IsTrue(manager.TryGet(prewarmed[0].SurfaceToken, out var boundOnly));
+        Assert.AreEqual(PluginSurfacePhases.Background, boundOnly!.Phase, "A describe by key never promotes a pre-warmed surface.");
+        Assert.AreEqual(0, changed);
+
+        Assert.IsFalse(manager.TryPromote("not-a-live-token", "local:ws", "plugin", "app-0", context), "A retired or unknown token promotes nothing.");
+        Assert.IsFalse(manager.TryPromote(prewarmed[0].SurfaceToken, "local:ws", "plugin", "other-app", context), "A token is promoted only for the application it belongs to.");
+        Assert.AreEqual(0, changed);
+        Assert.IsTrue(manager.TryPromote(prewarmed[0].SurfaceToken, "local:ws", "plugin", "app-0", context));
         Assert.IsTrue(manager.TryGet(prewarmed[0].SurfaceToken, out var promoted));
         Assert.AreEqual(PluginSurfacePhases.Foreground, promoted!.Phase);
         Assert.AreEqual("orders", promoted.ActiveCollection);
         Assert.AreEqual(1, changed, "Promotion republishes which mounted frames carry authority.");
         Assert.AreEqual(2, manager.MountedForegroundSurfaceCount);
         Assert.IsTrue(manager.TryGet(prewarmed[1].SurfaceToken, out var untouched));
-        Assert.AreEqual(PluginSurfacePhases.Background, untouched!.Phase, "Binding one action leaves its siblings pre-warmed.");
+        Assert.AreEqual(PluginSurfacePhases.Background, untouched!.Phase, "Promoting one token leaves its sibling pre-warmed: promotion is never by key.");
 
         manager.BindActiveCollection("local:ws", "plugin", "app-0", context with { Collection = "notes" });
-        Assert.AreEqual(PluginSurfacePhases.Foreground, promoted.Phase, "There is no demotion.");
+        Assert.IsTrue(manager.TryGet(prewarmed[0].SurfaceToken, out var rebound));
+        Assert.AreEqual("notes", rebound!.ActiveCollection, "A foreground session re-binds its collection.");
+        Assert.AreEqual(PluginSurfacePhases.Foreground, rebound.Phase, "There is no demotion.");
         Assert.AreEqual(1, changed, "A plain re-bind does not republish.");
 
         // Retiring a pre-warmed surface frees its slot for the next declared application.

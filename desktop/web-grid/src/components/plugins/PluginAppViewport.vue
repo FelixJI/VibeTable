@@ -18,9 +18,10 @@ withDefaults(defineProps<{
 const emit = defineEmits<{
   resolve: [decision: "approved" | "rejected", taskId: string];
   cancel: [taskId: string];
-  close: [];
-  /** The plugin application signalled `readyToActivate`: it is prepared and a click may promote this frame. */
-  ready: [];
+  /** The user leaves the application (返回平台) or its surface closed itself; `token` names the frame, so a replaced frame's late close never passes for the visible application's. */
+  close: [token: string];
+  /** The plugin application signalled `readyToActivate`: it is prepared and a click may promote this frame. `token` names the frame. */
+  ready: [token: string];
   manage: [];
 }>();
 </script>
@@ -41,7 +42,7 @@ const emit = defineEmits<{
       </div>
       <div class="plugin-app-actions">
         <button type="button" data-testid="plugin-app-manage" @click="emit('manage')">管理插件</button>
-        <button type="button" data-testid="plugin-app-return" class="primary" @click="emit('close')">返回平台</button>
+        <button type="button" data-testid="plugin-app-return" class="primary" @click="emit('close', surfaceToken)">返回平台</button>
       </div>
     </header>
     <div class="plugin-app-body">
@@ -57,8 +58,8 @@ const emit = defineEmits<{
         :phase="phase"
         @resolve="(decision, taskId) => emit('resolve', decision, taskId)"
         @cancel="taskId => emit('cancel', taskId)"
-        @close="() => emit('close')"
-        @ready="emit('ready')"
+        @close="token => emit('close', token)"
+        @ready="token => emit('ready', token)"
       />
     </div>
   </section>

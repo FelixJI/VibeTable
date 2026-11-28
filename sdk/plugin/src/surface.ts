@@ -131,7 +131,8 @@ export interface SurfaceCapabilities {
 }
 
 /** vibetable.plugin-surface-lifecycle.v1 consumer side. `current()` is undefined until the Host announced a phase
- * or `context.read()` supplied one; `whenForeground()` asks the Host first so it never hangs on a Host that does not pre-warm.
+ * or `context.read()` supplied one; `whenForeground()` wakes at once on the Host's own foreground announcement and,
+ * while the phase is unknown, also asks the Host so it never hangs on a Host that does not pre-warm.
  * `readyToActivate()` is the application-ready handshake the Host waits for before it reuses a pre-warmed frame. */
 export interface SurfaceLifecycle {
   current(): SurfacePhase | undefined;
@@ -150,17 +151,6 @@ export interface SurfaceLifecycle {
 
 type WireCommandContext = Omit<CommandContext, "surfacePhase"> & { readonly surfacePhase?: unknown };
 const surfacePhase = (value: unknown): SurfacePhase => value === "background" ? "background" : "foreground";
-/** Rejects as soon as `signal` aborts even while `work` is in flight; the late reply is dropped without an unhandled rejection. */
-function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return work;
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled."));
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
-      error => { signal.removeEventListener("abort", abort); reject(error); });
-  });
-}
 
 /** Runs only inside an isolated WebView2 iframe; never forwards through the parent Product bridge. */
 export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTransport, parentTransport?: SurfaceParentTransport): SurfaceCapabilities {
@@ -503,19 +493,20 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const outputs = createSurfaceOutputClient(call, release);
   const datasets = createSurfaceDatasets(call, release);
   const snapshots = createSurfaceSnapshot(call, release);
-  const readContext = async (): Promise<CommandContext> => {
-    const context = await call<WireCommandContext>("context.read", {});
+  const adoptContext = (context: WireCommandContext): CommandContext => {
     // The Host is the phase authority; a Host without the lifecycle contract never pre-warms. The
     // announced phase is monotonic, so a reply that was already in flight when the surface was
     // promoted never rewinds it.
-    const announced = presentation.adoptPhase(surfacePhase(context.surfacePhase));
-    const normalized = { ...context, surfacePhase: announced } as CommandContext;
+    return { ...context, surfacePhase: presentation.adoptPhase(surfacePhase(context.surfacePhase)) };
+  };
+  const readContext = async (): Promise<CommandContext> => {
+    const context = adoptContext(await call<WireCommandContext>("context.read", {}));
     // Trusted parent supplies presentation only; Go remains the data authority.
-    if (!presentation.available) return normalized;
+    if (!presentation.available) return context;
     const current = await presentation.current();
     // The presentation read may have been in flight while the surface was promoted: the context carries the
     // phase as of now (the lifecycle only moves forward), never the one the reply started with.
-    return { ...normalized, surfacePhase: presentation.lifecycle.current() ?? announced, theme: current.mode, locale: current.locale, density: current.density };
+    return { ...context, surfacePhase: presentation.lifecycle.current() ?? context.surfacePhase, theme: current.mode, locale: current.locale, density: current.density };
   };
   return {
     dataset: datasets,
@@ -528,9 +519,23 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       onChanged: presentation.lifecycle.onChanged,
       async whenForeground(signal?: AbortSignal): Promise<SurfacePhase> {
         if (signal?.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled.");
-        // Cancellation takes effect while the read is still in flight instead of waiting for its reply.
-        if (presentation.lifecycle.current() === undefined) await abortable(readContext(), signal);
-        return presentation.lifecycle.whenForeground(signal);
+        if (presentation.lifecycle.current() !== undefined) return presentation.lifecycle.whenForeground(signal);
+        // Register before probing: a Host announcement can answer a wait while the native read is still in flight.
+        const waiter = new AbortController();
+        const waitSignal = signal ? AbortSignal.any([signal, waiter.signal]) : waiter.signal;
+        const announced = presentation.lifecycle.whenForeground(waitSignal);
+        const probed = call<WireCommandContext>("context.read", {}).then(context => {
+          adoptContext(context);
+          return announced;
+        }, (error: unknown) => {
+          if (presentation.lifecycle.current() !== undefined) return announced;
+          throw error;
+        });
+        try {
+          return await Promise.race([announced, probed]);
+        } finally {
+          waiter.abort();
+        }
       },
     },
     tasks: presentation.tasks,

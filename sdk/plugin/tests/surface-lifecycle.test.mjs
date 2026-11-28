@@ -148,6 +148,63 @@ test("whenForeground asks the Host for the phase first, so a Host that never pre
   fresh.dispose();
 });
 
+test("whenForeground wakes at once on the Host's own foreground announcement while the unknown phase is still being probed", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  const waiting = client.lifecycle.whenForeground();
+  await Promise.resolve();
+  assert.equal(host.calls.at(-1).method, "context.read", "The unknown phase is probed alongside the announcement.");
+  // The Host promotes the surface before the read answers: the wait resolves now, without the probe.
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  assert.equal(await waiting, "foreground");
+  // The late read is refused: it never decides a wait the Host already answered, and nothing is left unhandled.
+  for (const f of host.listeners) f({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: host.calls.at(-1).requestId, error: { code: "plugin_source_denied", message: "denied" } } });
+  await turn();
+  assert.equal(client.lifecycle.current(), "foreground");
+  client.dispose();
+});
+
+test("whenForeground never waits for the presentation read: a foreground announcement settles the wait while the probe is still in flight", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  // The trusted parent never answers the presentation read: the probe stays in flight.
+  const waiting = client.lifecycle.whenForeground();
+  await Promise.resolve();
+  host.reply(host.calls.at(-1), context("background"));
+  await turn();
+  let settled = false; waiting.then(() => { settled = true; });
+  await turn();
+  assert.equal(settled, false, "Background keeps the wait pending.");
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  assert.equal(await waiting, "foreground");
+  client.dispose();
+});
+
+test("whenForeground resolves from the native phase without requesting presentation", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  const waiting = client.lifecycle.whenForeground();
+  host.reply(host.calls.at(-1), context("foreground"));
+  assert.equal(await waiting, "foreground");
+  assert.equal(parent.calls.some(message => message.payload?.method === "context.current"), false);
+  client.dispose();
+});
+
+test("whenForeground follows an announced background phase after a failed phase probe", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  const waiting = client.lifecycle.whenForeground();
+  let outcome;
+  waiting.then(value => { outcome = value; }, error => { outcome = error.code; });
+  parent.emit("lifecycleChanged", { phase: "background" });
+  for (const f of host.listeners) f({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: host.calls.at(-1).requestId, error: { code: "plugin_source_denied", message: "denied" } } });
+  await turn();
+  assert.equal(outcome, undefined);
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  assert.equal(await waiting, "foreground");
+  client.dispose();
+});
+
 test("whenForeground cancels immediately while the phase read is still in flight and drops the late reply", async () => {
   const host = native();
   const client = sdk.createSurfaceClient("s1", host);

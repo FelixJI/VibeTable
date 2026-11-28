@@ -4,7 +4,7 @@ import type { DropdownOption } from "naive-ui";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import type { PluginRisk, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { createPluginCommandContext, type usePluginService } from "@/services/pluginService";
-import type { PluginApplicationOpen } from "./pluginAppPrewarm";
+import type { PluginApplicationIntent, PluginApplicationOpen } from "./pluginAppPrewarm";
 import type { usePluginStore } from "@/stores/pluginStore";
 import type { useTableStore } from "@/stores/tableStore";
 import type { useUiStore } from "@/stores/uiStore";
@@ -79,8 +79,8 @@ export interface WorkspacePluginController {
   readonly rowMenu: Ref<ContextMenuState>;
   readonly columnMenu: Ref<ColumnMenuState>;
   dispatch(intent: WorkspacePluginIntent): Promise<void>;
-  /** Opens an application through the same funnel as `app.open` (sidebar, toolbar, row/column menus, plugin
-   * center): one click = one intent = one describe. Resolves true only when the Host confirmed availability and
+  /** Opens an application through the same path as `app.open` (sidebar, toolbar, row context menu, plugin
+   * center). Resolves true only when the Host confirmed availability and
    * the application became the active foreground surface. `keys` is the command-context selection. */
   openApplication(key: string, keys?: readonly (string | number)[]): Promise<boolean>;
   dispose(): void;
@@ -241,63 +241,73 @@ export function createWorkspacePluginController(
     if (disposed) return false;
     const navigation = dependencies.ui.beginNavigation();
     const isNavigationCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation;
-    let settle: (opened: boolean) => void = () => undefined;
+    const inert: PluginApplicationIntent = { active: false, token: null, confirm: () => undefined, settle: () => undefined };
+    let intent = inert;
     let isCurrent = isNavigationCurrent;
     try {
-      // One click = one intent: the pre-warm layer closes a frame that never became ready (once) before this
-      // read and adopts on the same token the surface this describe promotes. No reload, no second describe.
-      if (dependencies.applicationOpen) settle = await dependencies.applicationOpen.begin(key, isNavigationCurrent);
-      if (!isNavigationCurrent()) return false;
+      // A cold frame releases its token before this read. The intent records the token the describe promotes
+      // so it can adopt that frame after success or release it if the click is discarded.
+      intent = dependencies.applicationOpen
+        ? await dependencies.applicationOpen.begin(key, isNavigationCurrent)
+        : { active: true, token: null, confirm: () => undefined, settle: () => undefined };
+      if (!intent.active || !isNavigationCurrent()) return false;
       // The catalog may have moved on during the bounded cold close: the entry is resolved after it.
+      const registered = registeredActions.value.find(item => item.key === key);
+      if (!registered) {
+        dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
+        return false;
+      }
+      if (registered.action.presentation !== "application") {
+        dependencies.reportError("该入口不是插件应用");
+        return false;
+      }
       const generation = dependencies.plugins.projectContextGeneration;
       const projectKey = dependencies.plugins.projectKey;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const registered = registeredActions.value.find(item => item.key === key);
-        if (!registered) {
-          if (attempt === 0) dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
-          return false;
+      const isProjectCurrent = () => dependencies.plugins.projectKey === projectKey
+        && dependencies.plugins.projectContextGeneration === generation;
+      const currentPlugin = () => dependencies.plugins.plugins.find(plugin => plugin.pluginId === registered.plugin.pluginId);
+      const sameVersion = (plugin: typeof registered.plugin) => plugin.installationId === registered.plugin.installationId
+        && plugin.revision === registered.plugin.revision;
+      isCurrent = () => {
+        const plugin = currentPlugin();
+        return isNavigationCurrent() && isProjectCurrent() && plugin !== undefined && sameVersion(plugin)
+          && (intent.token === null || plugin.manifest.actions.some(action =>
+            action.actionId === registered.action.actionId && action.surfaceToken === intent.token));
+      };
+      // describeAction refreshes the catalog for 3.x plugins, revalidates the
+      // live surface and binds the command context without opening the
+      // action overlay; the viewport then mounts from the fresh projection.
+      // The intent confirms the token the fresh catalog projects for this key, and the describe names it so
+      // the Host promotes that session and no other. A package upgrade or removal revealed by the read
+      // ends the click: the user clicks again on the committed catalog.
+      const availability = await dependencies.service.describeAction(
+        registered.plugin.pluginId,
+        registered.action.actionId,
+        commandContext(keys),
+        false,
+        { isCurrent, confirm: token => intent.confirm(token) },
+      );
+      if (!isCurrent()) {
+        const replacement = currentPlugin();
+        if (isNavigationCurrent() && isProjectCurrent() && replacement?.status === "enabled"
+          && replacement.installationId === registered.plugin.installationId && replacement.revision !== registered.plugin.revision
+          && replacement.manifest.actions.some(action => action.actionId === registered.action.actionId
+            && action.presentation === "application" && action.invocation === "manual")) {
+          dependencies.reportError("插件版本已更新，请重新打开应用");
         }
-        if (registered.action.presentation !== "application") {
-          dependencies.reportError("该入口不是插件应用");
-          return false;
-        }
-        isCurrent = () => isNavigationCurrent()
-          && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
-          && dependencies.plugins.plugins.some(plugin => plugin.pluginId === registered.plugin.pluginId
-            && plugin.installationId === registered.plugin.installationId && plugin.revision === registered.plugin.revision);
-        // describeAction refreshes the catalog for 3.x plugins, revalidates the
-        // live surface and binds the command context without opening the
-        // action overlay; the viewport then mounts from the fresh projection.
-        const availability = await dependencies.service.describeAction(
-          registered.plugin.pluginId,
-          registered.action.actionId,
-          commandContext(keys),
-          false,
-          isCurrent,
-        );
-        if (isCurrent()) {
-          if (!availability.available) return false;
-          dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
-          settle(true);
-          return true;
-        }
-        // The click's own catalog read brought a package upgrade of the same installation (same id, new
-        // revision): the user's click stands, so it is retried once on the fresh entry. Any other discard
-        // (another installation, the entry gone) ends the click.
-        if (!isNavigationCurrent() || dependencies.plugins.projectKey !== projectKey
-          || dependencies.plugins.projectContextGeneration !== generation) return false;
-        const fresh = registeredActions.value.find(item => item.key === key);
-        if (!fresh || fresh.plugin.installationId !== registered.plugin.installationId
-          || fresh.plugin.revision === registered.plugin.revision) return false;
+        return false;
       }
-      return false;
+      if (!availability.available) return false;
+      dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
+      intent.settle(true);
+      return true;
     } catch (error) {
       if (isCurrent()) dependencies.reportError(errorMessage(error));
       return false;
     } finally {
       // Discarded navigation, superseded click or refused describe: the intent reclaims the hidden surface
-      // it may have promoted. Idempotent once the click settled on the visible frame.
-      settle(false);
+      // its own describe may have promoted (its confirmed token only). Inert once the click settled.
+      intent.settle(false);
     }
   }
 

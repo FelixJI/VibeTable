@@ -20,10 +20,12 @@ const props = withDefaults(defineProps<{
   phase?: PluginSurfacePhase;
 }>(), { showTasks: true, phase: "foreground" });
 const emit = defineEmits<{
-  close: [];
+  /** The surface this token names closed (its own close message or the panel's close button); `token` identifies the frame, so a
+   * replaced frame's late close never passes for the visible application's. Unmounting releases the token without emitting. */
+  close: [token: string];
   /** The application signalled `readyToActivate` (SDK `api.lifecycle.readyToActivate()`): it finished preparing and
-   * a click may promote this very element. The transport `ready` only means the SDK subscribed. */
-  ready: [];
+   * a click may promote this very element. The transport `ready` only means the SDK subscribed. `token` identifies the frame. */
+  ready: [token: string];
   action: [payload: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected", taskId: string];
   cancel: [taskId: string];
@@ -85,7 +87,7 @@ function onMessage(event: MessageEvent): void {
   if (event.data.event === "readyToActivate") {
     // Application readiness is consumed here and never forwarded: the Host authority does not act on it, and
     // an older Host would reject it as an unknown surface event.
-    emit("ready");
+    emit("ready", activeToken.value);
     return;
   }
   // Transport `ready`: the SDK subscribed late or lazily; replay the current snapshots without treating the frame as reusable.
@@ -122,7 +124,7 @@ function close(payload: Readonly<Record<string, unknown>> = {}, notifyParent = t
   if (typeof payload.status === "string" && payload.status) {
     emit("finish", payload.status, typeof payload.summary === "string" ? payload.summary : "");
   }
-  if (notifyParent) emit("close");
+  if (notifyParent) emit("close", token);
 }
 
 watch(() => props.theme, sendTheme, { deep: true });
@@ -137,7 +139,9 @@ watch(() => props.surfaceToken, (token) => {
 onMounted(() => window.addEventListener("message", onMessage));
 onBeforeUnmount(() => {
   window.removeEventListener("message", onMessage);
-  close();
+  // Unmounting releases this token's Host session; it is not the user closing the application. The successor
+  // view mounted in its place (a promoted pre-warmed surface, another application) stays open.
+  close({}, false);
 });
 </script>
 

@@ -369,8 +369,33 @@ public sealed class PluginRequestDispatcherTests
             Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase);
             Assert.AreEqual("allow-scripts allow-same-origin", session.IframeSandbox, "Pre-warmed frames stay sandboxed without modal dialogs.");
 
+            // Without a token the describe binds foreground sessions only: a pre-warmed surface is never promoted by key.
+            const string DescribeContext = """{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}""";
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "lifecycle-describe-by-key",
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}}}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase, "A describe without a token never promotes a pre-warmed surface.");
+
+            // A token the Host no longer holds (retired, or issued for another application) is refused: the live session is
+            // never promoted in its place, so an older click can never open a session the catalog issued later.
+            string retired = surfaces.Open("project-1", declared.PluginId, PluginPackageRevision.Create(@"C:\plugins\clean", declared.PackageHash), "ui/index.html",
+                phase: PluginSurfacePhases.Background).SurfaceToken;
+            Assert.IsTrue(surfaces.Close(retired));
+            foreach (var (id, stale) in new[] { ("lifecycle-describe-retired", retired), ("lifecycle-describe-unknown", "not-a-live-token") })
+            {
+                await dispatcher.DispatchAsync(Request("plugin.action.describe", id,
+                    $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{stale}}"}"""));
+                var refused = Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload);
+                Assert.IsFalse(refused.Available);
+                CollectionAssert.Contains(refused.Reasons.ToArray(), "plugin_surface_unavailable");
+            }
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase, "A refused token promotes nothing.");
+
+            // The click confirms the session it is about to open: the Host promotes that session and no other.
             await dispatcher.DispatchAsync(Request("plugin.action.describe", "lifecycle-describe",
-                """{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}}"""));
+                $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{{DescribeContext}},"surfaceToken":"{{token}}"}"""));
             Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
             Assert.IsTrue(surfaces.TryGet(token, out session));
             Assert.AreEqual(PluginSurfacePhases.Foreground, session!.Phase, "Opening the application promotes the pre-warmed surface in place.");

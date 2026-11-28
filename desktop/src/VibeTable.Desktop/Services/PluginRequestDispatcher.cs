@@ -339,7 +339,19 @@ public sealed class PluginRequestDispatcher : IDisposable
                         _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, [reason]));
                         return;
                     }
-                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
+                    // The click names the session it confirmed (renderer intent): the Host promotes that session and no other,
+                    // so a session the catalog issued later for the same application is never promoted by an older click.
+                    // Without a token (panel actions, legacy applications) the describe binds the foreground sessions only:
+                    // a pre-warmed surface is never promoted by key.
+                    if (!string.IsNullOrEmpty(describe.SurfaceToken))
+                    {
+                        if (!_surfaces.TryPromote(describe.SurfaceToken, describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context))
+                        {
+                            _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
+                            return;
+                        }
+                    }
+                    else _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
                     _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
                     return;
                 }

@@ -135,7 +135,12 @@ public sealed record PluginDescribeActionParams(
     string ProjectKey,
     string PluginId,
     string ActionId,
-    PluginRuntimeCommandContext Context);
+    PluginRuntimeCommandContext Context)
+{
+    /// <summary>The live surface session the click confirmed (renderer intent). Present for 3.x applications:
+    /// the Host promotes that session and no other. Absent for panel actions and legacy applications.</summary>
+    public string? SurfaceToken { get; init; }
+}
 public sealed record PluginStartActionParams(
     string ProjectKey,
     string PluginId,

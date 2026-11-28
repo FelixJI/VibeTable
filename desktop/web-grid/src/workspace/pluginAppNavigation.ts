@@ -63,7 +63,7 @@ export function derivePluginAppEntries(
         surfacePhase,
         prewarm: declared && surfacePhase === "background",
       });
-          }
+    }
   }
   return entries;
 }
