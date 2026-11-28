@@ -91,12 +91,15 @@ Go 在同一事务内校验安装、全部授权与精确版本，只读元数�
 `application` 动作可声明 `compatibility.surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1"`（仅 `pluginApi: "3.x"`，
 其它取值为 `version_incompatible`）加入后台预热：工作区就绪后 Host 在隐藏隔离帧中预热该页面，不换页、不抢焦点，
 最多 4 个，切换工作区/禁用/卸载/失败时释放。后台阶段由 Host 按 surface token 强制只读：
-只允许 `request.cancel`、`context.read`、`model.read` 和单份快照的 `snapshot.open/page/readBatch/release`，
+只允许 `request.cancel`、`context.read`、`model.read` 和单份快照的 `snapshot.open/page/readBatch/release`（后台每帧 1 个句柄，4 帧不占满全局 8 个），
 其它方法及受信父页的 `tasks.cancel`/`notification.show`/`navigation.back` 一律 `plugin_surface_background`，无弹窗。
 插件在 `api.lifecycle.whenForeground(signal?)` 之前只做只读准备，用 `api.lifecycle.onChanged` / `context.read().surfacePhase`
 核对阶段；用户点击后 Host 把预热的同一 token 原位提升并投递 `foreground`（同一帧、同一会话原位成为可见页面，不换 token、不重载；
 提升瞬间的在途后台读取可能 `plugin_snapshot_stale`，需重读），离开前台退租 token，再次预热换发新的 `background` token。
-未就绪（仍在加载或启动失败）的预热帧不复用：点击时关闭一次并走正常可见路径重开。未声明的插件行为不变；超出 4 个上限的入口
+未就绪（仍在加载或启动失败）的预热帧不复用：点击时关闭一次并走正常可见路径重开。**首屏就绪后必须调用 `api.lifecycle.readyToActivate()`**（幂等、永不抛）：
+它是应用就绪握手，与 transport `ready` 分离；只有发过该信号的预热帧才会在点击时原位提升（单次 describe、不重载），未发信号的帧每次点击都
+关闭并重开一次（有界）。旧 Host 收不到该信号、行为不变。所有入口（侧栏、工具栏/行列菜单、插件中心）都经同一打开漏斗：
+一次点击 = 一个意图 = 一次 describe；取消或重复点击时旧意图确定性退租其捕获的 token，不关后继 token；若点击自身的目录读发现该包已被升级/重装，则在升级后的新入口上重试一次（首次尝试止于目录读，Host 仍只见一次 describe），升级后的帧以冷前台打开。模型尚未映射时插件可能在就绪前等待：未发信号的帧同样在首次点击就打开为可操作的冷前台，用户可在应用内完成映射。未声明的插件行为不变；超出 4 个上限的入口
 以及不返回 `surfacePhase` 的旧 Host 保持普通手动入口，不会被隐藏挂载。细节见 `docs/plugin-api.md` 的“后台预热生命周期”。
 
 `api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；

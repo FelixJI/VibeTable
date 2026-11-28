@@ -25,6 +25,17 @@ export function validatePluginSurfaceUrl(value: string): boolean {
   }
 }
 
+/** SDK `api.lifecycle.readyToActivate()`: the application finished preparing and the shell may promote this very frame.
+ * Consumed by the shell only; never forwarded to the Host authority, whose wire events stay `ready | close | action`. */
+export interface SurfaceReadyToActivateEvent {
+  readonly contract: "vibetable.plugin-surface.v1";
+  readonly surfaceToken: string;
+  readonly event: "readyToActivate";
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+/** Trusted events a plugin frame may post to its parent: the Host wire events plus the shell-consumed readiness signal. */
+export type TrustedSurfaceEvent = PluginSurfaceEventPayload | SurfaceReadyToActivateEvent;
+
 interface SurfaceMessageCandidate {
   readonly origin: string;
   readonly source: MessageEventSource | null;
@@ -40,13 +51,13 @@ interface SurfaceMessageExpectation {
 export function isTrustedSurfaceMessage(
   event: SurfaceMessageCandidate,
   expected: SurfaceMessageExpectation,
-): event is SurfaceMessageCandidate & { readonly data: PluginSurfaceEventPayload } {
+): event is SurfaceMessageCandidate & { readonly data: TrustedSurfaceEvent } {
   if (event.origin !== expected.expectedOrigin || event.source !== expected.expectedSource) return false;
   if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return false;
-  const data = event.data as Partial<PluginSurfaceEventPayload>;
+  const data = event.data as Partial<TrustedSurfaceEvent>;
   return data.contract === "vibetable.plugin-surface.v1"
     && data.surfaceToken === expected.surfaceToken
-    && (data.event === "ready" || data.event === "close" || data.event === "action")
+    && (data.event === "ready" || data.event === "readyToActivate" || data.event === "close" || data.event === "action")
     && typeof data.payload === "object"
     && data.payload !== null
     && !Array.isArray(data.payload);

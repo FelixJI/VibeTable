@@ -131,11 +131,21 @@ export interface SurfaceCapabilities {
 }
 
 /** vibetable.plugin-surface-lifecycle.v1 consumer side. `current()` is undefined until the Host announced a phase
- * or `context.read()` supplied one; `whenForeground()` asks the Host first so it never hangs on a Host that does not pre-warm. */
+ * or `context.read()` supplied one; `whenForeground()` asks the Host first so it never hangs on a Host that does not pre-warm.
+ * `readyToActivate()` is the application-ready handshake the Host waits for before it reuses a pre-warmed frame. */
 export interface SurfaceLifecycle {
   current(): SurfacePhase | undefined;
   onChanged(listener: (phase: SurfacePhase) => void): () => void;
   whenForeground(signal?: AbortSignal): Promise<SurfacePhase>;
+  /**
+   * Tells the Host this application finished preparing and can handle a foreground activation on the frame it
+   * runs in. The transport `ready` the SDK posts when the client is created only means the subscription is in
+   * place; a declared (`compatibility.surfaceLifecycle`) application calls this once its initial read-only
+   * preparation is done, in the background or already in the foreground. Idempotent and never throws. On a Host
+   * without the lifecycle contract nothing is sent. Without this signal a click on a pre-warmed frame closes it
+   * once and opens a fresh visible surface instead of promoting a blank page.
+   */
+  readyToActivate(): void;
 }
 
 type WireCommandContext = Omit<CommandContext, "surfacePhase"> & { readonly surfacePhase?: unknown };
@@ -503,7 +513,9 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     // Trusted parent supplies presentation only; Go remains the data authority.
     if (!presentation.available) return normalized;
     const current = await presentation.current();
-    return { ...normalized, theme: current.mode, locale: current.locale, density: current.density };
+    // The presentation read may have been in flight while the surface was promoted: the context carries the
+    // phase as of now (the lifecycle only moves forward), never the one the reply started with.
+    return { ...normalized, surfacePhase: presentation.lifecycle.current() ?? announced, theme: current.mode, locale: current.locale, density: current.density };
   };
   return {
     dataset: datasets,
@@ -512,6 +524,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     context: { read: readContext, current: presentation.current, onChanged: presentation.onChanged },
     lifecycle: {
       current: presentation.lifecycle.current,
+      readyToActivate: presentation.lifecycle.readyToActivate,
       onChanged: presentation.lifecycle.onChanged,
       async whenForeground(signal?: AbortSignal): Promise<SurfacePhase> {
         if (signal?.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled.");

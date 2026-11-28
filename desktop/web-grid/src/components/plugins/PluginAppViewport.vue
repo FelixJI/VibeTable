@@ -19,7 +19,7 @@ const emit = defineEmits<{
   resolve: [decision: "approved" | "rejected", taskId: string];
   cancel: [taskId: string];
   close: [];
-  /** The plugin frame completed the SDK `ready` handshake. */
+  /** The plugin application signalled `readyToActivate`: it is prepared and a click may promote this frame. */
   ready: [];
   manage: [];
 }>();

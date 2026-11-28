@@ -1141,6 +1141,25 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task BackgroundSurfaceHoldsOneSnapshotHandleAndPromotionRestoresTheForegroundAllowance()
+    {
+        using var fixture = new Fixture(presentation: "application", phase: PluginSurfacePhases.Background);
+        // Up to four frames are pre-warmed: one handle each keeps the total of eight for the visible application.
+        string first = (await fixture.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.AreEqual("plugin_snapshot_limit", Code(await fixture.Call("snapshot.open", SnapshotRequest)), "A second open is refused before the authority is asked.");
+        // Released capacity is reusable in background.
+        Assert.IsFalse((await fixture.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = first }))).TryGetProperty("error", out _));
+        string second = (await fixture.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        // Promotion restores the foreground allowance of two handles.
+        var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
+            [JsonSerializer.SerializeToElement("selected")], null, "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
+        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context);
+        string third = (await fixture.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.AreNotEqual(second, third);
+        Assert.AreEqual("plugin_snapshot_limit", Code(await fixture.Call("snapshot.open", SnapshotRequest)));
+    }
+
+    [TestMethod]
     public async Task SharedLifecycleContractMatchesTheHostBackgroundGate()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
@@ -1149,7 +1168,11 @@ public sealed class PluginSurfaceApiTests
         using var contract = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "plugin-surface-api.v1.json")));
         var lifecycle = contract.RootElement.GetProperty("lifecycle");
         Assert.AreEqual(PluginContractVersions.SurfaceLifecycle, lifecycle.GetProperty("contract").GetString());
-        Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, lifecycle.GetProperty("limits").GetProperty("maxBackgroundSurfaces").GetInt32());
+        var limits = lifecycle.GetProperty("limits");
+        Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, limits.GetProperty("maxBackgroundSurfaces").GetInt32());
+        Assert.AreEqual(PluginSurfaceApi.BackgroundSnapshotHandles, limits.GetProperty("snapshotHandlesPerBackgroundSurface").GetInt32());
+        Assert.AreEqual(PluginSurfaceApi.ForegroundSnapshotHandles, limits.GetProperty("snapshotHandlesPerForegroundSurface").GetInt32());
+        Assert.AreEqual(PluginSurfaceApi.SnapshotHandlesTotal, limits.GetProperty("snapshotHandlesTotal").GetInt32());
         CollectionAssert.AreEqual(new[] { PluginSurfacePhases.Background, PluginSurfacePhases.Foreground },
             lifecycle.GetProperty("phases").EnumerateArray().Select(item => item.GetString()).ToArray());
         var published = contract.RootElement.GetProperty("methods").EnumerateArray().Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);

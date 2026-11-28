@@ -19,7 +19,7 @@
  * idempotency key; we read those from the paste + workspace stores here so the
  * PastePanel component stays free of service knowledge.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon, NModal } from "naive-ui";
 import { FilePlus2 } from "@lucide/vue";
@@ -921,6 +921,7 @@ const pluginController = createWorkspacePluginController({
   historyCellLabel: () => t("history.context.cell"),
   historyRowLabel: () => t("history.context.row"),
   riskLabel: risk => t(`plugin.risk.${risk}`),
+  applicationOpen: { begin: (key, current) => pluginPrewarm.begin(key, current) },
 });
 const pluginTheme = pluginController.theme;
 const pluginApplicationTasks = pluginController.applicationTasks;
@@ -961,17 +962,12 @@ watch(
     }
   },
 );
-async function onOpenPluginApp(key: string): Promise<void> {
-  // A pre-warmed frame that never signalled ready (still loading or failed to start) would show a
-  // blank page if promoted in place: close it once, let the Host retire that session, and let the
-  // click's own catalog read open a fresh surface through the normal path.
-  if (pluginPrewarm.isCold(key)) {
-    pluginPrewarm.drop(key);
-    await nextTick();
-  }
-  // The describe call inside app.open promotes the Host session; the slot only has to adopt it.
-  const opened = pluginPrewarm.expectOpen(key);
-  void pluginController.dispatch({ type: "app.open", key }).finally(opened);
+/** Every application entry (sidebar `app.open`, toolbar and row/column menus `action.open`, the plugin center)
+ * goes through the controller funnel: one click = one intent = one describe. The intent closes a pre-warmed frame that
+ * never signalled application readiness (once) before the describe, adopts the surface the describe promotes on the
+ * same token, and reclaims it deterministically when the navigation is discarded. */
+function onOpenPluginApp(key: string): Promise<void> {
+  return pluginController.dispatch({ type: "app.open", key });
 }
 
 // #482 native host chrome: the always-reachable WPF row steers the trusted
@@ -1423,6 +1419,9 @@ function onPrewarmSlotClose(key: string, token: string): void {
 /** The active application's slot: when present it is the visible frame, so the legacy viewport stays out. */
 const activePrewarmSlot = computed(() =>
   pluginPrewarm.slots.value.find(slot => slot.key === activePluginAppKey.value) ?? null);
+/** The plugin center's 运行 button joins the same funnel; its command context carries no row selection. */
+const openPluginApplication = (pluginId: string, actionId: string): Promise<boolean> =>
+  pluginController.openApplication(`${pluginId}/${actionId}`, []);
 
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
@@ -1852,7 +1851,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           v-if="!platformViewsHidden && ui.activeView === 'conflicts' && workspaceSession.conflictEnabled"
           @action="workspaceSessionUi.execute"
         />
-        <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" />
+        <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" :open-application="openPluginApplication" />
         <PluginAppViewport
           v-if="!showWorkspaceCenterScreen && activePluginAppEntry && !activePrewarmSlot"
           :src="activePluginAppEntry.src"

@@ -22,6 +22,7 @@ function setup(initial: readonly PluginAppEntry[]) {
   const view = () => prewarm.slots.value.map(slot => [slot.key, slot.entry.surfaceToken, slot.phase]);
   return { prewarm, entries, activeKey, refresh, promote, rollback, view };
 }
+const settleAfter = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 describe("createPluginAppPrewarm", () => {
   it("mounts one hidden slot per declared application the Host granted in background; every other entry stays manual", () => {
@@ -42,28 +43,32 @@ describe("createPluginAppPrewarm", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("lets the click path adopt the surface the describe call already promoted, on the same token", async () => {
+  it("lets the click intent adopt the surface its describe already promoted, on the same token and without a second describe", async () => {
     const { prewarm, activeKey, promote, refresh, view } = setup([entry("com.acme.a/open", "a-1")]);
-    const opened = prewarm.expectOpen("com.acme.a/open");
+    prewarm.markReady("com.acme.a/open"); // the application signalled readyToActivate: the frame is reusable
+    const settle = await prewarm.begin("com.acme.a/open");
     activeKey.value = "com.acme.a/open";
     expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
     expect(promote).not.toHaveBeenCalled();
-    opened(); // The click path settled on the visible frame: nothing to re-read.
+    settle(true);
+    // The click path settled on the visible frame: nothing to re-read, and the idempotent follow-up is a no-op.
+    settle(false);
     await nextTick();
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
     expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("keeps an unhandshaked activation hidden until the Host promotes it, and rolls back when it refuses", async () => {
+  it("keeps an activation no click announced hidden until the Host promotes it, and rolls back when it refuses", async () => {
     const { activeKey, promote, rollback, refresh, view } = setup([entry("com.acme.a/open", "a-1"), entry("com.acme.b/open", "b-1")]);
     let refuse!: (ok: boolean) => void;
     promote.mockImplementationOnce(() => new Promise<boolean>(resolve => { refuse = resolve; }));
     activeKey.value = "com.acme.a/open";
     expect(promote).toHaveBeenCalledWith("com.acme.a/open");
     expect(view()).toEqual([["com.acme.a/open", "a-1", "background"], ["com.acme.b/open", "b-1", "background"]]);
-    refuse(true); await Promise.resolve(); await Promise.resolve();
+    refuse(true); await settleAfter();
     expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"], ["com.acme.b/open", "b-1", "background"]]);
     expect(rollback).not.toHaveBeenCalled();
-    // Leaving the foreground retires the host-side foreground session and refreshes the catalog.
+    // Leaving the foreground retires the host-side foreground session at once and refreshes the catalog.
     activeKey.value = null;
     expect(view()).toEqual([["com.acme.b/open", "b-1", "background"]]);
     expect(refresh).not.toHaveBeenCalled();
@@ -75,17 +80,31 @@ describe("createPluginAppPrewarm", () => {
     activeKey.value = "com.acme.b/open";
     expect(promote).toHaveBeenCalledWith("com.acme.b/open");
     expect(view()).toEqual([["com.acme.b/open", "b-1", "background"]]);
-    refuseB(false); await Promise.resolve(); await Promise.resolve();
+    refuseB(false); await settleAfter();
     expect(rollback).toHaveBeenCalledWith("com.acme.b/open");
     expect(view()).toEqual([]);
     await nextTick();
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
+  it("confirms an explicit promotion from the catalog: the same token without its grant was promoted, never retired", async () => {
+    const { entries, activeKey, promote, rollback, refresh, view } = setup([entry("com.acme.a/open", "a-1")]);
+    // No click announced this activation: the slot waits hidden for the Host.
+    activeKey.value = "com.acme.a/open";
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"]]);
+    expect(promote).toHaveBeenCalledTimes(1);
+    // The promotion's own catalog read projects the promoted session as `null` for the very same token.
+    entries.value = [entry("com.acme.a/open", "a-1", { phase: null })];
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("re-pre-warms on a fresh token after the user left and keeps a self-closed token retired", async () => {
     const { prewarm, entries, activeKey, refresh, promote, view } = setup([entry("com.acme.a/open", "a-1")]);
-    const opened = prewarm.expectOpen("com.acme.a/open");
-    activeKey.value = "com.acme.a/open"; opened();
+    prewarm.markReady("com.acme.a/open");
+    const settle = await prewarm.begin("com.acme.a/open");
+    activeKey.value = "com.acme.a/open"; settle(true);
     expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
     activeKey.value = null; await nextTick();
     expect(view()).toEqual([]);
@@ -108,14 +127,15 @@ describe("createPluginAppPrewarm", () => {
 
   it("promotes a replaced token of the active application and drops retired catalog entries", async () => {
     const { prewarm, entries, activeKey, promote, refresh, view } = setup([entry("com.acme.a/open", "a-1")]);
-    const opened = prewarm.expectOpen("com.acme.a/open");
-    activeKey.value = "com.acme.a/open"; opened();
+    prewarm.markReady("com.acme.a/open");
+    const settle = await prewarm.begin("com.acme.a/open");
+    activeKey.value = "com.acme.a/open"; settle(true);
     let admit!: (ok: boolean) => void;
     promote.mockImplementationOnce(() => new Promise<boolean>(resolve => { admit = resolve; }));
     entries.value = [entry("com.acme.a/open", "a-2")];
     expect(view()).toEqual([["com.acme.a/open", "a-2", "background"]]);
     expect(promote).toHaveBeenCalledWith("com.acme.a/open");
-    admit(true); await Promise.resolve(); await Promise.resolve();
+    admit(true); await settleAfter();
     expect(view()).toEqual([["com.acme.a/open", "a-2", "foreground"]]);
     // Disable / uninstall: the catalog drops the entry and the shell leaves the app; a later
     // reinstall starts cold without re-promoting the stale activation.
@@ -135,47 +155,121 @@ describe("createPluginAppPrewarm", () => {
     activeKey.value = "com.acme.a/open";
     activeKey.value = null;
     expect(view()).toEqual([]);
-    admit(true); await Promise.resolve(); await Promise.resolve();
+    admit(true); await settleAfter();
     expect(view()).toEqual([]);
     expect(rollback).not.toHaveBeenCalled();
   });
 
-  it("reclaims a hidden session a discarded click promoted: the click re-reads the authority and the ungranted token is retired", async () => {
-    const { prewarm, entries, refresh, promote, view } = setup([entry("com.acme.a/open", "a-1")]);
+  it("reclaims a discarded click at once: the token it may have promoted is retired and closed without a catalog read", async () => {
+    const { prewarm, entries, refresh, promote, view } = setup([entry("com.acme.a/open", "a-1"), entry("com.acme.b/open", "b-1")]);
+    prewarm.markReady("com.acme.a/open");
+    const settle = await prewarm.begin("com.acme.a/open");
     // The user navigated away while the describe was in flight: the app never opened, but the Host
-    // session may already be foreground. The finalizer re-reads the catalog instead of trusting it.
-    prewarm.expectOpen("com.acme.a/open")();
-    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"]]);
+    // session may already be foreground. The finalizer retires the captured token deterministically.
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"], ["com.acme.b/open", "b-1", "background"]]);
+    settle(false);
+    expect(view()).toEqual([["com.acme.b/open", "b-1", "background"]]);
+    expect(refresh).not.toHaveBeenCalled();
     await nextTick();
     expect(refresh).toHaveBeenCalledTimes(1);
-    entries.value = [entry("com.acme.a/open", "a-1", { phase: null })];
-    expect(view()).toEqual([]);
-    await nextTick();
-    expect(refresh).toHaveBeenCalledTimes(2);
+    // The catalog may still project the promoted session: it is already retired, nothing further happens.
+    entries.value = [entry("com.acme.a/open", "a-1", { phase: null }), entry("com.acme.b/open", "b-1")];
+    expect(view()).toEqual([["com.acme.b/open", "b-1", "background"]]);
+    expect(promote).not.toHaveBeenCalled();
     // The frame unmounted (its close retires the Host session) and the replacement token is pre-warmed.
-    entries.value = [entry("com.acme.a/open", "a-2")];
-    expect(view()).toEqual([["com.acme.a/open", "a-2", "background"]]);
+    entries.value = [entry("com.acme.a/open", "a-2"), entry("com.acme.b/open", "b-1")];
+    expect(view()).toEqual([["com.acme.a/open", "a-2", "background"], ["com.acme.b/open", "b-1", "background"]]);
+  });
+
+  it("a superseded click never touches the successor: the older finalizer is a no-op and the newer click opens the app", async () => {
+    const { prewarm, activeKey, promote, rollback, refresh, view } = setup([entry("com.acme.a/open", "a-1")]);
+    prewarm.markReady("com.acme.a/open");
+    const first = await prewarm.begin("com.acme.a/open");
+    const second = await prewarm.begin("com.acme.a/open");
+    // The second click's describe promoted the session; the first describe is discarded by the navigation.
+    first(false);
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"]]);
+    activeKey.value = "com.acme.a/open";
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
+    second(true);
+    first(false); second(false);
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
     expect(promote).not.toHaveBeenCalled();
   });
 
-  it("never promotes a cold frame in place: the click closes it once and the fresh token opens through the normal path", async () => {
+  it("switching to another application reclaims the first click's token and leaves the second application alone", async () => {
+    const { prewarm, activeKey, refresh, view } = setup([entry("com.acme.a/open", "a-1"), entry("com.acme.b/open", "b-1")]);
+    prewarm.markReady("com.acme.a/open"); prewarm.markReady("com.acme.b/open");
+    const clickA = await prewarm.begin("com.acme.a/open");
+    const clickB = await prewarm.begin("com.acme.b/open");
+    clickA(false); // A's describe was superseded by the click on B
+    expect(view()).toEqual([["com.acme.b/open", "b-1", "background"]]);
+    activeKey.value = "com.acme.b/open";
+    clickB(true);
+    expect(view()).toEqual([["com.acme.b/open", "b-1", "foreground"]]);
+    expect(refresh).not.toHaveBeenCalled();
+    await nextTick();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("never promotes a cold frame in place: the click closes it once before its own catalog read and the fresh token opens normally", async () => {
     const { prewarm, entries, activeKey, refresh, promote, view } = setup([entry("com.acme.a/open", "a-1")]);
     expect(prewarm.isCold("com.acme.a/open")).toBe(true);
-    prewarm.markReady("com.acme.a/open");
-    expect(prewarm.isCold("com.acme.a/open")).toBe(false);
-    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"]]);
-    prewarm.drop("com.acme.a/open");
+    const opening = prewarm.begin("com.acme.a/open");
     expect(view()).toEqual([]);
+    const settle = await opening;
     await nextTick();
     expect(refresh).not.toHaveBeenCalled(); // The click's own catalog read follows: no second read.
-    const opened = prewarm.expectOpen("com.acme.a/open");
-    activeKey.value = "com.acme.a/open";
-    expect(view()).toEqual([]);
-    // The Host retired the closed session and issued a replacement, which the handshake promotes directly.
+    // The Host retired the closed session and issued a replacement, which the click's describe promotes directly.
     entries.value = [entry("com.acme.a/open", "a-2")];
+    expect(view()).toEqual([["com.acme.a/open", "a-2", "background"]]);
+    activeKey.value = "com.acme.a/open";
     expect(view()).toEqual([["com.acme.a/open", "a-2", "foreground"]]);
     expect(promote).not.toHaveBeenCalled();
-    opened();
+    settle(true);
+    expect(refresh).not.toHaveBeenCalled();
+    // A discarded cold click closes the replacement too: its describe may have promoted it.
+    prewarm.markReady("com.acme.a/open");
+    expect(prewarm.isCold("com.acme.a/open")).toBe(false);
+  });
+
+  it("a click the user moved on from during the cold close registers nothing, so the newer click keeps the replacement", async () => {
+    const { prewarm, entries, activeKey, refresh, promote, view } = setup([entry("com.acme.a/open", "a-1")]);
+    let current = true;
+    const stale = prewarm.begin("com.acme.a/open", () => current);
+    current = false; // The user navigated again while the cold frame was closing
+    const settleStale = await stale;
+    expect(view()).toEqual([]);
+    entries.value = [entry("com.acme.a/open", "a-2")];
+    prewarm.markReady("com.acme.a/open");
+    const settleNew = await prewarm.begin("com.acme.a/open");
+    activeKey.value = "com.acme.a/open";
+    expect(view()).toEqual([["com.acme.a/open", "a-2", "foreground"]]);
+    expect(promote).not.toHaveBeenCalled();
+    settleStale(false); settleNew(true); settleStale(false);
+    expect(view()).toEqual([["com.acme.a/open", "a-2", "foreground"]]);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("a click during an explicit promotion settles it on the same token without another describe", async () => {
+    const { prewarm, activeKey, promote, view } = setup([entry("com.acme.a/open", "a-1")]);
+    activeKey.value = "com.acme.a/open";
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "background"]]);
+    expect(promote).toHaveBeenCalledTimes(1);
+    const settle = await prewarm.begin("com.acme.a/open");
+    // The click's describe confirmed the application while the explicit promotion is still in flight.
+    settle(true);
+    expect(view()).toEqual([["com.acme.a/open", "a-1", "foreground"]]);
+    expect(promote).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires a token the catalog shows promoted while no click owns it, hidden authority never lingers", () => {
+    const { entries, refresh, view } = setup([entry("com.acme.a/open", "a-1")]);
+    // A surface promoted by some other path (or a click whose finalizer already ran) shows `null` for its token.
+    entries.value = [entry("com.acme.a/open", "a-1", { phase: null })];
+    expect(view()).toEqual([]);
     expect(refresh).not.toHaveBeenCalled();
   });
 });

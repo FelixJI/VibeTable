@@ -50,6 +50,15 @@ describe("PluginSurfaceHost", () => {
     }));
     send("ready", {});
     expect(lifecycle()).toEqual(["background", "background"]);
+    // Transport `ready` only replays the snapshots. Application readiness is the explicit `readyToActivate`
+    // signal: emitted once to the shell and never forwarded, so no Host sees an unknown surface event.
+    expect(wrapper.emitted("ready")).toBeUndefined();
+    send("readyToActivate", {});
+    send("readyToActivate", {});
+    // Each signal is forwarded to the shell (whose slot state is idempotent); nothing reaches the Host.
+    expect(wrapper.emitted("ready")).toHaveLength(2);
+    expect(hostPostMessage.mock.calls.map(([message]) => message).filter(message => message.type === "plugin.surface.event").map(message => message.payload.event))
+      .toEqual(["ready"]);
     // Hidden surfaces never reach the platform: no notice, no navigation, no owned-task cancel.
     send("action", { service: "ui", requestId: "notice", method: "notification.show", params: { message: "后台弹窗" } });
     send("action", { service: "ui", requestId: "back", method: "navigation.back", params: {} });

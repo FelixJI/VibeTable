@@ -1,12 +1,13 @@
 using System.Text.Json;
+using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// #590 data.openSnapshot Host side. Go materializes every source inside one
 /// transaction and answers with the bounded in-memory corpus; the Host keeps
-/// that corpus per surface (2 handles per surface, 8 total, 5 minute absolute
-/// expiry), re-validates it with Go before every page and every cross-source
+/// that corpus per surface (1 handle per pre-warmed background surface, 2 per
+/// foreground surface, 8 total, 5 minute absolute expiry), re-validates it with Go before every page and every cross-source
 /// batch (snapshot.validate: session, current authorization, schema revisions of
 /// every source and the completed model record the corpus was authorized under,
 /// exactly once per request) and then slices rows out of the
@@ -20,6 +21,10 @@ internal sealed partial class PluginSurfaceApi
 {
     /// <summary>Corpus budget (every row and guard of every source plus the version vector) measured the way the bridge reply encodes it.</summary>
     private const int SnapshotBytes = 512 * 1024;
+    /// <summary>Published handle limits: one per pre-warmed surface (four of them would otherwise fill the total), two per visible application.</summary>
+    internal const int BackgroundSnapshotHandles = 1;
+    internal const int ForegroundSnapshotHandles = 2;
+    internal const int SnapshotHandlesTotal = 8;
     private const string SnapshotContract = "vibetable.plugin-snapshot.v1";
     /// <summary>One snapshot.readBatch crosses sources but carries at most this many rows (empty sources ride along).</summary>
     private const int SnapshotBatchRows = 200;
@@ -53,18 +58,21 @@ internal sealed partial class PluginSurfaceApi
 
     /// <summary>
     /// Reserves snapshot capacity before the authority starts materializing: the per-surface
-    /// (2) and total (8) limits count published handles plus in-flight opens, so parallel opens
-    /// can never make the authority build a corpus the Host would refuse to publish. Handles whose
-    /// absolute lifetime ran out count against the limits only until a sweep removes them, so the
-    /// admission sweeps first. The reservation becomes the published handle under the same gate
-    /// (PublishSnapshot) or is handed back by ReleaseSnapshotOpen from the open's finally.
+    /// (foreground 2, background 1) and total (8) limits count published handles plus in-flight
+    /// opens, so parallel opens can never make the authority build a corpus the Host would refuse to
+    /// publish. A background surface is one of up to four pre-warmed frames: one handle each keeps
+    /// the total for the visible application. Handles whose absolute lifetime ran out count against
+    /// the limits only until a sweep removes them, so the admission sweeps first. The reservation
+    /// becomes the published handle under the same gate (PublishSnapshot) or is handed back by
+    /// ReleaseSnapshotOpen from the open's finally.
     /// </summary>
-    private void ReserveSnapshotOpen(SurfaceState state)
+    private void ReserveSnapshotOpen(PluginSurfaceSession surface, SurfaceState state)
     {
         lock (_snapshotGate)
         {
             SweepSnapshots();
-            if (state.Snapshots.Count + state.SnapshotOpens >= 2 || _states.Values.Sum(item => item.Snapshots.Count) + _snapshotReservations >= 8) throw Error("plugin_snapshot_limit");
+            int perSurface = surface.Phase == PluginSurfacePhases.Background ? BackgroundSnapshotHandles : ForegroundSnapshotHandles;
+            if (state.Snapshots.Count + state.SnapshotOpens >= perSurface || _states.Values.Sum(item => item.Snapshots.Count) + _snapshotReservations >= SnapshotHandlesTotal) throw Error("plugin_snapshot_limit");
             state.SnapshotOpens++;
             _snapshotReservations++;
         }
@@ -91,7 +99,7 @@ internal sealed partial class PluginSurfaceApi
     private async Task<(string Handle, object Result)> OpenSnapshotAsync(PluginSurfaceSession surface, SurfaceState state, string requestId, JsonElement parameters, CancellationToken token)
     {
         ExactFile(parameters, "contract", "sources");
-        ReserveSnapshotOpen(state);
+        ReserveSnapshotOpen(surface, state);
         bool published = false;
         try
         {

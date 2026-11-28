@@ -854,11 +854,25 @@ describe("WorkspaceView", () => {
       .filter(item => item.type === "plugin.surface.event" && (item.payload as { event?: string }).event === "close")
       .map(item => (item.payload as { surfaceToken: string }).surfaceToken);
     const describeCount = (record: ReturnType<typeof makeRecordingBridge>) => record.posted.filter(item => item.type === "plugin.action.describe").length;
-    /** The SDK `ready` handshake from the frame: the pre-warmed surface finished loading and is reusable. */
+    /** The application-ready handshake from the frame (SDK `api.lifecycle.readyToActivate()`): the pre-warmed surface
+     * finished preparing and is reusable. The transport `ready` alone does not make a frame reusable. */
     function signalReady(slot: DOMWrapper<Element>, token: string) {
       const frame = slot.get("iframe");
       window.dispatchEvent(new MessageEvent("message", { origin: new URL(frame.attributes("src")!).origin, source: frame.element.contentWindow,
+        data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "readyToActivate", payload: {} } }));
+    }
+    /** The transport `ready` of a frame (channel in place, not application readiness): the shell announces the current phase. */
+    function signalTransportReady(slot: DOMWrapper<Element>, token: string) {
+      const frame = slot.get("iframe");
+      window.dispatchEvent(new MessageEvent("message", { origin: new URL(frame.attributes("src")!).origin, source: frame.element.contentWindow,
         data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "ready", payload: {} } }));
+    }
+    /** Captures what the shell posts into a frame (lifecycle, theme, tasks). */
+    function captureFramePosts(slot: DOMWrapper<Element>) {
+      const iframe = slot.get("iframe").element;
+      const post = vi.fn();
+      Object.defineProperty(iframe, "contentWindow", { configurable: true, value: { postMessage: post } });
+      return post;
     }
 
     it("retires the trusted print path synchronously for a platform overlay or application navigation", async () => {
@@ -1083,8 +1097,8 @@ describe("WorkspaceView", () => {
       expect(describes()).toBe(1);
       expect(closes()).toEqual([]);
       expect(post.mock.calls.map(([message]) => message).filter(message => message.event === "lifecycleChanged").map(message => message.payload.phase))
-        // The ready handshake replayed the background phase; the promotion announced the foreground once.
-        .toEqual(["background", "foreground"]);
+        // The application-ready signal is consumed by the shell (no phase replay); the promotion announced the foreground once.
+        .toEqual(["foreground"]);
       // 返回平台: the host-side foreground session is retired, the catalog is re-read and a fresh
       // background surface takes over on the replacement token.
       const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
@@ -1178,6 +1192,99 @@ describe("WorkspaceView", () => {
       expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
       expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
       expect(wrapper.get(".tables-view").isVisible()).toBe(false);
+      // The first sidebar click on a frame that never signalled readiness (still loading, failed to start, or a
+      // plugin waiting for an unmapped model) leaves an operable foreground: visible, focusable, promoted once.
+      expect(warm.get("iframe").attributes("tabindex")).toBeUndefined();
+      expect(warm.attributes("aria-hidden")).toBeUndefined();
+      // The frame's transport announces the phase it was promoted under: foreground, never a stale background.
+      const posts = captureFramePosts(warm);
+      signalTransportReady(warm, "warm-token");
+      expect(posts.mock.calls.map(([message]) => message.event)).toEqual(["lifecycleChanged", "themeChanged", "tasksChanged"]);
+      expect(posts.mock.calls[0]![0].payload).toEqual({ phase: "foreground" });
+      expect(record.posted.filter(item => item.type === "plugin.surface.event").map(item => (item.payload as { event?: string }).event))
+        .toEqual(["close", "ready"]);
+    });
+
+    it("opens an operable cold foreground on the first sidebar click while the model is not mapped yet, and lets the user leave for settings", async () => {
+      // The pre-warmed frame prepared in background (context.read, model.read → unmapped) but never signalled
+      // readyToActivate: a plugin waiting for its model mapping is not reusable in place.
+      let revision = 3; let issued = 0;
+      const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+        // Every close retires the session before the next catalog read, which issues a fresh background token.
+        if (message.type === "plugin.surface.event" && (message.payload as { event?: string }).event === "close") {
+          issued++; setCatalog(declaredApplication(plugin, `fresh-${issued}`, ++revision)); return true;
+        }
+        return false;
+      });
+      setCatalog(declaredApplication(plugin, "unmapped-token", 3)); await flushPromises();
+      expect(prewarmSlots(wrapper, "background")[0]!.get("iframe").attributes("name")).toBe("unmapped-token");
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      // The cold frame is closed once and the fresh token becomes a visible, focusable foreground: the
+      // application can now show its own guidance and the user can act.
+      expect(describeCount(record)).toBe(1);
+      expect(surfaceCloses(record)).toEqual(["unmapped-token"]);
+      const active = prewarmSlots(wrapper, "foreground")[0]!;
+      expect(active.get("iframe").attributes("name")).toBe("fresh-1");
+      expect(active.get("iframe").attributes("tabindex")).toBeUndefined();
+      expect(active.classes()).not.toContain("plugin-app-viewport--background");
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      const posts = captureFramePosts(active);
+      signalTransportReady(active, "fresh-1");
+      expect(posts.mock.calls[0]![0]).toMatchObject({ surfaceToken: "fresh-1", event: "lifecycleChanged", payload: { phase: "foreground" } });
+      // 返回平台: the foreground token is retired and closed before the catalog read, the entry pre-warms
+      // again on a new token, and the user can reach the plugin center (settings) from the platform.
+      await active.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(surfaceCloses(record)).toEqual(["unmapped-token", "fresh-1"]);
+      expect(prewarmSlots(wrapper, "background").map(slot => slot.get("iframe").attributes("name"))).toEqual(["fresh-2"]);
+      useUiStore().navigate("plugins"); await flushPromises();
+      expect(useUiStore().activeView).toBe("plugins");
+      expect(wrapper.find(".run-button").exists()).toBe(true);
+    });
+
+    it("keeps the sidebar's first click when its own catalog read reveals a package upgrade: the upgraded entry opens as a cold foreground", async () => {
+      let armed = false; let upgraded = false;
+      const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+        // The package was upgraded out of band (another window, the CLI): the click's own catalog read brings it.
+        if (armed && !upgraded && message.type === "plugin.catalog.list") { upgraded = true; setCatalog(declaredApplication(plugin, "upgraded-token", 7)); }
+        return false;
+      });
+      setCatalog(declaredApplication(plugin, "application-token", 3)); await flushPromises();
+      signalReady(prewarmSlots(wrapper, "background")[0]!, "application-token");
+      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+      armed = true;
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      // The stale entry the click resolved is retried once on the upgraded one: the click is never swallowed.
+      // The first attempt stops at its own catalog read, so the Host still sees a single describe.
+      expect(describeCount(record)).toBe(1);
+      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBeGreaterThanOrEqual(lists + 1);
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      // The old package's frame is closed once; the upgraded token opens as a cold foreground.
+      expect(surfaceCloses(record)).toEqual(["application-token"]);
+      expect(prewarmSlots(wrapper, "foreground").map(slot => slot.get("iframe").attributes("name"))).toEqual(["upgraded-token"]);
+      expect(prewarmSlots(wrapper, "background")).toHaveLength(0);
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(wrapper.get(".tables-view").isVisible()).toBe(false);
+      const posts = captureFramePosts(prewarmSlots(wrapper, "foreground")[0]!);
+      signalTransportReady(prewarmSlots(wrapper, "foreground")[0]!, "upgraded-token");
+      expect(posts.mock.calls[0]![0]).toMatchObject({ surfaceToken: "upgraded-token", event: "lifecycleChanged", payload: { phase: "foreground" } });
+    });
+
+    it("promotes the pre-warmed frame in place from a table toolbar action: the same funnel, one describe, no reload", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare();
+      const declared = declaredApplication(plugin, "application-token", 3);
+      setCatalog({ ...declared, manifest: { ...declared.manifest, actions: declared.manifest.actions.map(action =>
+        action.actionId === "application" ? { ...action, placements: ["table.toolbar"] } : action) } });
+      await flushPromises();
+      const hidden = prewarmSlots(wrapper, "background")[0]!;
+      signalReady(hidden, "application-token");
+      await wrapper.get('[data-testid="plugin-toolbar-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(describeCount(record)).toBe(1);
+      expect(surfaceCloses(record)).toEqual([]);
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      const active = prewarmSlots(wrapper, "foreground")[0]!;
+      expect(active.get("iframe").element).toBe(hidden.get("iframe").element);
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
     });
 
     it("reclaims the hidden session when the user leaves while the click's describe is still in flight", async () => {
@@ -1191,7 +1298,6 @@ describe("WorkspaceView", () => {
       });
       setCatalog(declaredApplication(plugin, "application-token", 3)); await flushPromises();
       signalReady(prewarmSlots(wrapper, "background")[0]!, "application-token");
-      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
       armed = true;
       await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
       expect(held).toBeDefined();
@@ -1199,14 +1305,57 @@ describe("WorkspaceView", () => {
       useUiStore().closePluginApp(); await flushPromises();
       record.emit({ ...held!, payload: { available: true, reasons: [] } }); await flushPromises();
       expect(useUiStore().activePluginApp).toBeNull();
-      // The click path settled without opening: the authority is re-read, the promoted token is retired
-      // with its frame closed, and the replacement token is pre-warmed again.
+      // The click path settled without opening: the token the intent captured is retired at once, its frame closed
+      // before any catalog read, and the replacement token is pre-warmed again.
       expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
       expect(surfaceCloses(record)).toEqual(["application-token"]);
-      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBe(lists + 3);
+      const closeAt = record.posted.findIndex(item => item.type === "plugin.surface.event" && (item.payload as { event?: string }).event === "close");
+      const lists = record.posted.map((item, index) => [item.type, index] as const).filter(([type]) => type === "plugin.catalog.list");
+      expect(lists.length).toBeGreaterThan(1);
+      expect(closeAt).toBeLessThan(lists.at(-1)![1]);
       setCatalog(declaredApplication(plugin, "application-token-2", 4)); await flushPromises();
       expect(prewarmSlots(wrapper, "background").map(slot => slot.get("iframe").attributes("name"))).toEqual(["application-token-2"]);
       expect(useUiStore().activePluginApp).toBeNull();
+      expect(describeCount(record)).toBe(1);
+    });
+
+    it("opens an application once per click: a duplicate click never closes the application and the plugin center joins the same funnel", async () => {
+      let held: Outbound | undefined; let armed = false;
+      const { wrapper, plugin, record, setCatalog } = await prepare(false, message => {
+        if (armed && message.type === "plugin.action.describe") { held = message; return true; }
+        return false;
+      });
+      const declared = (token: string, revision: number) => declaredApplication(plugin, token, revision);
+      const describes = () => describeCount(record);
+      setCatalog(declared("application-token", 3)); await flushPromises();
+      signalReady(prewarmSlots(wrapper, "background")[0]!, "application-token");
+      // The first click's describe is held; a second click supersedes it and its intent is a no-op.
+      armed = true;
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      const first = held!;
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      record.emit({ ...first, payload: { available: true, reasons: [] } }); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(surfaceCloses(record)).toEqual([]);
+      expect(prewarmSlots(wrapper, "background").map(slot => slot.get("iframe").attributes("name"))).toEqual(["application-token"]);
+      record.emit({ ...held!, payload: { available: true, reasons: [] } }); await flushPromises();
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(prewarmSlots(wrapper, "foreground")[0]?.get("iframe").attributes("name")).toBe("application-token");
+      expect(describes()).toBe(2);
+      expect(surfaceCloses(record)).toEqual([]);
+      // 返回平台, then the plugin center's 运行 button: the same funnel, the same single describe, no reload.
+      await prewarmSlots(wrapper, "foreground")[0]!.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      setCatalog(declared("application-token-2", 4)); await flushPromises();
+      signalReady(prewarmSlots(wrapper, "background")[0]!, "application-token-2");
+      useUiStore().navigate("plugins"); await flushPromises();
+      armed = false;
+      const before = describes(); const closesBefore = surfaceCloses(record).length;
+      await wrapper.get(".run-button").trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(describes()).toBe(before + 1);
+      expect(surfaceCloses(record).length).toBe(closesBefore);
+      expect(prewarmSlots(wrapper, "foreground")[0]?.get("iframe").attributes("name")).toBe("application-token-2");
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
     });
 
     it("keys a reopened headless run by its surface token without reusing stopped state or old receipts", async () => {

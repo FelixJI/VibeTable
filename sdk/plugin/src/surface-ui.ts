@@ -39,6 +39,11 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
   let closed = false;
   let presentation: SurfacePresentation | undefined;
   let phase: SurfacePhase | undefined;
+  /** The Host spoke vibetable.plugin-surface-lifecycle.v1 (it announced a phase); a Host that never did never hears `readyToActivate`. */
+  let lifecycleAnnounced = false;
+  /** The application asked for `readyToActivate()`; posted to the trusted parent once the Host announced the contract. */
+  let activationRequested = false;
+  let activationAnnounced = false;
   const themes = new Set<(value: SurfacePresentation) => void>();
   const listeners = new Set<(tasks: readonly SurfaceTask[]) => void>();
   const phases = new Set<(phase: SurfacePhase) => void>();
@@ -61,8 +66,28 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
   }
   function applyLifecycle(value: unknown): boolean {
     if (!object(value) || (value.phase !== "background" && value.phase !== "foreground")) return false;
+    lifecycleAnnounced = true;
+    announceActivation();
     adopt(value.phase);
     return true;
+  }
+  /**
+   * Application readiness, separate from the transport `ready` above (which only says the SDK subscribed).
+   * `readyToActivate()` means the application finished preparing and can take a foreground activation, so
+   * the Host may promote this very frame instead of reloading it. Idempotent, never throws, posted once and only
+   * after the Host announced the lifecycle contract: an older Host would reject an unknown surface event.
+   * Without the signal a click opens the application through a fresh visible surface instead.
+   */
+  function readyToActivate(): void {
+    if (closed) return;
+    activationRequested = true;
+    announceActivation();
+  }
+  function announceActivation(): void {
+    if (!activationRequested || activationAnnounced || closed || !lifecycleAnnounced || !channel) return;
+    activationAnnounced = true;
+    try { channel.parent.postMessage({ contract: "vibetable.plugin-surface.v1", surfaceToken, event: "readyToActivate", payload: {} }, origin); }
+    catch { /* Without the signal the click opens the application through a visible reload. */ }
   }
   function applyTheme(value: unknown): boolean {
     if (!object(value) || value.contract !== "vibetable.plugin-theme.v1" || !["light", "dark"].includes(String(value.mode))
@@ -148,6 +173,7 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
     adoptPhase: adopt,
     lifecycle: {
       current: () => phase,
+      readyToActivate,
       onChanged(listener: (phase: SurfacePhase) => void): () => void {
         if (closed) throw new PluginCapabilityError("plugin_surface_closed", "Surface closed.");
         if (!channel) throw new PluginCapabilityError("plugin_api_unsupported", "Trusted parent presentation unavailable.");

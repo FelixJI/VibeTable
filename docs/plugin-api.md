@@ -72,6 +72,7 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `output.print(signal?)` | `{opened:true}` | 仅当前可见 application；表示已开预览，不表示打印成功 |
 | `lifecycle.current()` / `onChanged(listener)` | `SurfacePhase \| undefined` / 取消函数 | 仅声明 `compatibility.surfaceLifecycle` 的插件会被后台预热；阶段由 Host 决定，插件只观察 |
 | `lifecycle.whenForeground(signal?)` | `Promise<SurfacePhase>` | 等到用户打开页面；无超时，用 `AbortSignal` 取消；关闭后拒绝 `plugin_surface_closed` |
+| `lifecycle.readyToActivate()` | void | **应用就绪握手**：首屏已渲染、可承接前台激活时调用一次；幂等、永不抛；仅 lifecycle 声明插件有效，旧 Host 静默；详见“后台预热生命周期” |
 | `dispose()` | void | 关闭客户端，释放监听及句柄 |
 
 ## 查询与分页
@@ -245,7 +246,7 @@ CSV 仅对这些字段解封 computed envelope；普通 JSON 即使含 `fresh`�
 
 全部源合计最多 2000 行、每源 16 字段/8 汇总/2 分组字段。SQLite 在数据跨驱动前量测投影字节；
 完整 Go JSON（范围、版本、明细和分组汇总）还必须≤512 KiB，超限拒绝开集，不返回截断的完整结果。
-Host 每页面最多 2 个、全局最多 8 个快照，5 分钟到期；每页最多 200 行。每次 page/summary/export
+Host 每页面最多 2 个（后台预热帧每帧 1 个，4 帧合计不超过全局）、全局最多 8 个快照，5 分钟到期；每页最多 200 行。每次 page/summary/export
 均由 Go 核验安装、权限闭包及全部来源版本；并发 CRUD、schema、clock 或 computed 变化报
 `plugin_dataset_stale`。请明确标记旧展示失效，并由用户显式重开数据集，不拼接新旧页。
 
@@ -377,13 +378,13 @@ try {
   所用字段与 `data.query` 归一化完全相同：投影、排序、筛选叶子字段需授权（筛选组只是结构，不是读取），
   显式 `ids` 还要求 `id` 授权，且每次校验都重新核对。
 - 限制（在任何读取之前拒绝）：1–64 个来源、每来源 1–64 字段、ID ≤128 字节、ids ≤200、
-  总行 ≤4096、语料编码 ≤512 KiB（items+rowGuards+versions）、每批 ≤200 行且整批（chunk 容器与固定成员 + items+rowGuards + 分隔符）≤256 KiB、每 surface 2 个句柄、全局 8 个、
+  总行 ≤4096、语料编码 ≤512 KiB（items+rowGuards+versions）、每批 ≤200 行且整批（chunk 容器与固定成员 + items+rowGuards + 分隔符）≤256 KiB、每 surface 2 个句柄（后台预热帧 1 个）、全局 8 个、
   打开后 300 秒绝对过期。字节预算以 **bridge 实际编码**计量（默认 JSON 编码器把 CJK 与 HTML 敏感字符转义为
   `\uXXXX`，可达原始 JSON 的 6 倍；不改全局编码器）：Go 以原始字节数做内存上限，Host 以 Reply 的实际编码字节做权威
   判定，并且 open 时每一行连同其守卫都必须能单独放进一条 bridge 回复，否则整次 open 报 `plugin_snapshot_limit`。
   Host 在发布句柄前还以每次权威调用相同的编码预检该句柄的 validate 请求（插件 sources + 版本向量 + binding）能否放进 1 MiB 帧：
   放不下则整次 open 报 `plugin_snapshot_limit`，不发布句柄，预留配额归还。
-  两个句柄限额把在途 `snapshot.open` 也计入：Host 从开始物化即预留配额，发布句柄或
+  句柄限额（前台 2 个、后台预热帧 1 个）把在途 `snapshot.open` 也计入：Host 从开始物化即预留配额，发布句柄或
   失败/取消/关会话时归还，因此并发打开不会先让 Go 物化再被拒绝发布；每次准入都先清扫已过绝对过期的句柄，
   不等清理定时器。
   行/字节/句柄预算报 `plugin_snapshot_limit`；ids 超限报 `plugin_query_limit`；形状错误（未知键、重复来源、
@@ -472,4 +473,16 @@ await api.lifecycle.whenForeground(signal); // 用户已打开页面；关闭后
 离开前台时 Host 退租 token，再次预热会换发新的 `background` token，前台页面永不被降级。SDK 的相位按会话单调：`foreground` 之后
 忽略重复或更早的 `lifecycleChanged`，迟到的 `context.read()` 回复也不会把相位退回 `background`。`whenForeground` 没有超时
 （预热可能持续数小时），请传入 `AbortSignal`；取消在 `context.read()` 在途时同样立即生效。旧 Host 不返回 `surfacePhase`
-也不会预热，SDK 归一化为 `foreground`。未就绪（仍在加载或启动失败）的预热帧不会被复用：点击时先关闭它一次，再经正常可见路径重新打开。
+也不会预热，SDK 归一化为 `foreground`。
+
+**应用就绪握手 `api.lifecycle.readyToActivate()`**（与 transport `ready` 分离，后者只表示消息通道就位）。transport `ready` 时插件往往还没渲染完，
+宿主不能据此复用预热帧。插件在首屏渲染完成、能承接前台激活后调用一次：
+```typescript
+await renderFirstView();          // 数据准备、首屏绘制完成
+api.lifecycle.readyToActivate(); // 幂等、永不抛；重复调用无副作用
+```
+技术含义：SDK 向受信父页投递 `vibetable.plugin-surface.v1` `event=readyToActivate`（仅 Shell 本地消费，**不转发 WPF 宿主**，宿主的 surface 事件仍为
+`ready | close | action`）。SDK 只在宿主宣布过 `lifecycleChanged` 之后才投递，未声明 lifecycle 的旧宿主永远收不到；过早调用会延迟到首次宣布。
+消费端效果：点击入口时，**只有发过该信号的预热帧**才会被原位提升（同一帧、同一会话、不重载、单次 describe）；未发信号的帧（仍在加载、
+启动失败、或插件从未调用）点击时先被确定性关闭一次，再经正常可见路径重新打开——每次点击最多一次重开，有界，与旧版视口行为一致。
+未就绪（仍在加载或启动失败）的预热帧不会被复用：点击时先关闭它一次，再经正常可见路径重新打开。

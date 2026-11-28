@@ -169,6 +169,71 @@ test("whenForeground cancels immediately while the phase read is still in flight
   client.dispose();
 });
 
+test("readyToActivate announces application readiness once, only after the Host announced the lifecycle contract", () => {
+  const parent = parentChannel();
+  const client = sdk.createSurfaceClient("s1", quiet, parent);
+  const signals = () => parent.calls.filter(message => message.event === "readyToActivate");
+  // A Host announcement alone never posts: the application has to ask for it.
+  parent.emit("lifecycleChanged", { phase: "background" });
+  assert.equal(signals().length, 0);
+  client.lifecycle.readyToActivate();
+  client.lifecycle.readyToActivate();
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  assert.deepEqual(signals(), [{ contract: "vibetable.plugin-surface.v1", surfaceToken: "s1", event: "readyToActivate", payload: {} }]);
+  // Asked before the Host announced: deferred until the first trusted announcement, then posted once.
+  const early = sdk.createSurfaceClient("s1", quiet, parent);
+  early.lifecycle.readyToActivate();
+  assert.equal(signals().length, 1);
+  parent.emit("lifecycleChanged", { phase: "background" }, { origin: "https://evil.test" });
+  parent.emit("lifecycleChanged", { phase: "background" }, { source: {} });
+  assert.equal(signals().length, 1, "An untrusted announcement does not open the channel");
+  parent.emit("lifecycleChanged", { phase: "background" });
+  early.lifecycle.readyToActivate();
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  assert.equal(signals().length, 2, "Idempotent across phases");
+  early.dispose();
+  early.lifecycle.readyToActivate();
+  assert.equal(signals().length, 2, "A closed surface never posts");
+  client.dispose();
+  assert.equal(parent.listeners.size, 0);
+});
+
+test("readyToActivate stays silent on a Host that never announces the lifecycle contract and without a parent channel", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  parent.parent.postMessage = message => { if (message.payload?.method === "context.current") parent.emit("uiResponse", { requestId: message.payload.requestId, result: theme }); };
+  client.lifecycle.readyToActivate();
+  // context.read adopts a phase without a lifecycle announcement: an older Host must never receive an unknown event.
+  const reading = client.context.read();
+  host.reply(host.calls.at(-1), context(undefined));
+  await reading;
+  assert.equal(client.lifecycle.current(), "foreground");
+  assert.equal(parent.calls.filter(message => message.event === "readyToActivate").length, 0);
+  client.dispose();
+  const offline = sdk.createSurfaceClient("s1", native());
+  assert.doesNotThrow(() => offline.lifecycle.readyToActivate());
+  offline.dispose();
+});
+
+test("context.read carries the phase as of its return when the promotion lands during the presentation read", async () => {
+  const parent = parentChannel(); const host = native();
+  const client = sdk.createSurfaceClient("s1", host, parent);
+  let held;
+  parent.parent.postMessage = message => { if (message.payload?.method === "context.current") held = message.payload.requestId; };
+  parent.emit("lifecycleChanged", { phase: "background" });
+  const reading = client.context.read();
+  host.reply(host.calls.at(-1), context("background"));
+  await turn();
+  assert.equal(typeof held, "string");
+  parent.emit("lifecycleChanged", { phase: "foreground" });
+  parent.emit("uiResponse", { requestId: held, result: theme });
+  const value = await reading;
+  assert.equal(value.surfacePhase, "foreground");
+  assert.equal(value.locale, "en-US");
+  assert.equal(value.theme, "dark");
+  client.dispose();
+});
+
 test("offline Host defaults to the foreground phase and lets a test model a pre-warmed background surface", async () => {
   for (const [options, expected] of [[{}, "foreground"], [{ surfacePhase: "background" }, "background"]]) {
     const host = testing.createOfflineSurfaceHost({ pluginId: "com.acme.lifecycle", workspaceId: "ws", surfaceToken: "token", context: options });

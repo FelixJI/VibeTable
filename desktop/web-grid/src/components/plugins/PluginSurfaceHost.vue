@@ -21,7 +21,8 @@ const props = withDefaults(defineProps<{
 }>(), { showTasks: true, phase: "foreground" });
 const emit = defineEmits<{
   close: [];
-  /** The frame completed the SDK `ready` handshake: its surface is loaded and reusable. */
+  /** The application signalled `readyToActivate` (SDK `api.lifecycle.readyToActivate()`): it finished preparing and
+   * a click may promote this very element. The transport `ready` only means the SDK subscribed. */
   ready: [];
   action: [payload: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected", taskId: string];
@@ -81,7 +82,14 @@ function onMessage(event: MessageEvent): void {
     if (response) postToSurface("uiResponse", response);
     return;
   }
-  if (event.data.event === "ready") { sendLifecycle(); sendTheme(); sendTask(); emit("ready"); }
+  if (event.data.event === "readyToActivate") {
+    // Application readiness is consumed here and never forwarded: the Host authority does not act on it, and
+    // an older Host would reject it as an unknown surface event.
+    emit("ready");
+    return;
+  }
+  // Transport `ready`: the SDK subscribed late or lazily; replay the current snapshots without treating the frame as reusable.
+  if (event.data.event === "ready") { sendLifecycle(); sendTheme(); sendTask(); }
   if (event.data.event !== "close") bridge.notify("plugin.surface.event", event.data);
   if (event.data.event === "action") {
     const payload = typeof event.data.payload === "object" && event.data.payload !== null

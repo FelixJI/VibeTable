@@ -4,6 +4,7 @@ import type { DropdownOption } from "naive-ui";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import type { PluginRisk, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { createPluginCommandContext, type usePluginService } from "@/services/pluginService";
+import type { PluginApplicationOpen } from "./pluginAppPrewarm";
 import type { usePluginStore } from "@/stores/pluginStore";
 import type { useTableStore } from "@/stores/tableStore";
 import type { useUiStore } from "@/stores/uiStore";
@@ -78,9 +79,10 @@ export interface WorkspacePluginController {
   readonly rowMenu: Ref<ContextMenuState>;
   readonly columnMenu: Ref<ColumnMenuState>;
   dispatch(intent: WorkspacePluginIntent): Promise<void>;
-  /** Opens an application through the same describe gate as `app.open`; resolves true only when the
-   * Host confirmed availability and the application became the active foreground surface. */
-  openApplication(key: string): Promise<boolean>;
+  /** Opens an application through the same funnel as `app.open` (sidebar, toolbar, row/column menus, plugin
+   * center): one click = one intent = one describe. Resolves true only when the Host confirmed availability and
+   * the application became the active foreground surface. `keys` is the command-context selection. */
+  openApplication(key: string, keys?: readonly (string | number)[]): Promise<boolean>;
   dispose(): void;
 }
 
@@ -102,6 +104,8 @@ export interface WorkspacePluginDependencies {
   readonly historyCellLabel: () => string;
   readonly historyRowLabel: () => string;
   readonly riskLabel: (risk: string) => string;
+  /** #596 pre-warm layer: registers every application open as one intent before its describe. */
+  readonly applicationOpen?: PluginApplicationOpen;
 }
 
 function errorMessage(error: unknown): string {
@@ -236,38 +240,64 @@ export function createWorkspacePluginController(
   async function openPluginApp(key: string, keys = selectedRowKeys()): Promise<boolean> {
     if (disposed) return false;
     const navigation = dependencies.ui.beginNavigation();
-    const generation = dependencies.plugins.projectContextGeneration;
-    const projectKey = dependencies.plugins.projectKey;
-    const registered = registeredActions.value.find(item => item.key === key);
-    if (!registered) {
-      dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
-      return false;
-    }
-    if (registered.action.presentation !== "application") {
-      dependencies.reportError("该入口不是插件应用");
-      return false;
-    }
-    const isCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation
-      && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
-      && dependencies.plugins.plugins.some(plugin => plugin.pluginId === registered.plugin.pluginId
-        && plugin.installationId === registered.plugin.installationId && plugin.revision === registered.plugin.revision);
+    const isNavigationCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation;
+    let settle: (opened: boolean) => void = () => undefined;
+    let isCurrent = isNavigationCurrent;
     try {
-      // describeAction refreshes the catalog for 3.x plugins, revalidates the
-      // live surface and binds the command context without opening the
-      // action overlay; the viewport then mounts from the fresh projection.
-      const availability = await dependencies.service.describeAction(
-        registered.plugin.pluginId,
-        registered.action.actionId,
-        commandContext(keys),
-        false,
-        isCurrent,
-      );
-      if (!isCurrent() || !availability.available) return false;
-      dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
-      return true;
+      // One click = one intent: the pre-warm layer closes a frame that never became ready (once) before this
+      // read and adopts on the same token the surface this describe promotes. No reload, no second describe.
+      if (dependencies.applicationOpen) settle = await dependencies.applicationOpen.begin(key, isNavigationCurrent);
+      if (!isNavigationCurrent()) return false;
+      // The catalog may have moved on during the bounded cold close: the entry is resolved after it.
+      const generation = dependencies.plugins.projectContextGeneration;
+      const projectKey = dependencies.plugins.projectKey;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const registered = registeredActions.value.find(item => item.key === key);
+        if (!registered) {
+          if (attempt === 0) dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
+          return false;
+        }
+        if (registered.action.presentation !== "application") {
+          dependencies.reportError("该入口不是插件应用");
+          return false;
+        }
+        isCurrent = () => isNavigationCurrent()
+          && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
+          && dependencies.plugins.plugins.some(plugin => plugin.pluginId === registered.plugin.pluginId
+            && plugin.installationId === registered.plugin.installationId && plugin.revision === registered.plugin.revision);
+        // describeAction refreshes the catalog for 3.x plugins, revalidates the
+        // live surface and binds the command context without opening the
+        // action overlay; the viewport then mounts from the fresh projection.
+        const availability = await dependencies.service.describeAction(
+          registered.plugin.pluginId,
+          registered.action.actionId,
+          commandContext(keys),
+          false,
+          isCurrent,
+        );
+        if (isCurrent()) {
+          if (!availability.available) return false;
+          dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
+          settle(true);
+          return true;
+        }
+        // The click's own catalog read brought a package upgrade of the same installation (same id, new
+        // revision): the user's click stands, so it is retried once on the fresh entry. Any other discard
+        // (another installation, the entry gone) ends the click.
+        if (!isNavigationCurrent() || dependencies.plugins.projectKey !== projectKey
+          || dependencies.plugins.projectContextGeneration !== generation) return false;
+        const fresh = registeredActions.value.find(item => item.key === key);
+        if (!fresh || fresh.plugin.installationId !== registered.plugin.installationId
+          || fresh.plugin.revision === registered.plugin.revision) return false;
+      }
+      return false;
     } catch (error) {
       if (isCurrent()) dependencies.reportError(errorMessage(error));
       return false;
+    } finally {
+      // Discarded navigation, superseded click or refused describe: the intent reclaims the hidden surface
+      // it may have promoted. Idempotent once the click settled on the visible frame.
+      settle(false);
     }
   }
 
@@ -381,7 +411,7 @@ export function createWorkspacePluginController(
     rowMenu,
     columnMenu,
     dispatch,
-    openApplication: openPluginApp,
+    openApplication: (key, keys) => openPluginApp(key, keys),
     dispose: () => { disposed = true; },
   };
 }
