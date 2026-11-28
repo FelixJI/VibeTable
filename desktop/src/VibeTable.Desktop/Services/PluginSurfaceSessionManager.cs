@@ -27,6 +27,12 @@ public sealed record PluginSurfaceSession(
     public string Presentation { get; init; } = "surface";
     public string ActiveCollection { get; init; } = "";
     public PluginRuntimeCommandContext? InvocationContext { get; init; }
+    /// <summary>
+    /// Lifecycle phase (<see cref="PluginSurfacePhases"/>). A background
+    /// surface is pre-warmed off-screen: it has no active collection until the
+    /// user opens it and the host admits reads only. The transition is one-way.
+    /// </summary>
+    public string Phase { get; init; } = PluginSurfacePhases.Foreground;
 }
 
 public sealed class PluginSurfacePolicyException : Exception
@@ -64,6 +70,8 @@ public sealed class PluginSurfaceSessionManager
     };
 
     internal const int RetiredCloseLimit = 256;
+    /// <summary>Upper bound on simultaneously pre-warmed surfaces; further opens become foreground.</summary>
+    internal const int MaxBackgroundSurfaces = 4;
     private readonly object _gate = new();
     private readonly HashSet<string> _mountedTokens = new(StringComparer.Ordinal);
     private readonly HashSet<string> _retiredTokens = new(StringComparer.Ordinal);
@@ -79,11 +87,17 @@ public sealed class PluginSurfaceSessionManager
         string pluginId,
         PluginPackageRevision revision,
         string entryPath,
-        Uri? documentUri = null)
+        Uri? documentUri = null,
+        string phase = PluginSurfacePhases.Foreground)
     {
         ArgumentNullException.ThrowIfNull(revision);
         string normalized = PluginResourceHost.NormalizePackagePath(entryPath);
         string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        // Pre-warming is bounded host-side: a surface beyond the bound is opened
+        // foreground so a hidden frame never carries foreground authority by accident.
+        string effectivePhase = phase == PluginSurfacePhases.Background && BackgroundSurfaceCount >= MaxBackgroundSurfaces
+            ? PluginSurfacePhases.Foreground
+            : phase;
         var session = new PluginSurfaceSession(
             token,
             projectKey,
@@ -91,7 +105,8 @@ public sealed class PluginSurfaceSessionManager
             revision,
             documentUri ?? new Uri(revision.Origin, normalized),
             "allow-scripts allow-same-origin",
-            PluginResourceHost.ContentSecurityPolicy);
+            PluginResourceHost.ContentSecurityPolicy)
+        { Phase = effectivePhase };
         if (!_sessions.TryAdd(token, session))
         {
             throw new InvalidOperationException("Could not allocate a unique surface token.");
@@ -111,10 +126,26 @@ public sealed class PluginSurfaceSessionManager
     /// <summary>Number of currently open plugin surfaces.</summary>
     public int ActiveSurfaceCount => _sessions.Count;
 
+    /// <summary>Number of currently pre-warmed (background) surfaces.</summary>
+    public int BackgroundSurfaceCount => _sessions.Values.Count(session => session.Phase == PluginSurfacePhases.Background);
+
     /// <summary>Number of plugin frames mounted by the current renderer.</summary>
     internal int MountedSurfaceCount
     {
         get { lock (_gate) return _mountedTokens.Count; }
+    }
+
+    /// <summary>
+    /// Mounted frames that carry foreground authority. A pre-warmed background
+       /// frame is mounted but not open, so it must not surface native plugin chrome.
+    /// </summary>
+    internal int MountedForegroundSurfaceCount
+    {
+        get
+        {
+            lock (_gate)
+                return _mountedTokens.Count(token => _sessions.TryGetValue(token, out var session) && session!.Phase != PluginSurfacePhases.Background);
+        }
     }
 
     internal bool MarkMounted(string surfaceToken)
@@ -244,10 +275,18 @@ public sealed class PluginSurfaceSessionManager
 
     internal void BindActiveCollection(string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)
     {
+        bool promoted = false;
         lock (_gate)
             foreach (var pair in _sessions)
                 if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
-                    _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+                {
+                    var bound = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+                    // Opening a pre-warmed application is the only promotion path; there is no demotion.
+                    if (bound.Phase == PluginSurfacePhases.Background) { bound = bound with { Phase = PluginSurfacePhases.Foreground }; promoted = true; }
+                    _sessions[pair.Key] = bound;
+                }
+        // Promotion changes which mounted frames carry authority; never raise under the gate.
+        if (promoted) Changed?.Invoke();
     }
 
     private static void ValidateTheme(PluginSurfaceThemeSnapshot theme)

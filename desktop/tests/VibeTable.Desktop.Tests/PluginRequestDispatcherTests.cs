@@ -311,6 +311,80 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task SurfaceLifecycleDeclarationProjectsBackgroundOnlyUntilTheUserOpensTheApplication()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-surface-lifecycle-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            PluginRuntimeAction Action(string actionId, string presentation) => new(actionId, new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Write, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null,
+                presentation, presentation == "headless" ? "worker.js" : "ui/index.html");
+            var declared = FakePluginGateway.DefaultSnapshot with
+            {
+                InstallationId = "declared-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = PluginContractVersions.SurfaceLifecycle }),
+                    Actions = [Action("app", "application"), Action("headless", "headless"), Action("entry", "surface")],
+                },
+            };
+            var legacy = declared with
+            {
+                PluginId = "com.acme.legacy", InstallationId = "legacy-record", PackageHash = "sha256:" + new string('b', 64),
+                Manifest = declared.Manifest with
+                {
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x", surfaceLifecycle = "vibetable.plugin-surface-lifecycle.v0" }),
+                    Actions = [Action("app", "application")],
+                },
+            };
+            foreach (var snapshot in new[] { declared, legacy })
+            {
+                using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+                {
+                    package.CreateEntry("ui/index.html");
+                    package.CreateEntry("worker.js");
+                }
+            }
+            using var gateway = new FakePluginGateway { CatalogSnapshot = declared };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { declared, legacy })), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-catalog", """{"projectKey":"project-1"}"""));
+            var catalog = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload);
+            var app = catalog.Single(snapshot => snapshot.PluginId == declared.PluginId).Manifest.Actions;
+            Assert.AreEqual(PluginSurfacePhases.Background, app.Single(action => action.ActionId == "app").SurfacePhase,
+                "Only the declared plugin's manual application action is pre-warmed.");
+            Assert.IsNull(app.Single(action => action.ActionId == "headless").SurfacePhase, "Headless modules keep the foreground lifecycle.");
+            Assert.IsNull(app.Single(action => action.ActionId == "entry").SurfacePhase, "Legacy surface panels are not pre-warmed.");
+            Assert.IsNull(catalog.Single(snapshot => snapshot.PluginId == legacy.PluginId).Manifest.Actions.Single().SurfacePhase,
+                "Unknown declarations change nothing.");
+            string token = app.Single(action => action.ActionId == "app").SurfaceToken!;
+            Assert.IsTrue(surfaces.TryGet(token, out var session));
+            Assert.AreEqual(PluginSurfacePhases.Background, session!.Phase);
+            Assert.AreEqual("allow-scripts allow-same-origin", session.IframeSandbox, "Pre-warmed frames stay sandboxed without modal dialogs.");
+
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "lifecycle-describe",
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"app","context":{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":"orders","selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}}"""));
+            Assert.IsTrue(Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload).Available);
+            Assert.IsTrue(surfaces.TryGet(token, out session));
+            Assert.AreEqual(PluginSurfacePhases.Foreground, session!.Phase, "Opening the application promotes the pre-warmed surface in place.");
+            Assert.AreEqual("orders", session.ActiveCollection);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "lifecycle-catalog-foreground", """{"projectKey":"project-1"}"""));
+            var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload)
+                .Single(snapshot => snapshot.PluginId == declared.PluginId).Manifest.Actions.Single(action => action.ActionId == "app");
+            Assert.AreEqual(token, projected.SurfaceToken, "Promotion keeps the prepared surface; the user reuses what was pre-warmed.");
+            Assert.IsNull(projected.SurfacePhase, "Foreground is implicit for undeclared consumers.");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task DispatchUsesCorrelatedClosedResponseTypeAndNeverGenericRpc()
     {
         var reply = new RecordingReplySink();

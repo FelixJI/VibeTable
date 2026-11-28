@@ -1,4 +1,8 @@
 import { PluginCapabilityError } from "./capabilities.js";
+import type { SurfacePhase } from "./types.js";
+
+/** Manifest `compatibility.surfaceLifecycle` value a plugin declares to opt into Host pre-warming. */
+export const SURFACE_LIFECYCLE_CONTRACT = "vibetable.plugin-surface-lifecycle.v1" as const;
 
 export const SURFACE_UI_METHODS = ["context.current", "tasks.list", "tasks.cancel", "notification.show", "navigation.back"] as const;
 export const SURFACE_UI_UNSUPPORTED = ["navigation.table", "navigation.record", "navigation.url", "task.create", "task.approve"] as const;
@@ -34,11 +38,27 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
   const channel = supplied ?? (window.parent && (window.parent as unknown) !== globalThis ? window as SurfaceParentTransport : undefined);
   let closed = false;
   let presentation: SurfacePresentation | undefined;
+  let phase: SurfacePhase | undefined;
   const themes = new Set<(value: SurfacePresentation) => void>();
   const listeners = new Set<(tasks: readonly SurfaceTask[]) => void>();
+  const phases = new Set<(phase: SurfacePhase) => void>();
+  const waiters = new Set<{ resolve(phase: SurfacePhase): void; reject(error: Error): void; signal: AbortSignal | undefined; abort(): void }>();
   const tasks = new Map<string, SurfaceTask>();
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   const notify = <T>(set: Set<(value: T) => void>, value: T) => { for (const callback of set) try { callback(value); } catch { /* Consumer callbacks cannot block receipts. */ } };
+  /** vibetable.plugin-surface-lifecycle.v1: only a change is announced; the Host never demotes a foreground surface. */
+  function adopt(next: SurfacePhase): void {
+    if (closed || phase === next) return;
+    phase = next;
+    notify(phases, next);
+    if (next !== "foreground") return;
+    for (const waiter of waiters) { waiters.delete(waiter); waiter.signal?.removeEventListener("abort", waiter.abort); waiter.resolve(next); }
+  }
+  function applyLifecycle(value: unknown): boolean {
+    if (!object(value) || (value.phase !== "background" && value.phase !== "foreground")) return false;
+    adopt(value.phase);
+    return true;
+  }
   function applyTheme(value: unknown): boolean {
     if (!object(value) || value.contract !== "vibetable.plugin-theme.v1" || !["light", "dark"].includes(String(value.mode))
       || typeof value.locale !== "string" || value.locale.length > 32 || !["compact", "comfortable"].includes(String(value.density)) || !object(value.variables)) return false;
@@ -81,6 +101,7 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
     const message = event.data;
     if (message.contract !== "vibetable.plugin-surface.v1" || message.surfaceToken !== surfaceToken) return;
     if (message.event === "themeChanged") { applyTheme(message.payload); return; }
+    if (message.event === "lifecycleChanged") { applyLifecycle(message.payload); return; }
     if (message.event === "tasksChanged") { applyTasks(message.payload); return; }
     if (message.event !== "uiResponse" || !object(message.payload) || typeof message.payload.requestId !== "string") return;
     const request = pending.get(message.payload.requestId);
@@ -119,6 +140,28 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
       themes.add(listener); if (presentation) notify(new Set([listener]), presentation);
       return () => { themes.delete(listener); };
     },
+    adoptPhase: adopt,
+    lifecycle: {
+      current: () => phase,
+      onChanged(listener: (phase: SurfacePhase) => void): () => void {
+        if (closed) throw new PluginCapabilityError("plugin_surface_closed", "Surface closed.");
+        if (!channel) throw new PluginCapabilityError("plugin_api_unsupported", "Trusted parent presentation unavailable.");
+        phases.add(listener); if (phase) notify(new Set([listener]), phase);
+        return () => { phases.delete(listener); };
+      },
+      whenForeground(signal?: AbortSignal): Promise<SurfacePhase> {
+        if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Surface closed."));
+        if (phase === "foreground") return Promise.resolve("foreground");
+        return new Promise<SurfacePhase>((resolve, reject) => {
+          const waiter = { resolve, reject, signal, abort: () => {
+            waiters.delete(waiter); reject(new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled."));
+          } };
+          waiters.add(waiter);
+          signal?.addEventListener("abort", waiter.abort, { once: true });
+          if (signal?.aborted) waiter.abort();
+        });
+      },
+    },
     tasks: {
       async list(): Promise<readonly SurfaceTask[]> {
         if (!applyTasks(await call("tasks.list"))) throw new PluginCapabilityError("plugin_ui_invalid", "Invalid task snapshot.");
@@ -143,6 +186,9 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
       channel?.removeEventListener("message", receive);
       for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new PluginCapabilityError("plugin_surface_closed", "Surface closed.")); }
       pending.clear(); tasks.clear(); themes.clear(); listeners.clear(); presentation = undefined;
+      const error = new PluginCapabilityError("plugin_surface_closed", "Surface closed.");
+      for (const waiter of waiters) { waiter.signal?.removeEventListener("abort", waiter.abort); waiter.reject(error); }
+      waiters.clear(); phases.clear(); phase = undefined;
     },
   };
 }

@@ -53,7 +53,7 @@ test("current authorized context uses fresh parent locale/theme without replacin
   const request = parent.calls.at(-1);
   assert.equal(request.payload.method, "context.current");
   parent.reply(request, { contract: "vibetable.plugin-theme.v1", locale: "en-US", mode: "dark", density: "compact", variables: {} });
-  assert.deepEqual(await context, { projectKey: "workspace-owned", collection: "authorized", user: { role: "reader" }, locale: "en-US", theme: "dark", density: "compact" });
+  assert.deepEqual(await context, { projectKey: "workspace-owned", collection: "authorized", user: { role: "reader" }, locale: "en-US", theme: "dark", density: "compact", surfacePhase: "foreground" });
   client.dispose();
 });
 

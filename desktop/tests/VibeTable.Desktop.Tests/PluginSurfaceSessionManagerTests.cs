@@ -161,6 +161,58 @@ public sealed class PluginSurfaceSessionManagerTests
     }
 
     [TestMethod]
+    public void BackgroundSurfacesAreBoundedPromoteOnceAndOnlyCountForegroundMounts()
+    {
+        var manager = new PluginSurfaceSessionManager();
+        var revision = PluginPackageRevision.Create(@"C:\plugins\clean", PackageHash);
+        var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", "local:ws", "orders",
+            [], null, "zh-CN", "light", "comfortable", default, "1.0");
+        PluginSurfaceSession OpenBackground(string actionId) => manager.Open("local:ws", "plugin", revision, "ui/index.html", phase: PluginSurfacePhases.Background);
+        var prewarmed = new List<PluginSurfaceSession>();
+        for (int index = 0; index < PluginSurfaceSessionManager.MaxBackgroundSurfaces; index++)
+        {
+            var surface = OpenBackground($"app-{index}");
+            manager.BindIdentity(surface.SurfaceToken, new PluginProjectContext("local:ws", "workspace:7", 7), 1, "3.x", actionId: $"app-{index}", presentation: "application");
+            manager.TryGet(surface.SurfaceToken, out var bound);
+            prewarmed.Add(bound!);
+        }
+        var overflow = OpenBackground("app-overflow");
+        var legacy = manager.Open("local:ws", "legacy", revision, "ui/index.html");
+
+        Assert.IsTrue(prewarmed.All(surface => surface.Phase == PluginSurfacePhases.Background));
+        Assert.AreEqual(PluginSurfacePhases.Foreground, overflow.Phase, "Beyond the bound a surface opens foreground, never as a hidden writer.");
+        Assert.AreEqual(PluginSurfacePhases.Foreground, legacy.Phase, "Undeclared surfaces keep the foreground default.");
+        Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, manager.BackgroundSurfaceCount);
+
+        // A mounted pre-warmed frame is not an open application: it carries no foreground authority.
+        Assert.IsTrue(manager.MarkMounted(prewarmed[0].SurfaceToken));
+        Assert.IsTrue(manager.MarkMounted(legacy.SurfaceToken));
+        Assert.AreEqual(2, manager.MountedSurfaceCount);
+        Assert.AreEqual(1, manager.MountedForegroundSurfaceCount);
+
+        int changed = 0;
+        manager.Changed += () => changed++;
+        manager.BindActiveCollection("local:ws", "plugin", "app-0", context);
+        Assert.IsTrue(manager.TryGet(prewarmed[0].SurfaceToken, out var promoted));
+        Assert.AreEqual(PluginSurfacePhases.Foreground, promoted!.Phase);
+        Assert.AreEqual("orders", promoted.ActiveCollection);
+        Assert.AreEqual(1, changed, "Promotion republishes which mounted frames carry authority.");
+        Assert.AreEqual(2, manager.MountedForegroundSurfaceCount);
+        Assert.IsTrue(manager.TryGet(prewarmed[1].SurfaceToken, out var untouched));
+        Assert.AreEqual(PluginSurfacePhases.Background, untouched!.Phase, "Binding one action leaves its siblings pre-warmed.");
+
+        manager.BindActiveCollection("local:ws", "plugin", "app-0", context with { Collection = "notes" });
+        Assert.AreEqual(PluginSurfacePhases.Foreground, promoted.Phase, "There is no demotion.");
+        Assert.AreEqual(1, changed, "A plain re-bind does not republish.");
+
+        // Retiring a pre-warmed surface frees its slot for the next declared application.
+        Assert.IsTrue(manager.Close(prewarmed[1].SurfaceToken));
+        var again = OpenBackground("app-again");
+        Assert.AreEqual(PluginSurfacePhases.Background, again.Phase);
+        Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces - 1, manager.BackgroundSurfaceCount, "The promoted surface keeps its foreground slot; only a retired one frees a background slot.");
+    }
+
+    [TestMethod]
     public void MountedSurfacesRetireBeforeChangedAndIgnoreLateMounts()
     {
         var manager = new PluginSurfaceSessionManager();

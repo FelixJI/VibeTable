@@ -105,7 +105,22 @@ describe("derivePluginAppEntries", () => {
       label: "打开任务台",
       src: "https://aaa.bbb.plugins.vibetable.local/ui/index.html",
       surfaceToken: "token-open",
+      prewarm: false,
     });
+  });
+
+  it("pre-warms only applications whose manifest declares the exact surface lifecycle contract", () => {
+    const declared = appPlugin({ manifest: { ...appPlugin().manifest,
+      compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
+      actions: appPlugin().manifest.actions.map(action => ({ ...action, surfacePhase: "background" })) } });
+    const misspelled = appPlugin({ pluginId: "com.example.typo", manifest: { ...appPlugin().manifest, pluginId: "com.example.typo",
+      compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v2" } } });
+    const entries = derivePluginAppEntries([declared, misspelled, appPlugin()], "zh-CN");
+    expect(entries.map(entry => [entry.key, entry.prewarm])).toEqual([
+      ["com.example.tasks/open-task-desk", true],
+      ["com.example.typo/open-task-desk", false],
+      ["com.example.tasks/open-task-desk", false],
+    ]);
   });
 
   it("uses the active locale before the fixed Host title and omits nonmanual applications", () => {

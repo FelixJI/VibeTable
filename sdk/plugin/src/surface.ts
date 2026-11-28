@@ -1,6 +1,6 @@
 import { createSurfacePresentationClient, type SurfaceParentTransport, type SurfacePresentation, type SurfaceTask } from "./surface-ui.js";
 import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryPage, DataQueryRequest } from "./data.js";
-import type { CommandContext, JsonObject, JsonValue } from "./types.js";
+import type { CommandContext, JsonObject, JsonValue, SurfacePhase } from "./types.js";
 import type { ReadGrant, WriteGrant } from "./capabilities.js";
 import { PluginCapabilityError } from "./capabilities.js";
 import { createSurfaceModel, type SurfaceModel } from "./surface-model.js";
@@ -68,6 +68,8 @@ export interface SurfaceCapabilities {
   readonly model: SurfaceModel;
   readonly transaction: SurfaceTransaction;
   readonly context: { read(): Promise<CommandContext>; current(): Promise<SurfacePresentation>; onChanged(listener: (value: SurfacePresentation) => void): () => void };
+  /** vibetable.plugin-surface-lifecycle.v1: observable background → foreground lifecycle of this surface. */
+  readonly lifecycle: SurfaceLifecycle;
   readonly tasks: { list(): Promise<readonly SurfaceTask[]>; onChanged(listener: (tasks: readonly SurfaceTask[]) => void): () => void; cancel(taskId: string): Promise<{ readonly cancelRequested: boolean }> };
   readonly ui: ReturnType<typeof createSurfacePresentationClient>["ui"];
   readonly data: {
@@ -127,6 +129,17 @@ export interface SurfaceCapabilities {
   readonly output: SurfaceOutputClient & { print(signal?: AbortSignal): Promise<{ readonly opened: true }> };
   dispose(): void;
 }
+
+/** vibetable.plugin-surface-lifecycle.v1 consumer side. `current()` is undefined until the Host announced a phase
+ * or `context.read()` supplied one; `whenForeground()` asks the Host first so it never hangs on a Host that does not pre-warm. */
+export interface SurfaceLifecycle {
+  current(): SurfacePhase | undefined;
+  onChanged(listener: (phase: SurfacePhase) => void): () => void;
+  whenForeground(signal?: AbortSignal): Promise<SurfacePhase>;
+}
+
+type WireCommandContext = Omit<CommandContext, "surfacePhase"> & { readonly surfacePhase?: unknown };
+const surfacePhase = (value: unknown): SurfacePhase => value === "background" ? "background" : "foreground";
 
 /** Runs only inside an isolated WebView2 iframe; never forwards through the parent Product bridge. */
 export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTransport, parentTransport?: SurfaceParentTransport): SurfaceCapabilities {
@@ -469,19 +482,29 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const outputs = createSurfaceOutputClient(call, release);
   const datasets = createSurfaceDatasets(call, release);
   const snapshots = createSurfaceSnapshot(call, release);
+  const readContext = async (): Promise<CommandContext> => {
+    const context = await call<WireCommandContext>("context.read", {});
+    // The Host is the phase authority; a Host without the lifecycle contract never pre-warms.
+    const normalized = { ...context, surfacePhase: surfacePhase(context.surfacePhase) } as CommandContext;
+    presentation.adoptPhase(normalized.surfacePhase);
+    // Trusted parent supplies presentation only; Go remains the data authority.
+    if (!presentation.available) return normalized;
+    const current = await presentation.current();
+    return { ...normalized, theme: current.mode, locale: current.locale, density: current.density };
+  };
   return {
     dataset: datasets,
     model: createSurfaceModel(call),
     transaction: createSurfaceTransaction(call),
-    context: {
-      read: async () => {
-        const context = await call<CommandContext>("context.read", {});
-        // Trusted parent supplies presentation only; Go remains the data authority.
-        if (!presentation.available) return context;
-        const current = await presentation.current();
-        return { ...context, theme: current.mode, locale: current.locale, density: current.density };
+    context: { read: readContext, current: presentation.current, onChanged: presentation.onChanged },
+    lifecycle: {
+      current: presentation.lifecycle.current,
+      onChanged: presentation.lifecycle.onChanged,
+      async whenForeground(signal?: AbortSignal): Promise<SurfacePhase> {
+        if (signal?.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "Foreground wait cancelled.");
+        if (presentation.lifecycle.current() === undefined) await readContext();
+        return presentation.lifecycle.whenForeground(signal);
       },
-      current: presentation.current, onChanged: presentation.onChanged,
     },
     tasks: presentation.tasks,
     ui: presentation.ui,

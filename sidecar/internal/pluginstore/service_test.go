@@ -1026,4 +1026,21 @@ func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
 	v1["$schema"] = "vibetable.plugin-manifest.v1"
 	v1["compatibility"] = map[string]any{"pluginApi": "1.x"}
 	check("v1-presentation", v1, false)
+
+	// #596: compatibility.surfaceLifecycle opts a native application into Host pre-warming;
+	// only the exact contract id is accepted, and only on a 3.x manifest.
+	lifecycle := build("application", "ui/index.html", nil, nil)
+	lifecycle["compatibility"] = map[string]any{"pluginApi": "3.x", "surfaceLifecycle": surfaceLifecycleContract}
+	check("surface-lifecycle", lifecycle, true)
+	for name, declared := range map[string]any{
+		"newer": surfaceLifecycleContract + ".v2", "flag": true, "empty": "", "spaced": " " + surfaceLifecycleContract,
+	} {
+		pinned := build("application", "ui/index.html", nil, nil)
+		pinned["compatibility"] = map[string]any{"pluginApi": "3.x", "surfaceLifecycle": declared}
+		check("surface-lifecycle-"+name, pinned, false)
+	}
+	v1Lifecycle := build("application", "ui/index.html", map[string]any{"workerEntry": "dist/worker.js"}, nil)
+	v1Lifecycle["$schema"] = "vibetable.plugin-manifest.v1"
+	v1Lifecycle["compatibility"] = map[string]any{"pluginApi": "1.x", "surfaceLifecycle": surfaceLifecycleContract}
+	check("v1-surface-lifecycle", v1Lifecycle, false)
 }

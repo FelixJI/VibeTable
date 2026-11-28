@@ -1052,6 +1052,11 @@ export type PluginTaskState =
   | "cancelled"
   | "aborted";
 
+/** Manifest `compatibility.surfaceLifecycle` value: the plugin opts into Host background pre-warming. */
+export const PLUGIN_SURFACE_LIFECYCLE_CONTRACT = "vibetable.plugin-surface-lifecycle.v1" as const;
+/** One-way surface lifecycle: `background` (pre-warmed, read-only, hidden) → `foreground` (user opened it) → released. */
+export type PluginSurfacePhase = "background" | "foreground";
+
 export interface PluginAction {
   readonly actionId: string;
   readonly displayName: Readonly<Record<string, string>>;
@@ -1075,6 +1080,9 @@ export interface PluginAction {
   readonly surfaceToken?: string | null;
   /** Host projection only: localized entry title for application actions. */
   readonly surfaceTitle?: string | null;
+  /** Host projection only: `"background"` while a lifecycle-declaring application surface is pre-warmed
+   * and not yet opened by the user; `null`/absent once foreground or for undeclared plugins. */
+  readonly surfacePhase?: PluginSurfacePhase | null;
 }
 
 export interface PluginManifest {

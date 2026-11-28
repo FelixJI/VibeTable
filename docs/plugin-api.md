@@ -42,7 +42,7 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 
 | SDK 方法 | 返回值 / 用途 | 权限及注意事项 |
 | --- | --- | --- |
-| `context.read()` | `CommandContext` | Host 绑定的工作区、活动表、选择上下文 |
+| `context.read()` | `CommandContext` | Host 绑定的工作区、活动表、选择上下文；`surfacePhase` 为当前 surface 的宿主授权阶段（后台预热为 `background`，缺省 `foreground`） |
 | `data.describe({accepts, collection?})` | `DataCatalog \| DataDescription` | 未给表时返回授权目录；给表时返回授权字段 |
 | `data.query(request, signal?)` | `DataQueryPage & {rowGuards}` | `read` + `query`；字段、筛选、排序均需授权 |
 | `data.pages(request, signal?)` | 异步分页迭代器 | **本次新增 SDK 帮助方法**，不新增 Host 协议；自动管理继续页游标 |
@@ -70,6 +70,8 @@ Host 提供的 surface token；不能自己生成或跨页面共享。`context.r
 | `ui.navigation.back()` | `{navigated}` | 返回平台；false 表示离开被阻止 |
 | `ui.capabilities()` | 支持及不支持的方法列表 | 同步展示能力查询，不是权限查询 |
 | `output.print(signal?)` | `{opened:true}` | 仅当前可见 application；表示已开预览，不表示打印成功 |
+| `lifecycle.current()` / `onChanged(listener)` | `SurfacePhase \| undefined` / 取消函数 | 仅声明 `compatibility.surfaceLifecycle` 的插件会被后台预热；阶段由 Host 决定，插件只观察 |
+| `lifecycle.whenForeground(signal?)` | `Promise<SurfacePhase>` | 等到用户打开页面；无超时，用 `AbortSignal` 取消；关闭后拒绝 `plugin_surface_closed` |
 | `dispose()` | void | 关闭客户端，释放监听及句柄 |
 
 ## 查询与分页
@@ -444,3 +446,26 @@ if (task) {
 `sameTarget` 可用 `skipEmptyRightEnd:true` 与既有左端选项对称处理合同末端未知；双方已知冲突仍拒。申请来源的 allocationBalance 可用 `requireCompleteWhenAllocated:true`，有来源时须完整覆盖父四维。配合 `requireCompleteWhen` 可要求命中全部父行条件时至少有一个来源，例如已确认红字申请的每一行。actual allocation 继续允许部分归属。
 
 state.relationCases 为不同来源角色声明必填/可空/禁止关系；groupSameTarget 按整票分组比较已知合同，related单层继承，reference单向校验不污染组。二者都在原生最终图执行，写入/历史恢复不能绕过。
+
+## 后台预热生命周期：compatibility.surfaceLifecycle
+
+合同 `vibetable.plugin-surface-lifecycle.v1`（公开合同见 `contracts/plugin-surface-api.v1.json` 的 `lifecycle` 节）。
+只有 `manifest.v2`（`pluginApi: "3.x"`）可以声明 `compatibility.surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1"`，
+其它取值（包括布尔、空串或未知版本）都是 `version_incompatible`；未声明的插件保持原有手动入口，Host 不会预加载。
+
+声明后，Host 在工作区就绪后用现有隔离 session 在后台预热该插件声明的 application 页面：帧隐藏、不可聚焦、
+不进入 Tab 序、不换页、不抢焦点、不阻塞主界面，同时最多 4 个；切换工作区、禁用、卸载或失败时释放。
+**只读由 Host 按 surface token 强制，不是前端标志**：后台阶段仅允许 `request.cancel`、`context.read`、`model.read`
+和单份快照的 `snapshot.open/page/readBatch/release`，其余方法一律返回 `plugin_surface_background`；
+受信父页的 `tasks.cancel`、`notification.show`、`navigation.back` 同样拒绝，沙箱无 `allow-modals`，不会弹窗。
+
+插件通过两种方式观察阶段：`context.read()` 的 `surfacePhase`（Go 授权）和受信父页的 `lifecycleChanged`。
+```typescript
+const phase = api.lifecycle.current() ?? (await api.context.read()).surfacePhase;
+const stop = api.lifecycle.onChanged((phase) => { if (phase === "foreground") renderEditable(); });
+await api.lifecycle.whenForeground(signal); // 用户已打开页面；关闭后为 plugin_surface_closed
+```
+阶段单向：用户点击入口时 Host 先绑定新的前台 token，再投递 `foreground`，隐藏帧被丢弃而不是原地提升，
+因此提升瞬间的在途后台读取可能报 `plugin_snapshot_stale`，应重新读取；离开前台时 Host 退租 token，
+再次预热会换发新的 `background` token，前台页面永不被降级。`whenForeground` 没有超时（预热可能持续数小时），
+请传入 `AbortSignal`；旧 Host 不返回 `surfacePhase` 也不会预热，SDK 归一化为 `foreground`。

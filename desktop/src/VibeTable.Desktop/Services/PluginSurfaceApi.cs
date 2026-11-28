@@ -90,11 +90,21 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             PluginSurfaceSession surface = CurrentSurface(frameToken, source);
             state = _states.GetOrAdd(frameToken, _ => new SurfaceState(surface));
             if (!_surfaces.IsActive(frameToken)) { RetireState(frameToken); throw Error("plugin_source_denied"); }
+            // A surface prepared in background has no active collection until the user
+            // opens it. The first request after that promotion adopts the bound identity
+            // instead of reporting the expected collection change as stale.
+            if (state.Identity.Phase == PluginSurfacePhases.Background && surface.Phase == PluginSurfacePhases.Foreground)
+                state.Identity = surface;
             if (state.Identity.Context != surface.Context || state.Identity.InstallationRevision != surface.InstallationRevision
                 || state.Identity.InstallationId != surface.InstallationId
                 || state.Identity.ActiveCollection != surface.ActiveCollection || state.Identity.ActionId != surface.ActionId
                 || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry
                 || state.Identity.Presentation != surface.Presentation) throw Error("plugin_session_stale");
+            // Background pre-warming is host-enforced, never a renderer flag: a surface the
+            // user has not opened may only observe (reads, subscriptions, handle release).
+            // Everything else is refused here, before any capability, dialog or write path runs.
+            if (surface.Phase == PluginSurfacePhases.Background && !BackgroundMethods.Contains(request.Method))
+                throw Error("plugin_surface_background");
             foreach (var expired in state.Plans.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow))
                 if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
@@ -231,6 +241,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                         context["theme"] = surface.InvocationContext?.Theme ?? "light";
                         context["density"] = surface.InvocationContext?.Density ?? "comfortable";
                         context["hostVersion"] = typeof(PluginSurfaceApi).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+                        // Authoritative phase for plugins that pre-warm: they re-check it with every context read.
+                        context["surfacePhase"] = surface.Phase;
                         result = context;
                         break;
                     }
@@ -629,6 +641,22 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private static string ReadHandle(JsonElement parameters, string name)
     { if (parameters.ValueKind != JsonValueKind.Object || parameters.EnumerateObject().Count() != 1 || !parameters.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())) throw Error("plugin_capability_invalid"); return value.GetString()!; }
     private static PluginSurfacePolicyException Error(string code) => new(code, "插件请求未完成。");
+    /// <summary>
+    /// Methods a background (pre-warmed) surface may call. This is the exact
+    /// preparation set, nothing wider: observe the phase, read the completed
+    /// model bindings (model.read is a pure read — repair needs preview+commit,
+    /// both refused here), open and page one snapshot, release it, cancel reads.
+    /// Every other method — writes, mutations, transactions, I/O, output, files,
+    /// model configuration, attachments, subscriptions, datasets, storage —
+    /// is refused with plugin_surface_background.
+    /// </summary>
+    internal static readonly HashSet<string> BackgroundMethods = new(StringComparer.Ordinal)
+    {
+        "request.cancel",
+        "context.read",
+        "model.read",
+        "snapshot.open", "snapshot.page", "snapshot.readBatch", "snapshot.release",
+    };
     private sealed record CommitRejectionScope(string[] Methods, string[] Codes);
     private static readonly CommitRejectionScope[] CommitRejectionScopes = LoadCommitRejectionScopes();
     private static CommitRejectionScope[] LoadCommitRejectionScopes()
@@ -701,7 +729,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private sealed class SurfaceState(PluginSurfaceSession identity)
     {
         internal Func<string, Func<Func<bool>, bool>, CancellationToken, Task<bool>>? FrameNotifier { get; set; }
-        internal PluginSurfaceSession Identity { get; } = identity;
+        internal PluginSurfaceSession Identity { get; set; } = identity;
         internal CancellationTokenSource Lifetime { get; } = new();
         internal ConcurrentDictionary<string, CancellationTokenSource> Pending { get; } = new();
         // In-flight data.io.cancel requestIds; bounded independently of Pending.

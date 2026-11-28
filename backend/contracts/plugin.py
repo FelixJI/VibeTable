@@ -38,6 +38,10 @@ InteractionDecision = Literal["approved", "rejected"]
 # full business viewport) and "headless" (in-package JS module) are new v2
 # shapes that declare their entry on the action itself.
 PluginPresentation = Literal["surface", "application", "headless"]
+# #596 manifest opt-in (compatibility.surfaceLifecycle) for Host background pre-warming of
+# application surfaces. A Host that predates the contract ignores the key; a Host that
+# knows it keeps the hidden surface read-only until the user opens it.
+SURFACE_LIFECYCLE_CONTRACT = "vibetable.plugin-surface-lifecycle.v1"
 
 
 def plugin_entry_is_host_reserved(entry: str) -> bool:
@@ -114,6 +118,10 @@ class PluginManifest(PluginContract):
             not native or self.compatibility["dataset"] != "vibetable.plugin-dataset.v1"
         ):
             raise ValueError("dataset compatibility requires native dataset v1")
+        if "surfaceLifecycle" in self.compatibility and (
+            not native or self.compatibility["surfaceLifecycle"] != SURFACE_LIFECYCLE_CONTRACT
+        ):
+            raise ValueError("surfaceLifecycle compatibility requires native surface lifecycle v1")
         if "model" in self.permissions:
             if not native:
                 raise ValueError("model permissions require native plugin API 3.x")
@@ -470,6 +478,7 @@ class UninstallResult(PluginContract):
 
 
 __all__ = [
+    "SURFACE_LIFECYCLE_CONTRACT",
     "ActionAvailability",
     "CancelFlag",
     "CommandContext",

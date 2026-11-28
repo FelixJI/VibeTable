@@ -2,7 +2,7 @@
 import { createPluginSurfaceUi, projectSurfaceTasks } from "./pluginSurfaceUi";
 import PluginTaskList from "./PluginTaskList.vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
+import type { PluginSurfacePhase, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { useHostBridge } from "@/services/bridgeContext";
 import { PLUGIN_SURFACE_CSP, isTrustedSurfaceMessage, validatePluginSurfaceUrl } from "./pluginSurfacePolicy";
 
@@ -16,7 +16,9 @@ const props = withDefaults(defineProps<{
   showTasks?: boolean;
   navigateBack?: (surfaceToken: string) => boolean;
   variant?: "panel" | "app" | "headless";
-}>(), { showTasks: true });
+  /** v1 surface lifecycle: `background` frames are hidden, unfocusable and read-only on the Host side. */
+  phase?: PluginSurfacePhase;
+}>(), { showTasks: true, phase: "foreground" });
 const emit = defineEmits<{
   close: [];
   action: [payload: Readonly<Record<string, unknown>>];
@@ -34,10 +36,11 @@ const presentation = createPluginSurfaceUi({
   token: () => activeToken.value, theme: () => props.theme, tasks: () => currentTasks.value,
   cancel: taskId => emit("cancel", taskId), back: () => props.navigateBack?.(activeToken.value) ?? false,
   show: message => { notices.value = [...notices.value, message].slice(-3); },
+  background: () => props.phase === "background",
 });
 const origin = computed(() => valid.value ? new URL(props.src).origin : "");
 
-function postToSurface(event: "themeChanged" | "taskChanged" | "tasksChanged" | "uiResponse", payload: unknown): void {
+function postToSurface(event: "themeChanged" | "taskChanged" | "tasksChanged" | "uiResponse" | "lifecycleChanged", payload: unknown): void {
   if (!valid.value || !activeToken.value) return;
   // postMessage structured-clones its argument, and Vue reactive proxies
   // cannot be cloned; theme/task are JSON contract snapshots, so post a plain copy.
@@ -51,6 +54,11 @@ function postToSurface(event: "themeChanged" | "taskChanged" | "tasksChanged" | 
 
 function sendTheme(): void {
   postToSurface("themeChanged", props.theme);
+}
+
+/** vibetable.plugin-surface-lifecycle.v1: the plugin re-checks its own version of the read-only state on each change. */
+function sendLifecycle(): void {
+  postToSurface("lifecycleChanged", { phase: props.phase });
 }
 
 function sendTask(): void {
@@ -71,7 +79,7 @@ function onMessage(event: MessageEvent): void {
     if (response) postToSurface("uiResponse", response);
     return;
   }
-  if (event.data.event === "ready") { sendTheme(); sendTask(); }
+  if (event.data.event === "ready") { sendLifecycle(); sendTheme(); sendTask(); }
   if (event.data.event !== "close") bridge.notify("plugin.surface.event", event.data);
   if (event.data.event === "action") {
     const payload = typeof event.data.payload === "object" && event.data.payload !== null
@@ -109,6 +117,7 @@ function close(payload: Readonly<Record<string, unknown>> = {}, notifyParent = t
 
 watch(() => props.theme, sendTheme, { deep: true });
 watch(currentTasks, sendTask, { deep: true });
+watch(() => props.phase, sendLifecycle);
 watch(() => props.surfaceToken, (token) => {
   // Retire the former authorization without closing its replacement's view.
   close({}, false);
@@ -125,9 +134,10 @@ onBeforeUnmount(() => {
 <template>
   <section
     class="surface-shell"
-    :class="variant === 'app' ? 'surface-shell--app' : null"
+    :class="[variant === 'app' ? 'surface-shell--app' : null, phase === 'background' ? 'surface-shell--background' : null]"
     role="region"
     :aria-label="title"
+    :aria-hidden="phase === 'background' ? 'true' : undefined"
   >
     <header v-if="variant !== 'app' && variant !== 'headless'">
       <div><strong>{{ title }}</strong></div>
@@ -142,10 +152,12 @@ onBeforeUnmount(() => {
       :data-plugin-print-surface="variant === 'app' ? surfaceToken : undefined"
       :title="title"
       :class="variant === 'headless' ? 'surface-frame--hidden' : null"
+      :tabindex="phase === 'background' ? -1 : undefined"
       sandbox="allow-scripts allow-same-origin"
       referrerpolicy="no-referrer"
       :data-required-csp="PLUGIN_SURFACE_CSP"
-      @load="() => { sendTheme(); sendTask(); }"
+      :data-surface-phase="phase"
+      @load="() => { sendLifecycle(); sendTheme(); sendTask(); }"
     />
     <div v-else class="surface-error" role="alert">插件页面地址未通过不可变 origin 校验。</div>
     <aside v-if="notices.length" class="plugin-notices" aria-label="插件通知" aria-live="polite">
@@ -162,6 +174,8 @@ onBeforeUnmount(() => {
 .surface-shell--app { min-height: 0; height: 100%; border: 0; border-radius: 0; }
 .surface-shell--app iframe { min-height: 0; }
 .surface-frame--hidden { position: absolute; width: 1px; height: 1px; min-height: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
+/* Pre-warmed frame: never visible, never focusable, never a pointer target. Scripts still load. */
+.surface-shell--background { visibility: hidden; pointer-events: none; }
 header { display: flex; flex: 0 0 42px; align-items: center; justify-content: space-between; padding: 0 10px 0 13px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 header div { display: flex; align-items: baseline; gap: 10px; }
 header strong { font-size: var(--vt-font-body); }

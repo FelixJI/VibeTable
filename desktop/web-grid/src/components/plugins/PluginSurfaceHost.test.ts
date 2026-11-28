@@ -29,6 +29,45 @@ const theme: PluginSurfaceThemeSnapshot = {
 describe("PluginSurfaceHost", () => {
   afterEach(() => setHostBridgeForTesting(null));
 
+  it("announces the v1 surface lifecycle on load, ready and phase changes; a background frame is unfocusable and read-only", async () => {
+    const hostPostMessage = vi.fn();
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage: hostPostMessage, addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const back = vi.fn(() => true);
+    const wrapper = mount(PluginSurfaceHost, { props: { src, surfaceToken: "surface-1", title: "预热插件", theme, phase: "background", navigateBack: back } });
+    const iframe = wrapper.get("iframe");
+    expect(iframe.attributes("tabindex")).toBe("-1");
+    expect(iframe.attributes("data-surface-phase")).toBe("background");
+    expect(wrapper.get("section").attributes("aria-hidden")).toBe("true");
+    expect(wrapper.get("section").classes()).toContain("surface-shell--background");
+    const post = vi.fn();
+    Object.defineProperty(iframe.element, "contentWindow", { configurable: true, value: { postMessage: post } });
+    const lifecycle = () => post.mock.calls.map(([message]) => message).filter(message => message.event === "lifecycleChanged").map(message => message.payload.phase);
+    await iframe.trigger("load");
+    expect(lifecycle()).toEqual(["background"]);
+    const send = (event: string, payload: object) => window.dispatchEvent(new MessageEvent("message", {
+      origin: new URL(src).origin, source: iframe.element.contentWindow,
+      data: { contract: "vibetable.plugin-surface.v1", surfaceToken: "surface-1", event, payload },
+    }));
+    send("ready", {});
+    expect(lifecycle()).toEqual(["background", "background"]);
+    // Hidden surfaces never reach the platform: no notice, no navigation, no owned-task cancel.
+    send("action", { service: "ui", requestId: "notice", method: "notification.show", params: { message: "后台弹窗" } });
+    send("action", { service: "ui", requestId: "back", method: "navigation.back", params: {} });
+    send("action", { service: "ui", requestId: "cancel", method: "tasks.cancel", params: { taskId: "t" } });
+    expect(post.mock.calls.filter(([message]) => message.event === "uiResponse").map(([message]) => message.payload.error.code))
+      .toEqual(["plugin_surface_background", "plugin_surface_background", "plugin_surface_background"]);
+    expect(wrapper.find('[aria-label="插件通知"]').exists()).toBe(false);
+    expect(back).not.toHaveBeenCalled();
+    // Promotion keeps the very same frame element and announces the foreground phase.
+    await wrapper.setProps({ phase: "foreground" });
+    expect(wrapper.get("iframe").element).toBe(iframe.element);
+    expect(iframe.attributes("tabindex")).toBeUndefined();
+    expect(lifecycle()).toEqual(["background", "background", "foreground"]);
+    send("action", { service: "ui", requestId: "back-2", method: "navigation.back", params: {} });
+    expect(back).toHaveBeenCalledWith("surface-1");
+    expect(post.mock.calls.at(-1)?.[0].payload).toMatchObject({ requestId: "back-2", result: { navigated: true } });
+  });
+
   it("uses the fixed sandbox and sends a token-bound theme envelope", async () => {
     const hostPostMessage = vi.fn();
     setHostBridgeForTesting(createHostBridge({ webview: {
@@ -148,8 +187,10 @@ describe("PluginSurfaceHost", () => {
     await Promise.resolve();
 
     expect(cloneFailures).toEqual([]);
-    expect(posted.length).toBeGreaterThanOrEqual(2);
-    expect(posted[0]).toMatchObject({
+    expect(posted.length).toBeGreaterThanOrEqual(3);
+    // vibetable.plugin-surface-lifecycle.v1: the current phase precedes presentation on load.
+    expect(posted[0]).toMatchObject({ contract: "vibetable.plugin-surface.v1", surfaceToken: "surface-1", event: "lifecycleChanged", payload: { phase: "foreground" } });
+    expect(posted[1]).toMatchObject({
       contract: "vibetable.plugin-surface.v1",
       surfaceToken: "surface-1",
       event: "themeChanged",

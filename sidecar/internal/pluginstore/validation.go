@@ -12,6 +12,9 @@ func invalidPayload() *Error {
 	return requestError("plugin.request_invalid", "plugin payload is invalid", nil)
 }
 
+// surfaceLifecycleContract is the only compatibility.surfaceLifecycle value a v2 manifest may declare (#596).
+const surfaceLifecycleContract = "vibetable.plugin-surface-lifecycle.v1"
+
 func validateObject(object map[string]any, allowed, texts string) error {
 	fields := " " + allowed + " "
 	for key := range object {
@@ -38,6 +41,9 @@ func validateManifest(value any, pluginID, version string) error {
 	}
 	native := manifest["$schema"] == "vibetable.plugin-manifest.v2" && compatibility["pluginApi"] == "3.x"
 	if !native && (manifest["$schema"] != "vibetable.plugin-manifest.v1" || compatibility["pluginApi"] == "3.x") {
+		return invalidPayload()
+	}
+	if value, exists := compatibility["surfaceLifecycle"]; exists && (!native || value != surfaceLifecycleContract) {
 		return invalidPayload()
 	}
 	if err := validateObject(manifest, "$schema pluginId version displayName description compatibility permissions actions ui", "pluginId version"); err != nil {

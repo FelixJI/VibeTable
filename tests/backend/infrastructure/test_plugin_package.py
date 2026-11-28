@@ -121,6 +121,51 @@ def test_native_manifest_negotiates_without_worker_and_rejects_mismatch(tmp_path
         assert error.value.code == "version_incompatible"
 
 
+def test_surface_lifecycle_declaration_is_opt_in_and_pinned(tmp_path: Path) -> None:
+    # #596: only the exact contract id on a native (3.x) manifest opts a plugin into background
+    # pre-warming; any other shape is a version mismatch on both validators.
+    from backend.contracts.plugin import SURFACE_LIFECYCLE_CONTRACT, PluginManifest
+
+    plugin = tmp_path / "surface"
+    _write_local_plugin(plugin)
+    path = plugin / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["$schema"] = "vibetable.plugin-manifest.v2"
+    manifest["compatibility"]["pluginApi"] = "3.x"
+    del manifest["actions"][0]["workerEntry"]
+    manifest["ui"] = {
+        "customViews": [
+            {"viewId": "reader", "actionId": "read-selection", "entry": "ui/index.html"}
+        ]
+    }
+    (plugin / "ui").mkdir()
+    (plugin / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    manifest["compatibility"]["surfaceLifecycle"] = SURFACE_LIFECYCLE_CONTRACT
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    inspected = inspect_plugin_package(plugin)
+    assert inspected.manifest["compatibility"]["surfaceLifecycle"] == SURFACE_LIFECYCLE_CONTRACT
+
+    def validate(value: dict[str, Any]) -> None:
+        entries = [*_valid_entries(value), ("ui/index.html", b"<!doctype html>")]
+        validate_plugin_manifest(entries)
+
+    validate(manifest)
+    for schema, api, declaration in (
+        ("vibetable.plugin-manifest.v2", "3.x", "vibetable.plugin-surface-lifecycle.v2"),
+        ("vibetable.plugin-manifest.v2", "3.x", True),
+        ("vibetable.plugin-manifest.v1", "1.x", SURFACE_LIFECYCLE_CONTRACT),
+    ):
+        variant = json.loads(json.dumps(manifest))
+        variant["$schema"] = schema
+        variant["compatibility"]["pluginApi"] = api
+        variant["compatibility"]["surfaceLifecycle"] = declaration
+        with pytest.raises(PluginPackageError) as error:
+            validate(variant)
+        assert error.value.code == "version_incompatible"
+        with pytest.raises(ValueError, match="surfaceLifecycle"):
+            PluginManifest.model_validate(variant)
+
+
 def test_inspect_local_package_returns_normalized_files_and_hash(tmp_path: Path) -> None:
     plugin = tmp_path / "reader"
     _write_local_plugin(plugin)

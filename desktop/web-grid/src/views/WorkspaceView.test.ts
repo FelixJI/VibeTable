@@ -1028,6 +1028,92 @@ describe("WorkspaceView", () => {
     });
 
 
+    it("pre-warms a lifecycle-declaring application hidden and read-only, promotes the same frame on click and retires it on leave", async () => {
+      const { wrapper, plugins, plugin, record, setCatalog } = await prepare();
+      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html`;
+      const declared = (token: string, revision: number, status: "enabled" | "disabled" = "enabled"): PluginSnapshot => ({ ...plugin, status, revision, manifest: { ...plugin.manifest,
+        compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
+        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: token, surfacePhase: "background", surfaceSrc: source } : action) } });
+      const slots = (phase: string) => wrapper.findAll('[data-testid="plugin-app-prewarm-slot"]').filter(slot => slot.attributes("data-phase") === phase);
+      const closes = () => record.posted.filter(item => item.type === "plugin.surface.event" && (item.payload as { event?: string }).event === "close")
+        .map(item => (item.payload as { surfaceToken: string }).surfaceToken);
+      const describes = () => record.posted.filter(item => item.type === "plugin.action.describe").length;
+      setCatalog(declared("application-token", 3)); await flushPromises();
+      // Background: loaded once, hidden, unfocusable, no legacy viewport, no describe.
+      const slot = slots("background")[0]!;
+      expect(slot.classes()).toContain("plugin-app-viewport--background");
+      expect(slot.attributes("aria-hidden")).toBe("true");
+      const frame = slot.get("iframe");
+      expect(frame.attributes("name")).toBe("application-token");
+      expect(frame.attributes("tabindex")).toBe("-1");
+      expect(frame.attributes("data-surface-phase")).toBe("background");
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(describes()).toBe(0);
+      const post = vi.fn();
+      Object.defineProperty(frame.element, "contentWindow", { configurable: true, value: { postMessage: post } });
+      // Click: the pre-warmed element itself becomes foreground; no reload, no second describe.
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(slots("background")).toHaveLength(0);
+      const active = slots("foreground")[0]!;
+      expect(active.element).toBe(slot.element);
+      expect(active.classes()).not.toContain("plugin-app-viewport--background");
+      expect(active.get("iframe").element).toBe(frame.element);
+      expect(frame.attributes("tabindex")).toBeUndefined();
+      expect(wrapper.get(".tables-view").isVisible()).toBe(false);
+      expect(describes()).toBe(1);
+      expect(closes()).toEqual([]);
+      expect(post.mock.calls.map(([message]) => message).filter(message => message.event === "lifecycleChanged").map(message => message.payload.phase)).toEqual(["foreground"]);
+      // 返回平台: the host-side foreground session is retired, the catalog is re-read and a fresh
+      // background surface takes over on the replacement token.
+      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+      await active.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(slots("foreground")).toHaveLength(0);
+      expect(closes()).toEqual(["application-token"]);
+      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBeGreaterThan(lists);
+      setCatalog(declared("application-token-2", 4)); await flushPromises();
+      expect(slots("background").map(item => item.get("iframe").attributes("name"))).toEqual(["application-token-2"]);
+      expect(wrapper.get(".tables-view").isVisible()).toBe(true);
+      // Disable while pre-warmed: the frame is gone immediately.
+      plugins.applyPlugin(declared("application-token-2", 5, "disabled")); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(closes()).toEqual(["application-token", "application-token-2"]);
+    });
+
+    it("promotes the active application again when the catalog replaces its token, and never revives a self-closed background frame", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare();
+      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html`;
+      const declared = (token: string, revision: number): PluginSnapshot => ({ ...plugin, revision, manifest: { ...plugin.manifest,
+        compatibility: { pluginApi: "3.x", surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1" },
+        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: token, surfacePhase: "background", surfaceSrc: source } : action) } });
+      const slots = (phase: string) => wrapper.findAll('[data-testid="plugin-app-prewarm-slot"]').filter(slot => slot.attributes("data-phase") === phase);
+      const describes = () => record.posted.filter(item => item.type === "plugin.action.describe").length;
+      setCatalog(declared("application-token", 3)); await flushPromises();
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(slots("foreground")[0]?.get("iframe").attributes("name")).toBe("application-token");
+      expect(describes()).toBe(1);
+      // Upgrade replaces the live token: the fresh background surface is promoted through describe.
+      setCatalog(declared("application-token-2", 4)); await flushPromises();
+      expect(describes()).toBe(2);
+      expect(slots("background")).toHaveLength(0);
+      expect(slots("foreground")[0]?.get("iframe").attributes("name")).toBe("application-token-2");
+      expect(useUiStore().activePluginApp?.actionId).toBe("application");
+      // A background plugin closing itself (SDK close) must not remount the same token.
+      useUiStore().closePluginApp(); await flushPromises();
+      setCatalog(declared("application-token-3", 5)); await flushPromises();
+      const cold = slots("background")[0]!;
+      const coldOrigin = new URL(cold.get("iframe").attributes("src")!).origin;
+      window.dispatchEvent(new MessageEvent("message", { origin: coldOrigin, source: cold.get("iframe").element.contentWindow,
+        data: { contract: "vibetable.plugin-surface.v1", surfaceToken: "application-token-3", event: "close", payload: {} } }));
+      await flushPromises();
+      const lists = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+      setCatalog(declared("application-token-3", 6)); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-app-prewarm-slot"]').exists()).toBe(false);
+      expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBe(lists);
+    });
+
     it("keys a reopened headless run by its surface token without reusing stopped state or old receipts", async () => {
       const { wrapper, plugins, task, openPanel } = await prepare();
       openPanel("headless");

@@ -1,6 +1,7 @@
 import type { ComputedRef } from "vue";
 import { computed } from "vue";
 import type { PluginSnapshot } from "@/contracts";
+import { PLUGIN_SURFACE_LIFECYCLE_CONTRACT } from "@/contracts";
 import type { useUiStore } from "@/stores/uiStore";
 import type { usePluginStore } from "@/stores/pluginStore";
 
@@ -16,6 +17,8 @@ export interface PluginAppEntry {
   readonly src: string;
   readonly surfaceToken: string;
   readonly revision: number;
+  /** The manifest declares `compatibility.surfaceLifecycle`: the Host may keep this surface loaded in the background. */
+  readonly prewarm: boolean;
 }
 
 /**
@@ -48,6 +51,7 @@ export function derivePluginAppEntries(
         src: action.surfaceSrc,
         surfaceToken: action.surfaceToken,
         revision: plugin.revision,
+        prewarm: plugin.manifest.compatibility.surfaceLifecycle === PLUGIN_SURFACE_LIFECYCLE_CONTRACT,
       });
     }
   }

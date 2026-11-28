@@ -1,13 +1,14 @@
 export { PluginCapabilityError } from "./capabilities.js";
 export type { ReadGrant, WriteGrant } from "./capabilities.js";
 export { createSurfaceClient, finishHeadlessRun, SURFACE_API_CONTRACT } from "./surface.js";
-export type { SurfaceCapabilities, SurfaceIoTask, SurfaceIoStatus, SurfaceImportPreview, SurfaceAttachment, SurfaceAttachmentTarget, SurfaceSubscription, SurfaceDataEvent, SurfaceMutationPlan, SurfaceMutationPreview, SurfaceMutationOutcome, SurfaceTransport } from "./surface.js";
+export type { SurfaceLifecycle, SurfaceCapabilities, SurfaceIoTask, SurfaceIoStatus, SurfaceImportPreview, SurfaceAttachment, SurfaceAttachmentTarget, SurfaceSubscription, SurfaceDataEvent, SurfaceMutationPlan, SurfaceMutationPreview, SurfaceMutationOutcome, SurfaceTransport } from "./surface.js";
 export type {
   CommandContext,
   Density,
   JsonObject,
   JsonPrimitive,
   JsonValue,
+  SurfacePhase,
   ThemeMode,
 } from "./types.js";
 
@@ -16,7 +17,7 @@ export type { DataOperator, DataFilter, DataSort, DataField, DataTable, DataCata
 export { describeCellValue, formatCellValue, isMissingCell } from "./display.js";
 export type { CellDisplay, CellValueKind } from "./display.js";
 
-export { SURFACE_UI_METHODS, SURFACE_UI_UNSUPPORTED } from "./surface-ui.js";
+export { SURFACE_UI_METHODS, SURFACE_UI_UNSUPPORTED, SURFACE_LIFECYCLE_CONTRACT } from "./surface-ui.js";
 export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from "./surface-ui.js";
 export type { ModelOutputFileField, SurfaceModel, SurfaceModelBinding, SurfaceModelStatus } from "./surface-model.js";
 export { SURFACE_DATASET_CONTRACT } from "./surface-dataset.js";

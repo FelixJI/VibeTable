@@ -129,6 +129,7 @@ import { createAlternativeViewInteractionController } from "@/workspace/alternat
 import { createRelationEditorController } from "@/workspace/relationEditorController";
 import { createWorkspacePluginController } from "@/workspace/workspacePluginController";
 import { createPluginAppNavigation } from "@/workspace/pluginAppNavigation";
+import { createPluginAppPrewarm } from "@/workspace/pluginAppPrewarm";
 import {
   createTabulatorInteractionAdapter,
   createWorkspaceTableInteractionController,
@@ -961,7 +962,9 @@ watch(
   },
 );
 function onOpenPluginApp(key: string): void {
-  void pluginController.dispatch({ type: "app.open", key });
+  // The describe call inside app.open promotes the Host session; the slot only has to adopt it.
+  const opened = pluginPrewarm.expectOpen(key);
+  void pluginController.dispatch({ type: "app.open", key }).finally(opened);
 }
 
 // #482 native host chrome: the always-reachable WPF row steers the trusted
@@ -1393,6 +1396,22 @@ const showWorkspaceCenterScreen = computed(() =>
   && (showWorkspaceCenter.value
     || (!workspaceSession.hasOpenWorkspace && ui.activeView === "home")));
 
+// #596 surface lifecycle: declared applications keep a hidden read-only frame in the
+// background; the click reuses it. The legacy viewport above only serves undeclared plugins.
+const pluginPrewarm = createPluginAppPrewarm({
+  entries: pluginAppNav.entries,
+  activeKey: computed(() => showWorkspaceCenterScreen.value ? null : activePluginAppKey.value),
+  refresh: () => void pluginService.list().catch(() => undefined),
+  promote: key => pluginController.openApplication(key),
+  rollback: key => {
+    if (activePluginAppKey.value === key) ui.closePluginApp();
+    message.warning("插件入口已失效或被移除，已返回平台");
+  },
+});
+function onPrewarmSlotClose(key: string): void {
+  if (activePluginAppKey.value === key) ui.closePluginApp(); else pluginPrewarm.selfClose(key);
+}
+
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
   ({ nextWorkspaceId }) => {
@@ -1823,7 +1842,7 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
         />
         <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" />
         <PluginAppViewport
-          v-if="!showWorkspaceCenterScreen && activePluginAppEntry"
+          v-if="!showWorkspaceCenterScreen && activePluginAppEntry && !activePluginAppEntry.prewarm"
           :src="activePluginAppEntry.src"
           :surface-token="activePluginAppEntry.surfaceToken"
           :title="activePluginAppEntry.label"
@@ -1835,6 +1854,29 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
           @close="ui.closePluginApp"
           @manage="ui.closePluginApp(); ui.navigate('plugins')"
         />
+        <!-- #596: every lifecycle-declaring application keeps exactly one frame here; the
+             active one is the same element that was pre-warmed, so a click never reloads. -->
+        <div v-if="pluginPrewarm.slots.value.length" class="plugin-app-prewarm" aria-label="插件应用">
+          <PluginAppViewport
+            v-for="slot in pluginPrewarm.slots.value"
+            :key="slot.key"
+            data-testid="plugin-app-prewarm-slot"
+            :data-phase="slot.phase"
+            :class="slot.phase === 'foreground' ? 'plugin-app-prewarm-slot--foreground' : null"
+            :active="slot.phase === 'foreground'"
+            :phase="slot.phase"
+            :src="slot.entry.src"
+            :surface-token="slot.entry.surfaceToken"
+            :title="slot.entry.label"
+            :theme="pluginTheme"
+            :navigate-back="backFromPluginSurface"
+            :tasks="pluginApplicationTasks"
+            @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+            @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
+            @close="onPrewarmSlotClose(slot.key)"
+            @manage="ui.closePluginApp(); ui.navigate('plugins')"
+          />
+        </div>
       </div>
       <section v-if="closedPluginTaskReceipts.length" data-testid="closed-plugin-task-receipts"
         class="closed-plugin-task-receipts" aria-label="已关闭插件页面的任务回执">
@@ -2331,6 +2373,9 @@ onBeforeUnmount(() => pluginPrintScope.dispose());
 .app-title strong { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); font-weight: 500; }
 .view-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; background: var(--vt-bg); }
 .view-stack > * { width: 100%; height: 100%; }
+/* #596 pre-warm layer: covers the stack without blocking the platform underneath; only the foreground slot is interactive. */
+.plugin-app-prewarm { position: absolute; inset: 0; pointer-events: none; }
+.plugin-app-prewarm-slot--foreground { position: absolute; inset: 0; pointer-events: auto; }
 .tables-view { display: flex; min-width: 0; }
 .main {
   display: flex;

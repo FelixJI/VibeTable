@@ -88,6 +88,16 @@ Go 在同一事务内校验安装、全部授权与精确版本，只读元数�
 选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
 隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
 
+`application` 动作可声明 `compatibility.surfaceLifecycle: "vibetable.plugin-surface-lifecycle.v1"`（仅 `pluginApi: "3.x"`，
+其它取值为 `version_incompatible`）加入后台预热：工作区就绪后 Host 在隐藏隔离帧中预热该页面，不换页、不抢焦点，
+最多 4 个，切换工作区/禁用/卸载/失败时释放。后台阶段由 Host 按 surface token 强制只读：
+只允许 `request.cancel`、`context.read`、`model.read` 和单份快照的 `snapshot.open/page/readBatch/release`，
+其它方法及受信父页的 `tasks.cancel`/`notification.show`/`navigation.back` 一律 `plugin_surface_background`，无弹窗。
+插件在 `api.lifecycle.whenForeground(signal?)` 之前只做只读准备，用 `api.lifecycle.onChanged` / `context.read().surfacePhase`
+核对阶段；用户点击后 Host 绑定新的前台 token 并投递 `foreground`，隐藏帧被丢弃（提升瞬间的在途后台读取可能
+`plugin_snapshot_stale`，需重读），离开前台退租 token，再次预热换发新的 `background` token。
+未声明的插件行为不变。细节见 `docs/plugin-api.md` 的“后台预热生命周期”。
+
 `api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；
 不另授读权限，输出是该页面已经获准读取并自行渲染的内容。Host 向 Go 重核当前安装、包、动作和
 工作区身份，可信父页只保留该 iframe 的打印路径；平台表格、导航、任务与确认页脚、消息、

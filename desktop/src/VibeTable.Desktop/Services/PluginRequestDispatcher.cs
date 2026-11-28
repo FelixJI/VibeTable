@@ -1064,12 +1064,22 @@ public sealed class PluginRequestDispatcher : IDisposable
                 projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });
                 continue;
             }
+            // A plugin that declares compatibility.surfaceLifecycle opts its manual
+            // application action into background pre-warming: the surface is prepared
+            // off-screen and the host admits reads only until the user opens it.
+            string? phase = action.EffectivePresentation == "application"
+                && snapshot.Manifest.Compatibility.TryGetProperty("surfaceLifecycle", out var lifecycle)
+                && lifecycle.ValueKind == JsonValueKind.String
+                && lifecycle.GetString() == PluginContractVersions.SurfaceLifecycle
+                    ? PluginSurfacePhases.Background
+                    : null;
             var surface = _resourceHost.OpenSurface(
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 action.Entry,
                 action.ActionId,
-                action.EffectivePresentation);
+                action.EffectivePresentation,
+                phase ?? PluginSurfacePhases.Foreground);
             if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
@@ -1079,6 +1089,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 SurfaceSrc = surface.DocumentUri.ToString(),
                 SurfaceToken = surface.SurfaceToken,
                 SurfaceTitle = LocalizeTitle(action.DisplayName, action.ActionId),
+                // Background is the only phase the renderer needs to see; foreground stays implicit.
+                SurfacePhase = surface.Phase == PluginSurfacePhases.Background ? PluginSurfacePhases.Background : null,
             });
         }
         return projected;

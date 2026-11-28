@@ -297,6 +297,7 @@
       "navigation.back"
     ],
     "notifications": [
+      "lifecycleChanged",
       "themeChanged",
       "tasksChanged",
       "uiResponse"
@@ -318,5 +319,35 @@
     },
     "context": "presentation only; Go-authorized context.read remains the data authority",
     "tasks": "only native tasks owned by the current surface; cancelRequested is not settlement; no confirmation fields"
+  },
+  "lifecycle": {
+    "contract": "vibetable.plugin-surface-lifecycle.v1",
+    "declaration": "manifest compatibility.surfaceLifecycle; pluginApi 3.x only; any other value is version_incompatible; a plugin without it keeps the manual entry only",
+    "phases": [
+      "background",
+      "foreground"
+    ],
+    "background": {
+      "mount": "hidden isolated frame in the workspace; never focused, no tab stop, no Product bridge; dropped on workspace switch, disable, uninstall or failure",
+      "authority": "Host-enforced per surface token before any capability runs; never a renderer flag",
+      "allowlist": [
+        "request.cancel",
+        "context.read",
+        "model.read",
+        "snapshot.open",
+        "snapshot.page",
+        "snapshot.readBatch",
+        "snapshot.release"
+      ],
+      "refusal": "plugin_surface_background for every other method, including ui tasks.cancel, notification.show and navigation.back",
+      "dialogs": "none; no script dialogs and no modals sandbox flag"
+    },
+    "promote": "only the user opening the entry: a new foreground token is bound first, then lifecycleChanged foreground is delivered; the hidden frame is discarded, never promoted in place",
+    "demote": "leaving the foreground retires the token and releases the frame; a Host never demotes a foreground surface; re-preparing the same entry issues a new background token",
+    "contextRead": "surfacePhase reports the Go-authorized phase of the calling token; a Host without this contract omits it and the SDK reads it as foreground",
+    "transport": "trusted parent vibetable.plugin-surface.v1 event=lifecycleChanged payload={phase}; sent before themeChanged on ready and on load, and on every phase change; the SDK ignores a repeated phase",
+    "limits": {
+      "maxBackgroundSurfaces": 4
+    }
   }
 }

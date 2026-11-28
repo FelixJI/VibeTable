@@ -28,8 +28,11 @@ export function createPluginSurfaceUi(port: {
   cancel(taskId: string): void;
   back(): boolean;
   show(message: string): void;
+  /** v1 surface lifecycle: true while the frame is pre-warmed in the background. */
+  background?(): boolean;
 }) {
   let shown = 0;
+  const background = () => port.background?.() === true;
   return {
     reset(): void { shown = 0; },
     handle(value: unknown): { requestId: string; result?: unknown; error?: { code: string } } | null {
@@ -48,6 +51,7 @@ export function createPluginSurfaceUi(port: {
           result = projectSurfaceTasks(port.tasks(), port.token()); break;
         case "tasks.cancel": {
           if (!exact(params, ["taskId"]) || typeof params.taskId !== "string" || params.taskId.length > 128) return failure("plugin_capability_invalid");
+          if (background()) return failure("plugin_surface_background");
           const task = port.tasks().find(task => task.taskId === params.taskId && task.surfaceToken === port.token());
           if (!task) return failure("plugin_task_not_owned");
           if (terminal(task)) { result = { cancelRequested: false }; break; }
@@ -58,9 +62,11 @@ export function createPluginSurfaceUi(port: {
         case "notification.show":
           if (!exact(params, ["message"]) || typeof params.message !== "string" || !params.message.trim() || params.message.length > 500) return failure("plugin_capability_invalid");
           if (shown >= 8) return failure("plugin_notification_limit");
+          if (background()) return failure("plugin_surface_background");
           shown++; port.show(params.message); result = { shown: true }; break;
         case "navigation.back":
           if (!exact(params, [])) return failure("plugin_capability_invalid");
+          if (background()) return failure("plugin_surface_background");
           result = { navigated: port.back() }; break;
         default: return failure("plugin_api_unsupported");
       }

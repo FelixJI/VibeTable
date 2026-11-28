@@ -59,4 +59,22 @@ describe("surface presentation services", () => {
     const cycle: Record<string, unknown> = {}; cycle.self = cycle;
     expect(call("notification.show", cycle)?.error?.code).toBe("plugin_capability_invalid");
   });
+  it("keeps a background (pre-warmed) surface read-only: no notice, navigation or cancel, but current presentation and tasks", () => {
+    let background = false;
+    const cancel = vi.fn(); const show = vi.fn(); const back = vi.fn(() => true);
+    const service = createPluginSurfaceUi({ token: () => "token", theme: () => theme, tasks: () => [running], cancel, show, back, background: () => background });
+    const call = (method: string, params: object = {}) => service.handle({ service: "ui", requestId: method, method, params });
+    background = true;
+    expect(call("notification.show", { message: "后台不可见" })?.error?.code).toBe("plugin_surface_background");
+    expect(call("navigation.back")?.error?.code).toBe("plugin_surface_background");
+    expect(call("tasks.cancel", { taskId: "one" })?.error?.code).toBe("plugin_surface_background");
+    expect(call("tasks.cancel", { taskId: "missing" })?.error?.code).toBe("plugin_surface_background");
+    expect(show).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled(); expect(back).not.toHaveBeenCalled();
+    expect(call("context.current")?.result).toEqual(theme);
+    expect(call("tasks.list")?.result).toMatchObject([{ taskId: "one" }]);
+    background = false;
+    expect(call("notification.show", { message: "已在前台" })?.result).toEqual({ shown: true });
+    expect(call("tasks.cancel", { taskId: "missing" })?.error?.code).toBe("plugin_task_not_owned");
+    expect(call("navigation.back")?.result).toEqual({ navigated: true });
+  });
 });

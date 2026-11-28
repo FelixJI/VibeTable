@@ -78,6 +78,9 @@ export interface WorkspacePluginController {
   readonly rowMenu: Ref<ContextMenuState>;
   readonly columnMenu: Ref<ColumnMenuState>;
   dispatch(intent: WorkspacePluginIntent): Promise<void>;
+  /** Opens an application through the same describe gate as `app.open`; resolves true only when the
+   * Host confirmed availability and the application became the active foreground surface. */
+  openApplication(key: string): Promise<boolean>;
   dispose(): void;
 }
 
@@ -230,19 +233,19 @@ export function createWorkspacePluginController(
     }
   }
 
-  async function openPluginApp(key: string, keys = selectedRowKeys()): Promise<void> {
-    if (disposed) return;
+  async function openPluginApp(key: string, keys = selectedRowKeys()): Promise<boolean> {
+    if (disposed) return false;
     const navigation = dependencies.ui.beginNavigation();
     const generation = dependencies.plugins.projectContextGeneration;
     const projectKey = dependencies.plugins.projectKey;
     const registered = registeredActions.value.find(item => item.key === key);
     if (!registered) {
       dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
-      return;
+      return false;
     }
     if (registered.action.presentation !== "application") {
       dependencies.reportError("该入口不是插件应用");
-      return;
+      return false;
     }
     const isCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation
       && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
@@ -259,10 +262,12 @@ export function createWorkspacePluginController(
         false,
         isCurrent,
       );
-      if (!isCurrent() || !availability.available) return;
+      if (!isCurrent() || !availability.available) return false;
       dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
+      return true;
     } catch (error) {
       if (isCurrent()) dependencies.reportError(errorMessage(error));
+      return false;
     }
   }
 
@@ -376,6 +381,7 @@ export function createWorkspacePluginController(
     rowMenu,
     columnMenu,
     dispatch,
+    openApplication: openPluginApp,
     dispose: () => { disposed = true; },
   };
 }

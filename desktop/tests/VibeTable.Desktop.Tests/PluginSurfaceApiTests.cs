@@ -1089,6 +1089,98 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task BackgroundSurfaceAdmitsReadsOnlyAndRecoversAfterPromotion()
+    {
+        using var fixture = new Fixture(presentation: "application", phase: PluginSurfacePhases.Background);
+        Assert.AreEqual(PluginSurfacePhases.Background, fixture.Surface.Phase);
+
+        // Observation is admitted without an invocation context and reports the authoritative phase.
+        var observed = await fixture.Call("context.read", "{}");
+        Assert.AreEqual(PluginSurfacePhases.Background, observed.GetProperty("result").GetProperty("surfacePhase").GetString());
+        Assert.IsFalse(observed.GetProperty("result").TryGetProperty("collection", out _), "Background is not bound to any table.");
+        Assert.IsFalse(fixture.Http.Calls.Single().TryGetProperty("invocationContext", out _), "Background reads carry no selection context.");
+        // The preparation set: pure-read model bindings, one snapshot, its release.
+        Assert.AreEqual("completed", (await fixture.Call("model.read", "{}")).GetProperty("result").GetProperty("status").GetString());
+        string snapshot = (await fixture.Call("snapshot.open", SnapshotRequest)).GetProperty("result").GetProperty("snapshotId").GetString()!;
+        Assert.IsFalse((await fixture.Call("snapshot.release", JsonSerializer.Serialize(new { snapshotId = snapshot }))).TryGetProperty("error", out _));
+        int reads = fixture.Http.Calls.Count;
+
+        // Everything else is refused host-side before any capability, dialog or write path runs —
+        // including reads the preparation does not need (attachments, subscriptions, datasets, storage).
+        foreach (var (method, parameters) in new[]
+        {
+            ("storage.set", "{}"), ("storage.get", "{}"), ("storage.delete", "{}"),
+            ("mutation.submit", "{}"), ("transaction.configure", "{}"),
+            ("output.print", "{}"), ("file.pickRead", "{}"), ("data.import.start", "{}"), ("data.export.start", "{}"),
+            ("model.status", "{}"), ("model.preview", "{}"), ("model.catalog", "{}"), ("model.configure", "{}"),
+            ("attachments.list", "{}"), ("attachments.read", "{}"), ("attachments.previewChange", "{}"),
+            ("data.query", "{}"), ("data.subscribe", "{}"), ("data.describe", "{}"), ("dataset.open", "{}"), ("data.io.start", "{}"),
+        })
+            Assert.AreEqual("plugin_surface_background", Code(await fixture.Call(method, parameters)), method);
+        Assert.AreEqual(reads, fixture.Http.Calls.Count, "Refused methods never reach the authority.");
+        Assert.AreEqual(0, fixture.Prints, "A hidden surface cannot open a print dialog.");
+        Assert.AreEqual(PluginSurfacePhases.Background, fixture.Surface.Phase, "Denied writes never promote a surface.");
+
+        // Opening the application binds the active collection and promotes the surface.
+        var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
+            [JsonSerializer.SerializeToElement("selected")], null, "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
+        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context);
+        fixture.Surfaces.TryGet(fixture.Surface.SurfaceToken, out var promoted);
+        Assert.AreEqual(PluginSurfacePhases.Foreground, promoted!.Phase);
+        var foreground = await fixture.Call("context.read", "{}");
+        Assert.AreEqual(PluginSurfacePhases.Foreground, foreground.GetProperty("result").GetProperty("surfacePhase").GetString());
+        Assert.AreEqual("selected", fixture.Http.Calls.Last().GetProperty("invocationContext").GetProperty("selectedKeys")[0].GetString(), "Promotion binds the active selection.");
+        // Promotion restores exactly the declared capability: a refused read-set member and a write both pass.
+        Assert.IsFalse((await fixture.Call("data.query", "{}")).TryGetProperty("error", out _));
+        Assert.IsFalse((await fixture.Call("storage.set", "{}")).TryGetProperty("error", out _), "Promotion restores the declared write capability.");
+
+        // Once adopted, a promoted surface follows the foreground stale rules like any other.
+        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId,
+            context with { Collection = "notes" });
+        Assert.AreEqual("plugin_session_stale", Code(await fixture.Call("context.read", "{}")));
+    }
+
+    [TestMethod]
+    public async Task SharedLifecycleContractMatchesTheHostBackgroundGate()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "plugin-surface-api.v1.json"))) root = root.Parent;
+        Assert.IsNotNull(root, "repository contract root must be available");
+        using var contract = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "plugin-surface-api.v1.json")));
+        var lifecycle = contract.RootElement.GetProperty("lifecycle");
+        Assert.AreEqual(PluginContractVersions.SurfaceLifecycle, lifecycle.GetProperty("contract").GetString());
+        Assert.AreEqual(PluginSurfaceSessionManager.MaxBackgroundSurfaces, lifecycle.GetProperty("limits").GetProperty("maxBackgroundSurfaces").GetInt32());
+        CollectionAssert.AreEqual(new[] { PluginSurfacePhases.Background, PluginSurfacePhases.Foreground },
+            lifecycle.GetProperty("phases").EnumerateArray().Select(item => item.GetString()).ToArray());
+        var published = contract.RootElement.GetProperty("methods").EnumerateArray().Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);
+        var allowlist = lifecycle.GetProperty("background").GetProperty("allowlist").EnumerateArray().Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);
+        Assert.IsTrue(allowlist.SetEquals(PluginSurfaceApi.BackgroundMethods), "The published allowlist is exactly the Host gate.");
+        Assert.IsTrue(allowlist.IsSubsetOf(published), "The allowlist never names a method outside the shared surface API.");
+        // Real behaviour: every published method outside the allowlist is refused by the Host before any
+        // capability runs, whatever parameters it carries.
+        using var fixture = new Fixture(presentation: "application", phase: PluginSurfacePhases.Background);
+        int refused = 0;
+        foreach (string method in published.Where(method => !allowlist.Contains(method)).Order(StringComparer.Ordinal))
+        {
+            Assert.AreEqual("plugin_surface_background", Code(await fixture.Call(method, "{}")), method);
+            refused++;
+        }
+        Assert.IsTrue(refused > 30, "The contract lists the write surface, not only the preparation set.");
+        Assert.AreEqual(0, fixture.Http.Calls.Count, "Refused methods never reach the authority.");
+        Assert.AreEqual(PluginSurfacePhases.Background, fixture.Surface.Phase);
+    }
+
+    [TestMethod]
+    public async Task BackgroundReadsStayStaleAcrossSessionRetirement()
+    {
+        using var fixture = new Fixture(phase: PluginSurfacePhases.Background);
+        Assert.IsFalse((await fixture.Call("context.read", "{}")).TryGetProperty("error", out _));
+        fixture.RetireAfterReceipt();
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("context.read", "{}")),
+            "Pre-warmed surfaces release with the workspace session like every other surface.");
+    }
+
+    [TestMethod]
     public async Task ActualSourceTokenVersionAndUnmappedIdentityFailBeforeAuthority()
     {
         using var fixture = new Fixture();
@@ -2201,14 +2293,14 @@ public sealed class PluginSurfaceApiTests
         private readonly ProductAuthorityEpoch _authority = new();
         private string? _taskId;
         internal string TaskId => _taskId!;
-        internal Fixture(PluginProjectContext? context = null, string actionId = "save", string risk = "destructive", string presentation = "surface")
+        internal Fixture(PluginProjectContext? context = null, string actionId = "save", string risk = "destructive", string presentation = "surface", string phase = PluginSurfacePhases.Foreground)
         {
             Context = context ?? Context;
             _authority.Transition(Context);
             Tasks = new(_authority);
             Tasks.SetWorkspaceContext(Context);
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
-            Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
+            Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html", phase: phase);
             Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html", presentation: presentation, installationId: "record-surface");
             Surfaces.TryGet(Surface.SurfaceToken, out var bound);
             Surface = bound!;
