@@ -1,7 +1,6 @@
 using System.IO;
 using System.Diagnostics;
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
@@ -398,14 +397,6 @@ internal static class Program
 
     private static int ReadDocument(IntPtr hwnd)
     {
-        Stage("assemblies begin");
-        // The application is an ordinary named CLR caller, without PowerShell frames.
-        AssemblyName providers = typeof(AutomationElement).Assembly.GetName();
-        providers.Name = "UIAutomationClientsideProviders";
-        Stage("provider-registration begin");
-        ClientSettings.RegisterClientSideProviderAssembly(providers);
-        Stage("provider-registration end");
-        Stage("assemblies end");
         Stage("root begin");
         AutomationElement root = AutomationElement.FromHandle(hwnd);
         Stage("root end");
